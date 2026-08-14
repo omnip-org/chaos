@@ -1,0 +1,232 @@
+use std::{collections::HashSet, sync::Arc};
+
+use chaos_domain::{
+    FieldViolation,
+    catalog::{Product, ProductHandle, ProductId, ProductOptionValueId, Sku},
+    merchant::{MerchantRole, StoreId},
+};
+
+use crate::{
+    ApplicationError,
+    merchant::MerchantActor,
+    ports::{CatalogProvisioningUnitOfWork, IdempotencyRequest},
+};
+
+pub struct CreateProductOptionInput {
+    pub name: String,
+    pub values: Vec<String>,
+}
+
+pub struct CreateProductSelectedOptionInput {
+    pub option: String,
+    pub value: String,
+}
+
+pub struct CreateProductVariantInput {
+    pub title: String,
+    pub sku: Option<String>,
+    pub requires_shipping: bool,
+    pub track_inventory: bool,
+    pub selected_options: Vec<CreateProductSelectedOptionInput>,
+}
+
+pub struct CreateProductInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub handle: String,
+    pub title: String,
+    pub description: String,
+    pub options: Vec<CreateProductOptionInput>,
+    pub variants: Vec<CreateProductVariantInput>,
+    pub idempotency: IdempotencyRequest,
+}
+
+#[derive(Debug)]
+pub struct CreateProductOutput {
+    pub product_id: ProductId,
+}
+
+pub struct CreateProduct {
+    unit_of_work: Arc<dyn CatalogProvisioningUnitOfWork>,
+}
+
+impl CreateProduct {
+    pub fn new(unit_of_work: Arc<dyn CatalogProvisioningUnitOfWork>) -> Self {
+        Self { unit_of_work }
+    }
+
+    pub async fn execute(
+        &self,
+        input: CreateProductInput,
+    ) -> Result<CreateProductOutput, ApplicationError> {
+        if !matches!(
+            input.actor.role(),
+            MerchantRole::Owner
+                | MerchantRole::Administrator
+                | MerchantRole::Developer
+                | MerchantRole::Manager
+        ) {
+            return Err(ApplicationError::Forbidden);
+        }
+
+        let product = build_product(&input)?;
+        let mut transaction = self.unit_of_work.begin(input.actor, input.store_id).await?;
+        transaction.require_writable_store().await?;
+        if let Some(product_id) = transaction
+            .reserve_product_creation(&input.idempotency)
+            .await?
+        {
+            return Ok(CreateProductOutput { product_id });
+        }
+        transaction.insert_product(&product).await?;
+        transaction
+            .complete_product_creation(&input.idempotency, product.id())
+            .await?;
+        transaction.commit().await?;
+        Ok(CreateProductOutput {
+            product_id: product.id(),
+        })
+    }
+}
+
+fn build_product(input: &CreateProductInput) -> Result<Product, ApplicationError> {
+    let mut product = Product::create(
+        input.actor.merchant_account_id(),
+        input.store_id,
+        ProductHandle::parse(input.handle.clone())?,
+        input.title.clone(),
+        input.description.clone(),
+    )?;
+
+    for option in &input.options {
+        let option_id = product.add_option(option.name.clone())?;
+        for value in &option.values {
+            product.add_option_value(option_id, value.clone())?;
+        }
+    }
+
+    for variant in &input.variants {
+        let selected_value_ids = resolve_selected_options(&product, &variant.selected_options)?;
+        let sku = variant.sku.clone().map(Sku::parse).transpose()?;
+        product.add_variant(
+            variant.title.clone(),
+            sku,
+            variant.requires_shipping,
+            variant.track_inventory,
+            selected_value_ids,
+        )?;
+    }
+    Ok(product)
+}
+
+fn resolve_selected_options(
+    product: &Product,
+    selections: &[CreateProductSelectedOptionInput],
+) -> Result<Vec<ProductOptionValueId>, ApplicationError> {
+    let mut option_names = HashSet::new();
+    let mut value_ids = Vec::with_capacity(selections.len());
+    for selection in selections {
+        let normalized_option = selection.option.to_lowercase();
+        if !option_names.insert(normalized_option.clone()) {
+            return Err(selection_violation(
+                "must not select the same option more than once",
+            ));
+        }
+        let option = product
+            .options()
+            .iter()
+            .find(|option| option.name().to_lowercase() == normalized_option)
+            .ok_or_else(|| selection_violation("contains an unknown product option"))?;
+        let normalized_value = selection.value.to_lowercase();
+        let value = option
+            .values()
+            .iter()
+            .find(|value| value.value().to_lowercase() == normalized_value)
+            .ok_or_else(|| selection_violation("contains an unknown option value"))?;
+        value_ids.push(value.id());
+    }
+    Ok(value_ids)
+}
+
+fn selection_violation(reason: &'static str) -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![FieldViolation {
+            field: "selected_options",
+            reason: reason.into(),
+        }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chaos_domain::{
+        identity::UserId,
+        merchant::{MerchantAccountId, MerchantRole},
+    };
+
+    use super::*;
+
+    fn input() -> CreateProductInput {
+        CreateProductInput {
+            actor: MerchantActor::new(
+                UserId::new(),
+                MerchantAccountId::new(),
+                MerchantRole::Manager,
+            ),
+            store_id: StoreId::new(),
+            handle: "classic-shirt".into(),
+            title: "Classic Shirt".into(),
+            description: String::new(),
+            options: vec![
+                CreateProductOptionInput {
+                    name: "Color".into(),
+                    values: vec!["Blue".into(), "Black".into()],
+                },
+                CreateProductOptionInput {
+                    name: "Size".into(),
+                    values: vec!["S".into(), "M".into()],
+                },
+            ],
+            variants: vec![CreateProductVariantInput {
+                title: "Blue / M".into(),
+                sku: Some("SHIRT-BLUE-M".into()),
+                requires_shipping: true,
+                track_inventory: true,
+                selected_options: vec![
+                    CreateProductSelectedOptionInput {
+                        option: "color".into(),
+                        value: "blue".into(),
+                    },
+                    CreateProductSelectedOptionInput {
+                        option: "SIZE".into(),
+                        value: "m".into(),
+                    },
+                ],
+            }],
+            idempotency: IdempotencyRequest {
+                key: "product-test".into(),
+                request_fingerprint: [1; 32],
+            },
+        }
+    }
+
+    #[test]
+    fn builds_a_complete_product_from_case_insensitive_option_names() {
+        let product = build_product(&input()).unwrap();
+
+        assert_eq!(product.options().len(), 2);
+        assert_eq!(product.variants().len(), 1);
+        assert_eq!(product.variants()[0].selected_options().len(), 2);
+    }
+
+    #[test]
+    fn rejects_unknown_selected_options_before_persistence() {
+        let mut input = input();
+        input.variants[0].selected_options[0].option = "Material".into();
+
+        assert!(matches!(
+            build_product(&input),
+            Err(ApplicationError::Validation { .. })
+        ));
+    }
+}

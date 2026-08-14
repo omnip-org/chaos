@@ -1,4 +1,5 @@
 mod api_key;
+mod catalog;
 mod merchant;
 mod merchant_query;
 mod passwordless;
@@ -8,6 +9,7 @@ pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
     GeneratedApiKeyMaterial, MachineActor,
 };
+pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use merchant::{
     IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
 };

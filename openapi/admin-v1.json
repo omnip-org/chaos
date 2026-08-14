@@ -12,6 +12,7 @@
     { "name": "Authentication" },
     { "name": "Merchant accounts" },
     { "name": "Stores" },
+    { "name": "Catalog" },
     { "name": "API keys" }
   ],
   "paths": {
@@ -273,6 +274,44 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "post": {
+        "operationId": "createProduct",
+        "tags": ["Catalog"],
+        "summary": "Create a draft product with options and variants",
+        "description": "Creates the complete product aggregate atomically. The product remains unpublished until an explicit publication operation succeeds.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateProduct" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Draft product created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentifierResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys": {
       "parameters": [
         { "$ref": "#/components/parameters/MerchantAccountId" },
@@ -493,6 +532,69 @@
           "name": { "type": "string", "minLength": 1, "maxLength": 120 },
           "default_region": { "$ref": "#/components/schemas/RegionCode" },
           "default_currency": { "$ref": "#/components/schemas/CurrencyCode" }
+        }
+      },
+      "CreateProductSelectedOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["option", "value"],
+        "properties": {
+          "option": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "value": { "type": "string", "minLength": 1, "maxLength": 120 }
+        }
+      },
+      "CreateProductVariant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "sku": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "requires_shipping": { "type": "boolean", "default": true },
+          "track_inventory": { "type": "boolean", "default": true },
+          "selected_options": {
+            "type": "array",
+            "default": [],
+            "maxItems": 10,
+            "items": { "$ref": "#/components/schemas/CreateProductSelectedOption" }
+          }
+        }
+      },
+      "CreateProductOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "values"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "values": {
+            "type": "array",
+            "maxItems": 100,
+            "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+          }
+        }
+      },
+      "CreateProduct": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "title"],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "description": { "type": "string", "maxLength": 100000, "default": "" },
+          "options": {
+            "type": "array",
+            "default": [],
+            "maxItems": 10,
+            "items": { "$ref": "#/components/schemas/CreateProductOption" }
+          },
+          "variants": {
+            "type": "array",
+            "default": [],
+            "items": { "$ref": "#/components/schemas/CreateProductVariant" }
+          }
         }
       },
       "ApiKeyClass": { "type": "string", "enum": ["publishable", "secret"] },

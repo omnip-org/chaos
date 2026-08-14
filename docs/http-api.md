@@ -116,6 +116,12 @@ The default region is the store's initial operating configuration. It does not r
 
 Both list endpoints accept `limit` from 1 to 100, defaulting to 20, and an opaque `cursor`. Results use ascending UUIDv7 keyset pagination. When more results exist, `meta.page.has_more` is true and `meta.page.next_cursor` contains the cursor for the next request. Clients must not parse or construct cursors.
 
+## Catalog
+
+`POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products` creates a draft Product aggregate atomically, including its Options, Option Values, Variants, and selected combinations. Owners, administrators, developers, and managers may author Catalog data; support members are read-only. The request requires `Idempotency-Key`, and its fingerprint includes the Store ID so a key cannot be replayed against another Store.
+
+Draft Products may omit Options and Variants while content is being authored. Product creation never publishes implicitly. Prices, inventory quantities, and Sales Channel publication remain separate domain operations.
+
 ## API keys
 
 Store API keys are managed beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys`. Only owners, administrators, and developers may create, list, or revoke them. Every key is bound to the Store in its path and cannot authorize a different Store.
