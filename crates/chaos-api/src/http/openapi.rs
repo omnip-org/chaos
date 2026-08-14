@@ -94,6 +94,48 @@ mod tests {
         assert!(schemas.contains_key("ErrorEnvelope"));
         assert!(schemas.contains_key("MerchantAccountCollectionEnvelope"));
         assert!(schemas.contains_key("StoreCollectionEnvelope"));
+        assert!(schemas.contains_key("ApiKeyCreatedEnvelope"));
+        assert!(schemas.contains_key("ApiKeyCollectionEnvelope"));
         assert!(schemas.contains_key("PageMeta"));
+    }
+
+    #[test]
+    fn every_local_reference_resolves() {
+        fn visit(value: &Value, root: &Value) {
+            match value {
+                Value::Object(object) => {
+                    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                        let pointer = reference
+                            .strip_prefix('#')
+                            .expect("only local OpenAPI references are allowed");
+                        assert!(
+                            root.pointer(pointer).is_some(),
+                            "OpenAPI reference {reference} must resolve"
+                        );
+                    }
+                    object.values().for_each(|child| visit(child, root));
+                }
+                Value::Array(array) => array.iter().for_each(|child| visit(child, root)),
+                _ => {}
+            }
+        }
+
+        let specification = specification();
+        visit(&specification, &specification);
+    }
+
+    #[test]
+    fn api_key_secret_is_declared_as_one_time_sensitive_response_data() {
+        let specification = specification();
+        let secret =
+            &specification["components"]["schemas"]["ApiKeyCreated"]["properties"]["secret"];
+
+        assert_eq!(secret["readOnly"], true);
+        assert_eq!(secret["x-sensitive"], true);
+        assert!(
+            specification["components"]["schemas"]["ApiKey"]["properties"]
+                .get("secret")
+                .is_none()
+        );
     }
 }

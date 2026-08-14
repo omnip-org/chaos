@@ -1,3 +1,4 @@
+mod api_key;
 mod auth;
 mod error;
 mod extract;
@@ -8,7 +9,9 @@ mod response;
 
 use axum::Router;
 use chaos_application::{
-    merchant::{CreateMerchantAccount, CreateStore, MerchantQueries},
+    merchant::{
+        ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore, MerchantQueries,
+    },
     ports::PasswordlessAuthentication,
 };
 use std::sync::Arc;
@@ -17,8 +20,9 @@ use chaos_infrastructure::{
     config::Settings,
     passwordless::PasswordlessAuth,
     repositories::{
-        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
-        PostgresStoreProvisioningUnitOfWork,
+        PostgresApiKeyRepository, PostgresMerchantProvisioningUnitOfWork,
+        PostgresMerchantReadRepository, PostgresStoreProvisioningUnitOfWork,
+        SecureApiKeyMaterialGenerator,
     },
     state::AppState,
 };
@@ -30,7 +34,7 @@ use tower_http::{
 use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
-pub use extract::{ApiJson, ApiQuery, AuthenticatedSession, MerchantContext};
+pub use extract::{ApiJson, ApiPath, ApiQuery, AuthenticatedSession, MerchantContext};
 pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
@@ -41,6 +45,8 @@ pub struct ApiState {
     pub create_merchant_account: Arc<CreateMerchantAccount>,
     pub create_store: Arc<CreateStore>,
     pub merchant_queries: Arc<MerchantQueries>,
+    pub api_key_management: Arc<ApiKeyManagement>,
+    pub api_key_authentication: Arc<ApiKeyAuthentication>,
 }
 
 impl ApiState {
@@ -67,6 +73,13 @@ impl ApiState {
         let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             infrastructure.runtime_pool(),
         )));
+        let api_key_repository =
+            Arc::new(PostgresApiKeyRepository::new(infrastructure.runtime_pool()));
+        let api_key_management = ApiKeyManagement::new(
+            api_key_repository.clone(),
+            Arc::new(SecureApiKeyMaterialGenerator),
+        );
+        let api_key_authentication = ApiKeyAuthentication::new(api_key_repository);
         Ok(Self {
             infrastructure,
             lifecycle,
@@ -74,6 +87,8 @@ impl ApiState {
             create_merchant_account: Arc::new(create_merchant_account),
             create_store: Arc::new(create_store),
             merchant_queries: Arc::new(merchant_queries),
+            api_key_management: Arc::new(api_key_management),
+            api_key_authentication: Arc::new(api_key_authentication),
         })
     }
 }
@@ -83,6 +98,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/health", health::routes())
         .nest("/admin/v1/auth", auth::routes())
         .nest("/admin/v1", merchant::routes())
+        .nest("/admin/v1", api_key::routes())
         .nest("/openapi", openapi::routes())
         .with_state(state)
         .layer(PropagateRequestIdLayer::x_request_id())

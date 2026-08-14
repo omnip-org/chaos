@@ -37,9 +37,10 @@ const IDEMPOTENCY_KEY: &str = "idempotency-key";
 const CURSOR_VERSION: u8 = 1;
 
 #[derive(Clone, Copy)]
-enum CursorKind {
+pub(super) enum CursorKind {
     MerchantAccount = 1,
     Store = 2,
+    ApiKey = 3,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -231,7 +232,7 @@ async fn list_stores(
     Ok(ApiResponse::ok(data).with_meta(page_meta(page.has_more, next_cursor)))
 }
 
-fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
+pub(super) fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
     match limit.unwrap_or(20) {
         limit @ 1..=100 => Ok(limit),
         _ => Err(ApplicationError::Validation {
@@ -244,7 +245,7 @@ fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
     }
 }
 
-fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
+pub(super) fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
     let mut payload = [0_u8; 18];
     payload[0] = CURSOR_VERSION;
     payload[1] = kind as u8;
@@ -252,7 +253,7 @@ fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
     URL_SAFE_NO_PAD.encode(payload)
 }
 
-fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<Uuid, ApiError> {
+pub(super) fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<Uuid, ApiError> {
     let bytes = URL_SAFE_NO_PAD.decode(cursor).ok();
     bytes
         .as_deref()
@@ -271,7 +272,7 @@ fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<Uuid, ApiErr
         })
 }
 
-fn page_meta(has_more: bool, next_cursor: Option<String>) -> ResponseMeta {
+pub(super) fn page_meta(has_more: bool, next_cursor: Option<String>) -> ResponseMeta {
     ResponseMeta {
         page: Some(PageMeta {
             has_more,
@@ -288,7 +289,7 @@ fn default_currency() -> String {
     "USD".into()
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
+pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
     let key = headers
         .get(IDEMPOTENCY_KEY)
         .and_then(|value| value.to_str().ok())

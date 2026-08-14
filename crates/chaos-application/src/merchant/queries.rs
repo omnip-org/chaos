@@ -23,6 +23,18 @@ pub struct MerchantActor {
 }
 
 impl MerchantActor {
+    pub(crate) const fn new(
+        user_id: UserId,
+        merchant_account_id: MerchantAccountId,
+        role: MerchantRole,
+    ) -> Self {
+        Self {
+            user_id,
+            merchant_account_id,
+            role,
+        }
+    }
+
     pub const fn user_id(self) -> UserId {
         self.user_id
     }
@@ -73,11 +85,7 @@ impl MerchantQueries {
             .membership_role(user_id, merchant_account_id)
             .await?
             .ok_or(ApplicationError::Forbidden)?;
-        Ok(MerchantActor {
-            user_id,
-            merchant_account_id,
-            role,
-        })
+        Ok(MerchantActor::new(user_id, merchant_account_id, role))
     }
 
     pub async fn list_stores(

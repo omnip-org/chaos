@@ -14,12 +14,13 @@ use uuid::Uuid;
 use super::{ApiError, ApiState};
 
 pub struct ApiJson<T>(pub T);
+pub struct ApiPath<T>(pub T);
 pub struct ApiQuery<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
     S: Send + Sync,
-    T: DeserializeOwned,
+    T: DeserializeOwned + Send,
 {
     type Rejection = ApiError;
 
@@ -43,6 +44,25 @@ where
             .await
             .map(|Query(value)| Self(value))
             .map_err(ApiError::from_query_rejection)
+    }
+}
+
+impl<S, T> FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Send,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(value)| Self(value))
+            .map_err(|_| ApiError::Request {
+                status: axum::http::StatusCode::BAD_REQUEST,
+                code: "invalid_path",
+                message: "one or more path parameters are invalid",
+            })
     }
 }
 

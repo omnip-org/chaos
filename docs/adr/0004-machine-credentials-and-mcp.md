@@ -16,9 +16,9 @@ There are two machine-credential classes:
 - Publishable keys identify a Store or sales channel and authorize only explicitly public read operations. They are safe to embed in a browser but are still revocable and rate limited.
 - Secret keys authorize server-side operations permitted by their scopes. They must never be embedded in browsers, URLs, logs, telemetry attributes, or MCP configuration committed to source control.
 
-Keys use a self-identifying versioned format with an environment and class prefix, a searchable non-secret key identifier, and a random secret. An illustrative format is `cc_live_secret_<key_id>_<secret>`. The exact encoder is owned by the identity application service and may evolve by version.
+Keys use a self-identifying versioned format with an environment and class prefix, a searchable non-secret key identifier, and a random secret. The initial format is `cc_v1_live_secret_<key_id>_<secret>`. The exact encoder is owned by the credential infrastructure adapter and may evolve by version.
 
-PostgreSQL stores the key identifier and a SHA-256 digest of the complete presented key, never the plaintext secret. A constant-time digest comparison authenticates a key after indexed identifier lookup. Plaintext is returned exactly once at creation. Losing it requires rotation, not recovery.
+PostgreSQL stores the key identifier and a SHA-256 digest of the complete presented key, never the plaintext secret. A narrowly granted verifier function authenticates a key after indexed high-entropy identifier lookup without exposing stored digests to the runtime role. Plaintext is returned exactly once at creation. Losing it requires rotation, not recovery.
 
 Each key records:
 

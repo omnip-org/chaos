@@ -268,13 +268,13 @@ CREATE TABLE merchant.api_keys (
     FOREIGN KEY (revoked_by_user_id)
         REFERENCES identity.users(id),
     CONSTRAINT api_keys_identifier_format_check CHECK (
-        key_identifier ~ '^[A-Za-z0-9]{16}$'
+        key_identifier ~ '^[A-Za-z0-9_-]{16}$'
     ),
     CONSTRAINT api_keys_secret_digest_length_check CHECK (
         octet_length(secret_digest) = 32
     ),
     CONSTRAINT api_keys_display_suffix_format_check CHECK (
-        display_suffix ~ '^[A-Za-z0-9]{4}$'
+        display_suffix ~ '^[A-Za-z0-9_-]{4}$'
     ),
     CONSTRAINT api_keys_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 80
@@ -408,6 +408,54 @@ CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE FUNCTION merchant.authenticate_api_key(
+    presented_key_identifier  TEXT,
+    presented_secret_digest  BYTEA
+)
+RETURNS TABLE (
+    api_key_id           UUID,
+    merchant_account_id  UUID,
+    store_id             UUID,
+    class                TEXT,
+    mode                 TEXT,
+    scopes               TEXT[]
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT api_key.id,
+           api_key.merchant_account_id,
+           api_key.store_id,
+           api_key.class::TEXT,
+           api_key.mode::TEXT,
+           ARRAY(
+               SELECT api_key_scope.scope::TEXT
+               FROM merchant.api_key_scopes AS api_key_scope
+               WHERE api_key_scope.merchant_account_id = api_key.merchant_account_id
+                 AND api_key_scope.api_key_id = api_key.id
+               ORDER BY api_key_scope.scope::TEXT
+           )
+    FROM merchant.api_keys AS api_key
+    INNER JOIN merchant.merchant_accounts AS merchant_account
+        ON merchant_account.id = api_key.merchant_account_id
+    INNER JOIN merchant.stores AS store
+        ON store.merchant_account_id = api_key.merchant_account_id
+       AND store.id = api_key.store_id
+    WHERE api_key.key_identifier = presented_key_identifier
+      AND api_key.secret_digest = presented_secret_digest
+      AND api_key.revoked_at IS NULL
+      AND (api_key.expires_at IS NULL OR api_key.expires_at > CURRENT_TIMESTAMP)
+      AND merchant_account.status = 'active'
+      AND (api_key.mode = 'test' OR store.status = 'active');
+$$;
+
+REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
+
+COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
+    'Authenticates a machine credential without exposing stored secret digests';
+
 DO $$
 BEGIN
     CREATE ROLE chaos_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
@@ -434,6 +482,8 @@ $$;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 GRANT USAGE ON SCHEMA extensions, integration, merchant TO chaos_runtime;
+GRANT EXECUTE
+    ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE

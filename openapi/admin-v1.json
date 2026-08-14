@@ -11,7 +11,8 @@
   "tags": [
     { "name": "Authentication" },
     { "name": "Merchant accounts" },
-    { "name": "Stores" }
+    { "name": "Stores" },
+    { "name": "API keys" }
   ],
   "paths": {
     "/admin/v1/auth/email-links": {
@@ -179,6 +180,7 @@
               }
             }
           },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "422": { "$ref": "#/components/responses/ValidationFailed" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
@@ -234,6 +236,7 @@
               }
             }
           },
+          "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "422": { "$ref": "#/components/responses/ValidationFailed" }
@@ -269,6 +272,90 @@
           "422": { "$ref": "#/components/responses/ValidationFailed" }
         }
       }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "listApiKeys",
+        "tags": ["API keys"],
+        "summary": "List Store API keys without secret material",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "API key page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiKeyCollectionEnvelope" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
+      "post": {
+        "operationId": "createApiKey",
+        "tags": ["API keys"],
+        "summary": "Create a Store-scoped API key",
+        "description": "The plaintext secret is returned exactly once. Replaying the Idempotency-Key returns a conflict instead of disclosing it again.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateApiKey" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "API key created; copy the one-time secret now",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ApiKeyCreatedEnvelope" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys/{api_key_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "$ref": "#/components/parameters/ApiKeyId" }
+      ],
+      "delete": {
+        "operationId": "revokeApiKey",
+        "tags": ["API keys"],
+        "summary": "Revoke an API key",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "204": { "description": "API key revoked" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
     }
   },
   "components": {
@@ -282,6 +369,18 @@
     "parameters": {
       "MerchantAccountId": {
         "name": "merchant_account_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "StoreId": {
+        "name": "store_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "ApiKeyId": {
+        "name": "api_key_id",
         "in": "path",
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
@@ -317,6 +416,10 @@
       },
       "Forbidden": {
         "description": "Authenticated caller is not allowed to access the resource",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "NotFound": {
+        "description": "The resource does not exist in the authorized scope",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "Conflict": {
@@ -391,6 +494,95 @@
           "default_region": { "$ref": "#/components/schemas/RegionCode" },
           "default_currency": { "$ref": "#/components/schemas/CurrencyCode" }
         }
+      },
+      "ApiKeyClass": { "type": "string", "enum": ["publishable", "secret"] },
+      "ApiKeyMode": { "type": "string", "enum": ["test", "live"] },
+      "ApiKeyScope": {
+        "type": "string",
+        "enum": [
+          "catalog:read",
+          "carts:write",
+          "checkout:write",
+          "orders:read",
+          "customers:write",
+          "mcp:tools"
+        ]
+      },
+      "CreateApiKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "class", "mode", "scopes"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "class": { "$ref": "#/components/schemas/ApiKeyClass" },
+          "mode": { "$ref": "#/components/schemas/ApiKeyMode" },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "$ref": "#/components/schemas/ApiKeyScope" }
+          }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "key_identifier",
+          "display_suffix",
+          "class",
+          "mode",
+          "scopes",
+          "created_at"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "key_identifier": { "type": "string", "minLength": 16, "maxLength": 16 },
+          "display_suffix": { "type": "string", "minLength": 4, "maxLength": 4 },
+          "class": { "$ref": "#/components/schemas/ApiKeyClass" },
+          "mode": { "$ref": "#/components/schemas/ApiKeyMode" },
+          "scopes": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeyScope" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "revoked_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ApiKeyCreated": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "key_identifier",
+          "display_suffix",
+          "class",
+          "mode",
+          "scopes",
+          "secret"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "key_identifier": { "type": "string", "minLength": 16, "maxLength": 16 },
+          "display_suffix": { "type": "string", "minLength": 4, "maxLength": 4 },
+          "class": { "$ref": "#/components/schemas/ApiKeyClass" },
+          "mode": { "$ref": "#/components/schemas/ApiKeyMode" },
+          "scopes": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKeyScope" } },
+          "secret": {
+            "type": "string",
+            "format": "password",
+            "readOnly": true,
+            "x-sensitive": true,
+            "description": "One-time plaintext API key. It cannot be retrieved again."
+          }
+        }
+      },
+      "ApiKeyCreatedEnvelope": {
+        "type": "object",
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ApiKeyCreated" } }
       },
       "RegionCode": { "type": "string", "pattern": "^[A-Z]{2}$", "default": "US" },
       "CurrencyCode": { "type": "string", "pattern": "^[A-Z]{3}$", "default": "USD" },
@@ -493,6 +685,14 @@
         "required": ["data", "meta"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/Store" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
+      },
+      "ApiKeyCollectionEnvelope": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/ApiKey" } },
           "meta": { "$ref": "#/components/schemas/ResponseMeta" }
         }
       },

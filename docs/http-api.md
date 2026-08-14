@@ -115,3 +115,13 @@ The default region is the store's initial operating configuration. It does not r
 `GET /admin/v1/merchant-accounts/{merchant_account_id}/stores` returns stores only after resolving the authenticated user's merchant membership. Each item includes the Store identity, code, name, defaults, and status.
 
 Both list endpoints accept `limit` from 1 to 100, defaulting to 20, and an opaque `cursor`. Results use ascending UUIDv7 keyset pagination. When more results exist, `meta.page.has_more` is true and `meta.page.next_cursor` contains the cursor for the next request. Clients must not parse or construct cursors.
+
+## API keys
+
+Store API keys are managed beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys`. Only owners, administrators, and developers may create, list, or revoke them. Every key is bound to the Store in its path and cannot authorize a different Store.
+
+`POST` requires an `Idempotency-Key` and returns the plaintext `secret` exactly once. The stored record contains only a searchable random identifier, SHA-256 digest, and four-character display suffix. Replaying the same creation request returns HTTP 409 with `api_key_secret_already_issued`; it never returns the secret again. Losing the response requires creating a replacement key and revoking the inaccessible key.
+
+Keys have an explicit `test` or `live` mode and are either `publishable` or `secret`. Publishable keys may contain only public read scopes. Secret keys can receive server-side scopes such as `orders:read` and `mcp:tools`. The exact scope allowlist is part of the versioned API contract.
+
+`GET` returns metadata for active and revoked keys but never secret material or digests. `DELETE` requires an `Idempotency-Key`, records the revoking user, and is safely replayable. Revocation is authoritative in PostgreSQL and immediately causes machine authentication to fail.
