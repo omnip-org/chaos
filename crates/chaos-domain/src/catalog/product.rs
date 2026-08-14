@@ -89,6 +89,48 @@ impl Sku {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProductContent {
+    handle: ProductHandle,
+    title: String,
+    description: String,
+}
+
+impl ProductContent {
+    pub fn new(
+        handle: ProductHandle,
+        title: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Result<Self, DomainError> {
+        let title = title.into();
+        let description = description.into();
+        validate_text("title", &title, 255)?;
+        if description.chars().count() > 100_000 {
+            return Err(validation(
+                "description",
+                "must contain at most 100000 characters",
+            ));
+        }
+        Ok(Self {
+            handle,
+            title,
+            description,
+        })
+    }
+
+    pub const fn handle(&self) -> &ProductHandle {
+        &self.handle
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProductStatus {
     Draft,
@@ -112,6 +154,50 @@ impl ProductStatus {
             "archived" => Some(Self::Archived),
             _ => None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProductLifecycle {
+    status: ProductStatus,
+    variant_count: u32,
+}
+
+impl ProductLifecycle {
+    pub const fn from_snapshot(status: ProductStatus, variant_count: u32) -> Self {
+        Self {
+            status,
+            variant_count,
+        }
+    }
+
+    pub fn activate(&mut self) -> Result<(), DomainError> {
+        if self.variant_count == 0 {
+            return Err(validation(
+                "variants",
+                "must contain at least one variant before activation",
+            ));
+        }
+        self.status = ProductStatus::Active;
+        Ok(())
+    }
+
+    pub fn archive(&mut self) {
+        self.status = ProductStatus::Archived;
+    }
+
+    pub fn require_publishable(self) -> Result<(), DomainError> {
+        if self.status != ProductStatus::Active {
+            return Err(validation(
+                "product_status",
+                "must be active before publication",
+            ));
+        }
+        Ok(())
+    }
+
+    pub const fn status(self) -> ProductStatus {
+        self.status
     }
 }
 
@@ -247,9 +333,7 @@ pub struct Product {
     id: ProductId,
     merchant_account_id: MerchantAccountId,
     store_id: StoreId,
-    handle: ProductHandle,
-    title: String,
-    description: String,
+    content: ProductContent,
     status: ProductStatus,
     options: Vec<ProductOption>,
     variants: Vec<ProductVariant>,
@@ -263,22 +347,12 @@ impl Product {
         title: impl Into<String>,
         description: impl Into<String>,
     ) -> Result<Self, DomainError> {
-        let title = title.into();
-        let description = description.into();
-        validate_text("title", &title, 255)?;
-        if description.chars().count() > 100_000 {
-            return Err(validation(
-                "description",
-                "must contain at most 100000 characters",
-            ));
-        }
+        let content = ProductContent::new(handle, title, description)?;
         Ok(Self {
             id: ProductId::new(),
             merchant_account_id,
             store_id,
-            handle,
-            title,
-            description,
+            content,
             status: ProductStatus::Draft,
             options: Vec::new(),
             variants: Vec::new(),
@@ -424,14 +498,21 @@ impl Product {
     }
 
     pub fn activate(&mut self) -> Result<(), DomainError> {
-        if self.variants.is_empty() {
-            return Err(validation(
-                "variants",
-                "must contain at least one variant before activation",
-            ));
-        }
-        self.status = ProductStatus::Active;
+        let mut lifecycle = ProductLifecycle::from_snapshot(
+            self.status,
+            u32::try_from(self.variants.len()).unwrap_or(u32::MAX),
+        );
+        lifecycle.activate()?;
+        self.status = lifecycle.status();
         Ok(())
+    }
+
+    pub fn archive(&mut self) {
+        self.status = ProductStatus::Archived;
+    }
+
+    pub fn update_content(&mut self, content: ProductContent) {
+        self.content = content;
     }
 
     pub const fn id(&self) -> ProductId {
@@ -447,15 +528,15 @@ impl Product {
     }
 
     pub fn handle(&self) -> &ProductHandle {
-        &self.handle
+        self.content.handle()
     }
 
     pub fn title(&self) -> &str {
-        &self.title
+        self.content.title()
     }
 
     pub fn description(&self) -> &str {
-        &self.description
+        self.content.description()
     }
 
     pub const fn status(&self) -> ProductStatus {
@@ -557,6 +638,30 @@ mod tests {
             .unwrap();
         product.activate().unwrap();
         assert_eq!(product.status(), ProductStatus::Active);
+    }
+
+    #[test]
+    fn lifecycle_requires_active_state_for_publication() {
+        let mut lifecycle = ProductLifecycle::from_snapshot(ProductStatus::Draft, 1);
+        assert!(lifecycle.require_publishable().is_err());
+        lifecycle.activate().unwrap();
+        assert!(lifecycle.require_publishable().is_ok());
+        lifecycle.archive();
+        assert_eq!(lifecycle.status(), ProductStatus::Archived);
+        assert!(lifecycle.require_publishable().is_err());
+    }
+
+    #[test]
+    fn product_content_reuses_creation_validation_for_updates() {
+        assert!(ProductContent::new(ProductHandle::parse("valid").unwrap(), "", "").is_err());
+        assert!(
+            ProductContent::new(
+                ProductHandle::parse("valid").unwrap(),
+                "Updated Product",
+                "Updated description",
+            )
+            .is_ok()
+        );
     }
 
     #[test]

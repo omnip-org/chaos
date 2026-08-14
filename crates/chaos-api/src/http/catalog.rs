@@ -2,19 +2,20 @@ use axum::{
     Router,
     extract::{DefaultBodyLimit, State},
     http::HeaderMap,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use chaos_application::{
     ApplicationError,
     catalog::{
-        CreateProductInput, CreateProductOptionInput, CreateProductSelectedOptionInput,
-        CreateProductVariantInput,
+        ChangeProductStatusInput, CreateProductInput, CreateProductOptionInput,
+        CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
+        UpdateProductInput,
     },
     ports::IdempotencyRequest,
 };
 use chaos_domain::{
     catalog::ProductId,
-    merchant::{MerchantAccountId, StoreId},
+    merchant::{MerchantAccountId, SalesChannelId, StoreId},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,7 +35,19 @@ pub fn routes() -> Router<ApiState> {
         )
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}",
-            get(get_product),
+            get(get_product).put(update_product),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/activate",
+            post(activate_product),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/archive",
+            post(archive_product),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/publications/{sales_channel_id}",
+            put(publish_product).delete(unpublish_product),
         )
         .layer(DefaultBodyLimit::max(256 * 1024))
 }
@@ -50,6 +63,14 @@ struct ProductDetailPath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct ProductPublicationPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    product_id: Uuid,
+    sales_channel_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +90,15 @@ struct CreateProductBody {
     options: Vec<CreateProductOptionBody>,
     #[serde(default)]
     variants: Vec<CreateProductVariantBody>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateProductBody {
+    handle: String,
+    title: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -100,6 +130,11 @@ struct CreateProductSelectedOptionBody {
 
 #[derive(Serialize)]
 struct ProductCreatedData {
+    id: Uuid,
+}
+
+#[derive(Serialize)]
+struct ProductMutationData {
     id: Uuid,
 }
 
@@ -336,6 +371,139 @@ async fn get_product(
         created_at: format_time(product.created_at)?,
         updated_at: format_time(product.updated_at)?,
     }))
+}
+
+async fn update_product(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProductDetailPath>,
+    ApiJson(body): ApiJson<UpdateProductBody>,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
+    let request = mutation_request(
+        &headers,
+        serde_json::to_vec(&(path.store_id, path.product_id, &body))
+            .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+    )?;
+    let id = state
+        .catalog_management
+        .update(UpdateProductInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            product_id: ProductId::from_uuid(path.product_id),
+            handle: body.handle,
+            title: body.title,
+            description: body.description,
+            idempotency: request,
+        })
+        .await?;
+    Ok(ApiResponse::ok(ProductMutationData { id: id.as_uuid() }))
+}
+
+async fn activate_product(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProductDetailPath>,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    change_product_status(state, headers, actor, path, true).await
+}
+
+async fn archive_product(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProductDetailPath>,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    change_product_status(state, headers, actor, path, false).await
+}
+
+async fn change_product_status(
+    state: ApiState,
+    headers: HeaderMap,
+    actor: chaos_application::merchant::MerchantActor,
+    path: ProductDetailPath,
+    activate: bool,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
+    let action = if activate { "activate" } else { "archive" };
+    let request = mutation_request(
+        &headers,
+        format!("{}:{}:{action}", path.store_id, path.product_id).into_bytes(),
+    )?;
+    let input = ChangeProductStatusInput {
+        actor,
+        store_id: StoreId::from_uuid(path.store_id),
+        product_id: ProductId::from_uuid(path.product_id),
+        idempotency: request,
+    };
+    let id = if activate {
+        state.catalog_management.activate(input).await?
+    } else {
+        state.catalog_management.archive(input).await?
+    };
+    Ok(ApiResponse::ok(ProductMutationData { id: id.as_uuid() }))
+}
+
+async fn publish_product(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProductPublicationPath>,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    change_publication(state, headers, actor, path, true).await
+}
+
+async fn unpublish_product(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProductPublicationPath>,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    change_publication(state, headers, actor, path, false).await
+}
+
+async fn change_publication(
+    state: ApiState,
+    headers: HeaderMap,
+    actor: chaos_application::merchant::MerchantActor,
+    path: ProductPublicationPath,
+    publish: bool,
+) -> Result<ApiResponse<ProductMutationData>, ApiError> {
+    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
+    let action = if publish { "publish" } else { "unpublish" };
+    let request = mutation_request(
+        &headers,
+        format!(
+            "{}:{}:{}:{action}",
+            path.store_id, path.product_id, path.sales_channel_id
+        )
+        .into_bytes(),
+    )?;
+    let input = ProductPublicationInput {
+        actor,
+        store_id: StoreId::from_uuid(path.store_id),
+        product_id: ProductId::from_uuid(path.product_id),
+        sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
+        idempotency: request,
+    };
+    let id = if publish {
+        state.catalog_management.publish(input).await?
+    } else {
+        state.catalog_management.unpublish(input).await?
+    };
+    Ok(ApiResponse::ok(ProductMutationData { id: id.as_uuid() }))
+}
+
+fn mutation_request(
+    headers: &HeaderMap,
+    fingerprint_source: Vec<u8>,
+) -> Result<IdempotencyRequest, ApiError> {
+    Ok(IdempotencyRequest {
+        key: idempotency_key(headers)?,
+        request_fingerprint: Sha256::digest(fingerprint_source).into(),
+    })
 }
 
 fn ensure_account_path(actual: MerchantAccountId, extracted: Uuid) -> Result<(), ApiError> {

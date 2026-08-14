@@ -363,6 +363,113 @@
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" }
         }
+      },
+      "put": {
+        "operationId": "updateProduct",
+        "tags": ["Catalog"],
+        "summary": "Replace Product content",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateProduct" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/ProductMutated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/activate": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "$ref": "#/components/parameters/ProductId" }
+      ],
+      "post": {
+        "operationId": "activateProduct",
+        "tags": ["Catalog"],
+        "summary": "Activate a Product",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ProductMutated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/archive": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "$ref": "#/components/parameters/ProductId" }
+      ],
+      "post": {
+        "operationId": "archiveProduct",
+        "tags": ["Catalog"],
+        "summary": "Archive a Product",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ProductMutated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/publications/{sales_channel_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "$ref": "#/components/parameters/ProductId" },
+        { "$ref": "#/components/parameters/SalesChannelId" },
+        { "$ref": "#/components/parameters/IdempotencyKey" }
+      ],
+      "put": {
+        "operationId": "publishProduct",
+        "tags": ["Catalog"],
+        "summary": "Publish a Product to a Sales Channel",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ProductMutated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
+      "delete": {
+        "operationId": "unpublishProduct",
+        "tags": ["Catalog"],
+        "summary": "Remove Product publication from a Sales Channel",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ProductMutated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
       }
     },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists": {
@@ -515,6 +622,12 @@
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
       },
+      "SalesChannelId": {
+        "name": "sales_channel_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
       "ApiKeyId": {
         "name": "api_key_id",
         "in": "path",
@@ -577,6 +690,10 @@
       "PasskeyCeremony": {
         "description": "WebAuthn ceremony options created",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PasskeyCeremonyResponse" } } }
+      },
+      "ProductMutated": {
+        "description": "Product mutation completed",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentifierResponse" } } }
       }
     },
     "schemas": {
@@ -692,6 +809,19 @@
             "default": [],
             "items": { "$ref": "#/components/schemas/CreateProductVariant" }
           }
+        }
+      },
+      "UpdateProduct": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "title"],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "description": { "type": "string", "maxLength": 100000, "default": "" }
         }
       },
       "ProductStatus": {

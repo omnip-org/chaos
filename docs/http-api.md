@@ -126,6 +126,12 @@ Draft Products may omit Options and Variants while content is being authored. Pr
 
 `GET /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}` returns the complete Product aggregate from one consistent database snapshot. Selected options include both stable identifiers and display values so Admin clients do not need to reconstruct combinations. A Product cannot be resolved through another Store's path.
 
+`PUT /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}` replaces Product content using the same handle, title, and description validation as creation. `POST` actions beneath `/activate` and `/archive` perform explicit lifecycle transitions. Activation requires at least one Variant.
+
+`PUT` and `DELETE` on `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/publications/{sales_channel_id}` publish and unpublish a Product. Publication requires both an active Product and an active Sales Channel in the same Store. Archiving makes a Product ineligible for Storefront serving without destroying its publication assignments, so deliberate reactivation can restore the prior channel topology.
+
+Every Product write requires `Idempotency-Key`. Owners, administrators, developers, and managers may mutate Catalog data; support members remain read-only.
+
 ## Pricing
 
 `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists` creates a Price List and its Variant prices atomically. The request requires `Idempotency-Key`. A Price List fixes one enabled Store currency, tax-inclusive behavior, and an optional RFC 3339 activation window. Each Variant appears at most once in a list and every amount is a non-negative integer in minor currency units.

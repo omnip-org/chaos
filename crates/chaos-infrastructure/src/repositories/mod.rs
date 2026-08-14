@@ -1,4 +1,5 @@
 mod api_key;
+mod catalog_management;
 mod catalog_provisioning;
 mod catalog_read;
 mod idempotency;
@@ -8,6 +9,7 @@ mod pricing_provisioning;
 mod store_provisioning;
 
 pub use api_key::{PostgresApiKeyRepository, SecureApiKeyMaterialGenerator};
+pub use catalog_management::PostgresCatalogManagementUnitOfWork;
 pub use catalog_provisioning::PostgresCatalogProvisioningUnitOfWork;
 pub use catalog_read::PostgresCatalogReadRepository;
 pub use merchant_provisioning::PostgresMerchantProvisioningUnitOfWork;

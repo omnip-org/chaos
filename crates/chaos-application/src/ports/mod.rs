@@ -1,5 +1,6 @@
 mod api_key;
 mod catalog;
+mod catalog_management;
 mod catalog_read;
 mod merchant;
 mod merchant_query;
@@ -12,6 +13,9 @@ pub use api_key::{
     GeneratedApiKeyMaterial, MachineActor,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
+pub use catalog_management::{
+    CatalogManagementTransaction, CatalogManagementUnitOfWork, ProductLifecycleSnapshot,
+};
 pub use catalog_read::{
     CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
     CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,

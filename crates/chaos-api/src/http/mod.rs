@@ -11,7 +11,7 @@ mod response;
 
 use axum::Router;
 use chaos_application::{
-    catalog::{CatalogQueries, CreateProduct},
+    catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore, MerchantQueries,
     },
@@ -24,10 +24,11 @@ use chaos_infrastructure::{
     config::Settings,
     passwordless::PasswordlessAuth,
     repositories::{
-        PostgresApiKeyRepository, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresMerchantProvisioningUnitOfWork,
-        PostgresMerchantReadRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresStoreProvisioningUnitOfWork, SecureApiKeyMaterialGenerator,
+        PostgresApiKeyRepository, PostgresCatalogManagementUnitOfWork,
+        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
+        PostgresPricingProvisioningUnitOfWork, PostgresStoreProvisioningUnitOfWork,
+        SecureApiKeyMaterialGenerator,
     },
     state::AppState,
 };
@@ -51,6 +52,7 @@ pub struct ApiState {
     pub create_store: Arc<CreateStore>,
     pub create_product: Arc<CreateProduct>,
     pub catalog_queries: Arc<CatalogQueries>,
+    pub catalog_management: Arc<CatalogManagement>,
     pub create_price_list: Arc<CreatePriceList>,
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
@@ -84,6 +86,9 @@ impl ApiState {
         let catalog_queries = CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(
             infrastructure.runtime_pool(),
         )));
+        let catalog_management = CatalogManagement::new(Arc::new(
+            PostgresCatalogManagementUnitOfWork::new(infrastructure.runtime_pool()),
+        ));
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
@@ -105,6 +110,7 @@ impl ApiState {
             create_store: Arc::new(create_store),
             create_product: Arc::new(create_product),
             catalog_queries: Arc::new(catalog_queries),
+            catalog_management: Arc::new(catalog_management),
             create_price_list: Arc::new(create_price_list),
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
