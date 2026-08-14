@@ -1,13 +1,17 @@
 mod auth;
 mod error;
 mod health;
+mod merchant;
 mod response;
 
 use axum::Router;
-use chaos_application::ports::PasswordlessAuthentication;
+use chaos_application::{merchant::CreateMerchantAccount, ports::PasswordlessAuthentication};
 use std::sync::Arc;
 
-use chaos_infrastructure::{config::Settings, passwordless::PasswordlessAuth, state::AppState};
+use chaos_infrastructure::{
+    config::Settings, passwordless::PasswordlessAuth,
+    repositories::PostgresMerchantProvisioningUnitOfWork, state::AppState,
+};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -23,6 +27,7 @@ pub struct ApiState {
     pub infrastructure: AppState,
     pub lifecycle: Lifecycle,
     pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
+    pub create_merchant_account: Arc<CreateMerchantAccount>,
 }
 
 impl ApiState {
@@ -40,10 +45,14 @@ impl ApiState {
             &settings.email_from,
             &settings.auth_public_base_url,
         )?;
+        let create_merchant_account = CreateMerchantAccount::new(Arc::new(
+            PostgresMerchantProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
+        ));
         Ok(Self {
             infrastructure,
             lifecycle,
             passwordless_auth: Arc::new(passwordless_auth),
+            create_merchant_account: Arc::new(create_merchant_account),
         })
     }
 }
@@ -52,6 +61,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", health::routes())
         .nest("/admin/v1/auth", auth::routes())
+        .nest("/admin/v1", merchant::routes())
         .with_state(state)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())

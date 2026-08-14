@@ -91,7 +91,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 5. Consistency and reliability
 
-- Every write API accepts `Idempotency-Key`, uniquely stored by `(merchant_account_id, key, operation)` with a request fingerprint and response snapshot.
+- Every write API accepts `Idempotency-Key` with a request fingerprint and response snapshot. Records are uniquely scoped by `(scope, scope_id, operation, key)`: authenticated user scope is used before a merchant account exists, and merchant-account scope is used for merchant-owned operations.
 - Inventory reservation uses PostgreSQL conditional updates or row locks with expiration. Redis may accelerate access but cannot own the invariant.
 - Business changes and outbox events commit in the same PostgreSQL transaction.
 - Workers claim outbox records with `FOR UPDATE SKIP LOCKED`. Delivery is at least once, so consumers must be idempotent.

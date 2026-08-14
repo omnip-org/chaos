@@ -181,7 +181,7 @@ async fn finish_passkey_authentication(
     Ok(ApiResponse::ok(session_data(grant)))
 }
 
-fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
+pub(super) fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())

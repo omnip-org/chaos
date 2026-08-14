@@ -69,6 +69,10 @@ impl AppState {
         self.control_plane_postgres.clone()
     }
 
+    pub fn runtime_pool(&self) -> PgPool {
+        self.postgres.clone()
+    }
+
     pub fn redis_client(&self) -> RedisClient {
         self.redis.clone()
     }

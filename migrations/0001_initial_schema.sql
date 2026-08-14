@@ -1,10 +1,13 @@
 CREATE SCHEMA extensions;
 CREATE SCHEMA identity;
+CREATE SCHEMA integration;
 CREATE SCHEMA merchant;
 CREATE SCHEMA partman;
 
 COMMENT ON SCHEMA extensions IS 'PostgreSQL extension-owned objects';
 COMMENT ON SCHEMA identity IS 'Users, credentials, service accounts, and sessions';
+COMMENT ON SCHEMA integration IS
+    'Idempotency records, webhooks, outbox delivery, and external mappings';
 COMMENT ON SCHEMA merchant IS
     'Merchant accounts, memberships, stores, channels, and domains';
 COMMENT ON SCHEMA partman IS 'Objects owned by the pg_partman extension';
@@ -15,6 +18,7 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
+CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account');
 CREATE TYPE merchant.merchant_account_status AS ENUM ('active', 'suspended', 'closed');
 CREATE TYPE merchant.merchant_role AS ENUM (
     'owner',
@@ -100,6 +104,36 @@ CREATE TABLE identity.passkey_credentials (
 
 CREATE INDEX passkey_credentials_user_created_idx
     ON identity.passkey_credentials (user_id, created_at DESC);
+
+CREATE TABLE integration.idempotency_records (
+    id                   UUID                             NOT NULL PRIMARY KEY,
+    scope                integration.idempotency_scope    NOT NULL,
+    scope_id             UUID                             NOT NULL,
+    operation            TEXT                             NOT NULL,
+    idempotency_key      TEXT                             NOT NULL,
+    request_fingerprint  BYTEA                            NOT NULL,
+    response_status      SMALLINT,
+    response_body        JSONB,
+    completed_at         TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (scope, scope_id, operation, idempotency_key),
+    CONSTRAINT idempotency_records_operation_length_check CHECK (
+        length(operation) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT idempotency_records_key_length_check CHECK (
+        octet_length(idempotency_key) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT idempotency_records_request_fingerprint_length_check CHECK (
+        octet_length(request_fingerprint) = 32
+    ),
+    CONSTRAINT idempotency_records_response_completion_check CHECK (
+        (response_status IS NULL AND response_body IS NULL AND completed_at IS NULL)
+        OR
+        (response_status BETWEEN 200 AND 599 AND response_body IS NOT NULL AND completed_at IS NOT NULL)
+    )
+);
 
 CREATE TABLE merchant.merchant_accounts (
     id            UUID                                NOT NULL PRIMARY KEY,
@@ -195,10 +229,27 @@ CREATE INDEX store_domains_merchant_account_store_idx
     ON merchant.store_domains (merchant_account_id, store_id);
 
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_domains ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
+    USING (
+        (scope = 'user' AND scope_id =
+            nullif(current_setting('app.user_id', true), '')::uuid)
+        OR
+        (scope = 'merchant_account' AND scope_id =
+            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+    )
+    WITH CHECK (
+        (scope = 'user' AND scope_id =
+            nullif(current_setting('app.user_id', true), '')::uuid)
+        OR
+        (scope = 'merchant_account' AND scope_id =
+            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+    );
 
 CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts
     USING (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid)
@@ -269,12 +320,20 @@ $$;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
-GRANT USAGE ON SCHEMA extensions, merchant TO chaos_runtime;
+GRANT USAGE ON SCHEMA extensions, integration, merchant TO chaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
 GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
+GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA merchant TO chaos_runtime;
 
+ALTER DEFAULT PRIVILEGES IN SCHEMA integration
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA integration
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA merchant

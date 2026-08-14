@@ -7,14 +7,19 @@ use chaos_domain::{
     },
 };
 
-use crate::{ApplicationError, ports::MerchantProvisioningUnitOfWork};
+use crate::{
+    ApplicationError,
+    ports::{IdempotencyRequest, MerchantProvisioningUnitOfWork},
+};
 
 pub struct CreateMerchantAccountInput {
     pub owner_user_id: UserId,
     pub slug: String,
     pub display_name: String,
+    pub idempotency: IdempotencyRequest,
 }
 
+#[derive(Debug)]
 pub struct CreateMerchantAccountOutput {
     pub merchant_account_id: MerchantAccountId,
 }
@@ -35,9 +40,23 @@ impl CreateMerchantAccount {
         let account =
             MerchantAccount::create(MerchantAccountSlug::parse(input.slug)?, input.display_name)?;
         let membership = MerchantAccountMembership::owner(account.id(), input.owner_user_id);
-        let mut transaction = self.unit_of_work.begin().await?;
+        let mut transaction = self
+            .unit_of_work
+            .begin(input.owner_user_id, account.id())
+            .await?;
+        if let Some(merchant_account_id) = transaction
+            .reserve_account_creation(&input.idempotency)
+            .await?
+        {
+            return Ok(CreateMerchantAccountOutput {
+                merchant_account_id,
+            });
+        }
         transaction.insert_merchant_account(&account).await?;
         transaction.insert_membership(&membership).await?;
+        transaction
+            .complete_account_creation(&input.idempotency, account.id())
+            .await?;
         transaction.commit().await?;
 
         Ok(CreateMerchantAccountOutput {
@@ -77,6 +96,8 @@ mod tests {
     impl MerchantProvisioningUnitOfWork for FakeUnitOfWork {
         async fn begin(
             &self,
+            _owner_user_id: UserId,
+            _merchant_account_id: MerchantAccountId,
         ) -> Result<Box<dyn MerchantProvisioningTransaction>, ApplicationError> {
             Ok(Box::new(FakeTransaction {
                 writes: self.writes.clone(),
@@ -88,6 +109,13 @@ mod tests {
 
     #[async_trait]
     impl MerchantProvisioningTransaction for FakeTransaction {
+        async fn reserve_account_creation(
+            &mut self,
+            _request: &IdempotencyRequest,
+        ) -> Result<Option<MerchantAccountId>, ApplicationError> {
+            Ok(None)
+        }
+
         async fn insert_merchant_account(
             &mut self,
             account: &MerchantAccount,
@@ -101,6 +129,14 @@ mod tests {
             membership: &MerchantAccountMembership,
         ) -> Result<(), ApplicationError> {
             self.pending_role = Some(membership.role());
+            Ok(())
+        }
+
+        async fn complete_account_creation(
+            &mut self,
+            _request: &IdempotencyRequest,
+            _merchant_account_id: MerchantAccountId,
+        ) -> Result<(), ApplicationError> {
             Ok(())
         }
 
@@ -125,6 +161,10 @@ mod tests {
                 owner_user_id: UserId::new(),
                 slug: "acme".into(),
                 display_name: "ACME".into(),
+                idempotency: IdempotencyRequest {
+                    key: "create-acme".into(),
+                    request_fingerprint: [7; 32],
+                },
             })
             .await
             .unwrap();
