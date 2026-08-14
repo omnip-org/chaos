@@ -41,6 +41,7 @@ pub(super) enum CursorKind {
     MerchantAccount = 1,
     Store = 2,
     ApiKey = 3,
+    Product = 4,
 }
 
 #[derive(Deserialize, Serialize)]

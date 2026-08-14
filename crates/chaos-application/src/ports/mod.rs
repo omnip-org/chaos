@@ -1,5 +1,6 @@
 mod api_key;
 mod catalog;
+mod catalog_read;
 mod merchant;
 mod merchant_query;
 mod passwordless;
@@ -10,6 +11,10 @@ pub use api_key::{
     GeneratedApiKeyMaterial, MachineActor,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
+pub use catalog_read::{
+    CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
+    CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,
+};
 pub use merchant::{
     IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
 };

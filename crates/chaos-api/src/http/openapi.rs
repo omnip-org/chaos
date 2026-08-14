@@ -94,6 +94,8 @@ mod tests {
         assert!(schemas.contains_key("ErrorEnvelope"));
         assert!(schemas.contains_key("MerchantAccountCollectionEnvelope"));
         assert!(schemas.contains_key("StoreCollectionEnvelope"));
+        assert!(schemas.contains_key("ProductCollectionEnvelope"));
+        assert!(schemas.contains_key("ProductEnvelope"));
         assert!(schemas.contains_key("ApiKeyCreatedEnvelope"));
         assert!(schemas.contains_key("ApiKeyCollectionEnvelope"));
         assert!(schemas.contains_key("PageMeta"));

@@ -1,5 +1,7 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
+use chaos_application::ApplicationError;
 use serde::Serialize;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(Debug, Serialize)]
 pub struct ResponseEnvelope<T> {
@@ -53,4 +55,10 @@ impl<T: Serialize> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> axum::response::Response {
         (self.status, Json(self.envelope)).into_response()
     }
+}
+
+pub(super) fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
+    value
+        .format(&Rfc3339)
+        .map_err(|error| ApplicationError::Unexpected(error.into()))
 }

@@ -10,7 +10,7 @@ mod response;
 
 use axum::Router;
 use chaos_application::{
-    catalog::CreateProduct,
+    catalog::{CatalogQueries, CreateProduct},
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore, MerchantQueries,
     },
@@ -23,8 +23,9 @@ use chaos_infrastructure::{
     passwordless::PasswordlessAuth,
     repositories::{
         PostgresApiKeyRepository, PostgresCatalogProvisioningUnitOfWork,
-        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
-        PostgresStoreProvisioningUnitOfWork, SecureApiKeyMaterialGenerator,
+        PostgresCatalogReadRepository, PostgresMerchantProvisioningUnitOfWork,
+        PostgresMerchantReadRepository, PostgresStoreProvisioningUnitOfWork,
+        SecureApiKeyMaterialGenerator,
     },
     state::AppState,
 };
@@ -47,6 +48,7 @@ pub struct ApiState {
     pub create_merchant_account: Arc<CreateMerchantAccount>,
     pub create_store: Arc<CreateStore>,
     pub create_product: Arc<CreateProduct>,
+    pub catalog_queries: Arc<CatalogQueries>,
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
@@ -76,6 +78,9 @@ impl ApiState {
         let create_product = CreateProduct::new(Arc::new(
             PostgresCatalogProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
+        let catalog_queries = CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(
+            infrastructure.runtime_pool(),
+        )));
         let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -93,6 +98,7 @@ impl ApiState {
             create_merchant_account: Arc::new(create_merchant_account),
             create_store: Arc::new(create_store),
             create_product: Arc::new(create_product),
+            catalog_queries: Arc::new(catalog_queries),
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),

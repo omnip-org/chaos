@@ -122,6 +122,10 @@ Both list endpoints accept `limit` from 1 to 100, defaulting to 20, and an opaqu
 
 Draft Products may omit Options and Variants while content is being authored. Product creation never publishes implicitly. Prices, inventory quantities, and Sales Channel publication remain separate domain operations.
 
+`GET /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products` returns lightweight Product summaries using the same opaque UUIDv7 cursor contract as other collection endpoints. Summary rows include `variant_count` but do not expand Options or Variants.
+
+`GET /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}` returns the complete Product aggregate from one consistent database snapshot. Selected options include both stable identifiers and display values so Admin clients do not need to reconstruct combinations. A Product cannot be resolved through another Store's path.
+
 ## API keys
 
 Store API keys are managed beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys`. Only owners, administrators, and developers may create, list, or revoke them. Every key is bound to the Store in its path and cannot authorize a different Store.

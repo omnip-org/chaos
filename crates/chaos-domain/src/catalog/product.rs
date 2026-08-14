@@ -104,6 +104,15 @@ impl ProductStatus {
             Self::Archived => "archived",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "draft" => Some(Self::Draft),
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +126,14 @@ impl VariantStatus {
         match self {
             Self::Active => "active",
             Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            _ => None,
         }
     }
 }

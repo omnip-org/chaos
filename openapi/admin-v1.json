@@ -279,6 +279,31 @@
         { "$ref": "#/components/parameters/MerchantAccountId" },
         { "$ref": "#/components/parameters/StoreId" }
       ],
+      "get": {
+        "operationId": "listProducts",
+        "tags": ["Catalog"],
+        "summary": "List product summaries in a Store",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Product page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductCollectionEnvelope" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
       "post": {
         "operationId": "createProduct",
         "tags": ["Catalog"],
@@ -309,6 +334,33 @@
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
           "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "$ref": "#/components/parameters/ProductId" }
+      ],
+      "get": {
+        "operationId": "getProduct",
+        "tags": ["Catalog"],
+        "summary": "Get a complete Product aggregate",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": {
+            "description": "Product detail",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProductEnvelope" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
     },
@@ -414,6 +466,12 @@
       },
       "StoreId": {
         "name": "store_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "ProductId": {
+        "name": "product_id",
         "in": "path",
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
@@ -596,6 +654,137 @@
             "items": { "$ref": "#/components/schemas/CreateProductVariant" }
           }
         }
+      },
+      "ProductStatus": {
+        "type": "string",
+        "enum": ["draft", "active", "archived"]
+      },
+      "VariantStatus": {
+        "type": "string",
+        "enum": ["active", "archived"]
+      },
+      "ProductSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "handle",
+          "title",
+          "status",
+          "variant_count",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/ProductStatus" },
+          "variant_count": { "type": "integer", "minimum": 0 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProductOptionValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "value", "position"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "value": { "type": "string" },
+          "position": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ProductOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "position", "values"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "position": { "type": "integer", "minimum": 0 },
+          "values": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProductOptionValue" }
+          }
+        }
+      },
+      "SelectedOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["option_id", "option_name", "option_value_id", "value"],
+        "properties": {
+          "option_id": { "type": "string", "format": "uuid" },
+          "option_name": { "type": "string" },
+          "option_value_id": { "type": "string", "format": "uuid" },
+          "value": { "type": "string" }
+        }
+      },
+      "ProductVariant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "status",
+          "requires_shipping",
+          "track_inventory",
+          "selected_options",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "sku": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/VariantStatus" },
+          "requires_shipping": { "type": "boolean" },
+          "track_inventory": { "type": "boolean" },
+          "selected_options": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SelectedOption" }
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "handle",
+          "title",
+          "description",
+          "status",
+          "options",
+          "variants",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "status": { "$ref": "#/components/schemas/ProductStatus" },
+          "options": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProductOption" }
+          },
+          "variants": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProductVariant" }
+          },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ProductEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/Product" } }
       },
       "ApiKeyClass": { "type": "string", "enum": ["publishable", "secret"] },
       "ApiKeyMode": { "type": "string", "enum": ["test", "live"] },
@@ -787,6 +976,14 @@
         "required": ["data", "meta"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/Store" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
+      },
+      "ProductCollectionEnvelope": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/ProductSummary" } },
           "meta": { "$ref": "#/components/schemas/ResponseMeta" }
         }
       },

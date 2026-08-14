@@ -9,12 +9,12 @@ use chaos_domain::merchant::{ApiKeyId, StoreId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
+    response::format_time,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -214,12 +214,6 @@ fn ensure_account_path(actual: Uuid, extracted: Uuid) -> Result<(), ApiError> {
         return Ok(());
     }
     Err(ApplicationError::Forbidden.into())
-}
-
-fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
-    value
-        .format(&Rfc3339)
-        .map_err(|error| ApplicationError::Unexpected(error.into()))
 }
 
 #[cfg(test)]
