@@ -5,7 +5,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{MerchantAccountId, Store, StoreId},
+    merchant::{MerchantAccountId, SalesChannel, Store, StoreId},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -133,6 +133,31 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         .bind(store.merchant_account_id().as_uuid())
         .bind(store.id().as_uuid())
         .bind(store.default_currency().as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(unexpected_database_error)?;
+        Ok(())
+    }
+
+    async fn insert_default_sales_channel(
+        &mut self,
+        channel: &SalesChannel,
+    ) -> Result<(), ApplicationError> {
+        sqlx::query(
+            "INSERT INTO merchant.sales_channels \
+             (id, merchant_account_id, store_id, code, name, kind, status, is_default) \
+             VALUES ($1, $2, $3, $4, $5, \
+                     $6::merchant.sales_channel_kind, \
+                     $7::merchant.sales_channel_status, $8)",
+        )
+        .bind(channel.id().as_uuid())
+        .bind(channel.merchant_account_id().as_uuid())
+        .bind(channel.store_id().as_uuid())
+        .bind(channel.code().as_str())
+        .bind(channel.name())
+        .bind(channel.kind().as_str())
+        .bind(channel.status().as_str())
+        .bind(channel.is_default())
         .execute(&mut *self.transaction)
         .await
         .map_err(unexpected_database_error)?;
@@ -286,20 +311,35 @@ mod tests {
             })
         ));
 
-        let stored: (String, String, String, bool) = sqlx::query_as(
+        let stored: (String, String, String, bool, String, String, bool) = sqlx::query_as(
             "SELECT store.status::text, store.default_region::text, \
-                    currency.currency::text, currency.enabled \
+                    currency.currency::text, currency.enabled, \
+                    channel.code::text, channel.kind::text, channel.is_default \
              FROM merchant.stores AS store \
              INNER JOIN merchant.store_currencies AS currency \
                  ON currency.merchant_account_id = store.merchant_account_id \
                 AND currency.store_id = store.id \
+             INNER JOIN merchant.sales_channels AS channel \
+                 ON channel.merchant_account_id = store.merchant_account_id \
+                AND channel.store_id = store.id \
              WHERE store.id = $1",
         )
         .bind(output.store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
         .unwrap();
-        assert_eq!(stored, ("draft".into(), "US".into(), "USD".into(), true));
+        assert_eq!(
+            stored,
+            (
+                "draft".into(),
+                "US".into(),
+                "USD".into(),
+                true,
+                "web".into(),
+                "web".into(),
+                true,
+            )
+        );
 
         let store_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM merchant.stores WHERE merchant_account_id = $1",

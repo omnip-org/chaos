@@ -48,6 +48,20 @@ Stores are isolated by default. Sharing products, customers, inventory, or price
 
 A publication and access surface within a store, such as Web, mobile, POS, or marketplace. It controls publishable keys, product visibility, inventory selection, and channel-specific behavior.
 
+Every Store starts with an active default Web channel. Additional channels are explicit Store-owned resources. Product visibility is granted per channel rather than through one global published flag.
+
+### Product
+
+The Store-owned aggregate for merchant-authored catalog content. A Product has a stable handle, title, description, lifecycle status, Options, Option Values, and Variants. Draft Products may be incomplete and are never served merely because they exist.
+
+### ProductVariant
+
+The actual sellable unit of a Product. A Variant may have a Store-unique SKU and selects exactly one value for every Product Option. It carries behavioral flags such as whether shipping and inventory tracking are required, but it does not own prices or stock quantities.
+
+### ProductPublication
+
+The explicit relationship that makes an active Product visible through a Sales Channel. Publication does not override inactive Store, Channel, Product, or Variant state.
+
 ### ApiKey
 
 A revocable machine credential bound to one Store and an explicit set of capabilities. Publishable keys identify public Store API clients. Secret keys authenticate trusted integrations and MCP clients. Plaintext secrets are visible only when a key is created.

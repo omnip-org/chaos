@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     identity::UserId,
-    merchant::{MerchantAccountId, Store, StoreCode, StoreId},
+    merchant::{MerchantAccountId, SalesChannel, Store, StoreCode, StoreId},
 };
 
 use crate::{
@@ -58,6 +58,8 @@ impl CreateStore {
             default_region,
             default_currency,
         )?;
+        let default_sales_channel =
+            SalesChannel::default_web(input.merchant_account_id, store.id());
         let mut transaction = self
             .unit_of_work
             .begin(input.user_id, input.merchant_account_id)
@@ -75,6 +77,9 @@ impl CreateStore {
 
         transaction.insert_store(&store).await?;
         transaction.insert_default_currency(&store).await?;
+        transaction
+            .insert_default_sales_channel(&default_sales_channel)
+            .await?;
         transaction
             .complete_store_creation(&input.idempotency, store.id())
             .await?;

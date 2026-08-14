@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     identity::UserId,
-    merchant::{MerchantAccountId, Store, StoreId},
+    merchant::{MerchantAccountId, SalesChannel, Store, StoreId},
 };
 
 use super::IdempotencyRequest;
@@ -28,6 +28,11 @@ pub trait StoreProvisioningTransaction: Send {
     async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError>;
 
     async fn insert_default_currency(&mut self, store: &Store) -> Result<(), ApplicationError>;
+
+    async fn insert_default_sales_channel(
+        &mut self,
+        channel: &SalesChannel,
+    ) -> Result<(), ApplicationError>;
 
     async fn complete_store_creation(
         &mut self,

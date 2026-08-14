@@ -88,6 +88,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 - Cross-account account-directory reads use `app.user_id` and read-only membership policies; they never broaden merchant-owned Store or commerce-data policies.
 - Cross-account isolation tests are mandatory for every new merchant-owned aggregate. Store-scoped authorization tests are mandatory for store-owned aggregates.
 - API key rows and their normalized scopes live in `merchant`. Machine authentication uses a narrowly granted verifier boundary to resolve account and Store context without granting pre-authentication table access.
+- Catalog child tables carry `merchant_account_id`, `store_id`, and `product_id` through composite foreign keys. A Variant selection cannot reference an Option Value from another Product even when both Products belong to the same Store.
 
 ## 7. Migration rules
 

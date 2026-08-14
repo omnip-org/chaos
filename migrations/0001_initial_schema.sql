@@ -2,6 +2,7 @@ CREATE SCHEMA extensions;
 CREATE SCHEMA identity;
 CREATE SCHEMA integration;
 CREATE SCHEMA merchant;
+CREATE SCHEMA catalog;
 CREATE SCHEMA partman;
 
 COMMENT ON SCHEMA extensions IS 'PostgreSQL extension-owned objects';
@@ -10,6 +11,8 @@ COMMENT ON SCHEMA integration IS
     'Idempotency records, webhooks, outbox delivery, and external mappings';
 COMMENT ON SCHEMA merchant IS
     'Merchant accounts, memberships, stores, channels, and domains';
+COMMENT ON SCHEMA catalog IS
+    'Products, variants, options, collections, media, and channel publication';
 COMMENT ON SCHEMA partman IS 'Objects owned by the pg_partman extension';
 
 CREATE EXTENSION citext WITH SCHEMA extensions;
@@ -28,6 +31,14 @@ CREATE TYPE merchant.merchant_role AS ENUM (
     'support'
 );
 CREATE TYPE merchant.store_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE merchant.sales_channel_kind AS ENUM (
+    'web',
+    'mobile',
+    'point_of_sale',
+    'marketplace',
+    'custom'
+);
+CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
 CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
 CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
 CREATE TYPE merchant.api_key_scope AS ENUM (
@@ -38,6 +49,8 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
     'customers:write',
     'mcp:tools'
 );
+CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
 
 CREATE TABLE identity.users (
     id          UUID                    NOT NULL PRIMARY KEY,
@@ -210,6 +223,37 @@ CREATE TABLE merchant.stores (
 CREATE INDEX stores_merchant_account_status_idx
     ON merchant.stores (merchant_account_id, status);
 
+CREATE TABLE merchant.sales_channels (
+    id                   UUID                              NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                              NOT NULL,
+    store_id             UUID                              NOT NULL,
+    code                 extensions.citext                 NOT NULL,
+    name                 TEXT                              NOT NULL,
+    kind                 merchant.sales_channel_kind       NOT NULL,
+    status               merchant.sales_channel_status     NOT NULL DEFAULT 'active',
+    is_default           BOOLEAN                           NOT NULL DEFAULT false,
+    created_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, code),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT sales_channels_code_format_check CHECK (
+        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
+    ),
+    CONSTRAINT sales_channels_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 120
+    )
+);
+
+CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
+    ON merchant.sales_channels (merchant_account_id, store_id)
+    WHERE is_default;
+
+CREATE INDEX sales_channels_store_status_idx
+    ON merchant.sales_channels (merchant_account_id, store_id, status);
+
 CREATE TABLE merchant.store_currencies (
     merchant_account_id  UUID       NOT NULL,
     store_id             UUID       NOT NULL,
@@ -246,6 +290,7 @@ CREATE TABLE merchant.api_keys (
     id                   UUID                      NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                      NOT NULL,
     store_id             UUID                      NOT NULL,
+    sales_channel_id     UUID,
     key_identifier       TEXT                      NOT NULL UNIQUE,
     secret_digest        BYTEA                     NOT NULL,
     display_suffix       CHAR(4)                   NOT NULL,
@@ -263,6 +308,8 @@ CREATE TABLE merchant.api_keys (
     UNIQUE (merchant_account_id, id),
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
     FOREIGN KEY (created_by_user_id)
         REFERENCES identity.users(id),
     FOREIGN KEY (revoked_by_user_id)
@@ -301,14 +348,179 @@ CREATE TABLE merchant.api_key_scopes (
         REFERENCES merchant.api_keys(merchant_account_id, id) ON DELETE CASCADE
 );
 
+CREATE TABLE catalog.products (
+    id                   UUID                       NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                       NOT NULL,
+    store_id             UUID                       NOT NULL,
+    handle               extensions.citext          NOT NULL,
+    title                TEXT                       NOT NULL,
+    description          TEXT                       NOT NULL DEFAULT '',
+    status               catalog.product_status     NOT NULL DEFAULT 'draft',
+    created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, handle),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT products_handle_format_check CHECK (
+        handle::text ~ '^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$'
+    ),
+    CONSTRAINT products_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT products_description_length_check CHECK (
+        length(description) <= 100000
+    )
+);
+
+CREATE INDEX products_store_status_created_idx
+    ON catalog.products (merchant_account_id, store_id, status, created_at DESC, id DESC);
+
+CREATE TABLE catalog.product_options (
+    id                   UUID                 NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                 NOT NULL,
+    store_id             UUID                 NOT NULL,
+    product_id           UUID                 NOT NULL,
+    name                 extensions.citext    NOT NULL,
+    position             SMALLINT             NOT NULL,
+    created_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, product_id, name),
+    UNIQUE (merchant_account_id, store_id, product_id, position),
+    UNIQUE (merchant_account_id, store_id, product_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_options_name_length_check CHECK (
+        length(trim(name::text)) BETWEEN 1 AND 80
+    ),
+    CONSTRAINT product_options_position_check CHECK (
+        position BETWEEN 0 AND 9
+    )
+);
+
+CREATE TABLE catalog.product_option_values (
+    id                   UUID                 NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                 NOT NULL,
+    store_id             UUID                 NOT NULL,
+    product_id           UUID                 NOT NULL,
+    option_id            UUID                 NOT NULL,
+    value                extensions.citext    NOT NULL,
+    position             SMALLINT             NOT NULL,
+    created_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, product_id, option_id, value),
+    UNIQUE (merchant_account_id, store_id, product_id, option_id, position),
+    UNIQUE (merchant_account_id, store_id, product_id, option_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id, option_id)
+        REFERENCES catalog.product_options(merchant_account_id, store_id, product_id, id)
+        ON DELETE CASCADE,
+    CONSTRAINT product_option_values_value_length_check CHECK (
+        length(trim(value::text)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT product_option_values_position_check CHECK (
+        position BETWEEN 0 AND 999
+    )
+);
+
+CREATE TABLE catalog.product_variants (
+    id                   UUID                       NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                       NOT NULL,
+    store_id             UUID                       NOT NULL,
+    product_id           UUID                       NOT NULL,
+    title                TEXT                       NOT NULL,
+    sku                  extensions.citext,
+    status               catalog.variant_status     NOT NULL DEFAULT 'active',
+    requires_shipping    BOOLEAN                    NOT NULL DEFAULT true,
+    track_inventory      BOOLEAN                    NOT NULL DEFAULT true,
+    created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, product_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_variants_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT product_variants_sku_length_check CHECK (
+        sku IS NULL OR length(trim(sku::text)) BETWEEN 1 AND 64
+    ),
+    CONSTRAINT product_variants_sku_characters_check CHECK (
+        sku IS NULL OR sku::text !~ '[[:cntrl:]]'
+    )
+);
+
+CREATE UNIQUE INDEX product_variants_store_sku_key
+    ON catalog.product_variants (merchant_account_id, store_id, sku)
+    WHERE sku IS NOT NULL;
+
+CREATE INDEX product_variants_product_status_idx
+    ON catalog.product_variants (merchant_account_id, store_id, product_id, status);
+
+CREATE TABLE catalog.variant_selected_options (
+    merchant_account_id  UUID    NOT NULL,
+    store_id             UUID    NOT NULL,
+    product_id           UUID    NOT NULL,
+    variant_id           UUID    NOT NULL,
+    option_id            UUID    NOT NULL,
+    option_value_id      UUID    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, variant_id, option_id),
+    UNIQUE (merchant_account_id, store_id, variant_id, option_value_id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id, variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, product_id, id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id, option_id, option_value_id)
+        REFERENCES catalog.product_option_values(
+            merchant_account_id,
+            store_id,
+            product_id,
+            option_id,
+            id
+        ) ON DELETE CASCADE
+);
+
+CREATE TABLE catalog.product_publications (
+    merchant_account_id  UUID        NOT NULL,
+    store_id             UUID        NOT NULL,
+    product_id           UUID        NOT NULL,
+    sales_channel_id     UUID        NOT NULL,
+    published_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, store_id, product_id, sales_channel_id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX product_publications_channel_product_idx
+    ON catalog.product_publications (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        product_id
+    );
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_domains ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant.sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_options ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_option_values ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_variants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.variant_selected_options ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -388,6 +600,16 @@ CREATE POLICY merchant_account_isolation ON merchant.store_domains
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON merchant.sales_channels
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON merchant.api_keys
     USING (
         merchant_account_id =
@@ -399,6 +621,66 @@ CREATE POLICY merchant_account_isolation ON merchant.api_keys
     );
 
 CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.products
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.product_options
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.product_option_values
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.product_variants
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.variant_selected_options
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.product_publications
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -481,17 +763,21 @@ $$;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
-GRANT USAGE ON SCHEMA extensions, integration, merchant TO chaos_runtime;
+GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA catalog TO chaos_runtime;
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA merchant TO chaos_runtime;
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA catalog TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
@@ -500,6 +786,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration
 ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA extensions, identity TO chaos_control_plane;

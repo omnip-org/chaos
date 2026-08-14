@@ -86,6 +86,10 @@ mod tests {
         let account_b = MerchantAccountId::new();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
+        let channel_a = Uuid::now_v7();
+        let channel_b = Uuid::now_v7();
+        let product_a = Uuid::now_v7();
+        let product_b = Uuid::now_v7();
         let user_id = Uuid::now_v7();
         let key_a = Uuid::now_v7();
         let key_b = Uuid::now_v7();
@@ -125,6 +129,40 @@ mod tests {
             .bind(account_id.as_uuid())
             .bind(code)
             .bind(code)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (channel_id, store_id, account_id, code) in [
+            (channel_a, store_a, account_a, "web-a"),
+            (channel_b, store_b, account_b, "web-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO merchant.sales_channels \
+                 (id, merchant_account_id, store_id, code, name, kind, is_default) \
+                 VALUES ($1, $2, $3, $4, $4, 'web', true)",
+            )
+            .bind(channel_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(code)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (product_id, store_id, account_id, handle) in [
+            (product_a, store_a, account_a, "product-a"),
+            (product_b, store_b, account_b, "product-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO catalog.products \
+                 (id, merchant_account_id, store_id, handle, title) \
+                 VALUES ($1, $2, $3, $4, $4)",
+            )
+            .bind(product_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(handle)
             .execute(&pool)
             .await
             .unwrap();
@@ -178,6 +216,16 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
+        let visible_channel_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM merchant.sales_channels ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
+        let visible_product_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM catalog.products ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
         let visible_scope_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'mcp:tools'",
         )
@@ -188,6 +236,8 @@ mod tests {
 
         assert_eq!(visible_ids, vec![store_a]);
         assert_eq!(visible_key_ids, vec![key_a]);
+        assert_eq!(visible_channel_ids, vec![channel_a]);
+        assert_eq!(visible_product_ids, vec![product_a]);
         assert_eq!(visible_scope_count, 1);
 
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
@@ -202,6 +252,123 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn catalog_rejects_cross_product_option_selections() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let account_id = Uuid::now_v7();
+        let store_id = Uuid::now_v7();
+        let product_a = Uuid::now_v7();
+        let product_b = Uuid::now_v7();
+        let option_a = Uuid::now_v7();
+        let option_value_a = Uuid::now_v7();
+        let variant_b = Uuid::now_v7();
+        let suffix = Uuid::now_v7().simple().to_string();
+
+        sqlx::query(
+            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
+             VALUES ($1, $2, 'Catalog Constraint Test')",
+        )
+        .bind(account_id)
+        .bind(format!("catalog-constraint-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
+             VALUES ($1, $2, 'catalog-test', 'Catalog Test')",
+        )
+        .bind(store_id)
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (product_id, handle) in [(product_a, "product-a"), (product_b, "product-b")] {
+            sqlx::query(
+                "INSERT INTO catalog.products \
+                 (id, merchant_account_id, store_id, handle, title) \
+                 VALUES ($1, $2, $3, $4, $4)",
+            )
+            .bind(product_id)
+            .bind(account_id)
+            .bind(store_id)
+            .bind(handle)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO catalog.product_options \
+             (id, merchant_account_id, store_id, product_id, name, position) \
+             VALUES ($1, $2, $3, $4, 'Color', 0)",
+        )
+        .bind(option_a)
+        .bind(account_id)
+        .bind(store_id)
+        .bind(product_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO catalog.product_option_values \
+             (id, merchant_account_id, store_id, product_id, option_id, value, position) \
+             VALUES ($1, $2, $3, $4, $5, 'Blue', 0)",
+        )
+        .bind(option_value_a)
+        .bind(account_id)
+        .bind(store_id)
+        .bind(product_a)
+        .bind(option_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO catalog.product_variants \
+             (id, merchant_account_id, store_id, product_id, title) \
+             VALUES ($1, $2, $3, $4, 'Default')",
+        )
+        .bind(variant_b)
+        .bind(account_id)
+        .bind(store_id)
+        .bind(product_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cross_product = sqlx::query(
+            "INSERT INTO catalog.variant_selected_options \
+             (merchant_account_id, store_id, product_id, variant_id, \
+              option_id, option_value_id) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(account_id)
+        .bind(store_id)
+        .bind(product_b)
+        .bind(variant_b)
+        .bind(option_a)
+        .bind(option_value_a)
+        .execute(&pool)
+        .await;
+        assert!(cross_product.is_err());
+
+        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+            .bind(store_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
+            .bind(account_id)
             .execute(&pool)
             .await
             .unwrap();

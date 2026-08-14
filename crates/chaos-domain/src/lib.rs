@@ -1,6 +1,7 @@
 //! Pure business rules. This crate must not depend on web frameworks, databases,
 //! caches, serialization formats, or other delivery mechanisms.
 
+pub mod catalog;
 pub mod identity;
 pub mod merchant;
 
