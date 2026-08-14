@@ -74,4 +74,4 @@ TEST_DATABASE_URL=postgres://chaos:chaos@localhost:55432/chaos \
   cargo test -p chaos-infrastructure rls_hides_other_merchant_accounts_rows -- --ignored
 ```
 
-See [Product Model](docs/product-model.md), [System Architecture](docs/architecture.md), [Database Conventions](docs/database-conventions.md), [HTTP API Contract](docs/http-api.md), and [Contributing](CONTRIBUTING.md).
+See [Product Model](docs/product-model.md), [System Architecture](docs/architecture.md), [Delivery Roadmap](docs/delivery-roadmap.md), [Database Conventions](docs/database-conventions.md), [HTTP API Contract](docs/http-api.md), and [Contributing](CONTRIBUTING.md).

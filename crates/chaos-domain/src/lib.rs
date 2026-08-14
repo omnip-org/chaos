@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod identity;
 pub mod merchant;
+pub mod pricing;
 
 mod currency;
 mod region;
