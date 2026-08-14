@@ -3,6 +3,7 @@ CREATE SCHEMA identity;
 CREATE SCHEMA integration;
 CREATE SCHEMA merchant;
 CREATE SCHEMA catalog;
+CREATE SCHEMA pricing;
 CREATE SCHEMA partman;
 
 COMMENT ON SCHEMA extensions IS 'PostgreSQL extension-owned objects';
@@ -13,6 +14,8 @@ COMMENT ON SCHEMA merchant IS
     'Merchant accounts, memberships, stores, channels, and domains';
 COMMENT ON SCHEMA catalog IS
     'Products, variants, options, collections, media, and channel publication';
+COMMENT ON SCHEMA pricing IS
+    'Price lists, currency-specific prices, promotions, and tax classes';
 COMMENT ON SCHEMA partman IS 'Objects owned by the pg_partman extension';
 
 CREATE EXTENSION citext WITH SCHEMA extensions;
@@ -51,6 +54,7 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
 );
 CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
+CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE identity.users (
     id          UUID                    NOT NULL PRIMARY KEY,
@@ -506,6 +510,78 @@ CREATE INDEX product_publications_channel_product_idx
         product_id
     );
 
+CREATE TABLE pricing.price_lists (
+    id                   UUID                         NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                         NOT NULL,
+    store_id             UUID                         NOT NULL,
+    code                 extensions.citext            NOT NULL,
+    name                 TEXT                         NOT NULL,
+    currency             CHAR(3)                      NOT NULL,
+    tax_inclusive        BOOLEAN                      NOT NULL DEFAULT false,
+    status               pricing.price_list_status    NOT NULL DEFAULT 'draft',
+    starts_at            TIMESTAMPTZ,
+    ends_at              TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, code),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, currency)
+        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    CONSTRAINT price_lists_code_format_check CHECK (
+        code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+    ),
+    CONSTRAINT price_lists_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT price_lists_currency_format_check CHECK (
+        currency ~ '^[A-Z]{3}$'
+    ),
+    CONSTRAINT price_lists_validity_window_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at
+    )
+);
+
+CREATE INDEX price_lists_store_activation_idx
+    ON pricing.price_lists (
+        merchant_account_id,
+        store_id,
+        status,
+        currency,
+        starts_at,
+        ends_at
+    );
+
+CREATE TABLE pricing.prices (
+    id                   UUID         NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID         NOT NULL,
+    store_id             UUID         NOT NULL,
+    price_list_id        UUID         NOT NULL,
+    product_variant_id   UUID         NOT NULL,
+    amount_minor         BIGINT       NOT NULL,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, price_list_id, product_variant_id),
+    FOREIGN KEY (merchant_account_id, store_id, price_list_id)
+        REFERENCES pricing.price_lists(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
+    CONSTRAINT prices_amount_nonnegative_check CHECK (
+        amount_minor >= 0
+    )
+);
+
+CREATE INDEX prices_variant_lookup_idx
+    ON pricing.prices (
+        merchant_account_id,
+        store_id,
+        product_variant_id,
+        price_list_id
+    );
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
@@ -521,6 +597,8 @@ ALTER TABLE catalog.product_option_values ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.variant_selected_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -690,6 +768,26 @@ CREATE POLICY merchant_account_isolation ON catalog.product_publications
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON pricing.price_lists
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON pricing.prices
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE FUNCTION merchant.authenticate_api_key(
     presented_key_identifier  TEXT,
     presented_secret_digest  BYTEA
@@ -763,7 +861,7 @@ $$;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
-GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog TO chaos_runtime;
+GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog, pricing TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
@@ -772,12 +870,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA catalog TO chaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA pricing TO chaos_runtime;
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA merchant TO chaos_runtime;
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA catalog TO chaos_runtime;
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA pricing TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
@@ -790,6 +892,10 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
 ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA extensions, identity TO chaos_control_plane;

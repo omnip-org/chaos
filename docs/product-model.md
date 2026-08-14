@@ -62,6 +62,14 @@ The actual sellable unit of a Product. A Variant may have a Store-unique SKU and
 
 The explicit relationship that makes an active Product visible through a Sales Channel. Publication does not override inactive Store, Channel, Product, or Variant state.
 
+### PriceList
+
+A Store-owned pricing context with one enabled currency, tax semantics, an optional activation window, and explicit Product Variant prices. A Price List is independent from Product content and Sales Channel publication. The same Variant may have different authoritative prices in different Price Lists.
+
+### Money
+
+An exact amount in integer minor units paired with one ISO 4217 currency. Arithmetic is checked and never mixes currencies implicitly. Display conversion and exchange-rate calculations do not overwrite authoritative Money values.
+
 ### ApiKey
 
 A revocable machine credential bound to one Store and an explicit set of capabilities. Publishable keys identify public Store API clients. Secret keys authenticate trusted integrations and MCP clients. Plaintext secrets are visible only when a key is created.

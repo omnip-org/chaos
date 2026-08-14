@@ -6,6 +6,7 @@ mod extract;
 mod health;
 mod merchant;
 mod openapi;
+mod pricing;
 mod response;
 
 use axum::Router;
@@ -15,6 +16,7 @@ use chaos_application::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore, MerchantQueries,
     },
     ports::PasswordlessAuthentication,
+    pricing::CreatePriceList,
 };
 use std::sync::Arc;
 
@@ -24,8 +26,8 @@ use chaos_infrastructure::{
     repositories::{
         PostgresApiKeyRepository, PostgresCatalogProvisioningUnitOfWork,
         PostgresCatalogReadRepository, PostgresMerchantProvisioningUnitOfWork,
-        PostgresMerchantReadRepository, PostgresStoreProvisioningUnitOfWork,
-        SecureApiKeyMaterialGenerator,
+        PostgresMerchantReadRepository, PostgresPricingProvisioningUnitOfWork,
+        PostgresStoreProvisioningUnitOfWork, SecureApiKeyMaterialGenerator,
     },
     state::AppState,
 };
@@ -49,6 +51,7 @@ pub struct ApiState {
     pub create_store: Arc<CreateStore>,
     pub create_product: Arc<CreateProduct>,
     pub catalog_queries: Arc<CatalogQueries>,
+    pub create_price_list: Arc<CreatePriceList>,
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
@@ -81,6 +84,9 @@ impl ApiState {
         let catalog_queries = CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(
             infrastructure.runtime_pool(),
         )));
+        let create_price_list = CreatePriceList::new(Arc::new(
+            PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
+        ));
         let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -99,6 +105,7 @@ impl ApiState {
             create_store: Arc::new(create_store),
             create_product: Arc::new(create_product),
             catalog_queries: Arc::new(catalog_queries),
+            create_price_list: Arc::new(create_price_list),
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
@@ -112,6 +119,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1/auth", auth::routes())
         .nest("/admin/v1", merchant::routes())
         .nest("/admin/v1", catalog::routes())
+        .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/openapi", openapi::routes())
         .with_state(state)

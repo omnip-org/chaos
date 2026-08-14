@@ -4,6 +4,7 @@ mod catalog_read;
 mod merchant;
 mod merchant_query;
 mod passwordless;
+mod pricing;
 mod store;
 
 pub use api_key::{
@@ -20,4 +21,5 @@ pub use merchant::{
 };
 pub use merchant_query::{MerchantAccountListItem, MerchantReadRepository, StoreListItem};
 pub use passwordless::{CeremonyOptions, PasswordlessAuthentication, SessionGrant};
+pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};

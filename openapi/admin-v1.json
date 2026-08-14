@@ -13,6 +13,7 @@
     { "name": "Merchant accounts" },
     { "name": "Stores" },
     { "name": "Catalog" },
+    { "name": "Pricing" },
     { "name": "API keys" }
   ],
   "paths": {
@@ -361,6 +362,44 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "post": {
+        "operationId": "createPriceList",
+        "tags": ["Pricing"],
+        "summary": "Create a currency-specific Price List",
+        "description": "Creates a Price List and its Variant prices atomically. An active list may reference only active Variants in the same Store.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreatePriceList" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Price List created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentifierResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
         }
       }
     },
@@ -785,6 +824,37 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/Product" } }
+      },
+      "CreatePrice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product_variant_id", "amount_minor"],
+        "properties": {
+          "product_variant_id": { "type": "string", "format": "uuid" },
+          "amount_minor": { "type": "integer", "format": "int64", "minimum": 0 }
+        }
+      },
+      "CreatePriceList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name", "currency"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$"
+          },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "currency": { "$ref": "#/components/schemas/CurrencyCode" },
+          "tax_inclusive": { "type": "boolean", "default": false },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" },
+          "activate": { "type": "boolean", "default": false },
+          "prices": {
+            "type": "array",
+            "default": [],
+            "items": { "$ref": "#/components/schemas/CreatePrice" }
+          }
+        }
       },
       "ApiKeyClass": { "type": "string", "enum": ["publishable", "secret"] },
       "ApiKeyMode": { "type": "string", "enum": ["test", "live"] },

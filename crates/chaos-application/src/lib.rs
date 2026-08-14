@@ -4,5 +4,6 @@ pub mod catalog;
 mod error;
 pub mod merchant;
 pub mod ports;
+pub mod pricing;
 
 pub use error::ApplicationError;
