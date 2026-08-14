@@ -1,5 +1,13 @@
 # HTTP API Contract
 
+## OpenAPI
+
+The versioned Admin API source of truth is `openapi/admin-v1.json`. A running API instance serves the same embedded contract from `GET /openapi/admin-v1.json` with the `application/vnd.oai.openapi+json` media type. Publishing the embedded artifact guarantees that the contract belongs to the exact application build serving it.
+
+Every operation has a stable and unique `operationId`. Additive fields remain optional. Removing or renaming a route, field, operation, error code, or enum value requires a compatibility plan or a new API version. Contract tests validate the OpenAPI version, operation identifiers, authentication declarations, and shared response envelopes.
+
+Admin, Store, webhook, and future MCP surfaces have separate contracts and authentication boundaries. The Admin API uses human sessions. Store and MCP access never accepts a human session as a substitute for a scoped machine credential.
+
 ## Success responses
 
 Objects and collections are wrapped in `data`. The optional `meta` object is emitted only when pagination or other metadata exists.

@@ -48,12 +48,17 @@ Stores are isolated by default. Sharing products, customers, inventory, or price
 
 A publication and access surface within a store, such as Web, mobile, POS, or marketplace. It controls publishable keys, product visibility, inventory selection, and channel-specific behavior.
 
+### ApiKey
+
+A revocable machine credential bound to one Store and an explicit set of capabilities. Publishable keys identify public Store API clients. Secret keys authenticate trusted integrations and MCP clients. Plaintext secrets are visible only when a key is created.
+
 ## Isolation rules
 
 - `merchant_account_id` is the primary RLS and authorization boundary.
 - Store-owned commerce data also carries `store_id`.
 - The authenticated user selects a merchant account only through a verified membership.
 - Storefront requests derive merchant account and store from a publishable key or verified domain.
+- Integration and MCP requests derive merchant account and store from a scoped secret key.
 - Webhooks derive merchant account and store from a verified local provider mapping.
 - Internal events carry both identifiers whenever the event belongs to a store.
 - No request is authorized by trusting a client-supplied identifier alone.

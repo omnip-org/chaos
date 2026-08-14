@@ -7,7 +7,7 @@ The first production version uses a modular monolith. The initial deployment uni
 This design keeps reliable transaction boundaries around checkout, inventory reservation, payment state, and refunds. Services should be extracted only when throughput, team ownership, or fault-isolation requirements justify the operational cost. Transactional outbox events provide future extraction seams.
 
 ```text
-Storefront / Admin / Integrations
+Storefront / Admin / MCP / Integrations
               |
          HTTP / Webhooks
               |
@@ -43,6 +43,7 @@ Account and store resolution must never trust client-supplied identifiers by the
 
 - Admin API requests derive the merchant account from the authenticated user and membership.
 - Storefront API requests derive merchant account, store, and channel from a publishable key or verified domain.
+- MCP requests derive merchant account and store from a scoped secret key; each tool also enforces its capability scope.
 - Webhooks derive merchant account and store from a locally stored provider mapping after signature verification.
 - Internal jobs carry `merchant_account_id` and `store_id` when applicable and establish a fresh account context in every consumer.
 
@@ -116,6 +117,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - WebAuthn registration and authentication state is stored only in Redis with a short TTL and atomic one-time consumption so ceremonies work across API instances without becoming replayable.
 - Authentication abuse limits use privacy-preserving subject digests in Redis, so limits are shared by all instances without placing email addresses in cache keys.
 - API keys use a searchable prefix plus a secret hash. Plaintext is shown exactly once.
+- Human sessions, Store API keys, and MCP credentials are not interchangeable authentication mechanisms.
 - Admin authorization uses fine-grained RBAC. Sensitive writes enter an immutable audit log.
 - Secrets come only from the runtime environment or a secret manager and never enter the repository or logs.
 - Login, checkout, webhook, and public-key traffic use separate rate limits.

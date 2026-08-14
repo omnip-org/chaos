@@ -351,7 +351,7 @@ mod tests {
             decode_cursor(&cursor, CursorKind::MerchantAccount).unwrap(),
             id
         );
-        assert!(!cursor.contains('-'));
+        assert!(!cursor.contains(&id.to_string()));
         assert!(decode_cursor(&cursor, CursorKind::Store).is_err());
         assert!(decode_cursor("not-a-cursor", CursorKind::MerchantAccount).is_err());
     }

@@ -3,6 +3,7 @@ mod error;
 mod extract;
 mod health;
 mod merchant;
+mod openapi;
 mod response;
 
 use axum::Router;
@@ -82,6 +83,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/health", health::routes())
         .nest("/admin/v1/auth", auth::routes())
         .nest("/admin/v1", merchant::routes())
+        .nest("/openapi", openapi::routes())
         .with_state(state)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
@@ -179,5 +181,28 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(json["error"]["code"], "invalid_json");
+    }
+
+    #[tokio::test]
+    async fn admin_openapi_contract_is_publicly_available() {
+        let response = router(test_state())
+            .oneshot(
+                Request::get("/openapi/admin-v1.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/vnd.oai.openapi+json"
+        );
+
+        let body = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+        let contract = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(contract["info"]["title"], "Chaos Admin API");
+        assert_eq!(contract["openapi"], "3.1.0");
     }
 }

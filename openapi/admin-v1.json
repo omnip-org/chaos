@@ -1,0 +1,526 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chaos Admin API",
+    "version": "1.0.0",
+    "description": "Passwordless administration API for merchant accounts and headless commerce stores."
+  },
+  "servers": [
+    { "url": "/", "description": "Current origin" }
+  ],
+  "tags": [
+    { "name": "Authentication" },
+    { "name": "Merchant accounts" },
+    { "name": "Stores" }
+  ],
+  "paths": {
+    "/admin/v1/auth/email-links": {
+      "post": {
+        "operationId": "requestEmailLink",
+        "tags": ["Authentication"],
+        "summary": "Request a passwordless sign-in link",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RequestEmailLink" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Delivery request accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EmptyResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/auth/email-links/verify": {
+      "post": {
+        "operationId": "verifyEmailLink",
+        "tags": ["Authentication"],
+        "summary": "Consume a single-use sign-in link",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VerifyEmailLink" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SessionGranted" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/auth/session": {
+      "delete": {
+        "operationId": "revokeSession",
+        "tags": ["Authentication"],
+        "summary": "Revoke the current session",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "204": { "description": "Session revoked" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/auth/passkeys/registration/options": {
+      "post": {
+        "operationId": "startPasskeyRegistration",
+        "tags": ["Authentication"],
+        "summary": "Start passkey registration",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/PasskeyCeremony" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/auth/passkeys/registration/verify": {
+      "post": {
+        "operationId": "finishPasskeyRegistration",
+        "tags": ["Authentication"],
+        "summary": "Verify and persist a passkey",
+        "security": [{ "bearerSession": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FinishPasskeyRegistration" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Passkey registered",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentifierResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/auth/passkeys/authentication/options": {
+      "post": {
+        "operationId": "startPasskeyAuthentication",
+        "tags": ["Authentication"],
+        "summary": "Start passkey authentication",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RequestEmailLink" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/PasskeyCeremony" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/auth/passkeys/authentication/verify": {
+      "post": {
+        "operationId": "finishPasskeyAuthentication",
+        "tags": ["Authentication"],
+        "summary": "Verify a passkey assertion",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FinishPasskeyAuthentication" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/SessionGranted" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts": {
+      "get": {
+        "operationId": "listMerchantAccounts",
+        "tags": ["Merchant accounts"],
+        "summary": "List merchant accounts for the current user",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Merchant account page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MerchantAccountCollectionEnvelope" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "post": {
+        "operationId": "createMerchantAccount",
+        "tags": ["Merchant accounts"],
+        "summary": "Create a merchant account and owner membership",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateMerchantAccount" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Merchant account created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentifierResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores": {
+      "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }],
+      "get": {
+        "operationId": "listStores",
+        "tags": ["Stores"],
+        "summary": "List stores in a merchant account",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StoreCollectionEnvelope" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
+      "post": {
+        "operationId": "createStore",
+        "tags": ["Stores"],
+        "summary": "Create a draft store and default currency",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateStore" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Store created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentifierResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Opaque revocable session token"
+      }
+    },
+    "parameters": {
+      "MerchantAccountId": {
+        "name": "merchant_account_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "Opaque cursor returned by the previous page.",
+        "schema": { "type": "string" }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed JSON, query, content type, or payload size",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Unauthorized": {
+        "description": "Authentication required or credential invalid",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Forbidden": {
+        "description": "Authenticated caller is not allowed to access the resource",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Conflict": {
+        "description": "Idempotency or unique-domain conflict",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "ValidationFailed": {
+        "description": "Domain or request validation failed",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "ServiceUnavailable": {
+        "description": "Required dependency unavailable",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "SessionGranted": {
+        "description": "Session created",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionResponse" } } }
+      },
+      "PasskeyCeremony": {
+        "description": "WebAuthn ceremony options created",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PasskeyCeremonyResponse" } } }
+      }
+    },
+    "schemas": {
+      "RequestEmailLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": { "email": { "type": "string", "format": "email", "maxLength": 320 } }
+      },
+      "VerifyEmailLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["token"],
+        "properties": { "token": { "type": "string" } }
+      },
+      "FinishPasskeyRegistration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ceremony_id", "name", "credential"],
+        "properties": {
+          "ceremony_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "credential": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "FinishPasskeyAuthentication": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ceremony_id", "credential"],
+        "properties": {
+          "ceremony_id": { "type": "string", "format": "uuid" },
+          "credential": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "CreateMerchantAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "display_name"],
+        "properties": {
+          "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 }
+        }
+      },
+      "CreateStore": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "default_region": { "$ref": "#/components/schemas/RegionCode" },
+          "default_currency": { "$ref": "#/components/schemas/CurrencyCode" }
+        }
+      },
+      "RegionCode": { "type": "string", "pattern": "^[A-Z]{2}$", "default": "US" },
+      "CurrencyCode": { "type": "string", "pattern": "^[A-Z]{3}$", "default": "USD" },
+      "Identifier": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": { "id": { "type": "string", "format": "uuid" } }
+      },
+      "IdentifierResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/Identifier" } }
+      },
+      "EmptyResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "type": "object", "additionalProperties": false } }
+      },
+      "Session": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_token", "token_type", "expires_in"],
+        "properties": {
+          "session_token": { "type": "string" },
+          "token_type": { "type": "string", "const": "Bearer" },
+          "expires_in": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/Session" } }
+      },
+      "PasskeyCeremony": {
+        "type": "object",
+        "required": ["ceremony_id", "public_key"],
+        "properties": {
+          "ceremony_id": { "type": "string", "format": "uuid" },
+          "public_key": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "PasskeyCeremonyResponse": {
+        "type": "object",
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/PasskeyCeremony" } }
+      },
+      "MerchantAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "slug", "display_name", "status", "role"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "slug": { "type": "string" },
+          "display_name": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "suspended", "closed"] },
+          "role": { "type": "string", "enum": ["owner", "administrator", "developer", "manager", "support"] }
+        }
+      },
+      "Store": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "code", "name", "default_region", "default_currency", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "default_region": { "$ref": "#/components/schemas/RegionCode" },
+          "default_currency": { "$ref": "#/components/schemas/CurrencyCode" },
+          "status": { "type": "string", "enum": ["draft", "active", "archived"] }
+        }
+      },
+      "PageMeta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["has_more"],
+        "properties": {
+          "has_more": { "type": "boolean" },
+          "next_cursor": { "type": "string" }
+        }
+      },
+      "ResponseMeta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page"],
+        "properties": { "page": { "$ref": "#/components/schemas/PageMeta" } }
+      },
+      "MerchantAccountCollectionEnvelope": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/MerchantAccount" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
+      },
+      "StoreCollectionEnvelope": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/Store" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": {
+          "field": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": "array", "items": { "$ref": "#/components/schemas/ErrorDetail" } }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": { "error": { "$ref": "#/components/schemas/Error" } }
+      }
+    }
+  }
+}
