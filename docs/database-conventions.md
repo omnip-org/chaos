@@ -85,6 +85,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 - Runtime connections use a non-owner role without `BYPASSRLS`.
 - Control-plane operations use a separate privileged port and explicit audit trail.
 - Identity control-plane connections assume the non-owner `chaos_control_plane` role, which can access `identity` but cannot access merchant-owned tables.
+- Cross-account account-directory reads use `app.user_id` and read-only membership policies; they never broaden merchant-owned Store or commerce-data policies.
 - Cross-account isolation tests are mandatory for every new merchant-owned aggregate. Store-scoped authorization tests are mandatory for store-owned aggregates.
 
 ## 7. Migration rules

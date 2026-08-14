@@ -1,4 +1,9 @@
-use axum::{Json, extract::rejection::JsonRejection, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::rejection::{JsonRejection, QueryRejection},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use chaos_application::ApplicationError;
 use serde::Serialize;
 
@@ -58,6 +63,14 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             code: "invalid_json",
             message: "the request body is not valid JSON",
+        }
+    }
+
+    pub fn from_query_rejection(_rejection: QueryRejection) -> Self {
+        Self::Request {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_query",
+            message: "the query parameters are invalid",
         }
     }
 }

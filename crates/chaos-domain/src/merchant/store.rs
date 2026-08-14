@@ -61,6 +61,25 @@ pub enum StoreStatus {
     Archived,
 }
 
+impl StoreStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "draft" => Some(Self::Draft),
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Store {
     id: StoreId,

@@ -21,6 +21,17 @@ impl MerchantRole {
             Self::Support => "support",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "owner" => Some(Self::Owner),
+            "administrator" => Some(Self::Administrator),
+            "developer" => Some(Self::Developer),
+            "manager" => Some(Self::Manager),
+            "support" => Some(Self::Support),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

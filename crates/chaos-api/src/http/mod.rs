@@ -7,7 +7,7 @@ mod response;
 
 use axum::Router;
 use chaos_application::{
-    merchant::{CreateMerchantAccount, CreateStore},
+    merchant::{CreateMerchantAccount, CreateStore, MerchantQueries},
     ports::PasswordlessAuthentication,
 };
 use std::sync::Arc;
@@ -15,7 +15,10 @@ use std::sync::Arc;
 use chaos_infrastructure::{
     config::Settings,
     passwordless::PasswordlessAuth,
-    repositories::{PostgresMerchantProvisioningUnitOfWork, PostgresStoreProvisioningUnitOfWork},
+    repositories::{
+        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
+        PostgresStoreProvisioningUnitOfWork,
+    },
     state::AppState,
 };
 use tower_http::{
@@ -26,7 +29,7 @@ use tower_http::{
 use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
-pub use extract::{ApiJson, AuthenticatedSession};
+pub use extract::{ApiJson, ApiQuery, AuthenticatedSession, MerchantContext};
 pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
@@ -36,6 +39,7 @@ pub struct ApiState {
     pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
     pub create_merchant_account: Arc<CreateMerchantAccount>,
     pub create_store: Arc<CreateStore>,
+    pub merchant_queries: Arc<MerchantQueries>,
 }
 
 impl ApiState {
@@ -59,12 +63,16 @@ impl ApiState {
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             infrastructure.runtime_pool(),
         )));
+        let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+            infrastructure.runtime_pool(),
+        )));
         Ok(Self {
             infrastructure,
             lifecycle,
             passwordless_auth: Arc::new(passwordless_auth),
             create_merchant_account: Arc::new(create_merchant_account),
             create_store: Arc::new(create_store),
+            merchant_queries: Arc::new(merchant_queries),
         })
     }
 }

@@ -61,6 +61,25 @@ pub enum MerchantAccountStatus {
     Closed,
 }
 
+impl MerchantAccountStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suspended => "suspended",
+            Self::Closed => "closed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "suspended" => Some(Self::Suspended),
+            "closed" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MerchantAccount {
     id: MerchantAccountId,

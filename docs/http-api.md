@@ -92,6 +92,8 @@ An account may contain one or more passkeys. There is no minimum-two-passkey rul
 
 Idempotency records are scoped to the authenticated user for account creation. Repeating the same key and request returns the original HTTP 201 response without creating another account. Reusing the key with a different request returns HTTP 409 with `idempotency_key_reused`. The request fingerprint, business writes, and response snapshot commit in one PostgreSQL transaction.
 
+`GET /admin/v1/merchant-accounts` returns only merchant accounts where the authenticated user has a membership. Each item includes `id`, `slug`, `display_name`, `status`, and the caller's `role`.
+
 ## Stores
 
 `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores` creates a draft store and enables its default currency atomically. It requires a bearer session and an `Idempotency-Key` header. Only active merchant accounts and members with the `owner` or `administrator` role may create stores. A missing account and an unauthorized membership both return HTTP 403 to avoid account enumeration.
@@ -99,3 +101,7 @@ Idempotency records are scoped to the authenticated user for account creation. R
 Store creation idempotency is scoped to the merchant account. The request body requires `code` and `name`; `default_region` and `default_currency` are optional and default to `US` and `USD`. Regions use uppercase ISO 3166-1 alpha-2 codes and currencies use uppercase three-letter ISO 4217 codes. Store codes are unique within a merchant account; a conflict returns `store_code_taken`.
 
 The default region is the store's initial operating configuration. It does not restrict future markets, shipping zones, tax registrations, localized catalogs, or enabled currencies.
+
+`GET /admin/v1/merchant-accounts/{merchant_account_id}/stores` returns stores only after resolving the authenticated user's merchant membership. Each item includes the Store identity, code, name, defaults, and status.
+
+Both list endpoints accept `limit` from 1 to 100, defaulting to 20, and an opaque `cursor`. Results use ascending UUIDv7 keyset pagination. When more results exist, `meta.page.has_more` is true and `meta.page.next_cursor` contains the cursor for the next request. Clients must not parse or construct cursors.

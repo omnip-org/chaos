@@ -259,6 +259,18 @@ CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts
     USING (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid)
     WITH CHECK (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid);
 
+CREATE POLICY merchant_account_directory ON merchant.merchant_accounts
+    FOR SELECT
+    USING (
+        EXISTS (
+            SELECT 1
+            FROM merchant.merchant_account_memberships AS membership
+            WHERE membership.merchant_account_id = merchant_accounts.id
+              AND membership.user_id =
+                    nullif(current_setting('app.user_id', true), '')::uuid
+        )
+    );
+
 CREATE POLICY merchant_account_isolation ON merchant.merchant_account_memberships
     USING (
         merchant_account_id =
@@ -267,6 +279,12 @@ CREATE POLICY merchant_account_isolation ON merchant.merchant_account_membership
     WITH CHECK (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_membership_directory ON merchant.merchant_account_memberships
+    FOR SELECT
+    USING (
+        user_id = nullif(current_setting('app.user_id', true), '')::uuid
     );
 
 CREATE POLICY merchant_account_isolation ON merchant.stores
