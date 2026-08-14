@@ -3,9 +3,9 @@ use uuid::Uuid;
 use crate::{DomainError, FieldViolation};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct TenantId(Uuid);
+pub struct MerchantAccountId(Uuid);
 
-impl TenantId {
+impl MerchantAccountId {
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
@@ -19,16 +19,16 @@ impl TenantId {
     }
 }
 
-impl Default for TenantId {
+impl Default for MerchantAccountId {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct TenantSlug(String);
+pub struct MerchantAccountSlug(String);
 
-impl TenantSlug {
+impl MerchantAccountSlug {
     pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         let bytes = value.as_bytes();
@@ -55,22 +55,25 @@ impl TenantSlug {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TenantStatus {
+pub enum MerchantAccountStatus {
     Active,
     Suspended,
     Closed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Tenant {
-    id: TenantId,
-    slug: TenantSlug,
+pub struct MerchantAccount {
+    id: MerchantAccountId,
+    slug: MerchantAccountSlug,
     display_name: String,
-    status: TenantStatus,
+    status: MerchantAccountStatus,
 }
 
-impl Tenant {
-    pub fn create(slug: TenantSlug, display_name: impl Into<String>) -> Result<Self, DomainError> {
+impl MerchantAccount {
+    pub fn create(
+        slug: MerchantAccountSlug,
+        display_name: impl Into<String>,
+    ) -> Result<Self, DomainError> {
         let display_name = display_name.into();
         if display_name.trim().is_empty() || display_name.chars().count() > 120 {
             return Err(DomainError::Validation(vec![FieldViolation {
@@ -80,18 +83,18 @@ impl Tenant {
         }
 
         Ok(Self {
-            id: TenantId::new(),
+            id: MerchantAccountId::new(),
             slug,
             display_name,
-            status: TenantStatus::Active,
+            status: MerchantAccountStatus::Active,
         })
     }
 
-    pub const fn id(&self) -> TenantId {
+    pub const fn id(&self) -> MerchantAccountId {
         self.id
     }
 
-    pub fn slug(&self) -> &TenantSlug {
+    pub fn slug(&self) -> &MerchantAccountSlug {
         &self.slug
     }
 
@@ -99,7 +102,7 @@ impl Tenant {
         &self.display_name
     }
 
-    pub const fn status(&self) -> TenantStatus {
+    pub const fn status(&self) -> MerchantAccountStatus {
         self.status
     }
 }
@@ -110,17 +113,21 @@ mod tests {
 
     #[test]
     fn accepts_a_canonical_slug() {
-        assert_eq!(TenantSlug::parse("acme-sg").unwrap().as_str(), "acme-sg");
+        assert_eq!(
+            MerchantAccountSlug::parse("acme-sg").unwrap().as_str(),
+            "acme-sg"
+        );
     }
 
     #[test]
     fn rejects_a_slug_that_would_need_implicit_normalization() {
-        assert!(TenantSlug::parse("Acme SG").is_err());
+        assert!(MerchantAccountSlug::parse("Acme SG").is_err());
     }
 
     #[test]
-    fn tenant_starts_active() {
-        let tenant = Tenant::create(TenantSlug::parse("acme").unwrap(), "ACME").unwrap();
-        assert_eq!(tenant.status(), TenantStatus::Active);
+    fn merchant_account_starts_active() {
+        let account =
+            MerchantAccount::create(MerchantAccountSlug::parse("acme").unwrap(), "ACME").unwrap();
+        assert_eq!(account.status(), MerchantAccountStatus::Active);
     }
 }

@@ -4,8 +4,8 @@ use anyhow::Context;
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-use crate::{config::Settings, tenancy::TenantTransaction};
-use chaos_domain::tenancy::TenantId;
+use crate::{config::Settings, merchant::MerchantAccountTransaction};
+use chaos_domain::merchant::MerchantAccountId;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,11 +44,11 @@ impl AppState {
         })
     }
 
-    pub async fn begin_tenant_transaction(
+    pub async fn begin_merchant_account_transaction(
         &self,
-        tenant_id: TenantId,
-    ) -> anyhow::Result<TenantTransaction<'_>> {
-        TenantTransaction::begin(&self.postgres, tenant_id).await
+        merchant_account_id: MerchantAccountId,
+    ) -> anyhow::Result<MerchantAccountTransaction<'_>> {
+        MerchantAccountTransaction::begin(&self.postgres, merchant_account_id).await
     }
 
     pub async fn check_dependencies(&self) -> anyhow::Result<()> {

@@ -30,22 +30,23 @@ Storefront / Admin / Integrations
 
 Redis is never the source of truth for orders, inventory, or payments. Losing Redis data must not compromise business correctness.
 
-## 2. Multi-tenant model
+## 2. Multi-account commerce model
 
-The hierarchy is `tenant -> store -> sales_channel`:
+The hierarchy is `user -> merchant_account -> store -> sales_channel`:
 
-- A tenant is an independent merchant account and the boundary for billing, membership, authorization, and data isolation.
-- A store represents one brand or regional storefront within a tenant and owns default currency, locale, and selling policies.
+- A user is a global login identity and can own or join multiple merchant accounts.
+- A merchant account is an isolated business workspace and the boundary for billing, membership, authorization, and RLS.
+- A store is an independent online storefront within a merchant account and owns its domains and commerce configuration.
 - A sales channel will define publication scope, API keys, and inventory-location selection for Web, mobile, POS, or marketplace clients.
 
-Tenant resolution must never trust a client-supplied `tenant_id` by itself:
+Account and store resolution must never trust client-supplied identifiers by themselves:
 
-- Admin API requests derive the tenant from the authenticated principal and membership.
-- Storefront API requests derive tenant, store, and channel from a publishable key or verified domain.
-- Webhooks derive the tenant from a locally stored endpoint or provider-account mapping after signature verification.
-- Internal jobs carry `tenant_id` in the event envelope and establish a fresh tenant context in every consumer.
+- Admin API requests derive the merchant account from the authenticated user and membership.
+- Storefront API requests derive merchant account, store, and channel from a publishable key or verified domain.
+- Webhooks derive merchant account and store from a locally stored provider mapping after signature verification.
+- Internal jobs carry `merchant_account_id` and `store_id` when applicable and establish a fresh account context in every consumer.
 
-Every tenant-owned table contains `tenant_id`. Relationships use `(tenant_id, id)` composite foreign keys to prevent cross-tenant references. Every tenant transaction sets `SET LOCAL app.tenant_id = ...`. PostgreSQL RLS provides defense in depth. The production application role must not own tables or have `BYPASSRLS`. Platform administration uses a separate role, connection pool, and audited execution path.
+Every merchant-owned table contains `merchant_account_id`; store-owned commerce data also contains `store_id`. Relationships use account-scoped composite foreign keys to prevent cross-account references. Every account transaction sets `SET LOCAL app.merchant_account_id = ...`. PostgreSQL RLS provides defense in depth. The production application role must not own tables or have `BYPASSRLS`. Platform administration uses a separate role, connection pool, and audited execution path.
 
 ## 3. Money and multiple currencies
 
@@ -63,7 +64,7 @@ The pricing domain will provide a Money value object with checked arithmetic, sa
 Suggested implementation order:
 
 1. identity: users, service accounts, and sessions;
-2. tenancy: tenants, memberships, roles, API keys, stores, channels, and domains;
+2. merchant: merchant accounts, memberships, roles, API keys, stores, channels, and domains;
 3. catalog: products, variants, options, collections, and media;
 4. pricing: money, price lists, prices, promotions, and tax classes;
 5. inventory: locations, stock items, reservations, and adjustments;
@@ -90,7 +91,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 5. Consistency and reliability
 
-- Every write API accepts `Idempotency-Key`, uniquely stored by `(tenant_id, key, operation)` with a request fingerprint and response snapshot.
+- Every write API accepts `Idempotency-Key`, uniquely stored by `(merchant_account_id, key, operation)` with a request fingerprint and response snapshot.
 - Inventory reservation uses PostgreSQL conditional updates or row locks with expiration. Redis may accelerate access but cannot own the invariant.
 - Business changes and outbox events commit in the same PostgreSQL transaction.
 - Workers claim outbox records with `FOR UPDATE SKIP LOCKED`. Delivery is at least once, so consumers must be idempotent.
@@ -118,11 +119,11 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 8. PostgreSQL and Redis responsibilities
 
-PostgreSQL stores all business entities, transactions, idempotency records, outbox and inbox records, and audit logs. Tenant-table indexes generally start with `tenant_id`. Large tables are partitioned by time or tenant hash only after query and scale evidence justifies it.
+PostgreSQL stores all business entities, transactions, idempotency records, outbox and inbox records, and audit logs. Merchant-owned table indexes generally start with `merchant_account_id`. Large tables are partitioned only after query and scale evidence justifies it.
 
-PostgreSQL schemas follow bounded-context ownership rather than merchant tenancy. Current and reserved schemas include `identity`, `tenancy`, `catalog`, `pricing`, `inventory`, `sales`, `payments`, `fulfillment`, `integration`, `audit`, and `extensions`. Business SQL uses qualified identifiers. Detailed rules are defined in `docs/database-conventions.md`.
+PostgreSQL schemas follow bounded-context ownership. Current and reserved schemas include `identity`, `merchant`, `catalog`, `pricing`, `inventory`, `sales`, `payments`, `fulfillment`, `integration`, `audit`, and `extensions`. Business SQL uses qualified identifiers. Detailed rules are defined in `docs/database-conventions.md`.
 
-Redis provides short-lived cache entries, distributed rate limiting, session assistance, and short task coordination. Keys include environment and tenant, for example `chaos:prod:t:{tenant_id}:cart:{id}`, and cached values have TTLs. Lua or atomic commands protect compound cache invariants.
+Redis provides short-lived cache entries, distributed rate limiting, session assistance, and short task coordination. Keys include environment and merchant account, for example `chaos:prod:ma:{merchant_account_id}:store:{store_id}:cart:{id}`, and cached values have TTLs. Lua or atomic commands protect compound cache invariants.
 
 ## 9. Deployment topology
 
@@ -136,11 +137,11 @@ Observability targets include JSON logs, OpenTelemetry traces, and Prometheus me
 
 ## 10. Delivery roadmap
 
-- Phase 0: workspace, local dependencies, configuration, health checks, logging, DDD boundaries, and the foundational tenant schema.
-- Phase 1: tenant and store use cases, transaction-scoped tenant context, RLS integration tests, and admin authentication.
+- Phase 0: workspace, local dependencies, configuration, health checks, logging, DDD boundaries, and the foundational merchant schema.
+- Phase 1: identity, merchant-account membership, store use cases, transaction-scoped account context, RLS integration tests, and admin authentication.
 - Phase 2: catalog, Money, price lists, and Storefront query APIs.
 - Phase 3: inventory, carts, checkout, order state machines, and the idempotency framework.
 - Phase 4: payment adapters, webhook inbox and outbox processing, and refunds.
 - Phase 5: fulfillment, returns, search, production observability, and capacity testing.
 
-Every phase requires migration tests, domain unit tests, cross-tenant isolation tests, HTTP integration tests, and an OpenAPI update.
+Every phase requires migration tests, domain unit tests, cross-account isolation tests, HTTP integration tests, and an OpenAPI update.

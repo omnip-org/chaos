@@ -1,6 +1,6 @@
 # Chaos Commerce
 
-A modern headless commerce backend for multi-tenant, multi-store, and multi-currency use cases. It is built with Rust, Axum, PostgreSQL 18, and Redis 8.
+A modern headless commerce backend where one user can operate multiple merchant accounts and each merchant account can run multiple independent storefronts. It provides isolated catalog, pricing, inventory, cart, order, payment, fulfillment, and multi-currency capabilities with Rust, Axum, PostgreSQL 18, and Redis 8.
 
 ## Local development
 
@@ -67,7 +67,7 @@ The PostgreSQL RLS integration test is ignored by default and can be run explici
 
 ```bash
 TEST_DATABASE_URL=postgres://chaos:chaos@localhost:55432/chaos \
-  cargo test -p chaos-infrastructure rls_hides_other_tenants_rows -- --ignored
+  cargo test -p chaos-infrastructure rls_hides_other_merchant_accounts_rows -- --ignored
 ```
 
-See [System Architecture](docs/architecture.md), [Database Conventions](docs/database-conventions.md), [HTTP API Contract](docs/http-api.md), and [Contributing](CONTRIBUTING.md).
+See [Product Model](docs/product-model.md), [System Architecture](docs/architecture.md), [Database Conventions](docs/database-conventions.md), [HTTP API Contract](docs/http-api.md), and [Contributing](CONTRIBUTING.md).

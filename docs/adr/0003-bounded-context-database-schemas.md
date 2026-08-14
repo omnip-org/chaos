@@ -5,13 +5,13 @@
 
 ## Decision
 
-Use PostgreSQL schemas to express bounded-context ownership. Use shared tables with `tenant_id` and RLS for tenant isolation. Never create one schema or database per merchant tenant in the primary operating model.
+Use PostgreSQL schemas to express bounded-context ownership. Use shared tables with `merchant_account_id` and RLS for account isolation. Never create one schema or database per merchant account or store in the primary operating model.
 
-Business SQL must use schema-qualified identifiers. PostgreSQL extensions live in `extensions`; SQLx migration metadata remains in `public`; business objects live in their owning context schema.
+Business SQL must use schema-qualified identifiers. PostgreSQL extensions live in `extensions`; SQLx migration metadata remains in `public`; merchant account and store ownership lives in `merchant`; other business objects live in their owning context schema.
 
 ## Rationale
 
-Bounded-context schemas make ownership visible, reduce accidental name collisions, and provide useful permission boundaries without multiplying migration and connection-pool operations per merchant. A schema per merchant would make global migrations, connection pooling, analytics, and high-tenant-count operations unnecessarily expensive.
+Bounded-context schemas make ownership visible, reduce accidental name collisions, and provide useful permission boundaries without multiplying migration and connection-pool operations per account. A schema per account or store would make global migrations, connection pooling, analytics, and large-account-count operations unnecessarily expensive.
 
 ## Consequences
 

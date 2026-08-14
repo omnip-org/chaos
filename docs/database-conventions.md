@@ -2,14 +2,14 @@
 
 ## 1. Schema ownership
 
-PostgreSQL schemas represent bounded-context ownership. They do not represent individual tenants. Tenant isolation uses `tenant_id`, composite foreign keys, transaction-scoped tenant context, and RLS.
+PostgreSQL schemas represent bounded-context ownership. They do not represent individual merchant accounts or stores. Account isolation uses `merchant_account_id`, composite foreign keys, transaction-scoped account context, and RLS.
 
 Reserved schema map:
 
 | Schema | Ownership |
 |---|---|
 | `identity` | Users, credentials, service accounts, and sessions |
-| `tenancy` | Tenants, memberships, roles, stores, channels, and domains |
+| `merchant` | Merchant accounts, memberships, roles, stores, channels, and domains |
 | `catalog` | Products, variants, options, collections, and media |
 | `pricing` | Money metadata, price lists, prices, promotions, and tax classes |
 | `inventory` | Locations, stock items, reservations, and adjustments |
@@ -28,8 +28,8 @@ Application SQL always schema-qualifies tables, types, functions, and sequences.
 ## 2. Identifier naming
 
 - Use lowercase `snake_case` ASCII identifiers.
-- Use plural table names: `tenants`, `price_lists`, `inventory_reservations`.
-- Use singular enum and domain-type names: `tenant_status`, `payment_state`.
+- Use plural table names: `merchant_accounts`, `price_lists`, `inventory_reservations`.
+- Use singular enum and domain-type names: `merchant_account_status`, `payment_state`.
 - Use `id` for a table primary key and `<entity>_id` for references.
 - Prefer domain language over abbreviations. Use `quantity`, not `qty`; use `currency`, not `ccy`.
 - Avoid PostgreSQL keywords and vague names such as `data`, `value`, `type`, or `status` without domain context.
@@ -42,15 +42,15 @@ Use PostgreSQL-compatible names that are predictable in logs and migration error
 | Object | Pattern | Example |
 |---|---|---|
 | Primary key | `<table>_pkey` | `orders_pkey` |
-| Unique constraint | `<table>_<columns>_key` | `stores_tenant_id_code_key` |
-| Foreign key | `<table>_<columns>_fkey` | `stores_tenant_id_fkey` |
+| Unique constraint | `<table>_<columns>_key` | `stores_merchant_account_id_code_key` |
+| Foreign key | `<table>_<columns>_fkey` | `stores_merchant_account_id_fkey` |
 | Check constraint | `<table>_<rule>_check` | `stores_currency_format_check` |
-| Non-unique index | `<table>_<purpose>_idx` | `orders_tenant_created_idx` |
+| Non-unique index | `<table>_<purpose>_idx` | `orders_account_created_idx` |
 | Exclusion constraint | `<table>_<rule>_excl` | `reservations_no_overlap_excl` |
 
 Name semantic check constraints explicitly. Column lists are acceptable for primary, unique, and foreign-key constraints. Index names describe the query purpose rather than repeating every expression.
 
-Indexes on tenant-owned tables normally begin with `tenant_id`. Every foreign-key access path must be evaluated for an index; PostgreSQL does not create foreign-key indexes automatically. Do not add speculative indexes without a query pattern.
+Indexes on merchant-owned tables normally begin with `merchant_account_id`; store-specific query paths usually continue with `store_id`. Every foreign-key access path must be evaluated for an index; PostgreSQL does not create foreign-key indexes automatically. Do not add speculative indexes without a query pattern.
 
 ## 4. Column conventions
 
@@ -71,15 +71,16 @@ Indexes on tenant-owned tables normally begin with `tenant_id`. Every foreign-ke
 - Exchange rates and measured quantities use explicitly bounded `numeric(precision, scale)` values.
 - Check constraints reject negative amounts or quantities unless the domain explicitly permits them.
 
-## 6. Tenant isolation
+## 6. Merchant-account and store isolation
 
-- Every tenant-owned table contains a non-null `tenant_id`.
-- Tenant-owned relationships use composite `(tenant_id, id)` foreign keys where practical.
-- Every tenant transaction calls `set_config('app.tenant_id', ..., true)` before accessing tenant data.
-- RLS policies use the transaction-local `app.tenant_id` value.
+- Every merchant-owned table contains a non-null `merchant_account_id`.
+- Store-owned commerce data also contains a non-null `store_id`.
+- Merchant-owned relationships use account-scoped composite foreign keys where practical.
+- Every account transaction calls `set_config('app.merchant_account_id', ..., true)` before accessing merchant data.
+- RLS policies use the transaction-local `app.merchant_account_id` value.
 - Runtime connections use a non-owner role without `BYPASSRLS`.
 - Control-plane operations use a separate privileged port and explicit audit trail.
-- Cross-tenant isolation tests are mandatory for every new tenant-owned aggregate.
+- Cross-account isolation tests are mandatory for every new merchant-owned aggregate. Store-scoped authorization tests are mandatory for store-owned aggregates.
 
 ## 7. Migration rules
 

@@ -33,7 +33,7 @@ Use English [Conventional Commits](https://www.conventionalcommits.org/) with a 
 Examples:
 
 ```text
-feat(tenancy): add tenant transaction context
+feat(merchant): add merchant account transaction context
 fix(api): preserve requests during instance draining
 docs(architecture): document blue-green deployment
 ```
