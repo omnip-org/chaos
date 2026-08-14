@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    http::StatusCode,
     routing::{delete, post},
 };
 use chaos_application::ApplicationError;
@@ -11,7 +11,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson, ApiResponse, ApiState};
+use super::{ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedSession};
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
@@ -108,33 +108,29 @@ async fn verify_email_link(
 
 async fn revoke_session(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    session: AuthenticatedSession,
 ) -> Result<StatusCode, ApiError> {
     state
         .passwordless_auth
-        .revoke_session(&bearer_token(&headers)?)
+        .revoke_session(&session.token)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn start_passkey_registration(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    session: AuthenticatedSession,
 ) -> Result<ApiResponse<CeremonyData>, ApiError> {
-    let user_id = state
-        .passwordless_auth
-        .authenticate_session(&bearer_token(&headers)?)
-        .await?;
     let options = state
         .passwordless_auth
-        .start_passkey_registration(user_id)
+        .start_passkey_registration(session.user_id)
         .await?;
     Ok(ApiResponse::ok(ceremony_data(options)))
 }
 
 async fn finish_passkey_registration(
     State(state): State<ApiState>,
-    headers: HeaderMap,
+    session: AuthenticatedSession,
     ApiJson(body): ApiJson<FinishPasskeyRegistrationBody>,
 ) -> Result<ApiResponse<PasskeyData>, ApiError> {
     let name = body.name.trim();
@@ -147,13 +143,9 @@ async fn finish_passkey_registration(
         }
         .into());
     }
-    let user_id = state
-        .passwordless_auth
-        .authenticate_session(&bearer_token(&headers)?)
-        .await?;
     let id = state
         .passwordless_auth
-        .finish_passkey_registration(user_id, body.ceremony_id, body.credential, name)
+        .finish_passkey_registration(session.user_id, body.ceremony_id, body.credential, name)
         .await?;
     Ok(ApiResponse::created(PasskeyData { id }))
 }
@@ -179,16 +171,6 @@ async fn finish_passkey_authentication(
         .finish_passkey_authentication(body.ceremony_id, body.credential)
         .await?;
     Ok(ApiResponse::ok(session_data(grant)))
-}
-
-pub(super) fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
-    let value = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
-        .ok_or(ApplicationError::Unauthorized)?;
-    Ok(SecretString::from(value.to_owned()))
 }
 
 fn ceremony_data(options: CeremonyOptions) -> CeremonyData {

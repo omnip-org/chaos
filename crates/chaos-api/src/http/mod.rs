@@ -26,7 +26,7 @@ use tower_http::{
 use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
-pub use extract::ApiJson;
+pub use extract::{ApiJson, AuthenticatedSession};
 pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
@@ -159,7 +159,7 @@ mod tests {
     async fn malformed_json_uses_the_error_envelope() {
         let response = router(test_state())
             .oneshot(
-                Request::post("/admin/v1/merchant-accounts")
+                Request::post("/admin/v1/auth/email-links")
                     .header("content-type", "application/json")
                     .body(Body::from("{"))
                     .unwrap(),

@@ -5,8 +5,10 @@ pub mod identity;
 pub mod merchant;
 
 mod currency;
+mod region;
 
 pub use currency::CurrencyCode;
+pub use region::RegionCode;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FieldViolation {

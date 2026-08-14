@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::{CurrencyCode, DomainError, FieldViolation};
+use crate::{CurrencyCode, DomainError, FieldViolation, RegionCode};
 
 use super::MerchantAccountId;
 
@@ -67,6 +67,7 @@ pub struct Store {
     merchant_account_id: MerchantAccountId,
     code: StoreCode,
     name: String,
+    default_region: RegionCode,
     default_currency: CurrencyCode,
     status: StoreStatus,
 }
@@ -76,6 +77,7 @@ impl Store {
         merchant_account_id: MerchantAccountId,
         code: StoreCode,
         name: impl Into<String>,
+        default_region: RegionCode,
         default_currency: CurrencyCode,
     ) -> Result<Self, DomainError> {
         let name = name.into();
@@ -90,6 +92,7 @@ impl Store {
             merchant_account_id,
             code,
             name,
+            default_region,
             default_currency,
             status: StoreStatus::Draft,
         })
@@ -115,6 +118,10 @@ impl Store {
         self.default_currency
     }
 
+    pub const fn default_region(&self) -> RegionCode {
+        self.default_region
+    }
+
     pub const fn status(&self) -> StoreStatus {
         self.status
     }
@@ -130,9 +137,12 @@ mod tests {
             MerchantAccountId::new(),
             StoreCode::parse("main-store").unwrap(),
             "Main Store",
-            CurrencyCode::parse("USD").unwrap(),
+            RegionCode::US,
+            CurrencyCode::USD,
         )
         .unwrap();
         assert_eq!(store.status(), StoreStatus::Draft);
+        assert_eq!(store.default_region(), RegionCode::US);
+        assert_eq!(store.default_currency(), CurrencyCode::USD);
     }
 }

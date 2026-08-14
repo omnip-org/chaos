@@ -173,7 +173,8 @@ CREATE TABLE merchant.stores (
     merchant_account_id  UUID                     NOT NULL,
     code                 extensions.citext        NOT NULL,
     name                 TEXT                     NOT NULL,
-    default_currency     CHAR(3)                  NOT NULL,
+    default_region       CHAR(2)                  NOT NULL DEFAULT 'US',
+    default_currency     CHAR(3)                  NOT NULL DEFAULT 'USD',
     status               merchant.store_status    NOT NULL DEFAULT 'draft',
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -187,6 +188,9 @@ CREATE TABLE merchant.stores (
     ),
     CONSTRAINT stores_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT stores_region_format_check CHECK (
+        default_region ~ '^[A-Z]{2}$'
     ),
     CONSTRAINT stores_currency_format_check CHECK (
         default_currency ~ '^[A-Z]{3}$'

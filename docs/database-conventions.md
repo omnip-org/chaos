@@ -64,6 +64,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 - Mutable tables normally include `created_at` and `updated_at`.
 - Soft deletion is not a default. Use `deleted_at` only when recovery or legal history requires it.
 - External identifiers include the provider or scope when ambiguous: `stripe_payment_intent_id`.
+- Country and operating-region codes use uppercase ISO 3166-1 alpha-2 values stored as `char(2)`.
 - JSONB is reserved for provider payload snapshots, versioned opaque security-library records such as WebAuthn credentials, flexible metadata with defined limits, or data that is genuinely schemaless. Core searchable fields require typed columns.
 
 ## 5. Money, quantity, and numeric precision

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, RegionCode,
     identity::UserId,
     merchant::{MerchantAccountId, Store, StoreCode, StoreId},
 };
@@ -16,7 +16,8 @@ pub struct CreateStoreInput {
     pub merchant_account_id: MerchantAccountId,
     pub code: String,
     pub name: String,
-    pub default_currency: String,
+    pub default_region: Option<String>,
+    pub default_currency: Option<String>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -38,11 +39,24 @@ impl CreateStore {
         &self,
         input: CreateStoreInput,
     ) -> Result<CreateStoreOutput, ApplicationError> {
+        let default_region = input
+            .default_region
+            .as_deref()
+            .map(RegionCode::parse)
+            .transpose()?
+            .unwrap_or(RegionCode::US);
+        let default_currency = input
+            .default_currency
+            .as_deref()
+            .map(CurrencyCode::parse)
+            .transpose()?
+            .unwrap_or(CurrencyCode::USD);
         let store = Store::create(
             input.merchant_account_id,
             StoreCode::parse(input.code)?,
             input.name,
-            CurrencyCode::parse(&input.default_currency)?,
+            default_region,
+            default_currency,
         )?;
         let mut transaction = self
             .unit_of_work

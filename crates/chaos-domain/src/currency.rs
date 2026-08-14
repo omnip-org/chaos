@@ -4,6 +4,8 @@ use crate::{DomainError, FieldViolation};
 pub struct CurrencyCode([u8; 3]);
 
 impl CurrencyCode {
+    pub const USD: Self = Self(*b"USD");
+
     pub fn parse(value: &str) -> Result<Self, DomainError> {
         let bytes = value.as_bytes();
         if bytes.len() != 3 || !bytes.iter().all(u8::is_ascii_uppercase) {

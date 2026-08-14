@@ -109,13 +109,14 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
     async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO merchant.stores \
-             (id, merchant_account_id, code, name, default_currency, status) \
-             VALUES ($1, $2, $3, $4, $5, 'draft')",
+             (id, merchant_account_id, code, name, default_region, default_currency, status) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'draft')",
         )
         .bind(store.id().as_uuid())
         .bind(store.merchant_account_id().as_uuid())
         .bind(store.code().as_str())
         .bind(store.name())
+        .bind(store.default_region().as_str())
         .bind(store.default_currency().as_str())
         .execute(&mut *self.transaction)
         .await
@@ -255,7 +256,8 @@ mod tests {
             merchant_account_id,
             code: "primary".into(),
             name: "Primary Store".into(),
-            default_currency: "SGD".into(),
+            default_region: None,
+            default_currency: None,
             idempotency: IdempotencyRequest {
                 key: idempotency_key.clone(),
                 request_fingerprint: fingerprint,
@@ -284,8 +286,9 @@ mod tests {
             })
         ));
 
-        let stored: (String, String, bool) = sqlx::query_as(
-            "SELECT store.status::text, currency.currency::text, currency.enabled \
+        let stored: (String, String, String, bool) = sqlx::query_as(
+            "SELECT store.status::text, store.default_region::text, \
+                    currency.currency::text, currency.enabled \
              FROM merchant.stores AS store \
              INNER JOIN merchant.store_currencies AS currency \
                  ON currency.merchant_account_id = store.merchant_account_id \
@@ -296,7 +299,7 @@ mod tests {
         .fetch_one(&owner_pool)
         .await
         .unwrap();
-        assert_eq!(stored, ("draft".into(), "SGD".into(), true));
+        assert_eq!(stored, ("draft".into(), "US".into(), "USD".into(), true));
 
         let store_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM merchant.stores WHERE merchant_account_id = $1",

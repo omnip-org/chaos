@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson, ApiResponse, ApiState, auth::bearer_token};
+use super::{ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedSession};
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
@@ -40,6 +40,9 @@ struct MerchantAccountData {
 struct CreateStoreBody {
     code: String,
     name: String,
+    #[serde(default = "default_region")]
+    default_region: String,
+    #[serde(default = "default_currency")]
     default_currency: String,
 }
 
@@ -51,6 +54,7 @@ struct StoreData {
 async fn create_merchant_account(
     State(state): State<ApiState>,
     headers: HeaderMap,
+    session: AuthenticatedSession,
     ApiJson(body): ApiJson<CreateMerchantAccountBody>,
 ) -> Result<ApiResponse<MerchantAccountData>, ApiError> {
     let idempotency_key = idempotency_key(&headers)?;
@@ -58,14 +62,10 @@ async fn create_merchant_account(
         serde_json::to_vec(&body).map_err(|error| ApplicationError::Unexpected(error.into()))?,
     )
     .into();
-    let owner_user_id = state
-        .passwordless_auth
-        .authenticate_session(&bearer_token(&headers)?)
-        .await?;
     let output = state
         .create_merchant_account
         .execute(CreateMerchantAccountInput {
-            owner_user_id,
+            owner_user_id: session.user_id,
             slug: body.slug,
             display_name: body.display_name,
             idempotency: IdempotencyRequest {
@@ -84,6 +84,7 @@ async fn create_store(
     State(state): State<ApiState>,
     Path(merchant_account_id): Path<String>,
     headers: HeaderMap,
+    session: AuthenticatedSession,
     ApiJson(body): ApiJson<CreateStoreBody>,
 ) -> Result<ApiResponse<StoreData>, ApiError> {
     let merchant_account_id = Uuid::parse_str(&merchant_account_id)
@@ -99,18 +100,15 @@ async fn create_store(
         serde_json::to_vec(&body).map_err(|error| ApplicationError::Unexpected(error.into()))?,
     )
     .into();
-    let user_id = state
-        .passwordless_auth
-        .authenticate_session(&bearer_token(&headers)?)
-        .await?;
     let output = state
         .create_store
         .execute(CreateStoreInput {
-            user_id,
+            user_id: session.user_id,
             merchant_account_id,
             code: body.code,
             name: body.name,
-            default_currency: body.default_currency,
+            default_region: Some(body.default_region),
+            default_currency: Some(body.default_currency),
             idempotency: IdempotencyRequest {
                 key: idempotency_key,
                 request_fingerprint,
@@ -121,6 +119,14 @@ async fn create_store(
     Ok(ApiResponse::created(StoreData {
         id: output.store_id.as_uuid(),
     }))
+}
+
+fn default_region() -> String {
+    "US".into()
+}
+
+fn default_currency() -> String {
+    "USD".into()
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -158,5 +164,22 @@ mod tests {
     #[test]
     fn rejects_a_missing_idempotency_key() {
         assert!(idempotency_key(&HeaderMap::new()).is_err());
+    }
+
+    #[test]
+    fn store_request_defaults_are_canonical_before_fingerprinting() {
+        let omitted: CreateStoreBody =
+            serde_json::from_str(r#"{"code":"primary","name":"Primary Store"}"#).unwrap();
+        let explicit: CreateStoreBody = serde_json::from_str(
+            r#"{"code":"primary","name":"Primary Store","default_region":"US","default_currency":"USD"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(omitted.default_region, "US");
+        assert_eq!(omitted.default_currency, "USD");
+        assert_eq!(
+            serde_json::to_vec(&omitted).unwrap(),
+            serde_json::to_vec(&explicit).unwrap()
+        );
     }
 }
