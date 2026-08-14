@@ -11,7 +11,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiError, ApiResponse, ApiState};
+use super::{ApiError, ApiJson, ApiResponse, ApiState};
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
@@ -88,7 +88,7 @@ struct SessionData {
 
 async fn request_email_link(
     State(state): State<ApiState>,
-    axum::Json(body): axum::Json<RequestEmailLinkBody>,
+    ApiJson(body): ApiJson<RequestEmailLinkBody>,
 ) -> Result<ApiResponse<EmptyData>, ApiError> {
     let email = Email::parse(body.email).map_err(ApplicationError::from)?;
     state.passwordless_auth.request_magic_link(email).await?;
@@ -97,7 +97,7 @@ async fn request_email_link(
 
 async fn verify_email_link(
     State(state): State<ApiState>,
-    axum::Json(body): axum::Json<VerifyEmailLinkBody>,
+    ApiJson(body): ApiJson<VerifyEmailLinkBody>,
 ) -> Result<ApiResponse<SessionData>, ApiError> {
     let grant = state
         .passwordless_auth
@@ -135,7 +135,7 @@ async fn start_passkey_registration(
 async fn finish_passkey_registration(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    axum::Json(body): axum::Json<FinishPasskeyRegistrationBody>,
+    ApiJson(body): ApiJson<FinishPasskeyRegistrationBody>,
 ) -> Result<ApiResponse<PasskeyData>, ApiError> {
     let name = body.name.trim();
     if name.is_empty() || name.chars().count() > 80 {
@@ -160,7 +160,7 @@ async fn finish_passkey_registration(
 
 async fn start_passkey_authentication(
     State(state): State<ApiState>,
-    axum::Json(body): axum::Json<StartPasskeyAuthenticationBody>,
+    ApiJson(body): ApiJson<StartPasskeyAuthenticationBody>,
 ) -> Result<ApiResponse<CeremonyData>, ApiError> {
     let email = Email::parse(body.email).map_err(ApplicationError::from)?;
     let options = state
@@ -172,7 +172,7 @@ async fn start_passkey_authentication(
 
 async fn finish_passkey_authentication(
     State(state): State<ApiState>,
-    axum::Json(body): axum::Json<FinishPasskeyAuthenticationBody>,
+    ApiJson(body): ApiJson<FinishPasskeyAuthenticationBody>,
 ) -> Result<ApiResponse<SessionData>, ApiError> {
     let grant = state
         .passwordless_auth

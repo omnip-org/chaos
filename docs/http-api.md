@@ -48,6 +48,7 @@ Successful creation returns HTTP 201. A synchronous deletion with no response bo
 - `details` is included only when structured context exists. Empty arrays are omitted.
 - Internal errors, SQL, stack traces, provider payloads, and secrets never appear in responses. They are recorded only in server-side telemetry.
 - `x-request-id` correlates client reports, logs, and traces. The service generates or propagates it.
+- Malformed JSON, unsupported content types, and oversized bodies use the same error envelope with `invalid_json`, `unsupported_media_type`, or `payload_too_large`.
 
 ## Error mapping
 
@@ -90,3 +91,9 @@ An account may contain one or more passkeys. There is no minimum-two-passkey rul
 `POST /admin/v1/merchant-accounts` creates a merchant account and its owner membership atomically. It requires a valid bearer session and an `Idempotency-Key` header containing 1-255 bytes. The new merchant account ID is generated before the transaction begins and becomes the transaction-local RLS context, so initial provisioning does not bypass tenant isolation.
 
 Idempotency records are scoped to the authenticated user for account creation. Repeating the same key and request returns the original HTTP 201 response without creating another account. Reusing the key with a different request returns HTTP 409 with `idempotency_key_reused`. The request fingerprint, business writes, and response snapshot commit in one PostgreSQL transaction.
+
+## Stores
+
+`POST /admin/v1/merchant-accounts/{merchant_account_id}/stores` creates a draft store and enables its default currency atomically. It requires a bearer session and an `Idempotency-Key` header. Only active merchant accounts and members with the `owner` or `administrator` role may create stores. A missing account and an unauthorized membership both return HTTP 403 to avoid account enumeration.
+
+Store creation idempotency is scoped to the merchant account. The request body contains `code`, `name`, and an uppercase three-letter `default_currency`. Store codes are unique within a merchant account; a conflict returns `store_code_taken`.

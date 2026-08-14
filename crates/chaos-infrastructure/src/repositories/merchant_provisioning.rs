@@ -11,6 +11,8 @@ use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use super::idempotency::{self, IdempotencyScope};
+
 const CREATE_ACCOUNT_OPERATION: &str = "merchant_accounts.create.v1";
 
 #[derive(Clone)]
@@ -26,6 +28,7 @@ impl PostgresMerchantProvisioningUnitOfWork {
 
 struct PostgresMerchantProvisioningTransaction {
     transaction: Transaction<'static, Postgres>,
+    user_id: UserId,
 }
 
 #[async_trait]
@@ -48,6 +51,7 @@ impl MerchantProvisioningUnitOfWork for PostgresMerchantProvisioningUnitOfWork {
             .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresMerchantProvisioningTransaction {
             transaction,
+            user_id: owner_user_id,
         }))
     }
 }
@@ -58,51 +62,21 @@ impl MerchantProvisioningTransaction for PostgresMerchantProvisioningTransaction
         &mut self,
         request: &IdempotencyRequest,
     ) -> Result<Option<MerchantAccountId>, ApplicationError> {
-        let inserted = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO integration.idempotency_records \
-             (id, scope, scope_id, operation, idempotency_key, request_fingerprint) \
-             VALUES (uuidv7(), 'user', \
-                nullif(current_setting('app.user_id', true), '')::uuid, $1, $2, $3) \
-             ON CONFLICT (scope, scope_id, operation, idempotency_key) DO NOTHING \
-             RETURNING id",
+        let Some(body) = idempotency::reserve(
+            &mut self.transaction,
+            &IdempotencyScope::User(self.user_id.as_uuid()),
+            CREATE_ACCOUNT_OPERATION,
+            request,
         )
-        .bind(CREATE_ACCOUNT_OPERATION)
-        .bind(&request.key)
-        .bind(request.request_fingerprint.as_slice())
-        .fetch_optional(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-
-        if inserted.is_some() {
+        .await?
+        else {
             return Ok(None);
-        }
-
-        let record = sqlx::query_as::<_, (Vec<u8>, Option<serde_json::Value>)>(
-            "SELECT request_fingerprint, response_body \
-             FROM integration.idempotency_records \
-             WHERE scope = 'user' \
-               AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid \
-               AND operation = $1 \
-               AND idempotency_key = $2 \
-             FOR UPDATE",
-        )
-        .bind(CREATE_ACCOUNT_OPERATION)
-        .bind(&request.key)
-        .fetch_one(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-
-        if record.0.as_slice() != request.request_fingerprint {
-            return Err(ApplicationError::Conflict {
-                code: "idempotency_key_reused",
-                message: "the idempotency key was already used with a different request",
-            });
-        }
-
-        let merchant_account_id = record
-            .1
-            .and_then(|body| body.get("data")?.get("id")?.as_str().map(str::to_owned))
-            .and_then(|id| Uuid::parse_str(&id).ok())
+        };
+        let merchant_account_id = body
+            .get("data")
+            .and_then(|data| data.get("id"))
+            .and_then(|id| id.as_str())
+            .and_then(|id| Uuid::parse_str(id).ok())
             .map(MerchantAccountId::from_uuid)
             .ok_or_else(|| {
                 ApplicationError::Unexpected(anyhow::anyhow!(
@@ -153,29 +127,15 @@ impl MerchantProvisioningTransaction for PostgresMerchantProvisioningTransaction
         request: &IdempotencyRequest,
         merchant_account_id: MerchantAccountId,
     ) -> Result<(), ApplicationError> {
-        let result = sqlx::query(
-            "UPDATE integration.idempotency_records \
-             SET response_status = 201, \
-                 response_body = $3, \
-                 completed_at = CURRENT_TIMESTAMP, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE scope = 'user' \
-               AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid \
-               AND operation = $1 \
-               AND idempotency_key = $2",
+        idempotency::complete(
+            &mut self.transaction,
+            &IdempotencyScope::User(self.user_id.as_uuid()),
+            CREATE_ACCOUNT_OPERATION,
+            request,
+            201,
+            json!({ "data": { "id": merchant_account_id.as_uuid() } }),
         )
-        .bind(CREATE_ACCOUNT_OPERATION)
-        .bind(&request.key)
-        .bind(json!({ "data": { "id": merchant_account_id.as_uuid() } }))
-        .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
-        if result.rows_affected() != 1 {
-            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                "idempotency record disappeared before completion"
-            )));
-        }
-        Ok(())
     }
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {

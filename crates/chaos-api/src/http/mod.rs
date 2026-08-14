@@ -1,16 +1,22 @@
 mod auth;
 mod error;
+mod extract;
 mod health;
 mod merchant;
 mod response;
 
 use axum::Router;
-use chaos_application::{merchant::CreateMerchantAccount, ports::PasswordlessAuthentication};
+use chaos_application::{
+    merchant::{CreateMerchantAccount, CreateStore},
+    ports::PasswordlessAuthentication,
+};
 use std::sync::Arc;
 
 use chaos_infrastructure::{
-    config::Settings, passwordless::PasswordlessAuth,
-    repositories::PostgresMerchantProvisioningUnitOfWork, state::AppState,
+    config::Settings,
+    passwordless::PasswordlessAuth,
+    repositories::{PostgresMerchantProvisioningUnitOfWork, PostgresStoreProvisioningUnitOfWork},
+    state::AppState,
 };
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -20,6 +26,7 @@ use tower_http::{
 use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
+pub use extract::ApiJson;
 pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
@@ -28,6 +35,7 @@ pub struct ApiState {
     pub lifecycle: Lifecycle,
     pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
     pub create_merchant_account: Arc<CreateMerchantAccount>,
+    pub create_store: Arc<CreateStore>,
 }
 
 impl ApiState {
@@ -48,11 +56,15 @@ impl ApiState {
         let create_merchant_account = CreateMerchantAccount::new(Arc::new(
             PostgresMerchantProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
+        let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
+            infrastructure.runtime_pool(),
+        )));
         Ok(Self {
             infrastructure,
             lifecycle,
             passwordless_auth: Arc::new(passwordless_auth),
             create_merchant_account: Arc::new(create_merchant_account),
+            create_store: Arc::new(create_store),
         })
     }
 }
@@ -141,5 +153,23 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(json["error"]["code"], "service_unavailable");
+    }
+
+    #[tokio::test]
+    async fn malformed_json_uses_the_error_envelope() {
+        let response = router(test_state())
+            .oneshot(
+                Request::post("/admin/v1/merchant-accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_json");
     }
 }
