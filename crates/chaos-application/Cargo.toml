@@ -8,7 +8,10 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chaos-domain = { path = "../chaos-domain" }
+secrecy.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

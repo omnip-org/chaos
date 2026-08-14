@@ -21,6 +21,8 @@ curl http://localhost:8080/health/live
 curl http://localhost:8080/health/ready
 ```
 
+Development sign-in emails are captured by Mailpit at `http://localhost:58025`. The backend supports one-time email links and WebAuthn passkeys; it never stores account passwords.
+
 Stop the dependencies:
 
 ```bash
@@ -31,7 +33,7 @@ docker compose down
 
 ## Dual-instance Compose deployment
 
-Start Caddy, two blue/green API instances, the migration job, PostgreSQL, and Redis:
+Start Caddy, two blue/green API instances, the migration job, PostgreSQL, Redis, and the development mail catcher:
 
 ```bash
 docker compose -f compose.yaml -f compose.ha.yaml up -d --build --wait

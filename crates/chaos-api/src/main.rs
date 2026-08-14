@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     telemetry::init(&settings.log_filter, settings.log_json)?;
 
     let lifecycle = Lifecycle::new();
-    let state = ApiState::new(AppState::new(&settings)?, lifecycle.clone());
+    let state = ApiState::new(AppState::new(&settings)?, lifecycle.clone(), &settings)?;
     let app = http::router(state);
     let listener = TcpListener::bind(settings.bind_addr)
         .await

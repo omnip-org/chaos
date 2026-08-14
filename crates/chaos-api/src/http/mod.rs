@@ -1,9 +1,13 @@
+mod auth;
 mod error;
 mod health;
 mod response;
 
 use axum::Router;
-use chaos_infrastructure::state::AppState;
+use chaos_application::ports::PasswordlessAuthentication;
+use std::sync::Arc;
+
+use chaos_infrastructure::{config::Settings, passwordless::PasswordlessAuth, state::AppState};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -18,20 +22,36 @@ pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 pub struct ApiState {
     pub infrastructure: AppState,
     pub lifecycle: Lifecycle,
+    pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
 }
 
 impl ApiState {
-    pub fn new(infrastructure: AppState, lifecycle: Lifecycle) -> Self {
-        Self {
+    pub fn new(
+        infrastructure: AppState,
+        lifecycle: Lifecycle,
+        settings: &Settings,
+    ) -> anyhow::Result<Self> {
+        let passwordless_auth = PasswordlessAuth::new(
+            infrastructure.control_plane_pool(),
+            infrastructure.redis_client(),
+            &settings.webauthn_rp_id,
+            &settings.webauthn_rp_origin,
+            &settings.smtp_url,
+            &settings.email_from,
+            &settings.auth_public_base_url,
+        )?;
+        Ok(Self {
             infrastructure,
             lifecycle,
-        }
+            passwordless_auth: Arc::new(passwordless_auth),
+        })
     }
 }
 
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", health::routes())
+        .nest("/admin/v1/auth", auth::routes())
         .with_state(state)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
@@ -56,16 +76,29 @@ mod tests {
         let settings = Settings {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             database_url: "postgres://localhost/chaos".into(),
+            database_control_plane_url: "postgres://localhost/chaos".into(),
             database_max_connections: 1,
+            database_control_plane_max_connections: 1,
             database_acquire_timeout: Duration::from_millis(10),
             database_runtime_role: None,
+            database_control_plane_role: None,
             redis_url: "redis://localhost".into(),
+            webauthn_rp_id: "localhost".into(),
+            webauthn_rp_origin: "http://localhost:8080".into(),
+            auth_public_base_url: "http://localhost:8080".into(),
+            smtp_url: "smtp://localhost:1025".into(),
+            email_from: "Chaos <no-reply@localhost>".into(),
             dependency_timeout: Duration::from_millis(10),
             shutdown_drain_delay: Duration::ZERO,
             log_filter: "off".into(),
             log_json: false,
         };
-        ApiState::new(AppState::new(&settings).unwrap(), Lifecycle::new())
+        ApiState::new(
+            AppState::new(&settings).unwrap(),
+            Lifecycle::new(),
+            &settings,
+        )
+        .unwrap()
     }
 
     #[tokio::test]

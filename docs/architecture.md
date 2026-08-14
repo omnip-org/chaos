@@ -63,7 +63,7 @@ The pricing domain will provide a Money value object with checked arithmetic, sa
 
 Suggested implementation order:
 
-1. identity: users, service accounts, and sessions;
+1. identity: users, email links, passkeys, service accounts, and sessions;
 2. merchant: merchant accounts, memberships, roles, API keys, stores, channels, and domains;
 3. catalog: products, variants, options, collections, and media;
 4. pricing: money, price lists, prices, promotions, and tax classes;
@@ -110,7 +110,11 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 7. Security baseline
 
-- Passwords use Argon2id. Sessions and access tokens store irreversible digests or use short-lived signed credentials.
+- Human accounts are passwordless. One-time email links provide initial sign-in and recovery, while WebAuthn passkeys provide phishing-resistant daily authentication.
+- Users may register one or more passkeys. A second passkey is recommended but not required because verified email remains a recovery path.
+- Raw email-link and session tokens are shown or delivered only to the client. PostgreSQL stores SHA-256 digests, expiration, and revocation state.
+- WebAuthn registration and authentication state is stored only in Redis with a short TTL and atomic one-time consumption so ceremonies work across API instances without becoming replayable.
+- Authentication abuse limits use privacy-preserving subject digests in Redis, so limits are shared by all instances without placing email addresses in cache keys.
 - API keys use a searchable prefix plus a secret hash. Plaintext is shown exactly once.
 - Admin authorization uses fine-grained RBAC. Sensitive writes enter an immutable audit log.
 - Secrets come only from the runtime environment or a secret manager and never enter the repository or logs.
@@ -131,7 +135,7 @@ The API is stateless and horizontally replicated. Workers scale by task category
 
 Docker Compose runs blue and green API instances behind Caddy. A deployment replaces one instance at a time and waits for readiness before replacing the other. On SIGTERM, an instance starts draining and returns 503 from readiness, waits for Caddy to remove it, closes its listener, and lets Axum finish in-flight connections. Compose `stop_grace_period` provides the hard deadline. Configuration lives in `compose.ha.yaml` and `deploy/compose/Caddyfile`.
 
-Application instances never own sessions, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
+Application instances never own sessions, WebAuthn ceremonies, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
 
 Observability targets include JSON logs, OpenTelemetry traces, and Prometheus metrics. Core metrics cover request latency and error rate, database pool pressure, Redis health, checkout conversion, payment failures, inventory reservation conflicts, and outbox lag.
 

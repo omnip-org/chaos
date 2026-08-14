@@ -64,7 +64,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 - Mutable tables normally include `created_at` and `updated_at`.
 - Soft deletion is not a default. Use `deleted_at` only when recovery or legal history requires it.
 - External identifiers include the provider or scope when ambiguous: `stripe_payment_intent_id`.
-- JSONB is reserved for provider payload snapshots, flexible metadata with defined limits, or data that is genuinely schemaless. Core searchable fields require typed columns.
+- JSONB is reserved for provider payload snapshots, versioned opaque security-library records such as WebAuthn credentials, flexible metadata with defined limits, or data that is genuinely schemaless. Core searchable fields require typed columns.
 
 ## 5. Money, quantity, and numeric precision
 
@@ -83,6 +83,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 - RLS policies use the transaction-local `app.merchant_account_id` value.
 - Runtime connections use a non-owner role without `BYPASSRLS`.
 - Control-plane operations use a separate privileged port and explicit audit trail.
+- Identity control-plane connections assume the non-owner `chaos_control_plane` role, which can access `identity` but cannot access merchant-owned tables.
 - Cross-account isolation tests are mandatory for every new merchant-owned aggregate. Store-scoped authorization tests are mandatory for store-owned aggregates.
 
 ## 7. Migration rules

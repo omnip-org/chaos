@@ -5,8 +5,16 @@ x-api: &api
   environment:
     APP_BIND_ADDR: 0.0.0.0:8080
     DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
+    DATABASE_CONTROL_PLANE_URL: postgres://chaos:chaos@postgres:5432/chaos
+    DATABASE_CONTROL_PLANE_MAX_CONNECTIONS: "5"
     DATABASE_RUNTIME_ROLE: chaos_runtime
+    DATABASE_CONTROL_PLANE_ROLE: chaos_control_plane
     REDIS_URL: redis://redis:6379/0
+    WEBAUTHN_RP_ID: localhost
+    WEBAUTHN_RP_ORIGIN: http://localhost:${HTTP_PORT:-8080}
+    AUTH_PUBLIC_BASE_URL: http://localhost:${HTTP_PORT:-8080}
+    SMTP_URL: smtp://mailpit:1025
+    EMAIL_FROM: Chaos <no-reply@localhost>
     RUST_LOG: chaos=info,chaos_api=info,tower_http=info
     LOG_JSON: "true"
     SHUTDOWN_DRAIN_DELAY_MS: "5000"
@@ -16,6 +24,8 @@ x-api: &api
     migrate:
       condition: service_completed_successfully
     redis:
+      condition: service_healthy
+    mailpit:
       condition: service_healthy
   healthcheck:
     test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]

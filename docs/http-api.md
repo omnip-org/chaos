@@ -62,3 +62,25 @@ Successful creation returns HTTP 201. A synchronous deletion with no response bo
 | Unexpected | 500 | `internal_error` |
 
 The domain layer emits domain errors. The application layer translates them into use-case semantics. The HTTP layer is the only layer that chooses HTTP statuses and JSON representations.
+
+## Passwordless authentication
+
+Human accounts do not have passwords. Email links provide initial sign-in and recovery; passkeys provide phishing-resistant authentication after enrollment.
+
+| Method | Path | Authentication | Purpose |
+|---|---|---|---|
+| `POST` | `/admin/v1/auth/email-links` | None | Send a single-use sign-in link |
+| `POST` | `/admin/v1/auth/email-links/verify` | None | Consume a link token and create a session |
+| `DELETE` | `/admin/v1/auth/session` | Bearer session | Revoke the current session |
+| `POST` | `/admin/v1/auth/passkeys/registration/options` | Bearer session | Start passkey enrollment |
+| `POST` | `/admin/v1/auth/passkeys/registration/verify` | Bearer session | Verify and persist a passkey |
+| `POST` | `/admin/v1/auth/passkeys/authentication/options` | None | Start passkey authentication for an email |
+| `POST` | `/admin/v1/auth/passkeys/authentication/verify` | None | Verify an assertion and create a session |
+
+Requesting an email link always returns HTTP 202 after the delivery request is accepted. The emailed token expires after 15 minutes and is consumed exactly once. Session tokens expire after 30 days and are sent as `Authorization: Bearer <token>` when enrolling a passkey.
+
+Email-link delivery is limited to three requests per normalized email address per 15-minute window. Requests beyond the limit still return HTTP 202 without sending another message, which avoids exposing rate-limit or account state. Passkey authentication options are limited to ten requests per normalized email address per five-minute window. Rate-limit counters live in Redis and are therefore shared by every API instance.
+
+Registration and authentication option responses contain `ceremony_id` and `public_key`. The browser passes `public_key` to `navigator.credentials.create()` or `navigator.credentials.get()`, then submits the returned credential with the same ceremony ID. Ceremony state expires after five minutes and is atomically removed from Redis before verification.
+
+An account may contain one or more passkeys. There is no minimum-two-passkey rule because email-link authentication remains available as the recovery path.
