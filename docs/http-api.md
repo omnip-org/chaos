@@ -8,6 +8,8 @@ Every operation has a stable and unique `operationId`. Additive fields remain op
 
 Admin, Store, webhook, and future MCP surfaces have separate contracts and authentication boundaries. The Admin API uses human sessions. Store and MCP access never accepts a human session as a substitute for a scoped machine credential.
 
+Credential-issuing operations are a security-specific exception to response replay. They still require `Idempotency-Key`, but a repeated request never returns the plaintext secret again. If the original one-time response is lost, the client must create a replacement key and revoke the inaccessible key.
+
 ## Success responses
 
 Objects and collections are wrapped in `data`. The optional `meta` object is emitted only when pagination or other metadata exists.

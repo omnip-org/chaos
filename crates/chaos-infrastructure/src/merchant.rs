@@ -86,6 +86,16 @@ mod tests {
         let account_b = MerchantAccountId::new();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
+        let user_id = Uuid::now_v7();
+        let key_a = Uuid::now_v7();
+        let key_b = Uuid::now_v7();
+
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind(format!("rls-api-keys-{}@example.com", user_id.simple()))
+            .execute(&pool)
+            .await
+            .unwrap();
 
         for (account_id, slug) in [
             (account_a, "rls-test-account-a"),
@@ -119,6 +129,37 @@ mod tests {
             .await
             .unwrap();
         }
+        for (key_id, store_id, account_id, identifier) in [
+            (key_a, store_a, account_a, "RlsKeyAccountA01"),
+            (key_b, store_b, account_b, "RlsKeyAccountB02"),
+        ] {
+            sqlx::query(
+                "INSERT INTO merchant.api_keys \
+                 (id, merchant_account_id, store_id, key_identifier, secret_digest, \
+                  display_suffix, name, class, mode, created_by_user_id) \
+                 VALUES ($1, $2, $3, $4, $5, 'abcd', 'RLS test key', \
+                         'secret', 'test', $6)",
+            )
+            .bind(key_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(identifier)
+            .bind(vec![7_u8; 32])
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO merchant.api_key_scopes \
+                 (merchant_account_id, api_key_id, scope) \
+                 VALUES ($1, $2, 'mcp:tools')",
+            )
+            .bind(account_id.as_uuid())
+            .bind(key_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
 
         let mut transaction = MerchantAccountTransaction::begin(&pool, account_a)
             .await
@@ -132,9 +173,22 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
+        let visible_key_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM merchant.api_keys ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
+        let visible_scope_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'mcp:tools'",
+        )
+        .fetch_one(transaction.connection())
+        .await
+        .unwrap();
         transaction.rollback().await.unwrap();
 
         assert_eq!(visible_ids, vec![store_a]);
+        assert_eq!(visible_key_ids, vec![key_a]);
+        assert_eq!(visible_scope_count, 1);
 
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
             .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
@@ -143,6 +197,11 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = ANY($1)")
             .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
             .execute(&pool)
             .await
             .unwrap();

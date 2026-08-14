@@ -28,6 +28,16 @@ CREATE TYPE merchant.merchant_role AS ENUM (
     'support'
 );
 CREATE TYPE merchant.store_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
+CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
+CREATE TYPE merchant.api_key_scope AS ENUM (
+    'catalog:read',
+    'carts:write',
+    'checkout:write',
+    'orders:read',
+    'customers:write',
+    'mcp:tools'
+);
 
 CREATE TABLE identity.users (
     id          UUID                    NOT NULL PRIMARY KEY,
@@ -232,12 +242,73 @@ CREATE TABLE merchant.store_domains (
 CREATE INDEX store_domains_merchant_account_store_idx
     ON merchant.store_domains (merchant_account_id, store_id);
 
+CREATE TABLE merchant.api_keys (
+    id                   UUID                      NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                      NOT NULL,
+    store_id             UUID                      NOT NULL,
+    key_identifier       TEXT                      NOT NULL UNIQUE,
+    secret_digest        BYTEA                     NOT NULL,
+    display_suffix       CHAR(4)                   NOT NULL,
+    name                 TEXT                      NOT NULL,
+    class                merchant.api_key_class    NOT NULL,
+    mode                 merchant.api_key_mode     NOT NULL,
+    created_by_user_id   UUID                      NOT NULL,
+    revoked_by_user_id   UUID,
+    expires_at           TIMESTAMPTZ,
+    last_used_at         TIMESTAMPTZ,
+    revoked_at           TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id)
+        REFERENCES identity.users(id),
+    FOREIGN KEY (revoked_by_user_id)
+        REFERENCES identity.users(id),
+    CONSTRAINT api_keys_identifier_format_check CHECK (
+        key_identifier ~ '^[A-Za-z0-9]{16}$'
+    ),
+    CONSTRAINT api_keys_secret_digest_length_check CHECK (
+        octet_length(secret_digest) = 32
+    ),
+    CONSTRAINT api_keys_display_suffix_format_check CHECK (
+        display_suffix ~ '^[A-Za-z0-9]{4}$'
+    ),
+    CONSTRAINT api_keys_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 80
+    ),
+    CONSTRAINT api_keys_expiration_check CHECK (
+        expires_at IS NULL OR expires_at > created_at
+    ),
+    CONSTRAINT api_keys_revocation_check CHECK (
+        (revoked_at IS NULL AND revoked_by_user_id IS NULL)
+        OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX api_keys_store_created_idx
+    ON merchant.api_keys (merchant_account_id, store_id, created_at DESC, id DESC);
+
+CREATE TABLE merchant.api_key_scopes (
+    merchant_account_id  UUID                      NOT NULL,
+    api_key_id           UUID                      NOT NULL,
+    scope                merchant.api_key_scope    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, api_key_id, scope),
+    FOREIGN KEY (merchant_account_id, api_key_id)
+        REFERENCES merchant.api_keys(merchant_account_id, id) ON DELETE CASCADE
+);
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_domains ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -308,6 +379,26 @@ CREATE POLICY merchant_account_isolation ON merchant.store_currencies
     );
 
 CREATE POLICY merchant_account_isolation ON merchant.store_domains
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.api_keys
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
