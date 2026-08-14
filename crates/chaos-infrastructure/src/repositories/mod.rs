@@ -1,0 +1,3 @@
+mod merchant_provisioning;
+
+pub use merchant_provisioning::PostgresMerchantProvisioningUnitOfWork;

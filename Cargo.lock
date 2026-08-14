@@ -41,6 +41,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.92"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,14 +226,17 @@ name = "chaos-application"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chaos-domain",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
 name = "chaos-domain"
 version = "0.1.0"
 dependencies = [
+ "email_address",
  "thiserror",
  "uuid",
 ]
@@ -232,6 +246,8 @@ name = "chaos-infrastructure"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chaos-application",
  "chaos-domain",
  "redis",
  "sqlx",
@@ -384,6 +400,15 @@ name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "email_address"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
 dependencies = [
  "serde",
 ]

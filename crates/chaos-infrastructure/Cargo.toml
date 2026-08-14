@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+chaos-application = { path = "../chaos-application" }
 chaos-domain = { path = "../chaos-domain" }
 redis.workspace = true
 sqlx.workspace = true
