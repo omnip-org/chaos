@@ -38,6 +38,8 @@ docker compose -f compose.yaml -f compose.ha.yaml up -d --build --wait
 curl http://localhost:8080/health/ready
 ```
 
+The custom PostgreSQL 18 image includes `pg_cron`, `pgmq`, and `pg_partman`. The initial migration activates them with isolated extension-owned schemas. See [PostgreSQL extensions](docs/postgresql-extensions.md) for lifecycle and security requirements.
+
 Replace both API instances sequentially after a code or image update:
 
 ```bash

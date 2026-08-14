@@ -2,11 +2,21 @@ name: chaos
 
 services:
   postgres:
-    image: postgres:18.4
+    image: chaos-postgres:18.4
+    build:
+      context: ./deploy/postgres
     environment:
       POSTGRES_DB: chaos
       POSTGRES_USER: chaos
       POSTGRES_PASSWORD: chaos
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=chaos
+      - -c
+      - cron.use_background_workers=on
     ports:
       - "55432:5432"
     volumes:

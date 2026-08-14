@@ -18,7 +18,10 @@ Reserved schema map:
 | `fulfillment` | Shipments, packages, and fulfillment state |
 | `integration` | Webhook inboxes, outbox delivery, and external mappings |
 | `audit` | Immutable security and administrative audit records |
-| `extensions` | Objects owned by PostgreSQL extensions |
+| `extensions` | Relocatable utility extension objects, currently `citext` |
+| `cron` | Objects owned by the `pg_cron` extension |
+| `pgmq` | Objects owned by the `pgmq` extension |
+| `partman` | Objects owned by the `pg_partman` extension |
 | `public` | SQLx migration metadata only; no business tables |
 
 Create a bounded-context schema only when its first object is introduced. Cross-schema foreign keys are allowed only when the ownership direction is explicit and stable. Cross-context writes should normally be coordinated by an application use case and transactional outbox rather than by database triggers.
@@ -95,7 +98,9 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 
 ## 8. SQL style
 
-- Use uppercase SQL keywords and lowercase qualified identifiers.
+- Use uppercase SQL keywords and built-in data types, and lowercase qualified identifiers.
+- Align column names, data types, and nullability clauses within `CREATE TABLE` blocks when it improves scanability.
+- Separate column definitions from table constraints with one blank line.
 - List columns explicitly in application queries and inserts. Avoid `SELECT *`.
 - Bind every value. Dynamic identifiers require strict allowlisting and explicit safety review.
 - Keep transactions short and avoid network calls while holding database locks.

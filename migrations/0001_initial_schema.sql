@@ -1,13 +1,18 @@
 CREATE SCHEMA extensions;
 CREATE SCHEMA identity;
 CREATE SCHEMA merchant;
+CREATE SCHEMA partman;
 
 COMMENT ON SCHEMA extensions IS 'PostgreSQL extension-owned objects';
 COMMENT ON SCHEMA identity IS 'Users, credentials, service accounts, and sessions';
 COMMENT ON SCHEMA merchant IS
     'Merchant accounts, memberships, stores, channels, and domains';
+COMMENT ON SCHEMA partman IS 'Objects owned by the pg_partman extension';
 
 CREATE EXTENSION citext WITH SCHEMA extensions;
+CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS pgmq;
 
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 CREATE TYPE merchant.merchant_account_status AS ENUM ('active', 'suspended', 'closed');
@@ -21,23 +26,25 @@ CREATE TYPE merchant.merchant_role AS ENUM (
 CREATE TYPE merchant.store_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE identity.users (
-    id uuid PRIMARY KEY,
-    email extensions.citext NOT NULL UNIQUE,
-    status identity.user_status NOT NULL DEFAULT 'active',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    id          UUID                    NOT NULL PRIMARY KEY,
+    email       extensions.citext       NOT NULL UNIQUE,
+    status      identity.user_status    NOT NULL DEFAULT 'active',
+    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     CONSTRAINT users_email_length_check CHECK (
         length(trim(email::text)) BETWEEN 3 AND 320
     )
 );
 
 CREATE TABLE merchant.merchant_accounts (
-    id uuid PRIMARY KEY,
-    slug extensions.citext NOT NULL UNIQUE,
-    display_name text NOT NULL,
-    status merchant.merchant_account_status NOT NULL DEFAULT 'active',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    id            UUID                                NOT NULL PRIMARY KEY,
+    slug          extensions.citext                   NOT NULL UNIQUE,
+    display_name  TEXT                                NOT NULL,
+    status        merchant.merchant_account_status    NOT NULL DEFAULT 'active',
+    created_at    TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     CONSTRAINT merchant_accounts_slug_format_check CHECK (
         slug::text ~ '^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
     ),
@@ -47,30 +54,36 @@ CREATE TABLE merchant.merchant_accounts (
 );
 
 CREATE TABLE merchant.merchant_account_memberships (
-    merchant_account_id uuid NOT NULL
+    merchant_account_id  UUID                      NOT NULL,
+    user_id              UUID                      NOT NULL,
+    role                 merchant.merchant_role    NOT NULL,
+    created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, user_id),
+    FOREIGN KEY (merchant_account_id)
         REFERENCES merchant.merchant_accounts(id) ON DELETE CASCADE,
-    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
-    role merchant.merchant_role NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (merchant_account_id, user_id)
+    FOREIGN KEY (user_id)
+        REFERENCES identity.users(id) ON DELETE CASCADE
 );
 
 CREATE INDEX merchant_account_memberships_user_idx
     ON merchant.merchant_account_memberships (user_id, merchant_account_id);
 
 CREATE TABLE merchant.stores (
-    id uuid PRIMARY KEY,
-    merchant_account_id uuid NOT NULL
-        REFERENCES merchant.merchant_accounts(id),
-    code extensions.citext NOT NULL,
-    name text NOT NULL,
-    default_currency char(3) NOT NULL,
-    status merchant.store_status NOT NULL DEFAULT 'draft',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    id                   UUID                     NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                     NOT NULL,
+    code                 extensions.citext        NOT NULL,
+    name                 TEXT                     NOT NULL,
+    default_currency     CHAR(3)                  NOT NULL,
+    status               merchant.store_status    NOT NULL DEFAULT 'draft',
+    created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     UNIQUE (merchant_account_id, code),
     UNIQUE (merchant_account_id, id),
+    FOREIGN KEY (merchant_account_id)
+        REFERENCES merchant.merchant_accounts(id),
     CONSTRAINT stores_code_format_check CHECK (
         code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
     ),
@@ -86,10 +99,11 @@ CREATE INDEX stores_merchant_account_status_idx
     ON merchant.stores (merchant_account_id, status);
 
 CREATE TABLE merchant.store_currencies (
-    merchant_account_id uuid NOT NULL,
-    store_id uuid NOT NULL,
-    currency char(3) NOT NULL,
-    enabled boolean NOT NULL DEFAULT true,
+    merchant_account_id  UUID       NOT NULL,
+    store_id             UUID       NOT NULL,
+    currency             CHAR(3)    NOT NULL,
+    enabled              BOOLEAN    NOT NULL DEFAULT true,
+
     PRIMARY KEY (merchant_account_id, store_id, currency),
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
@@ -99,12 +113,13 @@ CREATE TABLE merchant.store_currencies (
 );
 
 CREATE TABLE merchant.store_domains (
-    id uuid PRIMARY KEY,
-    merchant_account_id uuid NOT NULL,
-    store_id uuid NOT NULL,
-    hostname extensions.citext NOT NULL UNIQUE,
-    verified_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
+    id                   UUID                 NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                 NOT NULL,
+    store_id             UUID                 NOT NULL,
+    hostname             extensions.citext    NOT NULL UNIQUE,
+    verified_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
     CONSTRAINT store_domains_hostname_lowercase_check CHECK (
