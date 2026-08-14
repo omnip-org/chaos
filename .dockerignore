@@ -1,0 +1,6 @@
+.git
+.env
+target
+deploy
+docs
+README.md

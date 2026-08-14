@@ -1,0 +1,64 @@
+x-api: &api
+  image: chaos-api:local
+  build:
+    context: .
+  environment:
+    APP_BIND_ADDR: 0.0.0.0:8080
+    DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
+    DATABASE_RUNTIME_ROLE: chaos_runtime
+    REDIS_URL: redis://redis:6379/0
+    RUST_LOG: chaos=info,chaos_api=info,tower_http=info
+    LOG_JSON: "true"
+    SHUTDOWN_DRAIN_DELAY_MS: "5000"
+  expose:
+    - "8080"
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]
+    interval: 2s
+    timeout: 1s
+    retries: 15
+    start_period: 2s
+  stop_grace_period: 45s
+  restart: unless-stopped
+
+services:
+  migrate:
+    image: chaos-api:local
+    build:
+      context: .
+    entrypoint: ["/usr/local/bin/chaos-migrate"]
+    environment:
+      DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api-blue:
+    <<: *api
+
+  api-green:
+    <<: *api
+
+  gateway:
+    image: caddy:2.11.4-alpine
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/compose/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      api-blue:
+        condition: service_healthy
+      api-green:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/health/gateway"]
+      interval: 5s
+      timeout: 1s
+      retries: 5
+    restart: unless-stopped

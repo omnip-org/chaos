@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+cjk_pattern='[\x{4e00}-\x{9fff}]'
+
+if rg --quiet "$cjk_pattern" "$1"; then
+    printf 'Commit messages must be written in English.\n' >&2
+    exit 1
+fi

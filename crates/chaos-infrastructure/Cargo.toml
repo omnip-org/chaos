@@ -1,0 +1,13 @@
+[package]
+name = "chaos-infrastructure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chaos-domain = { path = "../chaos-domain" }
+redis.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
