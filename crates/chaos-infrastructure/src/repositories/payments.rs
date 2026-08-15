@@ -5,6 +5,7 @@ use chaos_application::{
     merchant::MerchantActor,
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
+        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
         PaymentRepository, PaymentWebhookVerifier, ProviderCommand, ProviderCommandResult,
         QueueJob, RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
@@ -14,7 +15,8 @@ use chaos_domain::{
     inventory::InventoryReservationId,
     merchant::{SalesChannelId, StoreId},
     payments::{
-        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, Refund, RefundId, RefundStatus,
+        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, PaymentProviderAccount,
+        PaymentProviderAccountId, PaymentSecretReference, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
     sales::{CheckoutId, Order, OrderId, OrderStatus},
@@ -34,7 +36,20 @@ use super::{
 
 const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";
 const CREATE_REFUND_OPERATION: &str = "refunds.create.v1";
+const CREATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.create.v1";
+const UPDATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.update.v1";
 const MAX_QUEUE_ATTEMPTS: i32 = 8;
+
+type ProviderAccountRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    OffsetDateTime,
+    OffsetDateTime,
+);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,6 +206,172 @@ impl PostgresPaymentRepository {
         }
         set_config(&mut transaction, "app.merchant_account_id", account_id).await?;
         Ok(transaction)
+    }
+}
+
+#[async_trait]
+impl PaymentProviderAccountRepository for PostgresPaymentRepository {
+    async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+    ) -> Result<PaymentProviderAccountPage, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let rows = sqlx::query_as::<_, ProviderAccountRow>(
+            "SELECT id, provider, display_name, external_account_reference, enabled, \
+                    credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                    created_at, updated_at \
+             FROM payments.provider_accounts \
+             WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND ($3::uuid IS NULL OR id < $3) \
+             ORDER BY id DESC LIMIT $4",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(after)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let has_more = rows.len() > usize::from(limit);
+        let items = rows
+            .into_iter()
+            .take(usize::from(limit))
+            .map(provider_account_detail)
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(PaymentProviderAccountPage { items, has_more })
+    }
+
+    async fn get(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        id: PaymentProviderAccountId,
+    ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let value = load_provider_account(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            store_id,
+            id,
+        )
+        .await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(value)
+    }
+
+    async fn create(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &PaymentProviderAccount,
+        credential_secret_reference: &PaymentSecretReference,
+        webhook_secret_reference: &PaymentSecretReference,
+        request: &IdempotencyRequest,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+        let account_id = actor.merchant_account_id().as_uuid();
+        let mut transaction = self.begin_human(actor).await?;
+        if let Some(snapshot) = idempotency::reserve(
+            &mut transaction,
+            &IdempotencyScope::MerchantAccount(account_id),
+            CREATE_PROVIDER_ACCOUNT_OPERATION,
+            request,
+        )
+        .await?
+        {
+            return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
+        }
+        sqlx::query(
+            "INSERT INTO payments.provider_accounts \
+             (id, merchant_account_id, store_id, provider, display_name, \
+              external_account_reference, credential_secret_reference, webhook_secret_reference, \
+              enabled, created_by_user_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        )
+        .bind(account.id().as_uuid())
+        .bind(account_id)
+        .bind(store_id.as_uuid())
+        .bind(account.provider())
+        .bind(account.display_name())
+        .bind(account.external_account_reference())
+        .bind(credential_secret_reference.expose_reference())
+        .bind(webhook_secret_reference.expose_reference())
+        .bind(account.enabled())
+        .bind(actor.user_id().as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_provider_account_write_error)?;
+        complete_provider_account(
+            &mut transaction,
+            account_id,
+            CREATE_PROVIDER_ACCOUNT_OPERATION,
+            request,
+            account.id(),
+        )
+        .await?;
+        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+            .await?
+            .ok_or_else(corrupt_state)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(value)
+    }
+
+    async fn update(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &PaymentProviderAccount,
+        credential_secret_reference: &PaymentSecretReference,
+        webhook_secret_reference: &PaymentSecretReference,
+        request: &IdempotencyRequest,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+        let account_id = actor.merchant_account_id().as_uuid();
+        let mut transaction = self.begin_human(actor).await?;
+        if let Some(snapshot) = idempotency::reserve(
+            &mut transaction,
+            &IdempotencyScope::MerchantAccount(account_id),
+            UPDATE_PROVIDER_ACCOUNT_OPERATION,
+            request,
+        )
+        .await?
+        {
+            return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
+        }
+        let result = sqlx::query(
+            "UPDATE payments.provider_accounts SET display_name = $4, \
+                    credential_secret_reference = $5, webhook_secret_reference = $6, \
+                    enabled = $7, updated_at = CURRENT_TIMESTAMP \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        )
+        .bind(account_id)
+        .bind(store_id.as_uuid())
+        .bind(account.id().as_uuid())
+        .bind(account.display_name())
+        .bind(credential_secret_reference.expose_reference())
+        .bind(webhook_secret_reference.expose_reference())
+        .bind(account.enabled())
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_provider_account_write_error)?;
+        if result.rows_affected() != 1 {
+            return Err(provider_account_not_found(account.id()));
+        }
+        complete_provider_account(
+            &mut transaction,
+            account_id,
+            UPDATE_PROVIDER_ACCOUNT_OPERATION,
+            request,
+            account.id(),
+        )
+        .await?;
+        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+            .await?
+            .ok_or_else(corrupt_state)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(value)
     }
 }
 
@@ -1151,6 +1332,111 @@ fn refund_not_found(refund_id: RefundId) -> ApplicationError {
         resource: "refund",
         id: refund_id.as_uuid().to_string(),
     }
+}
+
+async fn load_provider_account(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    id: PaymentProviderAccountId,
+) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
+    sqlx::query_as::<_, ProviderAccountRow>(
+        "SELECT id, provider, display_name, external_account_reference, enabled, \
+                credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                created_at, updated_at FROM payments.provider_accounts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .map(provider_account_detail)
+    .transpose()
+}
+
+fn provider_account_detail(
+    row: ProviderAccountRow,
+) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+    Ok(PaymentProviderAccountDetail {
+        account: PaymentProviderAccount::rehydrate(
+            PaymentProviderAccountId::from_uuid(row.0),
+            row.1,
+            row.2,
+            row.3,
+            row.4,
+        )?,
+        credentials_configured: row.5,
+        created_at: row.6,
+        updated_at: row.7,
+    })
+}
+
+async fn replay_provider_account(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    snapshot: Value,
+) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+    let id = snapshot
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .map(PaymentProviderAccountId::from_uuid)
+        .ok_or_else(corrupt_state)?;
+    load_provider_account(transaction, account_id, store_id, id)
+        .await?
+        .ok_or_else(corrupt_state)
+}
+
+async fn complete_provider_account(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    operation: &'static str,
+    request: &IdempotencyRequest,
+    id: PaymentProviderAccountId,
+) -> Result<(), ApplicationError> {
+    idempotency::complete(
+        transaction,
+        &IdempotencyScope::MerchantAccount(account_id),
+        operation,
+        request,
+        200,
+        json!({"data":{"id":id.as_uuid()}}),
+    )
+    .await
+}
+
+fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(database) = &error {
+        let (code, message) = match database.constraint() {
+            Some("provider_accounts_store_provider_key") => (
+                "payment_provider_already_configured",
+                "the Payment Provider is already configured for this Store",
+            ),
+            Some("provider_accounts_provider_external_account_reference_key") => (
+                "payment_provider_account_already_linked",
+                "the external Payment Provider account is already linked",
+            ),
+            _ => return database_error(error),
+        };
+        return ApplicationError::Conflict { code, message };
+    }
+    database_error(error)
+}
+
+fn provider_account_not_found(id: PaymentProviderAccountId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "payment_provider_account",
+        id: id.as_uuid().to_string(),
+    }
+}
+
+fn corrupt_state() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "database contains invalid Payment Provider account state"
+    ))
 }
 
 fn provider_unavailable() -> ApplicationError {

@@ -13,6 +13,18 @@ use crate::{ApplicationError, merchant::MerchantActor};
 
 use super::{IdempotencyRequest, ShopperActor};
 
+pub struct PaymentProviderAccountDetail {
+    pub account: chaos_domain::payments::PaymentProviderAccount,
+    pub credentials_configured: bool,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+pub struct PaymentProviderAccountPage {
+    pub items: Vec<PaymentProviderAccountDetail>,
+    pub has_more: bool,
+}
+
 pub struct PaymentAttemptDetail {
     pub id: PaymentAttemptId,
     pub order_id: OrderId,
@@ -122,6 +134,44 @@ pub trait PaymentRepository: Send + Sync {
         job: &QueueJob,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
+}
+
+#[async_trait]
+pub trait PaymentProviderAccountRepository: Send + Sync {
+    async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+    ) -> Result<PaymentProviderAccountPage, ApplicationError>;
+
+    async fn get(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        id: chaos_domain::payments::PaymentProviderAccountId,
+    ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError>;
+
+    async fn create(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &chaos_domain::payments::PaymentProviderAccount,
+        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        webhook_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
+
+    async fn update(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &chaos_domain::payments::PaymentProviderAccount,
+        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        webhook_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
 }
 
 #[async_trait]

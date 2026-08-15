@@ -31,6 +31,131 @@ macro_rules! payment_id {
 
 payment_id!(PaymentAttemptId);
 payment_id!(RefundId);
+payment_id!(PaymentProviderAccountId);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentProviderAccount {
+    id: PaymentProviderAccountId,
+    provider: String,
+    display_name: String,
+    external_account_reference: String,
+    enabled: bool,
+}
+
+impl PaymentProviderAccount {
+    pub fn create(
+        provider: impl Into<String>,
+        display_name: impl Into<String>,
+        external_account_reference: impl Into<String>,
+    ) -> Result<Self, DomainError> {
+        Self::rehydrate(
+            PaymentProviderAccountId::new(),
+            provider,
+            display_name,
+            external_account_reference,
+            true,
+        )
+    }
+
+    pub fn rehydrate(
+        id: PaymentProviderAccountId,
+        provider: impl Into<String>,
+        display_name: impl Into<String>,
+        external_account_reference: impl Into<String>,
+        enabled: bool,
+    ) -> Result<Self, DomainError> {
+        let provider = provider.into();
+        let display_name = display_name.into();
+        let external_account_reference = external_account_reference.into();
+        if provider.is_empty()
+            || provider.len() > 64
+            || !provider
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(validation(
+                "provider",
+                "must contain 1-64 lowercase letters, digits, or underscores",
+            ));
+        }
+        validate_printable("display_name", &display_name, 120)?;
+        validate_printable(
+            "external_account_reference",
+            &external_account_reference,
+            255,
+        )?;
+        Ok(Self {
+            id,
+            provider,
+            display_name,
+            external_account_reference,
+            enabled,
+        })
+    }
+
+    pub const fn id(&self) -> PaymentProviderAccountId {
+        self.id
+    }
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    pub fn external_account_reference(&self) -> &str {
+        &self.external_account_reference
+    }
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+    pub fn update_administration(
+        &mut self,
+        display_name: impl Into<String>,
+        enabled: bool,
+    ) -> Result<(), DomainError> {
+        let display_name = display_name.into();
+        validate_printable("display_name", &display_name, 120)?;
+        self.display_name = display_name;
+        self.enabled = enabled;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct PaymentSecretReference(String);
+
+impl PaymentSecretReference {
+    pub fn new(field: &'static str, value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 255
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':')
+            })
+        {
+            return Err(validation(
+                field,
+                "must be a 1-255 character secret-manager reference",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn expose_reference(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_printable(field: &'static str, value: &str, maximum: usize) -> Result<(), DomainError> {
+    if value.trim().is_empty()
+        || value.chars().count() > maximum
+        || value.chars().any(char::is_control)
+    {
+        Err(validation(field, "must contain bounded printable text"))
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentAttemptStatus {
@@ -379,5 +504,19 @@ mod tests {
         assert!(refund.succeed("refund".into()).unwrap());
         assert!(!refund.succeed("refund".into()).unwrap());
         assert!(refund.fail("other".into()).is_err());
+    }
+
+    #[test]
+    fn provider_accounts_validate_canonical_names_and_opaque_secret_references() {
+        assert!(PaymentProviderAccount::create("stripe", "Stripe", "acct_123").is_ok());
+        assert!(PaymentProviderAccount::create("Stripe", "Stripe", "acct_123").is_err());
+        assert!(
+            PaymentSecretReference::new("credential_secret_reference", "vault://stripe/live")
+                .is_ok()
+        );
+        assert!(
+            PaymentSecretReference::new("credential_secret_reference", "secret with spaces")
+                .is_err()
+        );
     }
 }

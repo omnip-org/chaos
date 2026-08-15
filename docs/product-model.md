@@ -79,6 +79,10 @@ A revocable machine credential bound to one Store and an explicit set of capabil
 
 A Store-owned shopping profile linked to one verified global User. Customers hold reusable contact data and saved addresses. Immutable shopper links recover Order history across devices without replacing possession-bound guest ownership. The same User has independent Customer profiles in different Stores.
 
+### PaymentProviderAccount
+
+A Store-owned connection to one external payment provider account. Its provider identity and external mapping are immutable, while administrators may replace write-only secret-manager references and enable or disable new payment creation. Raw provider credentials are never part of the product model or HTTP response.
+
 ## Isolation rules
 
 - `merchant_account_id` is the primary RLS and authorization boundary.
@@ -96,7 +100,7 @@ A Store-owned shopping profile linked to one verified global User. Customers hol
 
 - Passwordless identity, merchant accounts, memberships, Stores, and Sales Channels.
 - Product, Variant, publication, Price List, Inventory, Customer, saved address, Cart, Checkout, and Order capabilities.
-- Provider-neutral Payment Attempt and Refund state machines with a sandbox adapter.
+- Provider-neutral Payment Attempt and Refund state machines, Store-owned Provider administration, and a sandbox adapter.
 - Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
 
 ### Next

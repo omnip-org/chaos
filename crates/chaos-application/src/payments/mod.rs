@@ -2,7 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use chaos_domain::{
     merchant::{ApiKeyClass, ApiKeyScope, MerchantRole, StoreId},
-    payments::PaymentAttemptId,
+    payments::{
+        PaymentAttemptId, PaymentProviderAccount, PaymentProviderAccountId, PaymentSecretReference,
+    },
     sales::OrderId,
 };
 use time::{Duration, OffsetDateTime};
@@ -15,6 +17,7 @@ use crate::{
     merchant::MerchantActor,
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
+        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
         PaymentRepository, PaymentWebhookVerifier, ProviderCommand, QueueJob, RefundDetail,
         ShopperActor,
     },
@@ -33,6 +36,123 @@ pub struct CreateRefundInput {
     pub payment_attempt_id: PaymentAttemptId,
     pub amount_minor: i64,
     pub idempotency: IdempotencyRequest,
+}
+
+pub struct CreatePaymentProviderAccountInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub provider: String,
+    pub display_name: String,
+    pub external_account_reference: String,
+    pub credential_secret_reference: String,
+    pub webhook_secret_reference: String,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct UpdatePaymentProviderAccountInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub id: PaymentProviderAccountId,
+    pub display_name: String,
+    pub credential_secret_reference: String,
+    pub webhook_secret_reference: String,
+    pub enabled: bool,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct PaymentProviderAdministration {
+    repository: Arc<dyn PaymentProviderAccountRepository>,
+}
+
+impl PaymentProviderAdministration {
+    pub fn new(repository: Arc<dyn PaymentProviderAccountRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+    ) -> Result<PaymentProviderAccountPage, ApplicationError> {
+        self.repository.list(actor, store_id, after, limit).await
+    }
+
+    pub async fn get(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        id: PaymentProviderAccountId,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+        self.repository
+            .get(actor, store_id, id)
+            .await?
+            .ok_or_else(|| provider_account_not_found(id))
+    }
+
+    pub async fn create(
+        &self,
+        input: CreatePaymentProviderAccountInput,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+        require_provider_administrator(input.actor)?;
+        let account = PaymentProviderAccount::create(
+            input.provider,
+            input.display_name,
+            input.external_account_reference,
+        )?;
+        let credential = PaymentSecretReference::new(
+            "credential_secret_reference",
+            input.credential_secret_reference,
+        )?;
+        let webhook = PaymentSecretReference::new(
+            "webhook_secret_reference",
+            input.webhook_secret_reference,
+        )?;
+        self.repository
+            .create(
+                input.actor,
+                input.store_id,
+                &account,
+                &credential,
+                &webhook,
+                &input.idempotency,
+            )
+            .await
+    }
+
+    pub async fn update(
+        &self,
+        input: UpdatePaymentProviderAccountInput,
+    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+        require_provider_administrator(input.actor)?;
+        let mut detail = self
+            .repository
+            .get(input.actor, input.store_id, input.id)
+            .await?
+            .ok_or_else(|| provider_account_not_found(input.id))?;
+        detail
+            .account
+            .update_administration(input.display_name, input.enabled)?;
+        let credential = PaymentSecretReference::new(
+            "credential_secret_reference",
+            input.credential_secret_reference,
+        )?;
+        let webhook = PaymentSecretReference::new(
+            "webhook_secret_reference",
+            input.webhook_secret_reference,
+        )?;
+        self.repository
+            .update(
+                input.actor,
+                input.store_id,
+                &detail.account,
+                &credential,
+                &webhook,
+                &input.idempotency,
+            )
+            .await
+    }
 }
 
 pub struct PaymentService {
@@ -245,6 +365,24 @@ fn require_payment_operator(actor: MerchantActor) -> Result<(), ApplicationError
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)
+    }
+}
+
+fn require_provider_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
+    if matches!(
+        actor.role(),
+        MerchantRole::Owner | MerchantRole::Administrator
+    ) {
+        Ok(())
+    } else {
+        Err(ApplicationError::Forbidden)
+    }
+}
+
+fn provider_account_not_found(id: PaymentProviderAccountId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "payment_provider_account",
+        id: id.as_uuid().to_string(),
     }
 }
 

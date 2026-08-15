@@ -48,7 +48,8 @@ pub use merchant::{
 pub use merchant_query::{MerchantAccountListItem, MerchantReadRepository, StoreListItem};
 pub use passwordless::{CeremonyOptions, PasswordlessAuthentication, SessionGrant};
 pub use payments::{
-    IntegrationQueue, PaymentAttemptDetail, PaymentProvider, PaymentRepository,
+    IntegrationQueue, PaymentAttemptDetail, PaymentProvider, PaymentProviderAccountDetail,
+    PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentRepository,
     PaymentWebhookVerifier, ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail,
     VerifiedWebhookEvent,
 };

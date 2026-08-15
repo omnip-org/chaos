@@ -1606,25 +1606,43 @@ CREATE TABLE payments.provider_accounts (
     merchant_account_id        UUID        NOT NULL,
     store_id                   UUID        NOT NULL,
     provider                   TEXT        NOT NULL,
+    display_name               TEXT        NOT NULL DEFAULT 'Payment provider',
     external_account_reference TEXT        NOT NULL,
+    credential_secret_reference TEXT,
+    webhook_secret_reference    TEXT,
     enabled                    BOOLEAN     NOT NULL DEFAULT true,
+    created_by_user_id          UUID,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
+    CONSTRAINT provider_accounts_store_provider_key
+        UNIQUE (merchant_account_id, store_id, provider),
     UNIQUE (provider, external_account_reference),
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
     CONSTRAINT provider_accounts_provider_length_check CHECK (
-        length(trim(provider)) BETWEEN 1 AND 64
+        provider ~ '^[a-z0-9_]{1,64}$'
+    ),
+    CONSTRAINT provider_accounts_display_name_length_check CHECK (
+        length(trim(display_name)) BETWEEN 1 AND 120
     ),
     CONSTRAINT provider_accounts_external_reference_length_check CHECK (
         length(trim(external_account_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT provider_accounts_credential_reference_check CHECK (
+        credential_secret_reference IS NULL
+        OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+    ),
+    CONSTRAINT provider_accounts_webhook_reference_check CHECK (
+        webhook_secret_reference IS NULL
+        OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
     )
 );
 
-CREATE INDEX provider_accounts_store_provider_idx
-    ON payments.provider_accounts (merchant_account_id, store_id, provider, id);
+CREATE INDEX provider_accounts_store_created_idx
+    ON payments.provider_accounts (merchant_account_id, store_id, created_at DESC, id DESC);
 
 CREATE TABLE payments.payment_attempts (
     id                     UUID                            NOT NULL PRIMARY KEY,

@@ -27,7 +27,7 @@ use chaos_application::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
         MerchantQueries, StoreAdministration,
     },
-    payments::{PaymentService, PaymentWorkers},
+    payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
     ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
@@ -95,6 +95,7 @@ pub struct ApiState {
     pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
+    pub payment_provider_administration: Arc<PaymentProviderAdministration>,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub shipping_management: Arc<ShippingManagement>,
@@ -190,6 +191,8 @@ impl ApiState {
                 settings.payment_webhook_secret.as_bytes(),
             )?),
         );
+        let payment_provider_administration =
+            PaymentProviderAdministration::new(payment_repository.clone());
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
             payment_repository,
@@ -236,6 +239,7 @@ impl ApiState {
             checkout_expiry_workers: Arc::new(checkout_expiry_workers),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
+            payment_provider_administration: Arc::new(payment_provider_administration),
             payment_workers: Arc::new(payment_workers),
             fulfillment_management: Arc::new(fulfillment_management),
             shipping_management: Arc::new(shipping_management),

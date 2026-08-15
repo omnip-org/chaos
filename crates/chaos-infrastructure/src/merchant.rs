@@ -103,6 +103,8 @@ mod tests {
         let customer_address_b = Uuid::now_v7();
         let shopper_a = Uuid::now_v7();
         let shopper_b = Uuid::now_v7();
+        let provider_account_a = Uuid::now_v7();
+        let provider_account_b = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id)
@@ -313,6 +315,23 @@ mod tests {
             .await
             .unwrap();
         }
+        for (id, account_id, store_id, external_reference) in [
+            (provider_account_a, account_a, store_a, "rls-provider-a"),
+            (provider_account_b, account_b, store_b, "rls-provider-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO payments.provider_accounts \
+                 (id, merchant_account_id, store_id, provider, external_account_reference) \
+                 VALUES ($1, $2, $3, 'testpay', $4)",
+            )
+            .bind(id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(external_reference)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
 
         let mut transaction = MerchantAccountTransaction::begin(&pool, account_a)
             .await
@@ -373,6 +392,11 @@ mod tests {
         .fetch_all(transaction.connection())
         .await
         .unwrap();
+        let visible_provider_account_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM payments.provider_accounts ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
         transaction.rollback().await.unwrap();
 
         assert_eq!(visible_ids, vec![store_a]);
@@ -385,7 +409,13 @@ mod tests {
         assert_eq!(visible_customer_ids, vec![customer_a]);
         assert_eq!(visible_customer_address_ids, vec![customer_address_a]);
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
+        assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
+        sqlx::query("DELETE FROM payments.provider_accounts WHERE merchant_account_id = ANY($1)")
+            .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
             .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
             .execute(&pool)

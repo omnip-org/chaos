@@ -7,12 +7,15 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    payments::{CreatePaymentAttemptInput, CreateRefundInput},
-    ports::{IdempotencyRequest, PaymentAttemptDetail, RefundDetail},
+    payments::{
+        CreatePaymentAttemptInput, CreatePaymentProviderAccountInput, CreateRefundInput,
+        UpdatePaymentProviderAccountInput,
+    },
+    ports::{IdempotencyRequest, PaymentAttemptDetail, PaymentProviderAccountDetail, RefundDetail},
 };
 use chaos_domain::{
     merchant::{MerchantAccountId, StoreId},
-    payments::PaymentAttemptId,
+    payments::{PaymentAttemptId, PaymentProviderAccountId},
     sales::OrderId,
 };
 use serde::{Deserialize, Serialize};
@@ -20,8 +23,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutShopper,
-    MerchantContext, merchant::idempotency_key,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, CheckoutShopper,
+    MerchantContext,
+    merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -37,6 +41,14 @@ pub(super) fn routes() -> Router<ApiState> {
         .route(
             "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds",
             post(create_refund),
+        )
+        .route(
+            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts",
+            get(list_provider_accounts).post(create_provider_account),
+        )
+        .route(
+            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts/{provider_account_id}",
+            get(get_provider_account).put(update_provider_account),
         )
         .route("/webhooks/v1/payments/{provider}", post(receive_webhook))
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -62,6 +74,45 @@ struct RefundPath {
 #[derive(Deserialize)]
 struct WebhookPath {
     provider: String,
+}
+
+#[derive(Deserialize)]
+struct ProviderCollectionPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct ProviderPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    provider_account_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderListQuery {
+    cursor: Option<String>,
+    limit: Option<u16>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateProviderAccountBody {
+    provider: String,
+    display_name: String,
+    external_account_reference: String,
+    credential_secret_reference: String,
+    webhook_secret_reference: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateProviderAccountBody {
+    display_name: String,
+    credential_secret_reference: String,
+    webhook_secret_reference: String,
+    enabled: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -110,6 +161,123 @@ struct RefundData {
 #[derive(Serialize)]
 struct WebhookReceiptData {
     accepted: bool,
+}
+
+#[derive(Serialize)]
+struct PaymentProviderAccountData {
+    id: Uuid,
+    provider: String,
+    display_name: String,
+    external_account_reference: String,
+    enabled: bool,
+    credentials_configured: bool,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+async fn list_provider_accounts(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProviderCollectionPath>,
+    ApiQuery(query): ApiQuery<ProviderListQuery>,
+) -> Result<ApiResponse<Vec<PaymentProviderAccountData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let after = query
+        .cursor
+        .as_deref()
+        .map(|value| decode_cursor(value, CursorKind::PaymentProviderAccount))
+        .transpose()?;
+    let limit = page_limit(query.limit)?;
+    let page = state
+        .payment_provider_administration
+        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .await?;
+    let next_cursor = page
+        .has_more
+        .then(|| {
+            page.items.last().map(|item| {
+                encode_cursor(
+                    item.account.id().as_uuid(),
+                    CursorKind::PaymentProviderAccount,
+                )
+            })
+        })
+        .flatten();
+    Ok(
+        ApiResponse::ok(page.items.into_iter().map(provider_account_data).collect())
+            .with_meta(page_meta(page.has_more, next_cursor)),
+    )
+}
+
+async fn get_provider_account(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProviderPath>,
+) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let value = state
+        .payment_provider_administration
+        .get(
+            actor,
+            StoreId::from_uuid(path.store_id),
+            PaymentProviderAccountId::from_uuid(path.provider_account_id),
+        )
+        .await?;
+    Ok(ApiResponse::ok(provider_account_data(value)))
+}
+
+async fn create_provider_account(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProviderCollectionPath>,
+    ApiJson(body): ApiJson<CreateProviderAccountBody>,
+) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = body_request(&headers, "create_payment_provider_account", &body)?;
+    let value = state
+        .payment_provider_administration
+        .create(CreatePaymentProviderAccountInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            provider: body.provider,
+            display_name: body.display_name,
+            external_account_reference: body.external_account_reference,
+            credential_secret_reference: body.credential_secret_reference,
+            webhook_secret_reference: body.webhook_secret_reference,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(provider_account_data(value)))
+}
+
+async fn update_provider_account(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ProviderPath>,
+    ApiJson(body): ApiJson<UpdateProviderAccountBody>,
+) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = body_request(
+        &headers,
+        "update_payment_provider_account",
+        &(path.provider_account_id, &body),
+    )?;
+    let value = state
+        .payment_provider_administration
+        .update(UpdatePaymentProviderAccountInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            id: PaymentProviderAccountId::from_uuid(path.provider_account_id),
+            display_name: body.display_name,
+            credential_secret_reference: body.credential_secret_reference,
+            webhook_secret_reference: body.webhook_secret_reference,
+            enabled: body.enabled,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(provider_account_data(value)))
 }
 
 async fn create_attempt(
@@ -232,6 +400,19 @@ fn refund_data(value: RefundDetail) -> Result<RefundData, ApplicationError> {
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
     })
+}
+
+fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProviderAccountData {
+    PaymentProviderAccountData {
+        id: value.account.id().as_uuid(),
+        provider: value.account.provider().into(),
+        display_name: value.account.display_name().into(),
+        external_account_reference: value.account.external_account_reference().into(),
+        enabled: value.account.enabled(),
+        credentials_configured: value.credentials_configured,
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
+    }
 }
 
 fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {

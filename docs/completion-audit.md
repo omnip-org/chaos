@@ -10,11 +10,21 @@ This audit records current evidence and open gates. A passing test for an implem
 | 1 — Identity and Merchant | Complete for the declared phase scope | — |
 | 2 — Catalog and Pricing | Complete for the declared phase scope | — |
 | 3 — Selling | Complete for the declared phase scope | Recoverable automatic Checkout and reservation expiry closes the final Phase 3 gate. Customer association and Order history belong to Phase 7. |
-| 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
+| 4 — Payments | Partial | Store-owned Provider administration, deterministic enabled-provider resolution, the sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; a production adapter remains open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
 | 8–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
+
+## Current Phase 4 evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Provider boundary | `PaymentProvider` is an application port and the sandbox implementation lives in infrastructure. Provider SDK and credential types do not enter Sales domain models. |
+| Provider administration | ADR 0012 defines immutable provider identity, Store ownership, write-only secret references, and enable/disable behavior. Domain tests validate canonical provider names and secret-manager references. The real-router PostgreSQL matrix covers create, uniqueness conflict, list, secret non-disclosure, update, disabled checkout resolution, and cross-Store denial. |
+| Payment state | Domain tests cover ordered Payment Attempt and Refund transitions, immutable provider references, exact settlement currency, and refund bounds. The PostgreSQL matrix covers idempotent creation and capture-to-Order reconciliation. |
+| Delivery reliability | Verified webhooks enter a deduplicated inbox; provider commands enter a transactional outbox. Runtime tests cover concurrent claims, stale lease recovery, capped retry, dead letters, and former-owner rejection. |
+| Open gate | A production payment adapter, provider-specific onboarding decision, external secret resolution, and live signed-webhook verification remain required. |
 
 ## Current Phase 5 evidence
 

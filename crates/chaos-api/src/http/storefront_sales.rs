@@ -1169,6 +1169,104 @@ mod tests {
         );
         let app = router(state);
 
+        let provider_accounts_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let stripe_configuration = json!({
+            "provider": "stripe",
+            "display_name": "Stripe Live",
+            "external_account_reference": format!("acct_stripe_{suffix}"),
+            "credential_secret_reference": "vault://payments/stripe/api-key",
+            "webhook_secret_reference": "vault://payments/stripe/webhook-secret"
+        });
+        let stripe_account = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &provider_accounts_uri,
+                Some("create-stripe-provider"),
+                Some(stripe_configuration.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(stripe_account.status(), StatusCode::CREATED);
+        let stripe_account = response_json(stripe_account).await;
+        let stripe_account_id = stripe_account["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(stripe_account["data"]["provider"], "stripe");
+        assert_eq!(stripe_account["data"]["credentials_configured"], true);
+        assert!(stripe_account["data"]["credential_secret_reference"].is_null());
+        assert!(stripe_account["data"]["webhook_secret_reference"].is_null());
+
+        let duplicate_provider = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &provider_accounts_uri,
+                Some("duplicate-stripe-provider"),
+                Some(stripe_configuration),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(duplicate_provider.status(), StatusCode::CONFLICT);
+        let provider_page = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{provider_accounts_uri}?limit=10"),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(provider_page.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(provider_page).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let stripe_account_uri = format!("{provider_accounts_uri}/{stripe_account_id}");
+        let disabled_stripe = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &stripe_account_uri,
+                Some("disable-stripe-provider"),
+                Some(json!({
+                    "display_name": "Stripe",
+                    "credential_secret_reference": "vault://payments/stripe/api-key-v2",
+                    "webhook_secret_reference": "vault://payments/stripe/webhook-secret-v2",
+                    "enabled": false
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(disabled_stripe.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(disabled_stripe).await["data"]["enabled"],
+            false
+        );
+
+        let cross_store_provider = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts/{stripe_account_id}",
+                    account_id.as_uuid(),
+                    other_store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cross_store_provider.status(), StatusCode::NOT_FOUND);
+
         let unauthorized = app
             .clone()
             .oneshot(store_request(
@@ -1848,6 +1946,22 @@ mod tests {
             .unwrap();
         assert_eq!(fetched_order.status(), StatusCode::OK);
         assert_eq!(response_json(fetched_order).await["data"]["id"], order_id);
+
+        let disabled_provider_attempt = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &format!("/store/v1/orders/{order_id}/payment-attempts"),
+                    Some(full_secret),
+                    Some("disabled-provider-attempt"),
+                    Some(json!({"provider": "stripe"})),
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(disabled_provider_attempt.status(), StatusCode::CONFLICT);
 
         let payment_attempt = app
             .clone()

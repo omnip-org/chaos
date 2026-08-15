@@ -1116,6 +1116,79 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "listPaymentProviderAccounts",
+        "tags": ["Payments"],
+        "summary": "List Store Payment Provider accounts without secret references",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }],
+        "responses": {
+          "200": { "description": "Payment Provider account page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentProviderAccountCollectionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
+      "post": {
+        "operationId": "createPaymentProviderAccount",
+        "tags": ["Payments"],
+        "summary": "Configure one Payment Provider for a Store",
+        "description": "Only owners and administrators may configure providers. Secret-manager references are write-only and are never returned.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePaymentProviderAccount" } } } },
+        "responses": {
+          "201": { "description": "Payment Provider account configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentProviderAccountEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts/{provider_account_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" },
+        { "name": "provider_account_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "get": {
+        "operationId": "getPaymentProviderAccount",
+        "tags": ["Payments"],
+        "summary": "Get a Store Payment Provider account without secret references",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "description": "Payment Provider account", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentProviderAccountEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "updatePaymentProviderAccount",
+        "tags": ["Payments"],
+        "summary": "Rotate secret references or enable or disable a Payment Provider account",
+        "description": "Provider identity and external account mapping are immutable. Secret-manager references are write-only.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdatePaymentProviderAccount" } } } },
+        "responses": {
+          "200": { "description": "Payment Provider account updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentProviderAccountEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds": {
       "post": {
         "operationId": "createRefund",
@@ -2136,6 +2209,55 @@
         "additionalProperties": false,
         "required": ["amount_minor"],
         "properties": { "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 } }
+      },
+      "CreatePaymentProviderAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "display_name", "external_account_reference", "credential_secret_reference", "webhook_secret_reference"],
+        "properties": {
+          "provider": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "external_account_reference": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "credential_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true, "description": "Opaque reference resolved by the deployment secret manager; never raw credentials." },
+          "webhook_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true, "description": "Opaque reference resolved by the deployment secret manager; never a raw signing secret." }
+        }
+      },
+      "UpdatePaymentProviderAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["display_name", "credential_secret_reference", "webhook_secret_reference", "enabled"],
+        "properties": {
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "credential_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true },
+          "webhook_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "PaymentProviderAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "provider", "display_name", "external_account_reference", "enabled", "credentials_configured", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "provider": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "external_account_reference": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "enabled": { "type": "boolean" },
+          "credentials_configured": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaymentProviderAccountEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/PaymentProviderAccount" } }
+      },
+      "PaymentProviderAccountCollectionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/PaymentProviderAccount" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
       },
       "Refund": {
         "type": "object",
