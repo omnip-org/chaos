@@ -193,6 +193,8 @@ struct PaymentProviderAccountData {
     readiness_status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     readiness_checked_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readiness_valid_until: Option<ApiDateTime>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     readiness_blocker_codes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -474,6 +476,7 @@ fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProvider
         credentials_configured: value.credentials_configured,
         readiness_status: value.readiness_status.as_str(),
         readiness_checked_at: value.readiness_checked_at.map(Into::into),
+        readiness_valid_until: value.readiness_valid_until.map(Into::into),
         readiness_blocker_codes: value.readiness_blocker_codes,
         credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
         webhook_rotation_expires_at: value.webhook_rotation_expires_at.map(Into::into),

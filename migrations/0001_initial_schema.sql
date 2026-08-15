@@ -1629,6 +1629,12 @@ CREATE TABLE payments.provider_accounts (
     readiness_status            TEXT        NOT NULL DEFAULT 'unchecked',
     readiness_snapshot          JSONB,
     readiness_checked_at        TIMESTAMPTZ,
+    readiness_valid_until       TIMESTAMPTZ,
+    readiness_reconcile_at      TIMESTAMPTZ,
+    readiness_locked_by         UUID,
+    readiness_locked_at         TIMESTAMPTZ,
+    readiness_reconcile_attempts INTEGER     NOT NULL DEFAULT 0,
+    readiness_last_error        TEXT,
     enabled                    BOOLEAN     NOT NULL DEFAULT false,
     created_by_user_id          UUID,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1682,6 +1688,8 @@ CREATE TABLE payments.provider_accounts (
             readiness_status = 'unchecked'
             AND readiness_snapshot IS NULL
             AND readiness_checked_at IS NULL
+            AND readiness_valid_until IS NULL
+            AND readiness_reconcile_at IS NULL
         )
         OR (
             readiness_status <> 'unchecked'
@@ -1691,12 +1699,43 @@ CREATE TABLE payments.provider_accounts (
         )
     ),
     CONSTRAINT provider_accounts_enabled_readiness_check CHECK (
-        NOT enabled OR readiness_status = 'ready'
+        NOT enabled
+        OR (
+            readiness_status = 'ready'
+            AND readiness_valid_until IS NOT NULL
+            AND readiness_reconcile_at IS NOT NULL
+        )
+    ),
+    CONSTRAINT provider_accounts_readiness_validity_check CHECK (
+        (
+            readiness_status = 'ready'
+            AND readiness_valid_until > readiness_checked_at
+            AND readiness_reconcile_at IS NOT NULL
+        )
+        OR (
+            readiness_status <> 'ready'
+            AND readiness_valid_until IS NULL
+            AND readiness_reconcile_at IS NULL
+        )
+    ),
+    CONSTRAINT provider_accounts_readiness_lock_shape_check CHECK (
+        (readiness_locked_by IS NULL AND readiness_locked_at IS NULL)
+        OR (readiness_locked_by IS NOT NULL AND readiness_locked_at IS NOT NULL)
+    ),
+    CONSTRAINT provider_accounts_readiness_attempts_check CHECK (
+        readiness_reconcile_attempts BETWEEN 0 AND 31
+    ),
+    CONSTRAINT provider_accounts_readiness_error_length_check CHECK (
+        readiness_last_error IS NULL OR length(readiness_last_error) BETWEEN 1 AND 2000
     )
 );
 
 CREATE INDEX provider_accounts_store_created_idx
     ON payments.provider_accounts (merchant_account_id, store_id, created_at DESC, id DESC);
+
+CREATE INDEX provider_accounts_readiness_due_idx
+    ON payments.provider_accounts (readiness_reconcile_at, id)
+    WHERE enabled;
 
 CREATE TABLE payments.payment_attempts (
     id                     UUID                            NOT NULL PRIMARY KEY,
@@ -2349,6 +2388,34 @@ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
         ON event.event_type = registry.event_type
      GROUP BY registry.event_type, registry.consumer_owner
      ORDER BY registry.event_type;
+$$;
+
+CREATE FUNCTION payments.provider_readiness_metrics()
+RETURNS TABLE (
+    due BIGINT,
+    retrying BIGINT,
+    expiring_within_six_hours BIGINT,
+    action_required BIGINT
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (
+               WHERE account.enabled
+                 AND account.readiness_reconcile_at <= CURRENT_TIMESTAMP
+           ),
+           count(*) FILTER (
+               WHERE account.enabled
+                 AND account.readiness_reconcile_attempts > 0
+           ),
+           count(*) FILTER (
+               WHERE account.enabled
+                 AND account.readiness_valid_until <= CURRENT_TIMESTAMP + INTERVAL '6 hours'
+           ),
+           count(*) FILTER (WHERE account.readiness_status = 'action_required')
+      FROM payments.provider_accounts AS account;
 $$;
 
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
@@ -3050,6 +3117,130 @@ AS $$
     ORDER BY candidate.priority;
 $$;
 
+CREATE FUNCTION payments.claim_provider_readiness_checks(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    provider_account_id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    provider TEXT,
+    external_account_reference TEXT,
+    credential_secret_reference TEXT,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired AS (
+        UPDATE payments.provider_accounts AS account
+           SET enabled = false,
+               readiness_status = 'action_required',
+               readiness_snapshot = jsonb_set(
+                   jsonb_set(account.readiness_snapshot, '{ready}', 'false'::jsonb, true),
+                   '{blocker_codes}', '["readiness_expired"]'::jsonb, true
+               ),
+               readiness_valid_until = NULL,
+               readiness_reconcile_at = NULL,
+               readiness_locked_by = NULL,
+               readiness_locked_at = NULL,
+               readiness_last_error = NULL,
+               updated_at = claimed_at
+         WHERE account.enabled
+           AND account.readiness_valid_until <= claimed_at
+        RETURNING account.id
+    ), claimable AS (
+        SELECT account.id
+        FROM payments.provider_accounts AS account
+        WHERE account.enabled
+          AND account.credential_secret_reference IS NOT NULL
+          AND account.readiness_valid_until > claimed_at
+          AND account.readiness_reconcile_at <= claimed_at
+          AND (
+              account.readiness_locked_at IS NULL
+              OR account.readiness_locked_at <= stale_before
+          )
+        ORDER BY account.readiness_reconcile_at, account.id
+        FOR UPDATE SKIP LOCKED
+        LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE payments.provider_accounts AS account
+       SET readiness_locked_by = worker_id,
+           readiness_locked_at = claimed_at,
+           readiness_reconcile_attempts = least(account.readiness_reconcile_attempts, 30) + 1
+      FROM claimable
+     WHERE account.id = claimable.id
+    RETURNING account.id, account.merchant_account_id, account.store_id, account.provider,
+              account.external_account_reference, account.credential_secret_reference,
+              account.readiness_reconcile_attempts;
+$$;
+
+CREATE FUNCTION payments.finish_provider_readiness_check(
+    requested_provider_account_id UUID,
+    worker_id UUID,
+    succeeded BOOLEAN,
+    ready BOOLEAN,
+    requested_readiness_snapshot JSONB,
+    observed_at TIMESTAMPTZ,
+    failure_message TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    UPDATE payments.provider_accounts AS account
+       SET enabled = CASE
+               WHEN succeeded THEN account.enabled AND ready
+               ELSE account.enabled
+           END,
+           readiness_status = CASE
+               WHEN succeeded AND ready THEN 'ready'
+               WHEN succeeded THEN 'action_required'
+               ELSE account.readiness_status
+           END,
+           readiness_snapshot = CASE
+               WHEN succeeded THEN requested_readiness_snapshot
+               ELSE account.readiness_snapshot
+           END,
+           readiness_checked_at = CASE
+               WHEN succeeded THEN observed_at
+               ELSE account.readiness_checked_at
+           END,
+           readiness_valid_until = CASE
+               WHEN succeeded AND ready THEN observed_at + INTERVAL '24 hours'
+               WHEN succeeded THEN NULL
+               ELSE account.readiness_valid_until
+           END,
+           readiness_reconcile_at = CASE
+               WHEN succeeded AND ready THEN observed_at + INTERVAL '6 hours'
+               WHEN succeeded THEN NULL
+               ELSE observed_at + make_interval(
+                   secs => least(power(2, greatest(account.readiness_reconcile_attempts - 1, 0))::integer, 3600)
+               )
+           END,
+           readiness_locked_by = NULL,
+           readiness_locked_at = NULL,
+           readiness_reconcile_attempts = CASE
+               WHEN succeeded THEN 0
+               ELSE account.readiness_reconcile_attempts
+           END,
+           readiness_last_error = CASE
+               WHEN succeeded THEN NULL
+               ELSE COALESCE(NULLIF(left(failure_message, 2000), ''), 'readiness check failed')
+           END,
+           updated_at = CASE WHEN succeeded THEN observed_at ELSE account.updated_at END
+     WHERE account.id = requested_provider_account_id
+       AND account.readiness_locked_by = worker_id
+    RETURNING true;
+$$;
+
 CREATE FUNCTION integration.claim_outbox_events(
     worker_id UUID,
     batch_size INTEGER,
@@ -3387,6 +3578,12 @@ $$;
 REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION payments.claim_provider_readiness_checks(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION payments.finish_provider_readiness_check(
+    UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -3406,6 +3603,7 @@ REVOKE ALL ON FUNCTION integration.finish_webhook_event(
     UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
+REVOKE ALL ON FUNCTION payments.provider_readiness_metrics() FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -3443,6 +3641,14 @@ GRANT EXECUTE
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION payments.claim_provider_readiness_checks(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION payments.finish_provider_readiness_check(
+    UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT
+)
+    TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
@@ -3467,6 +3673,7 @@ GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(
 ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION payments.provider_readiness_metrics() TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE

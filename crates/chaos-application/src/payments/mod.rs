@@ -19,8 +19,8 @@ use crate::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
         PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentProviderOnboarding, PaymentRepository, PaymentWebhookVerifier, QueueJob,
-        RefundDetail, ShopperActor,
+        PaymentProviderOnboarding, PaymentProviderReadinessQueue, PaymentRepository,
+        PaymentWebhookVerifier, QueueJob, RefundDetail, ShopperActor,
     },
 };
 
@@ -348,20 +348,29 @@ impl PaymentService {
 
 pub struct PaymentWorkers {
     queue: Arc<dyn IntegrationQueue>,
+    readiness_queue: Arc<dyn PaymentProviderReadinessQueue>,
     repository: Arc<dyn PaymentRepository>,
     providers: HashMap<String, Arc<dyn PaymentProvider>>,
+    onboarding: HashMap<String, Arc<dyn PaymentProviderOnboarding>>,
 }
 
 impl PaymentWorkers {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
+        readiness_queue: Arc<dyn PaymentProviderReadinessQueue>,
         repository: Arc<dyn PaymentRepository>,
         providers: impl IntoIterator<Item = Arc<dyn PaymentProvider>>,
+        onboarding: impl IntoIterator<Item = Arc<dyn PaymentProviderOnboarding>>,
     ) -> Self {
         Self {
             queue,
+            readiness_queue,
             repository,
             providers: providers
+                .into_iter()
+                .map(|provider| (provider.name().to_owned(), provider))
+                .collect(),
+            onboarding: onboarding
                 .into_iter()
                 .map(|provider| (provider.name().to_owned(), provider))
                 .collect(),
@@ -408,6 +417,35 @@ impl PaymentWorkers {
                 .map_err(|error| error.to_string());
             self.queue
                 .finish_webhook(worker_id, job.id, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
+
+    pub async fn run_readiness_batch(
+        &self,
+        worker_id: Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .readiness_queue
+            .claim_provider_readiness(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
+            .await?;
+        for job in &jobs {
+            let result = match self.onboarding.get(&job.provider) {
+                Some(provider) => provider
+                    .check_readiness(
+                        &job.external_account_reference,
+                        &job.credential_secret_reference,
+                        now,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("Provider onboarding adapter is not configured".into()),
+            };
+            self.readiness_queue
+                .finish_provider_readiness(worker_id, job.provider_account_id, result, now)
                 .await?;
         }
         Ok(jobs.len())

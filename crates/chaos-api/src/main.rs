@@ -115,6 +115,9 @@ async fn payment_worker_loop(
         if let Err(error) = workers.run_webhook_batch(worker_id, now, 50).await {
             tracing::warn!(%worker_id, %error, "payment webhook batch failed");
         }
+        if let Err(error) = workers.run_readiness_batch(worker_id, now, 25).await {
+            tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
+        }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 }

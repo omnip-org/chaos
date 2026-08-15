@@ -217,10 +217,17 @@ impl ApiState {
             webhook_verifiers,
             providers.clone(),
         );
-        let payment_provider_administration =
-            PaymentProviderAdministration::new(payment_repository.clone(), payment_onboarding);
-        let payment_workers =
-            PaymentWorkers::new(payment_repository.clone(), payment_repository, providers);
+        let payment_provider_administration = PaymentProviderAdministration::new(
+            payment_repository.clone(),
+            payment_onboarding.clone(),
+        );
+        let payment_workers = PaymentWorkers::new(
+            payment_repository.clone(),
+            payment_repository.clone(),
+            payment_repository,
+            providers,
+            payment_onboarding,
+        );
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
             infrastructure.runtime_pool(),
         ));

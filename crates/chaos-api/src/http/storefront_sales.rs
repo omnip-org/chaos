@@ -762,7 +762,7 @@ mod tests {
         payments::{PaymentProviderAdministration, PaymentWorkers},
         ports::{
             IntegrationQueue, PaymentProviderOnboarding, PaymentProviderReadiness,
-            PaymentRepository, ProviderCommandResult, QueueJob,
+            PaymentProviderReadinessQueue, PaymentRepository, ProviderCommandResult, QueueJob,
         },
     };
     use chaos_domain::{
@@ -812,6 +812,27 @@ mod tests {
                     "blocker_codes": ["account_incomplete"]
                 }),
                 checked_at,
+            })
+        }
+    }
+
+    struct UnavailableTestpayOnboarding;
+
+    #[async_trait]
+    impl PaymentProviderOnboarding for UnavailableTestpayOnboarding {
+        fn name(&self) -> &'static str {
+            "testpay"
+        }
+
+        async fn check_readiness(
+            &self,
+            _external_account_reference: &str,
+            _credential_secret_reference: &PaymentSecretReference,
+            _checked_at: time::OffsetDateTime,
+        ) -> Result<PaymentProviderReadiness, ApplicationError> {
+            Err(ApplicationError::Unavailable {
+                service: "testpay",
+                source: anyhow::anyhow!("simulated readiness dependency failure"),
             })
         }
     }
@@ -1080,9 +1101,12 @@ mod tests {
             "INSERT INTO payments.provider_accounts \
              (id, merchant_account_id, store_id, provider, external_account_reference, \
               credential_secret_reference, webhook_secret_reference, readiness_status, \
-              readiness_snapshot, readiness_checked_at, enabled) \
+              readiness_snapshot, readiness_checked_at, readiness_valid_until, \
+              readiness_reconcile_at, enabled) \
              VALUES ($1, $2, $3, 'testpay', $4, 'test://credential', 'test://webhook', \
-                     'ready', '{\"blocker_codes\":[]}'::jsonb, CURRENT_TIMESTAMP, true)",
+                     'ready', '{\"blocker_codes\":[]}'::jsonb, CURRENT_TIMESTAMP, \
+                     CURRENT_TIMESTAMP + INTERVAL '24 hours', \
+                     CURRENT_TIMESTAMP + INTERVAL '6 hours', true)",
         )
         .bind(testpay_provider_account_id)
         .bind(account_id.as_uuid())
@@ -1239,7 +1263,9 @@ mod tests {
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
             payment_repository.clone(),
+            payment_repository.clone(),
             Vec::new(),
+            vec![Arc::new(SandboxPaymentProvider) as Arc<dyn PaymentProviderOnboarding>],
         );
         let fulfillment_workers = state.fulfillment_workers.clone();
         let app = router(state);
@@ -1268,6 +1294,157 @@ mod tests {
         let ready_testpay = response_json(ready_testpay).await;
         assert_eq!(ready_testpay["data"]["readiness_status"], "ready");
         assert!(ready_testpay["data"]["readiness_checked_at"].is_string());
+        assert!(ready_testpay["data"]["readiness_valid_until"].is_string());
+        let first_reconciliation_at = test_clock.now() + time::Duration::minutes(1);
+        sqlx::query(
+            "UPDATE payments.provider_accounts SET readiness_reconcile_at = $2 WHERE id = $1",
+        )
+        .bind(testpay_provider_account_id)
+        .bind(first_reconciliation_at)
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let failing_readiness_workers = PaymentWorkers::new(
+            payment_repository.clone(),
+            payment_repository.clone(),
+            payment_repository.clone(),
+            Vec::new(),
+            vec![Arc::new(UnavailableTestpayOnboarding) as Arc<dyn PaymentProviderOnboarding>],
+        );
+        assert_eq!(
+            failing_readiness_workers
+                .run_readiness_batch(Uuid::now_v7(), first_reconciliation_at, 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let failed_reconciliation: (bool, i32, String, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT enabled, readiness_reconcile_attempts, readiness_last_error, \
+                    readiness_reconcile_at FROM payments.provider_accounts WHERE id = $1",
+        )
+        .bind(testpay_provider_account_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert!(failed_reconciliation.0);
+        assert_eq!(failed_reconciliation.1, 1);
+        assert_eq!(failed_reconciliation.2, "dependency testpay is unavailable");
+        assert_eq!(
+            failed_reconciliation.3,
+            first_reconciliation_at + time::Duration::seconds(1)
+        );
+        let readiness_metrics: (i64, i64, i64, i64) =
+            sqlx::query_as("SELECT * FROM payments.provider_readiness_metrics()")
+                .fetch_one(&runtime_pool)
+                .await
+                .unwrap();
+        assert_eq!(readiness_metrics.1, 1);
+        assert_eq!(
+            payment_workers
+                .run_readiness_batch(Uuid::now_v7(), failed_reconciliation.3, 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let abandoned_at = first_reconciliation_at + time::Duration::minutes(1);
+        sqlx::query(
+            "UPDATE payments.provider_accounts SET readiness_reconcile_at = $2 WHERE id = $1",
+        )
+        .bind(testpay_provider_account_id)
+        .bind(abandoned_at)
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let abandoned_worker = Uuid::now_v7();
+        let abandoned = PaymentProviderReadinessQueue::claim_provider_readiness(
+            payment_repository.as_ref(),
+            abandoned_worker,
+            10,
+            abandoned_at,
+            abandoned_at - time::Duration::minutes(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(abandoned.len(), 1);
+        assert_eq!(
+            payment_workers
+                .run_readiness_batch(
+                    Uuid::now_v7(),
+                    abandoned_at + time::Duration::minutes(2),
+                    10,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            PaymentProviderReadinessQueue::finish_provider_readiness(
+                payment_repository.as_ref(),
+                abandoned_worker,
+                abandoned[0].provider_account_id,
+                Err("former worker".into()),
+                abandoned_at + time::Duration::minutes(2),
+            )
+            .await
+            .is_err()
+        );
+        let expired_at = abandoned_at + time::Duration::hours(25);
+        sqlx::query(
+            "UPDATE payments.provider_accounts \
+             SET readiness_valid_until = $2, readiness_reconcile_at = $2 WHERE id = $1",
+        )
+        .bind(testpay_provider_account_id)
+        .bind(expired_at - time::Duration::seconds(1))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            payment_workers
+                .run_readiness_batch(Uuid::now_v7(), expired_at, 10)
+                .await
+                .unwrap(),
+            0
+        );
+        let expired_provider = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{provider_accounts_uri}/{testpay_provider_account_id}"),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        let expired_provider = response_json(expired_provider).await;
+        assert_eq!(expired_provider["data"]["enabled"], false);
+        assert_eq!(
+            expired_provider["data"]["readiness_status"],
+            "action_required"
+        );
+        assert_eq!(
+            expired_provider["data"]["readiness_blocker_codes"],
+            json!(["readiness_expired"])
+        );
+        let restored_testpay = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &format!("{provider_accounts_uri}/{testpay_provider_account_id}"),
+                Some("restore-testpay-readiness"),
+                Some(json!({
+                    "display_name": "TestPay",
+                    "credential_secret_reference": "test://credential",
+                    "webhook_secret_reference": "test://webhook",
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(restored_testpay.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(restored_testpay).await["data"]["readiness_status"],
+            "ready"
+        );
         let blocked_provider = app
             .clone()
             .oneshot(request(

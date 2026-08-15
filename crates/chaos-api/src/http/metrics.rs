@@ -35,6 +35,18 @@ async fn scrape(State(state): State<ApiState>) -> impl IntoResponse {
         ::metrics::gauge!("chaos_outbox_dead_letter").set(dead_letter as f64);
         ::metrics::gauge!("chaos_outbox_oldest_pending_seconds").set(oldest);
     }
+    if let Ok((due, retrying, expiring, action_required)) =
+        sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT * FROM payments.provider_readiness_metrics()",
+        )
+        .fetch_one(&pool)
+        .await
+    {
+        ::metrics::gauge!("chaos_payment_provider_readiness_due").set(due as f64);
+        ::metrics::gauge!("chaos_payment_provider_readiness_retrying").set(retrying as f64);
+        ::metrics::gauge!("chaos_payment_provider_readiness_expiring").set(expiring as f64);
+        ::metrics::gauge!("chaos_payment_provider_action_required").set(action_required as f64);
+    }
     (
         [(
             header::CONTENT_TYPE,

@@ -49,6 +49,7 @@ pub struct PaymentProviderAccountDetail {
     pub credentials_configured: bool,
     pub readiness_status: PaymentProviderReadinessStatus,
     pub readiness_checked_at: Option<OffsetDateTime>,
+    pub readiness_valid_until: Option<OffsetDateTime>,
     pub readiness_blocker_codes: Vec<String>,
     pub credential_rotation_expires_at: Option<OffsetDateTime>,
     pub webhook_rotation_expires_at: Option<OffsetDateTime>,
@@ -106,6 +107,16 @@ pub struct QueueJob {
     pub attempts: u32,
 }
 
+pub struct PaymentProviderReadinessJob {
+    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub provider: String,
+    pub external_account_reference: String,
+    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub attempts: u32,
+}
+
 pub struct ProviderCommand {
     pub event_type: String,
     pub aggregate_id: Uuid,
@@ -160,6 +171,25 @@ pub trait PaymentProviderOnboarding: Send + Sync {
         credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
         checked_at: OffsetDateTime,
     ) -> Result<PaymentProviderReadiness, ApplicationError>;
+}
+
+#[async_trait]
+pub trait PaymentProviderReadinessQueue: Send + Sync {
+    async fn claim_provider_readiness(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError>;
+
+    async fn finish_provider_readiness(
+        &self,
+        worker_id: Uuid,
+        provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
+        result: Result<PaymentProviderReadiness, String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]

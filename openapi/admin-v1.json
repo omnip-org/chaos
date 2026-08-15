@@ -2257,6 +2257,7 @@
           "credentials_configured": { "type": "boolean" },
           "readiness_status": { "type": "string", "enum": ["unchecked", "ready", "action_required"] },
           "readiness_checked_at": { "type": "string", "format": "date-time" },
+          "readiness_valid_until": { "type": "string", "format": "date-time", "description": "End of the current readiness validity window. Enabled accounts are rechecked before this time." },
           "readiness_blocker_codes": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" } },
           "credential_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the rollback window for the previous outbound credential reference, when a rotation is active." },
           "webhook_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the verification overlap window for the previous webhook secret reference, when a rotation is active." },

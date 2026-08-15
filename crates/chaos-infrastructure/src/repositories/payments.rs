@@ -7,10 +7,11 @@ use chaos_application::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
         PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessStatus,
-        PaymentRepository, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
-        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
-        RefundDetail, ShopperActor, VerifiedWebhookEvent,
+        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
+        PaymentProviderReadinessQueue, PaymentProviderReadinessStatus, PaymentRepository,
+        PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
+        ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, ShopperActor,
+        VerifiedWebhookEvent,
     },
 };
 use chaos_domain::{
@@ -52,6 +53,7 @@ type ProviderAccountRow = (
     bool,
     bool,
     String,
+    Option<OffsetDateTime>,
     Option<OffsetDateTime>,
     Value,
     Option<OffsetDateTime>,
@@ -273,7 +275,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, external_account_reference, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                    readiness_status, readiness_checked_at, \
+                    readiness_status, readiness_checked_at, readiness_valid_until, \
                     COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                     credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
@@ -343,8 +345,9 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
              (id, merchant_account_id, store_id, provider, display_name, \
               external_account_reference, credential_secret_reference, webhook_secret_reference, \
               readiness_status, readiness_snapshot, readiness_checked_at, \
+              readiness_valid_until, readiness_reconcile_at, \
               enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
         )
         .bind(account.id().as_uuid())
         .bind(account_id)
@@ -360,6 +363,16 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         ))
         .bind(readiness.map(|value| &value.configuration))
         .bind(readiness.map(|value| value.checked_at))
+        .bind(
+            readiness
+                .filter(|value| value.ready)
+                .map(|value| value.checked_at + time::Duration::hours(24)),
+        )
+        .bind(
+            readiness
+                .filter(|value| value.ready)
+                .map(|value| value.checked_at + time::Duration::hours(6)),
+        )
         .bind(account.enabled())
         .bind(actor.user_id().as_uuid())
         .execute(&mut *transaction)
@@ -433,6 +446,28 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                         WHEN $8::text IS NOT NULL THEN $10::timestamptz \
                         WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
                         ELSE readiness_checked_at END, \
+                    readiness_valid_until = CASE \
+                        WHEN $8::text = 'ready' THEN $10::timestamptz + INTERVAL '24 hours' \
+                        WHEN $8::text IS NOT NULL THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        ELSE readiness_valid_until END, \
+                    readiness_reconcile_at = CASE \
+                        WHEN $8::text = 'ready' THEN $10::timestamptz + INTERVAL '6 hours' \
+                        WHEN $8::text IS NOT NULL THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        ELSE readiness_reconcile_at END, \
+                    readiness_locked_by = CASE \
+                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN NULL ELSE readiness_locked_by END, \
+                    readiness_locked_at = CASE \
+                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN NULL ELSE readiness_locked_at END, \
+                    readiness_reconcile_attempts = CASE \
+                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN 0 ELSE readiness_reconcile_attempts END, \
+                    readiness_last_error = CASE \
+                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN NULL ELSE readiness_last_error END, \
                     enabled = $7, updated_at = CURRENT_TIMESTAMP \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
@@ -498,6 +533,84 @@ impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
 }
 
 #[async_trait]
+impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
+    async fn claim_provider_readiness(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError> {
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, String, i32)>(
+            "SELECT provider_account_id, merchant_account_id, store_id, provider, \
+                    external_account_reference, credential_secret_reference, attempts \
+             FROM payments.claim_provider_readiness_checks($1, $2, $3, $4)",
+        )
+        .bind(worker_id)
+        .bind(i32::from(limit.clamp(1, 100)))
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PaymentProviderReadinessJob {
+                provider_account_id: PaymentProviderAccountId::from_uuid(row.0),
+                merchant_account_id: row.1,
+                store_id: StoreId::from_uuid(row.2),
+                provider: row.3,
+                external_account_reference: row.4,
+                credential_secret_reference: PaymentSecretReference::new(
+                    "credential_secret_reference",
+                    row.5,
+                )?,
+                attempts: u32::try_from(row.6)
+                    .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+            })
+        })
+        .collect()
+    }
+
+    async fn finish_provider_readiness(
+        &self,
+        worker_id: Uuid,
+        provider_account_id: PaymentProviderAccountId,
+        result: Result<PaymentProviderReadiness, String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let (succeeded, ready, snapshot, checked_at, failure) = match result {
+            Ok(readiness) => (
+                true,
+                readiness.ready,
+                readiness.configuration,
+                readiness.checked_at,
+                String::new(),
+            ),
+            Err(failure) => (false, false, Value::Null, now, failure),
+        };
+        let finished: Option<bool> = sqlx::query_scalar(
+            "SELECT payments.finish_provider_readiness_check($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(provider_account_id.as_uuid())
+        .bind(worker_id)
+        .bind(succeeded)
+        .bind(ready)
+        .bind(snapshot)
+        .bind(checked_at)
+        .bind(failure)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(database_error)?;
+        if finished == Some(true) {
+            Ok(())
+        } else {
+            Err(queue_job_not_found())
+        }
+    }
+}
+
+#[async_trait]
 impl PaymentRepository for PostgresPaymentRepository {
     async fn create_attempt(
         &self,
@@ -539,6 +652,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         let provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM payments.provider_accounts \
              WHERE merchant_account_id = $1 AND store_id = $2 AND provider = $3 AND enabled \
+               AND readiness_status = 'ready' AND readiness_valid_until > CURRENT_TIMESTAMP \
              ORDER BY id LIMIT 1",
         )
         .bind(actor.merchant_account_id.as_uuid())
@@ -1696,7 +1810,7 @@ async fn load_provider_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, external_account_reference, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                readiness_status, readiness_checked_at, \
+                readiness_status, readiness_checked_at, readiness_valid_until, \
                 COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                 credential_rotation_expires_at, webhook_rotation_expires_at, \
                 created_at, updated_at FROM payments.provider_accounts \
@@ -1731,11 +1845,12 @@ fn provider_account_detail(
             _ => return Err(corrupt_state()),
         },
         readiness_checked_at: row.7,
-        readiness_blocker_codes: serde_json::from_value(row.8).map_err(|_| corrupt_state())?,
-        credential_rotation_expires_at: row.9,
-        webhook_rotation_expires_at: row.10,
-        created_at: row.11,
-        updated_at: row.12,
+        readiness_valid_until: row.8,
+        readiness_blocker_codes: serde_json::from_value(row.9).map_err(|_| corrupt_state())?,
+        credential_rotation_expires_at: row.10,
+        webhook_rotation_expires_at: row.11,
+        created_at: row.12,
+        updated_at: row.13,
     })
 }
 

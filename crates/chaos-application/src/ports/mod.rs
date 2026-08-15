@@ -52,9 +52,10 @@ pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,
     PaymentProviderAccountConfiguration, PaymentProviderAccountDetail, PaymentProviderAccountPage,
     PaymentProviderAccountRepository, PaymentProviderOnboarding, PaymentProviderReadiness,
-    PaymentProviderReadinessStatus, PaymentRepository, PaymentSecretResolver,
-    PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-    ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, VerifiedWebhookEvent,
+    PaymentProviderReadinessJob, PaymentProviderReadinessQueue, PaymentProviderReadinessStatus,
+    PaymentRepository, PaymentSecretResolver, PaymentWebhookConfigurationRepository,
+    PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand, ProviderCommandResult,
+    QueueJob, RefundDetail, VerifiedWebhookEvent,
 };
 pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use pricing_management::{

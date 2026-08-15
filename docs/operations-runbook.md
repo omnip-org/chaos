@@ -30,6 +30,8 @@ Create replacement values in the external secret manager, then update the Provid
 
 Store Provider configuration as disabled until external onboarding is expected to be complete, then request enablement through the Admin API. For Stripe, `action_required` blocker codes identify disabled charges or payouts, incomplete details, inactive card payments, outstanding requirements, or a fee/loss responsibility mismatch. Remediate the connected Account in Stripe and repeat the enable request. Do not bypass readiness in PostgreSQL: the selected direct-charge model requires the connected account to pay Stripe fees and carry payment-loss liability. Treat Stripe unavailability as a dependency incident and retry without changing credential references.
 
+Enabled accounts reconcile every six hours and assessments expire after 24 hours. Dependency failures retain the last valid assessment and retry with capped exponential backoff; abandoned claims are reclaimed after one minute. Alert on `chaos_payment_provider_readiness_retrying`, `chaos_payment_provider_readiness_expiring`, and `chaos_payment_provider_action_required`; inspect `readiness_last_error` under the affected merchant context. `readiness_expired` is fail-closed and requires a successful Admin enable request after the dependency or connected Account is repaired.
+
 ## Rollback
 
 Shift traffic to the healthy adjacent version with `scripts/rolling-update.sh`. Application rollback is allowed only while database changes remain backward compatible. Otherwise ship a forward fix. Confirm readiness, error rate, queue age, checkout success, and payment failures before declaring recovery.

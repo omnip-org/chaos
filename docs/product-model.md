@@ -81,7 +81,7 @@ A Store-owned shopping profile linked to one verified global User. Customers hol
 
 ### PaymentProviderAccount
 
-A Store-owned connection to one external payment provider account. Its provider identity and external mapping are immutable, while administrators may replace write-only secret-manager references and request enablement for new payment creation. Enablement is effective only after a provider capability and responsibility assessment reports ready; otherwise the account remains disabled with bounded remediation codes. Raw provider credentials and provider identity data are never part of the product model or HTTP response.
+A Store-owned connection to one external payment provider account. Its provider identity and external mapping are immutable, while administrators may replace write-only secret-manager references and request enablement for new payment creation. Enablement is effective only while a provider capability and responsibility assessment is ready and unexpired; otherwise the account remains disabled with bounded remediation codes. Raw provider credentials and provider identity data are never part of the product model or HTTP response.
 
 ## Isolation rules
 
