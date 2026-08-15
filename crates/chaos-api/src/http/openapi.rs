@@ -88,6 +88,10 @@ mod tests {
             ("/orders/{order_id}", "get"),
             ("/orders/{order_id}/payment-attempts", "post"),
             ("/payment-attempts/{payment_attempt_id}", "get"),
+            (
+                "/payment-attempts/{payment_attempt_id}/client-action",
+                "get",
+            ),
         ] {
             let parameters = specification["paths"][path][method]["parameters"]
                 .as_array()
@@ -155,7 +159,10 @@ mod tests {
         assert_eq!(specification["servers"][0]["url"], "/webhooks/v1");
         assert_eq!(
             specification["paths"]["/payments/{provider}"]["post"]["security"],
-            serde_json::json!([{ "paymentSignature": [] }])
+            serde_json::json!([
+                { "paymentSignature": [] },
+                { "stripeSignature": [] }
+            ])
         );
 
         fn visit(value: &Value, root: &Value) {

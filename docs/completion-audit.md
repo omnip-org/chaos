@@ -10,21 +10,23 @@ This audit records current evidence and open gates. A passing test for an implem
 | 1 — Identity and Merchant | Complete for the declared phase scope | — |
 | 2 — Catalog and Pricing | Complete for the declared phase scope | — |
 | 3 — Selling | Complete for the declared phase scope | Recoverable automatic Checkout and reservation expiry closes the final Phase 3 gate. Customer association and Order history belong to Phase 7. |
-| 4 — Payments | Partial | Store-owned Provider administration, deterministic enabled-provider resolution, the sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; a production adapter remains open. |
+| 4 — Payments | Complete for the declared phase scope | Store-owned Provider administration, sandbox and Stripe production adapters, possession-bound client handoff, signed webhooks, immutable provider-result persistence, stale processing-lease recovery, and bounded graceful worker drain are verified. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
-| 8–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
+| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch and webhook foundations are delivered. Automated onboarding readiness, overlap rotation, reconciliation, Resend, and the first shipping adapter remain open. |
+| 9–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 4 evidence
 
 | Criterion | Evidence |
 | --- | --- |
-| Provider boundary | `PaymentProvider` is an application port and the sandbox implementation lives in infrastructure. Provider SDK and credential types do not enter Sales domain models. |
+| Provider boundary | `PaymentProvider`, `PaymentSecretResolver`, and webhook verification are application ports. Sandbox and Stripe implementations live in infrastructure; Stripe wire and credential types do not enter Sales domain models. |
 | Provider administration | ADR 0012 defines immutable provider identity, Store ownership, write-only secret references, and enable/disable behavior. Domain tests validate canonical provider names and secret-manager references. The real-router PostgreSQL matrix covers create, uniqueness conflict, list, secret non-disclosure, update, disabled checkout resolution, and cross-Store denial. |
-| Payment state | Domain tests cover ordered Payment Attempt and Refund transitions, immutable provider references, exact settlement currency, and refund bounds. The PostgreSQL matrix covers idempotent creation and capture-to-Order reconciliation. |
+| Payment state | Domain tests cover ordered Payment Attempt and Refund transitions, immutable provider references, exact settlement currency, and refund bounds. Provider command results bind immutable references before queue completion. The PostgreSQL matrix covers command preparation, payment and refund result persistence, possession-bound client handoff, idempotent creation, and capture-to-Order reconciliation. |
 | Delivery reliability | Verified webhooks enter a deduplicated inbox; provider commands enter a transactional outbox. Runtime tests cover concurrent claims, stale lease recovery, capped retry, dead letters, and former-owner rejection. |
-| Open gate | A production payment adapter, provider-specific onboarding decision, external secret resolution, and live signed-webhook verification remain required. |
+| Stripe production adapter | ADR 0013 selects Connect direct charges and records merchant-of-record, funds-flow, fee, refund, dispute, and payout consequences. Real HTTP tests verify PaymentIntent creation, client-secret retrieval, Refund creation, Connect and API-version headers, stable idempotency keys, exact form encoding, timestamp tolerance, and signature mapping. The environment secret adapter accepts only constrained payment-secret references. |
+| Phase evidence | A clean PostgreSQL 18 bootstrap and all 8 API plus 16 infrastructure integration tests pass with the runtime role. Normal workspace tests, Clippy with warnings denied, formatting, language, and OpenAPI reference checks also pass. |
 
 ## Current Phase 5 evidence
 

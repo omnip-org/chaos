@@ -1,6 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
+use url::Url;
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -19,6 +20,7 @@ pub struct Settings {
     pub smtp_url: String,
     pub email_from: String,
     pub payment_webhook_secret: String,
+    pub stripe_api_base_url: Url,
     pub shopper_token_active_key_id: String,
     pub shopper_token_active_secret: String,
     pub shopper_token_previous_key: Option<(String, String)>,
@@ -53,6 +55,7 @@ impl Settings {
             smtp_url: required("SMTP_URL")?,
             email_from: required("EMAIL_FROM")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
+            stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
             shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
             shopper_token_previous_key: optional_pair(

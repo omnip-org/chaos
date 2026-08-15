@@ -12,7 +12,7 @@
         "operationId": "receivePaymentWebhook",
         "tags": ["Payment webhooks"],
         "summary": "Verify and enqueue a payment provider event",
-        "security": [{ "paymentSignature": [] }],
+        "security": [{ "paymentSignature": [] }, { "stripeSignature": [] }],
         "parameters": [
           {
             "name": "provider",
@@ -23,7 +23,10 @@
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentWebhookEvent" } } }
+          "content": { "application/json": { "schema": { "oneOf": [
+            { "$ref": "#/components/schemas/PaymentWebhookEvent" },
+            { "$ref": "#/components/schemas/StripeWebhookEvent" }
+          ] } } }
         },
         "responses": {
           "202": {
@@ -44,6 +47,12 @@
         "in": "header",
         "name": "x-payment-signature",
         "description": "Base64-encoded HMAC-SHA256 of the exact request body."
+      },
+      "stripeSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Stripe-Signature",
+        "description": "Stripe timestamped v1 signature over the exact request body."
       }
     },
     "schemas": {
@@ -55,12 +64,23 @@
           "id": { "type": "string", "minLength": 1, "maxLength": 255 },
           "event_type": {
             "type": "string",
-            "enum": ["payment.authorized", "payment.captured", "payment.failed", "refund.succeeded", "refund.failed"]
+            "enum": ["payment.authorized", "payment.captured", "payment.failed", "payment.cancelled", "refund.succeeded", "refund.failed"]
           },
           "account": { "type": "string", "minLength": 1, "maxLength": 255 },
           "object": { "type": "string", "minLength": 1, "maxLength": 255 },
           "aggregate_id": { "type": "string", "format": "uuid" },
           "failure_code": { "type": "string", "minLength": 1, "maxLength": 255 }
+        }
+      },
+      "StripeWebhookEvent": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "type", "account", "data"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "minLength": 1 },
+          "account": { "type": "string", "pattern": "^acct_[A-Za-z0-9_]+$" },
+          "data": { "type": "object" }
         }
       },
       "WebhookReceipt": {

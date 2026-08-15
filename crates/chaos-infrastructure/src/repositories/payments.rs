@@ -4,10 +4,12 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
-        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentRepository, PaymentWebhookVerifier, ProviderCommand, ProviderCommandResult,
-        QueueJob, RefundDetail, ShopperActor, VerifiedWebhookEvent,
+        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
+        PaymentClientAction, PaymentProvider, PaymentProviderAccountDetail,
+        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentRepository,
+        PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
+        ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, ShopperActor,
+        VerifiedWebhookEvent,
     },
 };
 use chaos_domain::{
@@ -22,6 +24,7 @@ use chaos_domain::{
     sales::{CheckoutId, Order, OrderId, OrderStatus},
 };
 use hmac::{Hmac, Mac};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -84,6 +87,22 @@ impl PaymentProvider for SandboxPaymentProvider {
             provider_reference: format!("testpay_{}", command.aggregate_id.simple()),
         })
     }
+
+    async fn client_action(
+        &self,
+        command: ProviderClientActionCommand,
+    ) -> Result<PaymentClientAction, ApplicationError> {
+        Ok(PaymentClientAction {
+            provider: self.name().into(),
+            kind: "confirm_payment",
+            public_key: SecretString::from("testpay_public".to_owned()),
+            client_token: SecretString::from(format!(
+                "{}_client_token",
+                command.provider_reference
+            )),
+            account_reference: command.external_account_reference,
+        })
+    }
 }
 
 impl HmacPaymentWebhookVerifier {
@@ -98,8 +117,13 @@ impl HmacPaymentWebhookVerifier {
     }
 }
 
+#[async_trait]
 impl PaymentWebhookVerifier for HmacPaymentWebhookVerifier {
-    fn verify(
+    fn name(&self) -> &'static str {
+        "testpay"
+    }
+
+    async fn verify(
         &self,
         provider: &str,
         signature: &str,
@@ -372,6 +396,30 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
             .ok_or_else(corrupt_state)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(value)
+    }
+}
+
+#[async_trait]
+impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
+    async fn webhook_secret_reference(
+        &self,
+        provider: &str,
+        external_account_reference: &str,
+    ) -> Result<Option<PaymentSecretReference>, ApplicationError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT secret_reference \
+             FROM payments.resolve_provider_webhook_secret_reference($1, $2)",
+        )
+        .bind(provider)
+        .bind(external_account_reference)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?
+        .map(|reference| {
+            PaymentSecretReference::new("webhook_secret_reference", reference)
+                .map_err(ApplicationError::from)
+        })
+        .transpose()
     }
 }
 
@@ -706,6 +754,194 @@ impl PaymentRepository for PostgresPaymentRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
+
+    async fn prepare_provider_command(
+        &self,
+        job: &QueueJob,
+    ) -> Result<ProviderCommand, ApplicationError> {
+        let aggregate_id = outbox_aggregate_id(job)?;
+        let provider = outbox_provider(job)?;
+        let mut transaction = self.begin_context(None, job.merchant_account_id).await?;
+        let row = if job.event_type == "payment.create_requested" {
+            sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
+                "SELECT attempt.amount_minor, attempt.currency::text, \
+                        account.external_account_reference, account.credential_secret_reference, \
+                        NULL::text \
+                 FROM payments.payment_attempts AS attempt \
+                 INNER JOIN payments.provider_accounts AS account \
+                   ON account.merchant_account_id = attempt.merchant_account_id \
+                  AND account.store_id = attempt.store_id \
+                  AND account.id = attempt.provider_account_id \
+                 WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 \
+                   AND attempt.id = $3 AND account.provider = $4 \
+                   AND account.credential_secret_reference IS NOT NULL",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .bind(provider)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        } else if job.event_type == "refund.create_requested" {
+            sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
+                "SELECT refund.amount_minor, refund.currency::text, \
+                        account.external_account_reference, account.credential_secret_reference, \
+                        attempt.provider_reference \
+                 FROM payments.refunds AS refund \
+                 INNER JOIN payments.payment_attempts AS attempt \
+                   ON attempt.merchant_account_id = refund.merchant_account_id \
+                  AND attempt.store_id = refund.store_id \
+                  AND attempt.id = refund.payment_attempt_id \
+                 INNER JOIN payments.provider_accounts AS account \
+                   ON account.merchant_account_id = attempt.merchant_account_id \
+                  AND account.store_id = attempt.store_id \
+                  AND account.id = attempt.provider_account_id \
+                 WHERE refund.merchant_account_id = $1 AND refund.store_id = $2 \
+                   AND refund.id = $3 AND account.provider = $4 \
+                   AND account.credential_secret_reference IS NOT NULL",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .bind(provider)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        } else {
+            return Err(invalid_outbox_payload());
+        }
+        .ok_or_else(provider_unavailable)?;
+        transaction.commit().await.map_err(database_error)?;
+        if row.0 != outbox_amount(job)? || row.1 != outbox_currency(job)? {
+            return Err(invalid_outbox_payload());
+        }
+        if job.event_type == "refund.create_requested" && row.4.is_none() {
+            return Err(ApplicationError::Conflict {
+                code: "payment_provider_reference_missing",
+                message: "the captured Payment Attempt has no provider reference",
+            });
+        }
+        Ok(ProviderCommand {
+            event_type: job.event_type.clone(),
+            aggregate_id,
+            amount_minor: row.0,
+            currency: CurrencyCode::parse(&row.1)?,
+            idempotency_key: job.id.to_string(),
+            external_account_reference: row.2,
+            credential_secret_reference: PaymentSecretReference::new(
+                "credential_secret_reference",
+                row.3,
+            )?,
+            payment_provider_reference: row.4,
+        })
+    }
+
+    async fn record_provider_result(
+        &self,
+        job: &QueueJob,
+        result: &ProviderCommandResult,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        if result.provider_reference.trim().is_empty()
+            || result.provider_reference.chars().count() > 255
+        {
+            return Err(provider_invalid_response());
+        }
+        let aggregate_id = outbox_aggregate_id(job)?;
+        let mut transaction = self.begin_context(None, job.merchant_account_id).await?;
+        let rows = if job.event_type == "payment.create_requested" {
+            sqlx::query(
+                "UPDATE payments.payment_attempts \
+                 SET provider_reference = COALESCE(provider_reference, $4), \
+                     updated_at = CASE WHEN provider_reference IS NULL THEN $5 ELSE updated_at END \
+                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+                   AND (provider_reference IS NULL OR provider_reference = $4)",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .bind(&result.provider_reference)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .rows_affected()
+        } else if job.event_type == "refund.create_requested" {
+            sqlx::query(
+                "UPDATE payments.refunds \
+                 SET provider_reference = COALESCE(provider_reference, $4), \
+                     updated_at = CASE WHEN provider_reference IS NULL THEN $5 ELSE updated_at END \
+                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+                   AND (provider_reference IS NULL OR provider_reference = $4)",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .bind(&result.provider_reference)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .rows_affected()
+        } else {
+            return Err(invalid_outbox_payload());
+        };
+        if rows != 1 {
+            return Err(provider_reference_mismatch());
+        }
+        transaction.commit().await.map_err(database_error)?;
+        Ok(())
+    }
+
+    async fn client_action_command(
+        &self,
+        shopper: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+    ) -> Result<Option<(String, ProviderClientActionCommand)>, ApplicationError> {
+        let actor = &shopper.machine;
+        let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        let row = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT account.provider, attempt.provider_reference, \
+                    account.external_account_reference, account.credential_secret_reference \
+             FROM payments.payment_attempts AS attempt \
+             INNER JOIN payments.provider_accounts AS account \
+               ON account.merchant_account_id = attempt.merchant_account_id \
+              AND account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
+             INNER JOIN sales.orders AS sales_order \
+               ON sales_order.merchant_account_id = attempt.merchant_account_id \
+              AND sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+             WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 \
+               AND attempt.id = $3 AND attempt.shopper_id = $4 \
+               AND sales_order.sales_channel_id = $5 AND attempt.status IN ('pending', 'authorized') \
+               AND attempt.provider_reference IS NOT NULL \
+               AND account.credential_secret_reference IS NOT NULL",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(attempt_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        row.map(|row| {
+            Ok((
+                row.0,
+                ProviderClientActionCommand {
+                    provider_reference: row.1,
+                    external_account_reference: row.2,
+                    credential_secret_reference: PaymentSecretReference::new(
+                        "credential_secret_reference",
+                        row.3,
+                    )?,
+                },
+            ))
+        })
+        .transpose()
+    }
 }
 
 #[async_trait]
@@ -973,12 +1209,15 @@ async fn apply_payment_event(
     let changed = match event_type {
         "payment.authorized" => attempt.authorize(provider_reference)?,
         "payment.captured" => {
-            if attempt.provider_reference() != Some(provider_reference.as_str()) {
+            if attempt.status() == PaymentAttemptStatus::Pending {
+                attempt.authorize(provider_reference)?;
+            } else if attempt.provider_reference() != Some(provider_reference.as_str()) {
                 return Err(provider_reference_mismatch());
             }
             attempt.capture()?
         }
         "payment.failed" => attempt.fail(Some(provider_reference))?,
+        "payment.cancelled" => attempt.cancel(Some(provider_reference))?,
         _ => return Err(corrupt_webhook_payload()),
     };
     if !changed {
@@ -1311,6 +1550,46 @@ fn invalid_snapshot(error: serde_json::Error) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "invalid payment idempotency snapshot: {error}"
     ))
+}
+
+fn outbox_aggregate_id(job: &QueueJob) -> Result<Uuid, ApplicationError> {
+    job.payload
+        .get("aggregate_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(invalid_outbox_payload)
+}
+
+fn outbox_provider(job: &QueueJob) -> Result<&str, ApplicationError> {
+    job.payload
+        .get("provider")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_outbox_payload)
+}
+
+fn outbox_amount(job: &QueueJob) -> Result<i64, ApplicationError> {
+    job.payload
+        .get("amount_minor")
+        .and_then(Value::as_i64)
+        .ok_or_else(invalid_outbox_payload)
+}
+
+fn outbox_currency(job: &QueueJob) -> Result<&str, ApplicationError> {
+    job.payload
+        .get("currency")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_outbox_payload)
+}
+
+fn invalid_outbox_payload() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!("payment outbox payload is invalid"))
+}
+
+fn provider_invalid_response() -> ApplicationError {
+    ApplicationError::Unavailable {
+        service: "payment_provider",
+        source: anyhow::anyhow!("provider returned an invalid reference"),
+    }
 }
 
 fn order_not_found(order_id: OrderId) -> ApplicationError {

@@ -264,7 +264,10 @@ impl PaymentAttempt {
         self.advance(PaymentAttemptStatus::Failed)
     }
 
-    pub fn cancel(&mut self) -> Result<bool, DomainError> {
+    pub fn cancel(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
+        if let Some(reference) = provider_reference {
+            self.bind_provider_reference(reference)?;
+        }
         self.advance(PaymentAttemptStatus::Cancelled)
     }
 
@@ -490,6 +493,19 @@ mod tests {
         assert!(attempt.authorize("provider-payment-2".into()).is_err());
         assert!(attempt.capture().unwrap());
         assert!(attempt.fail(None).is_err());
+
+        let mut cancelled = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
+        assert!(
+            cancelled
+                .cancel(Some("provider-cancelled-1".into()))
+                .unwrap()
+        );
+        assert_eq!(cancelled.provider_reference(), Some("provider-cancelled-1"));
+        assert!(
+            cancelled
+                .cancel(Some("provider-cancelled-2".into()))
+                .is_err()
+        );
     }
 
     #[test]

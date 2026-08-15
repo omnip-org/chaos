@@ -2,7 +2,8 @@ use axum::{
     Router,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header::CACHE_CONTROL},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chaos_application::{
@@ -11,13 +12,17 @@ use chaos_application::{
         CreatePaymentAttemptInput, CreatePaymentProviderAccountInput, CreateRefundInput,
         UpdatePaymentProviderAccountInput,
     },
-    ports::{IdempotencyRequest, PaymentAttemptDetail, PaymentProviderAccountDetail, RefundDetail},
+    ports::{
+        IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction,
+        PaymentProviderAccountDetail, RefundDetail,
+    },
 };
 use chaos_domain::{
     merchant::{MerchantAccountId, StoreId},
     payments::{PaymentAttemptId, PaymentProviderAccountId},
     sales::OrderId,
 };
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -37,6 +42,10 @@ pub(super) fn routes() -> Router<ApiState> {
         .route(
             "/store/v1/payment-attempts/{payment_attempt_id}",
             get(get_attempt),
+        )
+        .route(
+            "/store/v1/payment-attempts/{payment_attempt_id}/client-action",
+            get(get_client_action),
         )
         .route(
             "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds",
@@ -141,6 +150,15 @@ struct PaymentAttemptData {
     failure_code: Option<String>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct PaymentClientActionData {
+    provider: String,
+    r#type: &'static str,
+    public_key: String,
+    client_token: String,
+    account_reference: String,
 }
 
 #[derive(Serialize)]
@@ -312,6 +330,22 @@ async fn get_attempt(
     Ok(ApiResponse::ok(attempt_data(attempt)?))
 }
 
+async fn get_client_action(
+    State(state): State<ApiState>,
+    CheckoutShopper(actor): CheckoutShopper,
+    ApiPath(path): ApiPath<AttemptPath>,
+) -> Result<Response, ApiError> {
+    let action = state
+        .payment_service
+        .get_client_action(&actor, PaymentAttemptId::from_uuid(path.payment_attempt_id))
+        .await?;
+    let mut response = ApiResponse::ok(client_action_data(action)).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
 async fn create_refund(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -344,8 +378,13 @@ async fn receive_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<ApiResponse<WebhookReceiptData>, ApiError> {
+    let signature_header = if path.provider == "stripe" {
+        "stripe-signature"
+    } else {
+        "x-payment-signature"
+    };
     let signature = headers
-        .get("x-payment-signature")
+        .get(signature_header)
         .and_then(|value| value.to_str().ok())
         .ok_or(ApplicationError::Unauthorized)?;
     let accepted = state
@@ -356,6 +395,16 @@ async fn receive_webhook(
         StatusCode::ACCEPTED,
         WebhookReceiptData { accepted },
     ))
+}
+
+fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
+    PaymentClientActionData {
+        provider: value.provider,
+        r#type: value.kind,
+        public_key: value.public_key.expose_secret().to_owned(),
+        client_token: value.client_token.expose_secret().to_owned(),
+        account_reference: value.account_reference,
+    }
 }
 
 fn body_request<T: Serialize>(

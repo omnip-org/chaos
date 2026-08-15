@@ -20,9 +20,9 @@ Owners and administrators may create and update Provider accounts through the Ad
 
 The references identify values in a deployment secret manager. They are not credentials, and raw credentials are never accepted or persisted by this API. References are write-only in OpenAPI and never appear in response DTOs, logs, events, or idempotency snapshots. Responses expose only `credentials_configured`.
 
-Storefront Payment Attempt creation continues to accept a provider choice, but succeeds only when the current Store has exactly one enabled matching Provider account. Payment Attempts retain the Provider account foreign key. Webhook tenant resolution uses the immutable provider and external account mapping and only resolves active merchant accounts, Stores, and Provider accounts.
+Storefront Payment Attempt creation continues to accept a provider choice, but succeeds only when the current Store has exactly one enabled matching Provider account. Payment Attempts retain the Provider account foreign key. Webhook tenant resolution uses the immutable provider and external account mapping. Provider, Store, and merchant lifecycle changes do not suppress authenticated financial callbacks for existing activity.
 
-Updating a Provider account replaces its two secret references atomically and may enable or disable new payment creation. Existing Payment Attempts keep their Provider account relationship. Provider-specific onboarding state, dual-reference overlap rotation, and secret retrieval belong to the production adapter increment.
+Updating a Provider account replaces its two secret references atomically and may enable or disable new payment creation. Disabling blocks only new Payment Attempts. Existing Payment Attempts retain dispatch, client-action, refund, and signed-webhook access so in-flight money movement can converge. Existing Payment Attempts keep their Provider account relationship. Provider-specific onboarding state and dual-reference overlap rotation belong to later provider-integration increments.
 
 ## Consequences
 

@@ -53,6 +53,7 @@ use chaos_infrastructure::{
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
+    stripe::{EnvironmentPaymentSecretResolver, StripePaymentProvider, StripeWebhookVerifier},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::{
@@ -185,20 +186,33 @@ impl ApiState {
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let payment_service = PaymentService::new(
-            payment_repository.clone(),
+        let payment_secrets = Arc::new(EnvironmentPaymentSecretResolver);
+        let providers = vec![
+            Arc::new(SandboxPaymentProvider) as Arc<dyn chaos_application::ports::PaymentProvider>,
+            Arc::new(StripePaymentProvider::new(
+                settings.stripe_api_base_url.clone(),
+                settings.dependency_timeout,
+                payment_secrets.clone(),
+            )?) as Arc<dyn chaos_application::ports::PaymentProvider>,
+        ];
+        let webhook_verifiers = vec![
             Arc::new(HmacPaymentWebhookVerifier::new(
                 settings.payment_webhook_secret.as_bytes(),
-            )?),
+            )?) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
+            Arc::new(StripeWebhookVerifier::new(
+                payment_repository.clone(),
+                payment_secrets,
+            )) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
+        ];
+        let payment_service = PaymentService::new(
+            payment_repository.clone(),
+            webhook_verifiers,
+            providers.clone(),
         );
         let payment_provider_administration =
             PaymentProviderAdministration::new(payment_repository.clone());
-        let payment_workers = PaymentWorkers::new(
-            payment_repository.clone(),
-            payment_repository,
-            [Arc::new(SandboxPaymentProvider)
-                as Arc<dyn chaos_application::ports::PaymentProvider>],
-        );
+        let payment_workers =
+            PaymentWorkers::new(payment_repository.clone(), payment_repository, providers);
         let fulfillment_management = FulfillmentManagement::new(Arc::new(
             PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
         ));
@@ -306,6 +320,7 @@ mod tests {
             smtp_url: "smtp://localhost:1025".into(),
             email_from: "Chaos <no-reply@localhost>".into(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
+            stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,

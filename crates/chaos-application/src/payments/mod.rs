@@ -16,10 +16,10 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
-        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentRepository, PaymentWebhookVerifier, ProviderCommand, QueueJob, RefundDetail,
-        ShopperActor,
+        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
+        PaymentClientAction, PaymentProvider, PaymentProviderAccountDetail,
+        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentRepository,
+        PaymentWebhookVerifier, QueueJob, RefundDetail, ShopperActor,
     },
 };
 
@@ -157,17 +157,26 @@ impl PaymentProviderAdministration {
 
 pub struct PaymentService {
     repository: Arc<dyn PaymentRepository>,
-    verifier: Arc<dyn PaymentWebhookVerifier>,
+    verifiers: HashMap<String, Arc<dyn PaymentWebhookVerifier>>,
+    providers: HashMap<String, Arc<dyn PaymentProvider>>,
 }
 
 impl PaymentService {
     pub fn new(
         repository: Arc<dyn PaymentRepository>,
-        verifier: Arc<dyn PaymentWebhookVerifier>,
+        verifiers: impl IntoIterator<Item = Arc<dyn PaymentWebhookVerifier>>,
+        providers: impl IntoIterator<Item = Arc<dyn PaymentProvider>>,
     ) -> Self {
         Self {
             repository,
-            verifier,
+            verifiers: verifiers
+                .into_iter()
+                .map(|verifier| (verifier.name().to_owned(), verifier))
+                .collect(),
+            providers: providers
+                .into_iter()
+                .map(|provider| (provider.name().to_owned(), provider))
+                .collect(),
         }
     }
 
@@ -201,6 +210,37 @@ impl PaymentService {
             })
     }
 
+    pub async fn get_client_action(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+    ) -> Result<PaymentClientAction, ApplicationError> {
+        require_checkout_key(&actor.machine)?;
+        self.repository
+            .get_attempt(actor, attempt_id)
+            .await?
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "payment_attempt",
+                id: attempt_id.as_uuid().to_string(),
+            })?;
+        let (provider_name, command) = self
+            .repository
+            .client_action_command(actor, attempt_id)
+            .await?
+            .ok_or(ApplicationError::Conflict {
+                code: "payment_client_action_not_ready",
+                message: "the Payment Attempt client action is not available",
+            })?;
+        let provider = self
+            .providers
+            .get(&provider_name)
+            .ok_or(ApplicationError::Unavailable {
+                service: "payment_provider",
+                source: anyhow::anyhow!("provider adapter is not configured"),
+            })?;
+        provider.client_action(command).await
+    }
+
     pub async fn create_refund(
         &self,
         input: CreateRefundInput,
@@ -224,9 +264,16 @@ impl PaymentService {
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<bool, ApplicationError> {
-        let event = self
-            .verifier
-            .verify(provider, signature, payload, received_at)?;
+        let verifier = self
+            .verifiers
+            .get(provider)
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "payment_provider",
+                id: provider.to_owned(),
+            })?;
+        let event = verifier
+            .verify(provider, signature, payload, received_at)
+            .await?;
         self.repository.ingest_webhook(&event).await
     }
 }
@@ -265,7 +312,7 @@ impl PaymentWorkers {
             .await?;
         for job in &jobs {
             let result = self
-                .execute_provider_job(job)
+                .execute_provider_job(job, now)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
@@ -298,7 +345,11 @@ impl PaymentWorkers {
         Ok(jobs.len())
     }
 
-    async fn execute_provider_job(&self, job: &QueueJob) -> Result<(), ApplicationError> {
+    async fn execute_provider_job(
+        &self,
+        job: &QueueJob,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
         let provider_name = job
             .payload
             .get("provider")
@@ -311,31 +362,10 @@ impl PaymentWorkers {
                 service: "payment_provider",
                 source: anyhow::anyhow!("provider adapter is not configured"),
             })?;
-        let aggregate_id = job
-            .payload
-            .get("aggregate_id")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .ok_or_else(invalid_outbox_payload)?;
-        let amount_minor = job
-            .payload
-            .get("amount_minor")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or_else(invalid_outbox_payload)?;
-        let currency_text = job
-            .payload
-            .get("currency")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(invalid_outbox_payload)?;
-        let currency = chaos_domain::CurrencyCode::parse(currency_text)?;
-        provider
-            .execute(ProviderCommand {
-                event_type: job.event_type.clone(),
-                aggregate_id,
-                amount_minor,
-                currency,
-                idempotency_key: job.id.to_string(),
-            })
+        let command = self.repository.prepare_provider_command(job).await?;
+        let result = provider.execute(command).await?;
+        self.repository
+            .record_provider_result(job, &result, now)
             .await?;
         Ok(())
     }

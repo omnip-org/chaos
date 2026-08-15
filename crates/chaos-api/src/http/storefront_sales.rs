@@ -752,7 +752,10 @@ mod tests {
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
     use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
-    use chaos_application::{payments::PaymentWorkers, ports::IntegrationQueue};
+    use chaos_application::{
+        payments::PaymentWorkers,
+        ports::{IntegrationQueue, PaymentRepository, ProviderCommandResult, QueueJob},
+    };
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         fulfillment::ShippingServiceId,
@@ -1037,8 +1040,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO payments.provider_accounts \
-             (id, merchant_account_id, store_id, provider, external_account_reference) \
-             VALUES ($1, $2, $3, 'testpay', $4)",
+             (id, merchant_account_id, store_id, provider, external_account_reference, \
+              credential_secret_reference, webhook_secret_reference) \
+             VALUES ($1, $2, $3, 'testpay', $4, 'test://credential', 'test://webhook')",
         )
         .bind(Uuid::now_v7())
         .bind(account_id.as_uuid())
@@ -1162,6 +1166,28 @@ mod tests {
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
+        assert_eq!(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+                payment_repository.as_ref(),
+                "testpay",
+                &provider_account_reference,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .expose_reference(),
+            "test://webhook"
+        );
+        assert!(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+                payment_repository.as_ref(),
+                "testpay",
+                "unknown-account",
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
             payment_repository.clone(),
@@ -1249,6 +1275,18 @@ mod tests {
         assert_eq!(
             response_json(disabled_stripe).await["data"]["enabled"],
             false
+        );
+        assert_eq!(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+                payment_repository.as_ref(),
+                "stripe",
+                &format!("acct_stripe_{suffix}"),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .expose_reference(),
+            "vault://payments/stripe/webhook-secret-v2"
         );
 
         let cross_store_provider = app
@@ -1981,6 +2019,65 @@ mod tests {
         let payment_attempt = response_json(payment_attempt).await;
         let payment_attempt_id = payment_attempt["data"]["id"].as_str().unwrap();
         assert_eq!(payment_attempt["data"]["status"], "pending");
+        let payment_outbox = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
+             FROM integration.outbox_events \
+             WHERE aggregate_id = $1 AND event_type = 'payment.create_requested'",
+        )
+        .bind(Uuid::parse_str(payment_attempt_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        let payment_job = QueueJob {
+            id: payment_outbox.0,
+            merchant_account_id: payment_outbox.1,
+            store_id: payment_outbox.2,
+            event_type: payment_outbox.3,
+            payload: payment_outbox.4,
+            attempts: payment_outbox.5 as u32,
+        };
+        let payment_command = payment_repository
+            .prepare_provider_command(&payment_job)
+            .await
+            .unwrap();
+        assert_eq!(payment_command.amount_minor, 2700);
+        assert_eq!(
+            payment_command.external_account_reference,
+            provider_account_reference
+        );
+        payment_repository
+            .record_provider_result(
+                &payment_job,
+                &ProviderCommandResult {
+                    provider_reference: "pay_provider_1".into(),
+                },
+                test_clock.now(),
+            )
+            .await
+            .unwrap();
+        let client_action = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/payment-attempts/{payment_attempt_id}/client-action"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(client_action.status(), StatusCode::OK);
+        assert_eq!(client_action.headers()["cache-control"], "no-store");
+        let client_action = response_json(client_action).await;
+        assert_eq!(client_action["data"]["provider"], "testpay");
+        assert_eq!(client_action["data"]["type"], "confirm_payment");
+        assert_eq!(
+            client_action["data"]["client_token"],
+            "pay_provider_1_client_token"
+        );
         let cross_store = app
             .clone()
             .oneshot(with_shopper_token(
@@ -2095,6 +2192,42 @@ mod tests {
         assert_eq!(refund.status(), StatusCode::CREATED);
         let refund = response_json(refund).await;
         let refund_id = refund["data"]["id"].as_str().unwrap();
+        let refund_outbox = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
+             FROM integration.outbox_events \
+             WHERE aggregate_id = $1 AND event_type = 'refund.create_requested'",
+        )
+        .bind(Uuid::parse_str(refund_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        let refund_job = QueueJob {
+            id: refund_outbox.0,
+            merchant_account_id: refund_outbox.1,
+            store_id: refund_outbox.2,
+            event_type: refund_outbox.3,
+            payload: refund_outbox.4,
+            attempts: refund_outbox.5 as u32,
+        };
+        let refund_command = payment_repository
+            .prepare_provider_command(&refund_job)
+            .await
+            .unwrap();
+        assert_eq!(refund_command.amount_minor, 1000);
+        assert_eq!(
+            refund_command.payment_provider_reference.as_deref(),
+            Some("pay_provider_1")
+        );
+        payment_repository
+            .record_provider_result(
+                &refund_job,
+                &ProviderCommandResult {
+                    provider_reference: "refund_provider_1".into(),
+                },
+                test_clock.now(),
+            )
+            .await
+            .unwrap();
         let refund_webhook = app
             .clone()
             .oneshot(webhook_request(json!({

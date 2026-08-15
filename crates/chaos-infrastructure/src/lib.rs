@@ -5,3 +5,4 @@ pub mod passwordless;
 pub mod repositories;
 pub mod shopper;
 pub mod state;
+pub mod stripe;

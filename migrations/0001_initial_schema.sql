@@ -2919,16 +2919,25 @@ SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.merchant_account_id, account.store_id
     FROM payments.provider_accounts AS account
-    INNER JOIN merchant.merchant_accounts AS merchant_account
-        ON merchant_account.id = account.merchant_account_id
-    INNER JOIN merchant.stores AS store
-        ON store.merchant_account_id = account.merchant_account_id
-       AND store.id = account.store_id
+    WHERE account.provider = requested_provider
+      AND account.external_account_reference = requested_external_account_reference;
+$$;
+
+CREATE FUNCTION payments.resolve_provider_webhook_secret_reference(
+    requested_provider                   TEXT,
+    requested_external_account_reference TEXT
+)
+RETURNS TABLE (secret_reference TEXT)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT account.webhook_secret_reference
+    FROM payments.provider_accounts AS account
     WHERE account.provider = requested_provider
       AND account.external_account_reference = requested_external_account_reference
-      AND account.enabled
-      AND merchant_account.status = 'active'
-      AND store.status = 'active';
+      AND account.webhook_secret_reference IS NOT NULL;
 $$;
 
 CREATE FUNCTION integration.claim_outbox_events(
@@ -3210,6 +3219,7 @@ $$;
 
 REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_reference(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -3261,6 +3271,8 @@ GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog, pricing, inven
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
+GRANT EXECUTE
+    ON FUNCTION payments.resolve_provider_webhook_secret_reference(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )

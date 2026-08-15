@@ -421,6 +421,27 @@
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
+    },
+    "/payment-attempts/{payment_attempt_id}/client-action": {
+      "get": {
+        "operationId": "getPaymentClientAction",
+        "tags": ["Payments"],
+        "summary": "Retrieve the short-lived client action for a pending Payment Attempt",
+        "description": "Returns provider-neutral client handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
+        "security": [{ "publishableKey": ["checkout:write"] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/PaymentAttemptId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
+        "responses": {
+          "200": { "description": "Payment client action. The response includes `Cache-Control: no-store`.", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentClientActionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
     }
   },
   "components": {
@@ -932,6 +953,24 @@
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/PaymentAttempt" } }
       },
+      "PaymentClientAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "type", "public_key", "client_token", "account_reference"],
+        "properties": {
+          "provider": { "type": "string" },
+          "type": { "type": "string", "enum": ["confirm_payment"] },
+          "public_key": { "type": "string", "minLength": 1 },
+          "client_token": { "type": "string", "minLength": 1 },
+          "account_reference": { "type": "string", "minLength": 1 }
+        }
+      },
+      "PaymentClientActionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/PaymentClientAction" } }
+      },
       "Page": {
         "type": "object",
         "additionalProperties": false,
@@ -1014,6 +1053,10 @@
       },
       "ValidationFailed": {
         "description": "Invalid header, body, query, or path value",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Unavailable": {
+        "description": "Payment Provider or secret manager is temporarily unavailable",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       }
     }

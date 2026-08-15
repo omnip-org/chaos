@@ -5,6 +5,7 @@ use chaos_domain::{
     payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     sales::OrderId,
 };
+use secrecy::SecretString;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -76,10 +77,27 @@ pub struct ProviderCommand {
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
+    pub external_account_reference: String,
+    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub payment_provider_reference: Option<String>,
 }
 
 pub struct ProviderCommandResult {
     pub provider_reference: String,
+}
+
+pub struct ProviderClientActionCommand {
+    pub provider_reference: String,
+    pub external_account_reference: String,
+    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+}
+
+pub struct PaymentClientAction {
+    pub provider: String,
+    pub kind: &'static str,
+    pub public_key: SecretString,
+    pub client_token: SecretString,
+    pub account_reference: String,
 }
 
 #[async_trait]
@@ -90,16 +108,33 @@ pub trait PaymentProvider: Send + Sync {
         &self,
         command: ProviderCommand,
     ) -> Result<ProviderCommandResult, ApplicationError>;
+
+    async fn client_action(
+        &self,
+        command: ProviderClientActionCommand,
+    ) -> Result<PaymentClientAction, ApplicationError>;
 }
 
+#[async_trait]
 pub trait PaymentWebhookVerifier: Send + Sync {
-    fn verify(
+    fn name(&self) -> &'static str;
+
+    async fn verify(
         &self,
         provider: &str,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<VerifiedWebhookEvent, ApplicationError>;
+}
+
+#[async_trait]
+pub trait PaymentWebhookConfigurationRepository: Send + Sync {
+    async fn webhook_secret_reference(
+        &self,
+        provider: &str,
+        external_account_reference: &str,
+    ) -> Result<Option<chaos_domain::payments::PaymentSecretReference>, ApplicationError>;
 }
 
 #[async_trait]
@@ -134,6 +169,32 @@ pub trait PaymentRepository: Send + Sync {
         job: &QueueJob,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
+
+    async fn prepare_provider_command(
+        &self,
+        job: &QueueJob,
+    ) -> Result<ProviderCommand, ApplicationError>;
+
+    async fn record_provider_result(
+        &self,
+        job: &QueueJob,
+        result: &ProviderCommandResult,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn client_action_command(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+    ) -> Result<Option<(String, ProviderClientActionCommand)>, ApplicationError>;
+}
+
+#[async_trait]
+pub trait PaymentSecretResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        reference: &chaos_domain::payments::PaymentSecretReference,
+    ) -> Result<SecretString, ApplicationError>;
 }
 
 #[async_trait]
