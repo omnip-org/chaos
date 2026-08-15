@@ -3,20 +3,18 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        CeremonyOptions as ApplicationCeremonyOptions, PasswordlessAuthentication, SessionGrant,
+        CeremonyOptions as ApplicationCeremonyOptions, EmailMessage, EmailProvider,
+        PasswordlessAuthentication, SessionGrant,
     },
 };
 use chaos_domain::identity::{Email, UserId};
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{Mailbox, header::ContentType},
-};
 use rand::RngCore;
 use redis::{AsyncCommands, Client as RedisClient};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 use webauthn_rs::{
@@ -40,8 +38,8 @@ pub struct PasswordlessAuth {
     postgres: PgPool,
     redis: RedisClient,
     webauthn: Webauthn,
-    mailer: AsyncSmtpTransport<Tokio1Executor>,
-    email_from: Mailbox,
+    email_provider: Arc<dyn EmailProvider>,
+    email_from: String,
     auth_public_base_url: String,
 }
 
@@ -137,7 +135,7 @@ impl PasswordlessAuth {
         redis: RedisClient,
         rp_id: &str,
         rp_origin: &str,
-        smtp_url: &str,
+        email_provider: Arc<dyn EmailProvider>,
         email_from: &str,
         auth_public_base_url: &str,
     ) -> anyhow::Result<Self> {
@@ -151,20 +149,18 @@ impl PasswordlessAuth {
             .map_err(|error| anyhow::anyhow!("invalid WebAuthn configuration: {error}"))?
             .build()
             .map_err(|error| anyhow::anyhow!("invalid WebAuthn configuration: {error}"))?;
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::from_url(smtp_url)
-            .map_err(|error| anyhow::anyhow!("invalid SMTP_URL: {error}"))?
-            .build();
-        let email_from = email_from
-            .parse()
-            .map_err(|error| anyhow::anyhow!("invalid EMAIL_FROM: {error}"))?;
+        anyhow::ensure!(
+            !email_from.trim().is_empty(),
+            "EMAIL_FROM must not be empty"
+        );
         let auth_public_base_url = auth_public_base_url.trim_end_matches('/').to_owned();
 
         Ok(Self {
             postgres,
             redis,
             webauthn,
-            mailer,
-            email_from,
+            email_provider,
+            email_from: email_from.to_owned(),
             auth_public_base_url,
         })
     }
@@ -184,12 +180,13 @@ impl PasswordlessAuth {
         let token = random_token();
         let token_digest = token_digest(token.expose_secret());
 
+        let challenge_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO identity.magic_link_challenges \
              (id, email, token_digest, expires_at) \
              VALUES ($1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4))",
         )
-        .bind(Uuid::now_v7())
+        .bind(challenge_id)
         .bind(email.as_str())
         .bind(token_digest.as_slice())
         .bind(MAGIC_LINK_LIFETIME_SECONDS)
@@ -201,26 +198,18 @@ impl PasswordlessAuth {
             "{}/auth/email-link#token={encoded_token}",
             self.auth_public_base_url
         );
-        let message = Message::builder()
-            .from(self.email_from.clone())
-            .to(email
-                .as_str()
-                .parse::<Mailbox>()
-                .map_err(|error| ApplicationError::Unexpected(anyhow::anyhow!(error)))?)
-            .subject("Sign in to Chaos")
-            .header(ContentType::TEXT_PLAIN)
-            .body(format!(
-                "Use this link to sign in:\n\n{sign_in_url}\n\nThis link expires in 15 minutes and can be used once."
-            ))
-            .map_err(|error| ApplicationError::Unexpected(error.into()))?;
-
-        self.mailer
-            .send(message)
-            .await
-            .map_err(|error| ApplicationError::Unavailable {
-                service: "email",
-                source: error.into(),
-            })?;
+        self.email_provider
+            .send(EmailMessage {
+                from: self.email_from.clone(),
+                to: email.as_str().to_owned(),
+                subject: "Sign in to Chaos".into(),
+                text: format!(
+                    "Use this link to sign in:\n\n{sign_in_url}\n\nThis link expires in 15 minutes and can be used once."
+                ),
+                html: None,
+                idempotency_key: format!("auth-magic-link-{challenge_id}"),
+            })
+            .await?;
         Ok(())
     }
 

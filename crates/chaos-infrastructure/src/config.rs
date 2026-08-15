@@ -1,6 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
+use secrecy::SecretString;
 use url::Url;
 
 #[derive(Clone, Debug)]
@@ -19,6 +20,8 @@ pub struct Settings {
     pub auth_public_base_url: String,
     pub smtp_url: String,
     pub email_from: String,
+    pub resend_api_key: Option<SecretString>,
+    pub resend_api_base_url: Url,
     pub payment_webhook_secret: String,
     pub stripe_api_base_url: Url,
     pub shopper_token_active_key_id: String,
@@ -54,6 +57,8 @@ impl Settings {
             auth_public_base_url: required("AUTH_PUBLIC_BASE_URL")?,
             smtp_url: required("SMTP_URL")?,
             email_from: required("EMAIL_FROM")?,
+            resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
+            resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
@@ -76,6 +81,10 @@ impl Settings {
             log_json: parse_or("LOG_JSON", "false")?,
         })
     }
+}
+
+fn optional(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn optional_pair(first: &str, second: &str) -> anyhow::Result<Option<(String, String)>> {

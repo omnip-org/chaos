@@ -8,6 +8,7 @@ mod fulfillment;
 mod inventory;
 mod merchant;
 mod merchant_query;
+mod notification;
 mod passwordless;
 mod payments;
 mod pricing;
@@ -47,6 +48,7 @@ pub use merchant::{
     IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
 };
 pub use merchant_query::{MerchantAccountListItem, MerchantReadRepository, StoreListItem};
+pub use notification::{EmailDelivery, EmailMessage, EmailProvider};
 pub use passwordless::{CeremonyOptions, PasswordlessAuthentication, SessionGrant};
 pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,

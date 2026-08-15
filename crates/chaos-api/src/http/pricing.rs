@@ -872,6 +872,8 @@ pub(crate) mod tests {
             auth_public_base_url: "http://localhost:8080".into(),
             smtp_url: "smtp://localhost:1025".into(),
             email_from: "Chaos <no-reply@localhost>".into(),
+            resend_api_key: None,
+            resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),

@@ -38,6 +38,7 @@ use std::sync::Arc;
 use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
+    email::{ResendEmailProvider, SmtpEmailProvider},
     passwordless::PasswordlessAuth,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresApiKeyRepository, PostgresCatalogManagementUnitOfWork,
@@ -113,12 +114,22 @@ impl ApiState {
         settings: &Settings,
     ) -> anyhow::Result<Self> {
         let metrics = crate::telemetry::init_metrics()?;
+        let email_provider: Arc<dyn chaos_application::ports::EmailProvider> =
+            if let Some(api_key) = &settings.resend_api_key {
+                Arc::new(ResendEmailProvider::new(
+                    settings.resend_api_base_url.clone(),
+                    api_key.clone(),
+                    settings.dependency_timeout,
+                )?)
+            } else {
+                Arc::new(SmtpEmailProvider::new(&settings.smtp_url)?)
+            };
         let passwordless_auth = PasswordlessAuth::new(
             infrastructure.control_plane_pool(),
             infrastructure.redis_client(),
             &settings.webauthn_rp_id,
             &settings.webauthn_rp_origin,
-            &settings.smtp_url,
+            email_provider,
             &settings.email_from,
             &settings.auth_public_base_url,
         )?;
@@ -337,6 +348,8 @@ mod tests {
             auth_public_base_url: "http://localhost:8080".into(),
             smtp_url: "smtp://localhost:1025".into(),
             email_from: "Chaos <no-reply@localhost>".into(),
+            resend_api_key: None,
+            resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),

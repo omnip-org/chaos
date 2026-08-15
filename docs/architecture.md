@@ -79,7 +79,7 @@ Suggested implementation order:
 7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;
 8. payment: provider accounts, Payment Attempts, captures, Refunds, and webhook inboxes;
 9. customer: Customer profiles and saved addresses currently live within Sales because association is part of checkout ownership; segmentation remains a future boundary that may justify extraction;
-10. notifications: a planned integration capability for semantic delivery requests and provider status;
+10. notifications: a capability-specific email provider boundary with Resend production delivery and SMTP development delivery; durable semantic delivery requests, suppression, and provider status remain in progress;
 11. analytics: a planned boundary for behavior events, sessions, consent, attribution, aggregates, and conversion exports.
 
 The Cargo workspace enforces dependency direction with separate packages:
