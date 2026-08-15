@@ -1460,7 +1460,14 @@ mod tests {
                         "advertising_storage": false,
                         "policy_version": "cmp-v1"
                     },
-                    "properties": {"path": "/products", "title": "Products"}
+                    "properties": {
+                        "path": "/products",
+                        "title": "Products",
+                        "referrer_domain": "search.example",
+                        "campaign_source": "newsletter",
+                        "campaign_medium": "email",
+                        "campaign_name": "launch"
+                    }
                 },
                 {
                     "event_id": Uuid::now_v7(),
@@ -1498,6 +1505,27 @@ mod tests {
         assert_eq!(analytics["data"]["received"], 2);
         assert_eq!(analytics["data"]["stored"], 1);
         assert_eq!(analytics["data"]["discarded_for_consent"], 1);
+        let attribution_input: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT landing_path, referrer_domain, campaign_source, campaign_medium, campaign_name \
+             FROM analytics.behavior_events WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND event_id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(analytics_event_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            attribution_input,
+            (
+                "/products".into(),
+                "search.example".into(),
+                "newsletter".into(),
+                "email".into(),
+                "launch".into(),
+            )
+        );
         let analytics_replay = app
             .clone()
             .oneshot(store_request(
@@ -1932,10 +1960,10 @@ mod tests {
              (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
               schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
               advertising_storage_consent, consent_policy_version, collection_policy_version, \
-              properties, occurred_at, received_at, retention_expires_at) \
+              properties, landing_path, occurred_at, received_at, retention_expires_at) \
              VALUES (uuidv7(),uuidv7(),$1,$2,$3,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
                      true,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
-                     CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days') \
+                     '/',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days') \
              RETURNING id",
         )
         .bind(isolated_account_id.as_uuid())

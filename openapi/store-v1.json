@@ -583,10 +583,17 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
+        "dependentRequired": {
+          "campaign_medium": ["campaign_source"],
+          "campaign_name": ["campaign_source"]
+        },
         "properties": {
           "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/[^?#]*$" },
           "title": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 }
+          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 },
+          "campaign_source": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "campaign_medium": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "campaign_name": { "type": "string", "minLength": 1, "maxLength": 200 }
         }
       },
       "ProductViewedProperties": {

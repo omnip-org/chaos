@@ -101,15 +101,29 @@ export class ChaosStorefrontAnalytics {
     await this.flush({ keepalive: true });
   }
 
-  pageViewed({ path, title, referrerDomain } = {}) {
+  pageViewed({
+    path,
+    title,
+    referrerDomain,
+    campaignSource,
+    campaignMedium,
+    campaignName,
+  } = {}) {
     this.flushEngagement();
     const resolvedPath = path ?? this.document.location?.pathname ?? "/";
     const resolvedTitle = title ?? nonEmpty(this.document.title);
     const resolvedReferrer = referrerDomain ?? referrerHost(this.document.referrer);
+    const campaign = campaignParameters(
+      this.document.location?.search,
+      campaignSource,
+      campaignMedium,
+      campaignName,
+    );
     const eventId = this.enqueue("page_viewed", compact({
       path: resolvedPath,
       title: resolvedTitle,
       referrer_domain: resolvedReferrer,
+      ...campaign,
     }));
     this.accumulatedActiveMs = 0;
     this.currentPageViewEventId = eventId;
@@ -286,6 +300,31 @@ function referrerHost(value) {
 
 function nonEmpty(value) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function campaignParameters(search, source, medium, name) {
+  let parameters;
+  try {
+    parameters = new URLSearchParams(search ?? "");
+  } catch {
+    parameters = new URLSearchParams();
+  }
+  const campaignSource = boundedText(source ?? parameters.get("utm_source"), 100);
+  if (!campaignSource) return {};
+  return compact({
+    campaign_source: campaignSource,
+    campaign_medium: boundedText(medium ?? parameters.get("utm_medium"), 100),
+    campaign_name: boundedText(name ?? parameters.get("utm_campaign"), 200),
+  });
+}
+
+function boundedText(value, maximumLength) {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= maximumLength
+    && !/[\u0000-\u001f\u007f]/.test(value)
+    ? value
+    : undefined;
 }
 
 function compact(value) {

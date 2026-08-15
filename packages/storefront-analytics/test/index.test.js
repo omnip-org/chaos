@@ -46,7 +46,10 @@ function harness(responses = [{ ok: true, status: 200 }]) {
     visibilityState: "visible",
     title: "Catalog",
     referrer: "https://search.example/results?q=private",
-    location: { pathname: "/products" },
+    location: {
+      pathname: "/products",
+      search: "?utm_source=Newsletter&utm_medium=email&utm_campaign=Launch&ignored=secret",
+    },
     hasFocus: () => focused,
   });
   const window = Object.assign(new FakeTarget(), {
@@ -106,7 +109,11 @@ test("counts only visible and focused engagement and omits full referrer URLs", 
   const events = JSON.parse(requests[0].options.body).events;
   assert.equal(events[0].event_name, "page_viewed");
   assert.equal(events[0].properties.referrer_domain, "search.example");
+  assert.equal(events[0].properties.campaign_source, "Newsletter");
+  assert.equal(events[0].properties.campaign_medium, "email");
+  assert.equal(events[0].properties.campaign_name, "Launch");
   assert.equal(JSON.stringify(events).includes("q=private"), false);
+  assert.equal(JSON.stringify(events).includes("ignored"), false);
   assert.equal(events[1].event_name, "engagement_heartbeat");
   assert.equal(events[1].properties.page_view_event_id, pageViewEventId);
   assert.equal(events[1].properties.active_milliseconds, 15_000);

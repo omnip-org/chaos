@@ -124,15 +124,18 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
 
         let mut stored = 0;
         for event in events {
+            let (landing_path, referrer_domain, campaign_source, campaign_medium, campaign_name) =
+                attribution_columns(event.properties());
             let inserted = sqlx::query_scalar::<_, uuid::Uuid>(
                 "INSERT INTO analytics.behavior_events \
                  (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
                   schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
                   advertising_storage_consent, consent_policy_version, \
-                  collection_policy_version, properties, occurred_at, received_at, \
+                  collection_policy_version, properties, landing_path, referrer_domain, \
+                  campaign_source, campaign_medium, campaign_name, occurred_at, received_at, \
                   retention_expires_at) \
                  VALUES (uuidv7(),$1,$2,$3,$4,$5::analytics.browser_event_name,$6, \
-                         'browser',$7,$8,true,$9,$10,$11,$12,$13,$14,$15) \
+                         'browser',$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) \
                  ON CONFLICT (merchant_account_id, store_id, event_id) DO NOTHING \
                  RETURNING id",
             )
@@ -148,6 +151,11 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             .bind(event.consent().policy_version())
             .bind(collection_policy_version)
             .bind(properties(event.properties()))
+            .bind(landing_path)
+            .bind(referrer_domain)
+            .bind(campaign_source)
+            .bind(campaign_medium)
+            .bind(campaign_name)
             .bind(event.occurred_at())
             .bind(received_at)
             .bind(retention_expires_at)
@@ -1635,10 +1643,16 @@ fn properties(value: &BrowserEventProperties) -> Value {
             path,
             title,
             referrer_domain,
+            campaign_source,
+            campaign_medium,
+            campaign_name,
         } => json!({
             "path": path,
             "title": title,
             "referrer_domain": referrer_domain,
+            "campaign_source": campaign_source,
+            "campaign_medium": campaign_medium,
+            "campaign_name": campaign_name,
         }),
         BrowserEventProperties::ProductViewed {
             product_id,
@@ -1677,6 +1691,36 @@ fn properties(value: &BrowserEventProperties) -> Value {
             "page_view_event_id": page_view_event_id,
             "active_milliseconds": active_milliseconds,
         }),
+    }
+}
+
+type AttributionColumns<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+);
+
+fn attribution_columns(properties: &BrowserEventProperties) -> AttributionColumns<'_> {
+    if let BrowserEventProperties::PageViewed {
+        path,
+        referrer_domain,
+        campaign_source,
+        campaign_medium,
+        campaign_name,
+        ..
+    } = properties
+    {
+        (
+            Some(path),
+            referrer_domain.as_deref(),
+            campaign_source.as_deref(),
+            campaign_medium.as_deref(),
+            campaign_name.as_deref(),
+        )
+    } else {
+        (None, None, None, None, None)
     }
 }
 

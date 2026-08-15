@@ -367,6 +367,9 @@ struct PageViewedProperties {
     path: String,
     title: Option<String>,
     referrer_domain: Option<String>,
+    campaign_source: Option<String>,
+    campaign_medium: Option<String>,
+    campaign_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -452,7 +455,14 @@ fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
     let properties = match body.event_name {
         BrowserEventNameBody::PageViewed => {
             let value: PageViewedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::page_viewed(value.path, value.title, value.referrer_domain)?
+            BrowserEventProperties::page_viewed(
+                value.path,
+                value.title,
+                value.referrer_domain,
+                value.campaign_source,
+                value.campaign_medium,
+                value.campaign_name,
+            )?
         }
         BrowserEventNameBody::ProductViewed => {
             let value: ProductViewedProperties = event_properties(body.properties)?;

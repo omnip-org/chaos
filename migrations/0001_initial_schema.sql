@@ -2669,6 +2669,11 @@ CREATE TABLE analytics.behavior_events (
     consent_policy_version        TEXT                         NOT NULL,
     collection_policy_version     TEXT                         NOT NULL,
     properties                    JSONB                        NOT NULL,
+    landing_path                  TEXT,
+    referrer_domain               TEXT,
+    campaign_source               TEXT,
+    campaign_medium               TEXT,
+    campaign_name                 TEXT,
     occurred_at                   TIMESTAMPTZ                  NOT NULL,
     received_at                   TIMESTAMPTZ                  NOT NULL,
     retention_expires_at          TIMESTAMPTZ                  NOT NULL,
@@ -2697,6 +2702,25 @@ CREATE TABLE analytics.behavior_events (
     CONSTRAINT behavior_events_properties_check CHECK (
         jsonb_typeof(properties) = 'object' AND octet_length(properties::TEXT) <= 4096
     ),
+    CONSTRAINT behavior_events_attribution_shape_check CHECK (
+        (
+            event_name = 'page_viewed'
+            AND landing_path IS NOT NULL
+            AND length(landing_path) BETWEEN 1 AND 1024
+            AND (referrer_domain IS NULL OR length(referrer_domain) BETWEEN 1 AND 253)
+            AND (campaign_source IS NULL OR length(campaign_source) BETWEEN 1 AND 100)
+            AND (campaign_medium IS NULL OR length(campaign_medium) BETWEEN 1 AND 100)
+            AND (campaign_name IS NULL OR length(campaign_name) BETWEEN 1 AND 200)
+            AND (campaign_source IS NOT NULL
+                OR (campaign_medium IS NULL AND campaign_name IS NULL))
+        )
+        OR (
+            event_name <> 'page_viewed'
+            AND landing_path IS NULL AND referrer_domain IS NULL
+            AND campaign_source IS NULL AND campaign_medium IS NULL
+            AND campaign_name IS NULL
+        )
+    ),
     CONSTRAINT behavior_events_timestamp_skew_check CHECK (
         occurred_at >= received_at - INTERVAL '24 hours'
         AND occurred_at <= received_at + INTERVAL '5 minutes'
@@ -2723,6 +2747,17 @@ CREATE INDEX behavior_events_retention_idx
         retention_expires_at,
         id
     );
+
+CREATE INDEX behavior_events_attribution_touch_idx
+    ON analytics.behavior_events (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        anonymous_id,
+        session_id,
+        occurred_at,
+        id
+    ) WHERE event_name = 'page_viewed';
 
 CREATE TABLE analytics.behavior_event_processing (
     id                    UUID                     NOT NULL PRIMARY KEY,

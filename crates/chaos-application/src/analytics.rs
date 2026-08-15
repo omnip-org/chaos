@@ -500,7 +500,7 @@ mod tests {
             Uuid::now_v7(),
             Uuid::now_v7(),
             ConsentSnapshot::new(analytics_storage, false, "cmp-v1").unwrap(),
-            BrowserEventProperties::page_viewed("/products", None, None).unwrap(),
+            BrowserEventProperties::page_viewed("/products", None, None, None, None, None).unwrap(),
         )
         .unwrap()
     }

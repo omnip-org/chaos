@@ -221,6 +221,9 @@ pub enum BrowserEventProperties {
         path: String,
         title: Option<String>,
         referrer_domain: Option<String>,
+        campaign_source: Option<String>,
+        campaign_medium: Option<String>,
+        campaign_name: Option<String>,
     },
     ProductViewed {
         product_id: ProductId,
@@ -250,6 +253,9 @@ impl BrowserEventProperties {
         path: impl Into<String>,
         title: Option<String>,
         referrer_domain: Option<String>,
+        campaign_source: Option<String>,
+        campaign_medium: Option<String>,
+        campaign_name: Option<String>,
     ) -> Result<Self, DomainError> {
         let path = path.into();
         if !path.starts_with('/')
@@ -263,6 +269,23 @@ impl BrowserEventProperties {
             ));
         }
         validate_optional_text("properties.title", title.as_deref(), 200)?;
+        validate_optional_text(
+            "properties.campaign_source",
+            campaign_source.as_deref(),
+            100,
+        )?;
+        validate_optional_text(
+            "properties.campaign_medium",
+            campaign_medium.as_deref(),
+            100,
+        )?;
+        validate_optional_text("properties.campaign_name", campaign_name.as_deref(), 200)?;
+        if campaign_source.is_none() && (campaign_medium.is_some() || campaign_name.is_some()) {
+            return Err(validation(
+                "properties.campaign_source",
+                "is required when campaign medium or name is present",
+            ));
+        }
         if let Some(domain) = referrer_domain.as_deref()
             && (domain.is_empty()
                 || domain.len() > 253
@@ -279,6 +302,9 @@ impl BrowserEventProperties {
             path,
             title,
             referrer_domain,
+            campaign_source,
+            campaign_medium,
+            campaign_name,
         })
     }
 
@@ -489,7 +515,39 @@ mod tests {
             }
         );
         assert!(BrowserEventProperties::engagement_heartbeat(Uuid::now_v7(), 60_001).is_err());
-        assert!(BrowserEventProperties::page_viewed("/products?total=100", None, None).is_err());
+        assert!(
+            BrowserEventProperties::page_viewed(
+                "/products?total=100",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            BrowserEventProperties::page_viewed(
+                "/products",
+                None,
+                None,
+                None,
+                Some("email".into()),
+                Some("launch".into()),
+            )
+            .is_err()
+        );
+        assert!(
+            BrowserEventProperties::page_viewed(
+                "/products",
+                None,
+                None,
+                Some("newsletter".into()),
+                Some("email".into()),
+                Some("launch".into()),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
