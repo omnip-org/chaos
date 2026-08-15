@@ -1,22 +1,29 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
+    merchant::MerchantActor,
     ports::{
-        AnalyticsEventRepository, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
-        MachineActor,
+        AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsRetentionPurgeResult,
+        AnalyticsSessionizationJob, AnalyticsSessionizationQueue, IdempotencyRequest, MachineActor,
+        ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
     analytics::{
-        BrowserEvent, BrowserEventName, BrowserEventProperties, SESSION_INACTIVITY_MINUTES,
-        SessionEventContribution, capped_session_engagement,
+        AnalyticsPolicy, BrowserEvent, BrowserEventName, BrowserEventProperties,
+        SESSION_INACTIVITY_MINUTES, SessionEventContribution, capped_session_engagement,
     },
+    identity::UserId,
     merchant::{SalesChannelId, StoreId},
 };
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+use super::idempotency::{self, IdempotencyScope};
+
+const UPDATE_POLICY_OPERATION: &str = "analytics_policies.update.v1";
 
 #[derive(Clone)]
 pub struct PostgresAnalyticsEventRepository {
@@ -31,6 +38,51 @@ impl PostgresAnalyticsEventRepository {
 
 #[async_trait]
 impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
+    async fn resolve_collection_policy(
+        &self,
+        actor: &MachineActor,
+        now: OffsetDateTime,
+    ) -> Result<ResolvedAnalyticsPolicy, ApplicationError> {
+        let sales_channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, actor.merchant_account_id.as_uuid(), None).await?;
+        let context_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores AS store \
+             INNER JOIN merchant.sales_channels AS channel \
+               ON channel.merchant_account_id = store.merchant_account_id \
+              AND channel.store_id = store.id \
+             WHERE store.merchant_account_id = $1 AND store.id = $2 \
+               AND store.status = 'active' AND channel.id = $3 AND channel.status = 'active')",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(sales_channel_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !context_exists {
+            return Err(ApplicationError::Forbidden);
+        }
+        let policy = load_current_policy(
+            &mut transaction,
+            actor.merchant_account_id.as_uuid(),
+            actor.store_id,
+            now,
+        )
+        .await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(policy.map_or_else(
+            || ResolvedAnalyticsPolicy {
+                policy: AnalyticsPolicy::builtin(),
+                policy_version: "builtin-v1".into(),
+            },
+            |item| ResolvedAnalyticsPolicy {
+                policy: item.policy,
+                policy_version: item.policy_version,
+            },
+        ))
+    }
+
     async fn append_browser_events(
         &self,
         actor: &MachineActor,
@@ -113,6 +165,155 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(stored)
+    }
+}
+
+#[derive(FromRow)]
+struct PolicyRow {
+    id: Uuid,
+    store_id: Uuid,
+    version: i32,
+    behavior_collection_enabled: bool,
+    advertising_exports_enabled: bool,
+    identity_linking_enabled: bool,
+    raw_event_retention_days: i16,
+    created_by: Uuid,
+    effective_at: OffsetDateTime,
+    created_at: OffsetDateTime,
+}
+
+#[async_trait]
+impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
+    async fn get_store_policy(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        now: OffsetDateTime,
+    ) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        let store_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2)",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !store_exists {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        }
+        let policy = load_current_policy(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            store_id,
+            now,
+        )
+        .await?
+        .unwrap_or_else(|| builtin_policy(store_id));
+        transaction.commit().await.map_err(database_error)?;
+        Ok(Some(policy))
+    }
+
+    async fn update_store_policy(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        policy: AnalyticsPolicy,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        if let Some(policy_id) = reserve_policy(&mut transaction, actor, request).await? {
+            let item = load_policy_by_id(
+                &mut transaction,
+                actor.merchant_account_id().as_uuid(),
+                store_id,
+                policy_id,
+            )
+            .await?
+            .ok_or_else(invalid_policy_snapshot)?;
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(item);
+        }
+        let store_status = sqlx::query_scalar::<_, String>(
+            "SELECT status::text FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| store_not_found(store_id))?;
+        if store_status == "archived" {
+            return Err(ApplicationError::Conflict {
+                code: "store_not_writable",
+                message: "an archived Store cannot accept Analytics Policy changes",
+            });
+        }
+        let next_version: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(max(version), 0) + 1 \
+             FROM analytics.store_policy_versions \
+             WHERE merchant_account_id = $1 AND store_id = $2",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let policy_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO analytics.store_policy_versions \
+             (id, merchant_account_id, store_id, version, behavior_collection_enabled, \
+              advertising_exports_enabled, identity_linking_enabled, raw_event_retention_days, \
+              created_by, effective_at, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)",
+        )
+        .bind(policy_id)
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(next_version)
+        .bind(policy.behavior_collection_enabled())
+        .bind(policy.advertising_exports_enabled())
+        .bind(policy.identity_linking_enabled())
+        .bind(i16::try_from(policy.raw_event_retention_days()).map_err(conversion_error)?)
+        .bind(actor.user_id().as_uuid())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query("SELECT * FROM analytics.apply_store_retention_policy($1,$2,$3)")
+            .bind(actor.merchant_account_id().as_uuid())
+            .bind(store_id.as_uuid())
+            .bind(i32::from(policy.raw_event_retention_days()))
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        complete_policy(&mut transaction, actor, request, policy_id).await?;
+        let item = load_policy_by_id(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            store_id,
+            policy_id,
+        )
+        .await?
+        .ok_or_else(invalid_policy_snapshot)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(item)
     }
 }
 
@@ -255,6 +456,25 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
             }
         }
         transaction.commit().await.map_err(database_error)
+    }
+
+    async fn purge_expired_data(
+        &self,
+        limit: u16,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsRetentionPurgeResult, ApplicationError> {
+        let (behavior_events_deleted, sessions_deleted): (i64, i64) =
+            sqlx::query_as("SELECT * FROM analytics.purge_expired_data($1,$2)")
+                .bind(i32::from(limit))
+                .bind(now)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(database_error)?;
+        Ok(AnalyticsRetentionPurgeResult {
+            behavior_events_deleted: u64::try_from(behavior_events_deleted)
+                .map_err(conversion_error)?,
+            sessions_deleted: u64::try_from(sessions_deleted).map_err(conversion_error)?,
+        })
     }
 }
 
@@ -477,6 +697,154 @@ fn stale_sessionization_lease() -> ApplicationError {
     ApplicationError::Conflict {
         code: "analytics_sessionization_lease_lost",
         message: "the Analytics Sessionization lease is no longer owned by this Worker",
+    }
+}
+
+async fn set_merchant_context(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    user_id: Option<Uuid>,
+) -> Result<(), ApplicationError> {
+    sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+        .bind(merchant_account_id.to_string())
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    if let Some(user_id) = user_id {
+        sqlx::query("SELECT set_config('app.user_id', $1, true)")
+            .bind(user_id.to_string())
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+    }
+    Ok(())
+}
+
+async fn load_current_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    now: OffsetDateTime,
+) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
+    let row = sqlx::query_as::<_, PolicyRow>(
+        "SELECT id, store_id, version, behavior_collection_enabled, \
+                advertising_exports_enabled, identity_linking_enabled, \
+                raw_event_retention_days, created_by, effective_at, created_at \
+         FROM analytics.store_policy_versions \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND effective_at <= $3 \
+         ORDER BY effective_at DESC, version DESC LIMIT 1",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(now)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(policy_item).transpose()
+}
+
+async fn load_policy_by_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    policy_id: Uuid,
+) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
+    let row = sqlx::query_as::<_, PolicyRow>(
+        "SELECT id, store_id, version, behavior_collection_enabled, \
+                advertising_exports_enabled, identity_linking_enabled, \
+                raw_event_retention_days, created_by, effective_at, created_at \
+         FROM analytics.store_policy_versions \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(policy_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(policy_item).transpose()
+}
+
+fn policy_item(row: PolicyRow) -> Result<StoreAnalyticsPolicy, ApplicationError> {
+    let retention_days = u16::try_from(row.raw_event_retention_days).map_err(conversion_error)?;
+    Ok(StoreAnalyticsPolicy {
+        id: Some(row.id),
+        store_id: StoreId::from_uuid(row.store_id),
+        policy: AnalyticsPolicy::new(
+            row.behavior_collection_enabled,
+            row.advertising_exports_enabled,
+            row.identity_linking_enabled,
+            retention_days,
+        )?,
+        policy_version: format!("store-v{}", row.version),
+        created_by: Some(UserId::from_uuid(row.created_by)),
+        effective_at: Some(row.effective_at),
+        created_at: Some(row.created_at),
+    })
+}
+
+fn builtin_policy(store_id: StoreId) -> StoreAnalyticsPolicy {
+    StoreAnalyticsPolicy {
+        id: None,
+        store_id,
+        policy: AnalyticsPolicy::builtin(),
+        policy_version: "builtin-v1".into(),
+        created_by: None,
+        effective_at: None,
+        created_at: None,
+    }
+}
+
+async fn reserve_policy(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: MerchantActor,
+    request: &IdempotencyRequest,
+) -> Result<Option<Uuid>, ApplicationError> {
+    let Some(snapshot) = idempotency::reserve(
+        transaction,
+        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        UPDATE_POLICY_OPERATION,
+        request,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    snapshot
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .map(Some)
+        .ok_or_else(invalid_policy_snapshot)
+}
+
+async fn complete_policy(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: MerchantActor,
+    request: &IdempotencyRequest,
+    policy_id: Uuid,
+) -> Result<(), ApplicationError> {
+    idempotency::complete(
+        transaction,
+        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        UPDATE_POLICY_OPERATION,
+        request,
+        200,
+        json!({ "data": { "id": policy_id } }),
+    )
+    .await
+}
+
+fn invalid_policy_snapshot() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "completed Analytics Policy idempotency record is invalid"
+    ))
+}
+
+fn store_not_found(store_id: StoreId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "store",
+        id: store_id.as_uuid().to_string(),
     }
 }
 

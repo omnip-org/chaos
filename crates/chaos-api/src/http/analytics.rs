@@ -1,24 +1,143 @@
 use axum::{
     Router,
     extract::{DefaultBodyLimit, State},
-    routing::post,
+    http::HeaderMap,
+    routing::{get, post},
 };
-use chaos_application::analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput};
+use chaos_application::{
+    ApplicationError,
+    analytics::{
+        BrowserEventCollectionResult, CollectBrowserEventsInput, UpdateAnalyticsPolicyInput,
+    },
+    ports::{IdempotencyRequest, StoreAnalyticsPolicy},
+};
 use chaos_domain::{
     FieldViolation,
     analytics::{BrowserEvent, BrowserEventProperties, ConsentSnapshot},
     catalog::{ProductId, ProductVariantId},
+    merchant::{MerchantAccountId, StoreId},
     sales::{CartId, CheckoutId},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{AnalyticsMachine, ApiError, ApiJson, ApiResponse, ApiState, response::parse_api_time};
+use super::{
+    AnalyticsMachine, ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState,
+    MerchantContext, merchant::idempotency_key, response::parse_api_time,
+};
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(super) fn storefront_routes() -> Router<ApiState> {
     Router::new()
         .route("/analytics/events", post(collect_events))
         .layer(DefaultBodyLimit::max(32 * 1024))
+}
+
+pub(super) fn admin_routes() -> Router<ApiState> {
+    Router::new()
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-policy",
+            get(get_policy).put(update_policy),
+        )
+        .layer(DefaultBodyLimit::max(16 * 1024))
+}
+
+#[derive(Deserialize)]
+struct StorePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AnalyticsPolicyBody {
+    behavior_collection_enabled: bool,
+    advertising_exports_enabled: bool,
+    identity_linking_enabled: bool,
+    raw_event_retention_days: u16,
+}
+
+#[derive(Serialize)]
+struct AnalyticsPolicyData {
+    store_id: Uuid,
+    policy_version: String,
+    behavior_collection_enabled: bool,
+    advertising_exports_enabled: bool,
+    identity_linking_enabled: bool,
+    raw_event_retention_days: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_by: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<ApiDateTime>,
+}
+
+async fn get_policy(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<AnalyticsPolicyData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let policy = state
+        .analytics_administration
+        .get_policy(actor, StoreId::from_uuid(path.store_id), state.clock.now())
+        .await?;
+    Ok(ApiResponse::ok(policy_data(policy)))
+}
+
+async fn update_policy(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<AnalyticsPolicyBody>,
+) -> Result<ApiResponse<AnalyticsPolicyData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let request = IdempotencyRequest {
+        key: idempotency_key(&headers)?,
+        request_fingerprint: Sha256::digest(
+            serde_json::to_vec(&(path.store_id, &body))
+                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
+        .into(),
+    };
+    let policy = state
+        .analytics_administration
+        .update_policy(UpdateAnalyticsPolicyInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            behavior_collection_enabled: body.behavior_collection_enabled,
+            advertising_exports_enabled: body.advertising_exports_enabled,
+            identity_linking_enabled: body.identity_linking_enabled,
+            raw_event_retention_days: body.raw_event_retention_days,
+            idempotency: request,
+            now: state.clock.now(),
+        })
+        .await?;
+    Ok(ApiResponse::ok(policy_data(policy)))
+}
+
+fn policy_data(item: StoreAnalyticsPolicy) -> AnalyticsPolicyData {
+    AnalyticsPolicyData {
+        store_id: item.store_id.as_uuid(),
+        policy_version: item.policy_version,
+        behavior_collection_enabled: item.policy.behavior_collection_enabled(),
+        advertising_exports_enabled: item.policy.advertising_exports_enabled(),
+        identity_linking_enabled: item.policy.identity_linking_enabled(),
+        raw_event_retention_days: item.policy.raw_event_retention_days(),
+        created_by: item.created_by.map(|id| id.as_uuid()),
+        effective_at: item.effective_at.map(ApiDateTime::from),
+        created_at: item.created_at.map(ApiDateTime::from),
+    }
+}
+
+fn ensure_account(actual: MerchantAccountId, requested: Uuid) -> Result<(), ApiError> {
+    if actual.as_uuid() == requested {
+        Ok(())
+    } else {
+        Err(ApplicationError::Forbidden.into())
+    }
 }
 
 #[derive(Deserialize)]
@@ -109,7 +228,8 @@ struct CollectionResultData {
     stored: usize,
     duplicates: usize,
     discarded_for_consent: usize,
-    collection_policy_version: &'static str,
+    discarded_for_policy: usize,
+    collection_policy_version: String,
 }
 
 async fn collect_events(
@@ -204,6 +324,7 @@ fn collection_result_data(result: BrowserEventCollectionResult) -> CollectionRes
         stored: result.stored,
         duplicates: result.duplicates,
         discarded_for_consent: result.discarded_for_consent,
+        discarded_for_policy: result.discarded_for_policy,
         collection_policy_version: result.collection_policy_version,
     }
 }

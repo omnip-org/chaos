@@ -22,7 +22,7 @@ mod storefront_sales;
 
 use axum::Router;
 use chaos_application::{
-    analytics::{AnalyticsCollection, AnalyticsWorkers},
+    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsWorkers},
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -102,6 +102,7 @@ pub struct ApiState {
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub analytics_collection: Arc<AnalyticsCollection>,
+    pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -199,6 +200,7 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let analytics_collection = AnalyticsCollection::new(analytics_repository.clone());
+        let analytics_administration = AnalyticsAdministration::new(analytics_repository.clone());
         let analytics_workers = AnalyticsWorkers::new(analytics_repository);
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
@@ -336,6 +338,7 @@ impl ApiState {
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
             analytics_collection: Arc::new(analytics_collection),
+            analytics_administration: Arc::new(analytics_administration),
             analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
@@ -365,6 +368,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1/auth", auth::routes())
         .nest("/admin/v1", merchant::routes())
         .nest("/admin/v1", store_admin::routes())
+        .nest("/admin/v1", analytics::admin_routes())
         .nest("/admin/v1", inventory::routes())
         .nest("/admin/v1", order::routes())
         .nest("/admin/v1", fulfillment::routes())
@@ -374,7 +378,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
-        .nest("/store/v1", analytics::routes())
+        .nest("/store/v1", analytics::storefront_routes())
         .nest("/store/v1", storefront_sales::routes())
         .nest("/store/v1", customer::routes())
         .nest("/openapi", openapi::routes())

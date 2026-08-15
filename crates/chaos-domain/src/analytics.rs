@@ -11,6 +11,63 @@ pub const BROWSER_EVENT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_ENGAGEMENT_INTERVAL_MILLISECONDS: u32 = 60_000;
 pub const MAX_SESSION_ENGAGEMENT_MILLISECONDS: u64 = 14_400_000;
 pub const SESSION_INACTIVITY_MINUTES: i64 = 30;
+pub const DEFAULT_RAW_EVENT_RETENTION_DAYS: u16 = 30;
+pub const MAX_RAW_EVENT_RETENTION_DAYS: u16 = 400;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnalyticsPolicy {
+    behavior_collection_enabled: bool,
+    advertising_exports_enabled: bool,
+    identity_linking_enabled: bool,
+    raw_event_retention_days: u16,
+}
+
+impl AnalyticsPolicy {
+    pub fn new(
+        behavior_collection_enabled: bool,
+        advertising_exports_enabled: bool,
+        identity_linking_enabled: bool,
+        raw_event_retention_days: u16,
+    ) -> Result<Self, DomainError> {
+        if !(1..=MAX_RAW_EVENT_RETENTION_DAYS).contains(&raw_event_retention_days) {
+            return Err(validation(
+                "raw_event_retention_days",
+                "must be between 1 and 400",
+            ));
+        }
+        Ok(Self {
+            behavior_collection_enabled,
+            advertising_exports_enabled,
+            identity_linking_enabled,
+            raw_event_retention_days,
+        })
+    }
+
+    pub fn builtin() -> Self {
+        Self {
+            behavior_collection_enabled: true,
+            advertising_exports_enabled: false,
+            identity_linking_enabled: false,
+            raw_event_retention_days: DEFAULT_RAW_EVENT_RETENTION_DAYS,
+        }
+    }
+
+    pub const fn behavior_collection_enabled(self) -> bool {
+        self.behavior_collection_enabled
+    }
+
+    pub const fn advertising_exports_enabled(self) -> bool {
+        self.advertising_exports_enabled
+    }
+
+    pub const fn identity_linking_enabled(self) -> bool {
+        self.identity_linking_enabled
+    }
+
+    pub const fn raw_event_retention_days(self) -> u16 {
+        self.raw_event_retention_days
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsentSnapshot {
@@ -457,5 +514,16 @@ mod tests {
         assert!(
             SessionEventContribution::from_event(BrowserEventName::PageViewed, Some(1)).is_err()
         );
+    }
+
+    #[test]
+    fn analytics_policy_has_bounded_retention_and_conservative_defaults() {
+        let default = AnalyticsPolicy::builtin();
+        assert!(default.behavior_collection_enabled());
+        assert!(!default.advertising_exports_enabled());
+        assert!(!default.identity_linking_enabled());
+        assert_eq!(default.raw_event_retention_days(), 30);
+        assert!(AnalyticsPolicy::new(true, false, false, 0).is_err());
+        assert!(AnalyticsPolicy::new(true, false, false, 401).is_err());
     }
 }

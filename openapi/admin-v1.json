@@ -17,7 +17,8 @@
     { "name": "API keys" },
     { "name": "Orders" },
     { "name": "Payments" },
-    { "name": "Fulfillment" }
+    { "name": "Fulfillment" },
+    { "name": "Analytics" }
   ],
   "paths": {
     "/admin/v1/auth/email-links": {
@@ -1389,6 +1390,40 @@
         "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "promotion_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "operation", "in": "path", "required": true, "schema": { "type": "string", "enum": ["activate", "archive"] } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "responses": { "200": { "description": "Promotion updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PromotionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
       }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-policy": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "getStoreAnalyticsPolicy",
+        "tags": ["Analytics"],
+        "summary": "Get the effective Store Analytics Policy",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "description": "Effective Analytics Policy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsPolicyEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "updateStoreAnalyticsPolicy",
+        "tags": ["Analytics"],
+        "summary": "Create a new effective Store Analytics Policy version",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WriteAnalyticsPolicy" } } } },
+        "responses": {
+          "200": { "description": "Analytics Policy version created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsPolicyEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
     }
   },
   "components": {
@@ -2088,6 +2123,39 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/Store" } }
+      },
+      "WriteAnalyticsPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["behavior_collection_enabled", "advertising_exports_enabled", "identity_linking_enabled", "raw_event_retention_days"],
+        "properties": {
+          "behavior_collection_enabled": { "type": "boolean" },
+          "advertising_exports_enabled": { "type": "boolean" },
+          "identity_linking_enabled": { "type": "boolean" },
+          "raw_event_retention_days": { "type": "integer", "minimum": 1, "maximum": 400 }
+        }
+      },
+      "AnalyticsPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["store_id", "policy_version", "behavior_collection_enabled", "advertising_exports_enabled", "identity_linking_enabled", "raw_event_retention_days"],
+        "properties": {
+          "store_id": { "type": "string", "format": "uuid" },
+          "policy_version": { "type": "string", "pattern": "^(builtin|store)-v[1-9][0-9]*$" },
+          "behavior_collection_enabled": { "type": "boolean" },
+          "advertising_exports_enabled": { "type": "boolean" },
+          "identity_linking_enabled": { "type": "boolean" },
+          "raw_event_retention_days": { "type": "integer", "minimum": 1, "maximum": 400 },
+          "created_by": { "type": "string", "format": "uuid" },
+          "effective_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AnalyticsPolicyEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsPolicy" } }
       },
       "SalesChannel": {
         "type": "object",

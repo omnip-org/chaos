@@ -2568,6 +2568,38 @@ CREATE INDEX notification_webhook_events_delivery_idx
         id
     );
 
+CREATE TABLE analytics.store_policy_versions (
+    id                              UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id             UUID        NOT NULL,
+    store_id                        UUID        NOT NULL,
+    version                         INTEGER     NOT NULL,
+    behavior_collection_enabled     BOOLEAN     NOT NULL,
+    advertising_exports_enabled     BOOLEAN     NOT NULL,
+    identity_linking_enabled        BOOLEAN     NOT NULL,
+    raw_event_retention_days        SMALLINT    NOT NULL,
+    created_by                      UUID        NOT NULL,
+    effective_at                    TIMESTAMPTZ NOT NULL,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, version),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES identity.users(id),
+    CONSTRAINT store_policy_versions_version_check CHECK (version BETWEEN 1 AND 2147483647),
+    CONSTRAINT store_policy_versions_retention_check CHECK (
+        raw_event_retention_days BETWEEN 1 AND 400
+    )
+);
+
+CREATE INDEX store_policy_versions_current_idx
+    ON analytics.store_policy_versions (
+        merchant_account_id,
+        store_id,
+        effective_at DESC,
+        version DESC
+    );
+
 CREATE TABLE analytics.behavior_events (
     id                            UUID                         NOT NULL PRIMARY KEY,
     event_id                      UUID                         NOT NULL,
@@ -3190,6 +3222,112 @@ AS $$
       FROM analytics.behavior_event_processing AS job;
 $$;
 
+CREATE FUNCTION analytics.retention_metrics()
+RETURNS TABLE (
+    expired_behavior_events BIGINT,
+    expired_sessions BIGINT,
+    oldest_expired_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT (SELECT count(*) FROM analytics.behavior_events AS event
+             WHERE event.retention_expires_at <= CURRENT_TIMESTAMP),
+           (SELECT count(*) FROM analytics.sessions AS session
+             WHERE session.retention_expires_at <= CURRENT_TIMESTAMP),
+           greatest(
+               COALESCE((
+                   SELECT extract(epoch FROM CURRENT_TIMESTAMP - min(event.retention_expires_at))
+                     FROM analytics.behavior_events AS event
+                    WHERE event.retention_expires_at <= CURRENT_TIMESTAMP
+               ), 0),
+               COALESCE((
+                   SELECT extract(epoch FROM CURRENT_TIMESTAMP - min(session.retention_expires_at))
+                     FROM analytics.sessions AS session
+                    WHERE session.retention_expires_at <= CURRENT_TIMESTAMP
+               ), 0)
+           )::DOUBLE PRECISION;
+$$;
+
+CREATE FUNCTION analytics.apply_store_retention_policy(
+    requested_merchant_account_id UUID,
+    requested_store_id UUID,
+    retention_days INTEGER
+)
+RETURNS TABLE (behavior_events_updated BIGINT, sessions_updated BIGINT)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH updated_events AS (
+        UPDATE analytics.behavior_events AS event
+           SET retention_expires_at = least(
+                   event.retention_expires_at,
+                   event.received_at + make_interval(days => retention_days)
+               )
+         WHERE event.merchant_account_id = requested_merchant_account_id
+           AND event.store_id = requested_store_id
+           AND retention_days BETWEEN 1 AND 400
+           AND requested_merchant_account_id =
+               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        RETURNING 1
+    ), updated_sessions AS (
+        UPDATE analytics.sessions AS session
+           SET retention_expires_at = least(
+                   session.retention_expires_at,
+                   session.last_event_at + make_interval(days => retention_days)
+               ),
+               updated_at = CURRENT_TIMESTAMP
+         WHERE session.merchant_account_id = requested_merchant_account_id
+           AND session.store_id = requested_store_id
+           AND retention_days BETWEEN 1 AND 400
+           AND requested_merchant_account_id =
+               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM updated_events),
+           (SELECT count(*) FROM updated_sessions);
+$$;
+
+CREATE FUNCTION analytics.purge_expired_data(batch_size INTEGER, purged_at TIMESTAMPTZ)
+RETURNS TABLE (behavior_events_deleted BIGINT, sessions_deleted BIGINT)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired_sessions AS (
+        SELECT session.id
+          FROM analytics.sessions AS session
+         WHERE session.retention_expires_at <= purged_at
+         ORDER BY session.retention_expires_at, session.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 1000), 1)
+    ), deleted_sessions AS (
+        DELETE FROM analytics.sessions AS session
+         USING expired_sessions
+         WHERE session.id = expired_sessions.id
+        RETURNING 1
+    ), expired_events AS (
+        SELECT event.id
+          FROM analytics.behavior_events AS event
+         WHERE event.retention_expires_at <= purged_at
+         ORDER BY event.retention_expires_at, event.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 1000), 1)
+    ), deleted_events AS (
+        DELETE FROM analytics.behavior_events AS event
+         USING expired_events
+         WHERE event.id = expired_events.id
+        RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM deleted_events),
+           (SELECT count(*) FROM deleted_sessions);
+$$;
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
@@ -3255,6 +3393,7 @@ ALTER TABLE notification.email_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.email_suppressions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.webhook_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.store_policy_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_event_processing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.sessions ENABLE ROW LEVEL SECURITY;
 
@@ -3923,6 +4062,16 @@ CREATE POLICY merchant_account_isolation ON notification.webhook_events
     );
 
 CREATE POLICY merchant_account_isolation ON analytics.behavior_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.store_policy_versions
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -4905,6 +5054,9 @@ REVOKE ALL ON FUNCTION notification.email_delivery_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_tracking_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_cancellation_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.sessionization_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.retention_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -4997,6 +5149,11 @@ GRANT EXECUTE ON FUNCTION notification.email_delivery_metrics() TO chaos_runtime
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_tracking_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_cancellation_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.sessionization_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.retention_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER)
+    TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ)
+    TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
@@ -5019,6 +5176,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA notification TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA analytics TO chaos_runtime;
+REVOKE UPDATE, DELETE ON analytics.store_policy_versions FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.behavior_events FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;

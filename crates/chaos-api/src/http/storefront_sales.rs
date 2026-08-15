@@ -1389,6 +1389,31 @@ mod tests {
         ));
         let app = router(state);
 
+        let analytics_policy_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-policy",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let default_analytics_policy = app
+            .clone()
+            .oneshot(request(Method::GET, &analytics_policy_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(default_analytics_policy.status(), StatusCode::OK);
+        let default_analytics_policy = response_json(default_analytics_policy).await;
+        assert_eq!(
+            default_analytics_policy["data"]["policy_version"],
+            "builtin-v1"
+        );
+        assert_eq!(
+            default_analytics_policy["data"]["raw_event_retention_days"],
+            30
+        );
+        assert_eq!(
+            default_analytics_policy["data"]["advertising_exports_enabled"],
+            false
+        );
+
         let analytics_event_id = Uuid::now_v7();
         let analytics_anonymous_id = Uuid::now_v7();
         let analytics_session_id = Uuid::now_v7();
@@ -1678,6 +1703,165 @@ mod tests {
         assert_eq!(sessionization_metrics.0, 0);
         assert_eq!(sessionization_metrics.1, 0);
         assert_eq!(sessionization_metrics.2, 0);
+
+        let disabled_policy_body = json!({
+            "behavior_collection_enabled": false,
+            "advertising_exports_enabled": false,
+            "identity_linking_enabled": false,
+            "raw_event_retention_days": 7
+        });
+        let disabled_policy = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("disable-analytics-collection"),
+                Some(disabled_policy_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(disabled_policy.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(disabled_policy).await["data"]["policy_version"],
+            "store-v1"
+        );
+        let disabled_policy_replay = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("disable-analytics-collection"),
+                Some(disabled_policy_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(disabled_policy_replay.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(disabled_policy_replay).await["data"]["policy_version"],
+            "store-v1"
+        );
+        let policy_event_id = Uuid::now_v7();
+        let policy_event = |event_id| {
+            json!({
+                "events": [{
+                    "event_id": event_id,
+                    "event_name": "page_viewed",
+                    "schema_version": 1,
+                    "occurred_at": analytics_occurred_at,
+                    "anonymous_id": Uuid::now_v7(),
+                    "session_id": Uuid::now_v7(),
+                    "consent": {
+                        "analytics_storage": true,
+                        "advertising_storage": true,
+                        "policy_version": "cmp-v1"
+                    },
+                    "properties": {"path": "/policy"}
+                }]
+            })
+        };
+        let policy_discard = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(policy_event(policy_event_id)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(policy_discard.status(), StatusCode::OK);
+        let policy_discard = response_json(policy_discard).await;
+        assert_eq!(policy_discard["data"]["stored"], 0);
+        assert_eq!(policy_discard["data"]["discarded_for_policy"], 1);
+        assert_eq!(
+            policy_discard["data"]["collection_policy_version"],
+            "store-v1"
+        );
+        let enabled_policy = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("enable-analytics-collection"),
+                Some(json!({
+                    "behavior_collection_enabled": true,
+                    "advertising_exports_enabled": true,
+                    "identity_linking_enabled": false,
+                    "raw_event_retention_days": 7
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(enabled_policy.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(enabled_policy).await["data"]["policy_version"],
+            "store-v2"
+        );
+        let invalid_policy = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("invalid-analytics-retention"),
+                Some(json!({
+                    "behavior_collection_enabled": true,
+                    "advertising_exports_enabled": false,
+                    "identity_linking_enabled": false,
+                    "raw_event_retention_days": 0
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_policy.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let retained_policy_event_id = Uuid::now_v7();
+        let retained_policy_event = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(policy_event(retained_policy_event_id)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(retained_policy_event.status(), StatusCode::OK);
+        let retained_policy_event = response_json(retained_policy_event).await;
+        assert_eq!(retained_policy_event["data"]["stored"], 1);
+        assert_eq!(
+            retained_policy_event["data"]["collection_policy_version"],
+            "store-v2"
+        );
+        let retention_window: (time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT received_at, retention_expires_at FROM analytics.behavior_events \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND event_id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(retained_policy_event_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retention_window.1 - retention_window.0,
+            time::Duration::days(7)
+        );
+        let cross_account_policy = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-policy",
+                    Uuid::now_v7(),
+                    store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cross_account_policy.status(), StatusCode::FORBIDDEN);
         let analytics_rows: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events WHERE event_id = $1",
         )
@@ -1718,7 +1902,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query(
+        let isolated_behavior_event_id: Uuid = sqlx::query_scalar(
             "INSERT INTO analytics.behavior_events \
              (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
               schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
@@ -1726,12 +1910,13 @@ mod tests {
               properties, occurred_at, received_at, retention_expires_at) \
              VALUES (uuidv7(),uuidv7(),$1,$2,$3,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
                      true,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
-                     CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days')",
+                     CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days') \
+             RETURNING id",
         )
         .bind(isolated_account_id.as_uuid())
         .bind(isolated_store_id.as_uuid())
         .bind(isolated_channel_id.as_uuid())
-        .execute(&owner_pool)
+        .fetch_one(&owner_pool)
         .await
         .unwrap();
         let mut analytics_rls = runtime_pool.begin().await.unwrap();
@@ -1745,14 +1930,58 @@ mod tests {
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
-        assert_eq!(visible_analytics_rows, 6);
+        assert_eq!(visible_analytics_rows, 7);
         let visible_analytics_sessions: i64 =
             sqlx::query_scalar("SELECT count(*) FROM analytics.sessions")
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
         assert_eq!(visible_analytics_sessions, 3);
+        let cross_account_retention_update: (i64, i64) =
+            sqlx::query_as("SELECT * FROM analytics.apply_store_retention_policy($1,$2,1)")
+                .bind(isolated_account_id.as_uuid())
+                .bind(isolated_store_id.as_uuid())
+                .fetch_one(&mut *analytics_rls)
+                .await
+                .unwrap();
+        assert_eq!(cross_account_retention_update, (0, 0));
         analytics_rls.rollback().await.unwrap();
+
+        let retention_purge = analytics_workers
+            .run_retention_batch(test_clock.now() + time::Duration::days(8), 1000)
+            .await
+            .unwrap();
+        assert_eq!(retention_purge.behavior_events_deleted, 6);
+        assert_eq!(retention_purge.sessions_deleted, 2);
+        let retained_main_store_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.behavior_events \
+             WHERE merchant_account_id = $1 AND store_id = $2",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(retained_main_store_events, 0);
+        let retained_other_store_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.behavior_events \
+             WHERE merchant_account_id = $1 AND store_id = $2",
+        )
+        .bind(account_id.as_uuid())
+        .bind(other_store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(retained_other_store_events, 1);
+        let isolated_retention_days: f64 = sqlx::query_scalar(
+            "SELECT (extract(epoch FROM retention_expires_at - received_at) / 86400)::double precision \
+             FROM analytics.behavior_events WHERE id = $1",
+        )
+        .bind(isolated_behavior_event_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(isolated_retention_days, 30.0);
 
         let provider_accounts_uri = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts",

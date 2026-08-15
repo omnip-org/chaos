@@ -2,21 +2,23 @@ use std::sync::Arc;
 
 use chaos_domain::{
     FieldViolation,
-    analytics::{BrowserEvent, SessionEventContribution},
-    merchant::ApiKeyClass,
+    analytics::{AnalyticsPolicy, BrowserEvent, SessionEventContribution},
+    merchant::{ApiKeyClass, MerchantRole, StoreId},
 };
 use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    ports::{AnalyticsEventRepository, AnalyticsSessionizationQueue, MachineActor},
+    merchant::MerchantActor,
+    ports::{
+        AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsSessionizationQueue,
+        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
+    },
 };
 
-const COLLECTION_POLICY_VERSION: &str = "builtin-v1";
 const MAX_BATCH_SIZE: usize = 20;
 const MAX_PAST_SKEW: Duration = Duration::hours(24);
 const MAX_FUTURE_SKEW: Duration = Duration::minutes(5);
-const RAW_EVENT_RETENTION: Duration = Duration::days(30);
 
 pub struct CollectBrowserEventsInput {
     pub actor: MachineActor,
@@ -30,7 +32,8 @@ pub struct BrowserEventCollectionResult {
     pub stored: usize,
     pub duplicates: usize,
     pub discarded_for_consent: usize,
-    pub collection_policy_version: &'static str,
+    pub discarded_for_policy: usize,
+    pub collection_policy_version: String,
 }
 
 pub struct AnalyticsCollection {
@@ -39,6 +42,66 @@ pub struct AnalyticsCollection {
 
 pub struct AnalyticsWorkers {
     sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
+}
+
+pub struct UpdateAnalyticsPolicyInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub behavior_collection_enabled: bool,
+    pub advertising_exports_enabled: bool,
+    pub identity_linking_enabled: bool,
+    pub raw_event_retention_days: u16,
+    pub idempotency: IdempotencyRequest,
+    pub now: OffsetDateTime,
+}
+
+pub struct AnalyticsAdministration {
+    repository: Arc<dyn AnalyticsPolicyRepository>,
+}
+
+impl AnalyticsAdministration {
+    pub fn new(repository: Arc<dyn AnalyticsPolicyRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn get_policy(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        now: OffsetDateTime,
+    ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
+        self.repository
+            .get_store_policy(actor, store_id, now)
+            .await?
+            .ok_or_else(|| store_not_found(store_id))
+    }
+
+    pub async fn update_policy(
+        &self,
+        input: UpdateAnalyticsPolicyInput,
+    ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
+        match input.actor.role() {
+            MerchantRole::Owner | MerchantRole::Administrator => {}
+            MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
+                return Err(ApplicationError::Forbidden);
+            }
+        }
+        let policy = AnalyticsPolicy::new(
+            input.behavior_collection_enabled,
+            input.advertising_exports_enabled,
+            input.identity_linking_enabled,
+            input.raw_event_retention_days,
+        )?;
+        self.repository
+            .update_store_policy(
+                input.actor,
+                input.store_id,
+                policy,
+                &input.idempotency,
+                input.now,
+            )
+            .await
+    }
 }
 
 impl AnalyticsWorkers {
@@ -70,6 +133,16 @@ impl AnalyticsWorkers {
         }
         Ok(jobs.len())
     }
+
+    pub async fn run_retention_batch(
+        &self,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<crate::ports::AnalyticsRetentionPurgeResult, ApplicationError> {
+        self.sessionization_queue
+            .purge_expired_data(limit, now)
+            .await
+    }
 }
 
 impl AnalyticsCollection {
@@ -99,12 +172,26 @@ impl AnalyticsCollection {
         }
 
         let received = input.events.len();
-        let eligible = input
+        let policy = self
+            .repository
+            .resolve_collection_policy(&input.actor, input.received_at)
+            .await?;
+        let consent_eligible = input
             .events
             .into_iter()
             .filter(|event| event.consent().analytics_storage())
             .collect::<Vec<_>>();
-        let discarded_for_consent = received - eligible.len();
+        let discarded_for_consent = received - consent_eligible.len();
+        let discarded_for_policy = if policy.policy.behavior_collection_enabled() {
+            0
+        } else {
+            consent_eligible.len()
+        };
+        let eligible = if policy.policy.behavior_collection_enabled() {
+            consent_eligible
+        } else {
+            Vec::new()
+        };
         let stored = if eligible.is_empty() {
             0
         } else {
@@ -112,9 +199,10 @@ impl AnalyticsCollection {
                 .append_browser_events(
                     &input.actor,
                     &eligible,
-                    COLLECTION_POLICY_VERSION,
+                    &policy.policy_version,
                     input.received_at,
-                    input.received_at + RAW_EVENT_RETENTION,
+                    input.received_at
+                        + Duration::days(i64::from(policy.policy.raw_event_retention_days())),
                 )
                 .await?
         };
@@ -123,8 +211,16 @@ impl AnalyticsCollection {
             stored,
             duplicates: eligible.len() - stored,
             discarded_for_consent,
-            collection_policy_version: COLLECTION_POLICY_VERSION,
+            discarded_for_policy,
+            collection_policy_version: policy.policy_version,
         })
+    }
+}
+
+fn store_not_found(store_id: StoreId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "store",
+        id: store_id.as_uuid().to_string(),
     }
 }
 
@@ -155,6 +251,17 @@ mod tests {
 
     #[async_trait]
     impl AnalyticsEventRepository for RecordingRepository {
+        async fn resolve_collection_policy(
+            &self,
+            _actor: &MachineActor,
+            _now: OffsetDateTime,
+        ) -> Result<crate::ports::ResolvedAnalyticsPolicy, ApplicationError> {
+            Ok(crate::ports::ResolvedAnalyticsPolicy {
+                policy: AnalyticsPolicy::builtin(),
+                policy_version: "builtin-v1".into(),
+            })
+        }
+
         async fn append_browser_events(
             &self,
             _actor: &MachineActor,

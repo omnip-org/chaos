@@ -83,12 +83,26 @@ async fn analytics_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = workers
-            .run_sessionization_batch(worker_id, clock.now(), 100)
-            .await
-        {
+        let now = clock.now();
+        if let Err(error) = workers.run_sessionization_batch(worker_id, now, 100).await {
             tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
+        }
+        if now >= next_retention_at {
+            match workers.run_retention_batch(now, 1000).await {
+                Ok(result) => {
+                    ::metrics::counter!("chaos_analytics_retention_behavior_events_deleted_total")
+                        .increment(result.behavior_events_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_sessions_deleted_total")
+                        .increment(result.sessions_deleted);
+                    next_retention_at = now + time::Duration::minutes(1);
+                }
+                Err(error) => {
+                    tracing::warn!(%worker_id, %error, "analytics retention batch failed");
+                    next_retention_at = now + time::Duration::seconds(5);
+                }
+            }
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

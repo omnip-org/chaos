@@ -23,7 +23,9 @@ mod storefront_catalog;
 mod tax;
 
 pub use analytics::{
-    AnalyticsEventRepository, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
+    AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsRetentionPurgeResult,
+    AnalyticsSessionizationJob, AnalyticsSessionizationQueue, ResolvedAnalyticsPolicy,
+    StoreAnalyticsPolicy,
 };
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,

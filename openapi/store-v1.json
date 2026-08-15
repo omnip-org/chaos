@@ -653,12 +653,13 @@
       "AnalyticsCollectionResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["received", "stored", "duplicates", "discarded_for_consent", "collection_policy_version"],
+        "required": ["received", "stored", "duplicates", "discarded_for_consent", "discarded_for_policy", "collection_policy_version"],
         "properties": {
           "received": { "type": "integer", "minimum": 1, "maximum": 20 },
           "stored": { "type": "integer", "minimum": 0, "maximum": 20 },
           "duplicates": { "type": "integer", "minimum": 0, "maximum": 20 },
           "discarded_for_consent": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "discarded_for_policy": { "type": "integer", "minimum": 0, "maximum": 20 },
           "collection_policy_version": { "type": "string" }
         }
       },
