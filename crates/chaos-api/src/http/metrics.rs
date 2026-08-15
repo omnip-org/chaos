@@ -60,6 +60,28 @@ async fn scrape(State(state): State<ApiState>) -> impl IntoResponse {
         ::metrics::gauge!("chaos_notification_email_suppressed").set(suppressed as f64);
         ::metrics::gauge!("chaos_notification_email_oldest_pending_seconds").set(oldest);
     }
+    if let Ok((due, processing, dead_letter, oldest)) = sqlx::query_as::<_, (i64, i64, i64, f64)>(
+        "SELECT * FROM fulfillment.shipping_tracking_metrics()",
+    )
+    .fetch_one(&pool)
+    .await
+    {
+        ::metrics::gauge!("chaos_shipping_tracking_due").set(due as f64);
+        ::metrics::gauge!("chaos_shipping_tracking_processing").set(processing as f64);
+        ::metrics::gauge!("chaos_shipping_tracking_dead_letter").set(dead_letter as f64);
+        ::metrics::gauge!("chaos_shipping_tracking_oldest_due_seconds").set(oldest);
+    }
+    if let Ok((due, processing, dead_letter, oldest)) = sqlx::query_as::<_, (i64, i64, i64, f64)>(
+        "SELECT * FROM fulfillment.shipping_cancellation_metrics()",
+    )
+    .fetch_one(&pool)
+    .await
+    {
+        ::metrics::gauge!("chaos_shipping_cancellation_due").set(due as f64);
+        ::metrics::gauge!("chaos_shipping_cancellation_processing").set(processing as f64);
+        ::metrics::gauge!("chaos_shipping_cancellation_dead_letter").set(dead_letter as f64);
+        ::metrics::gauge!("chaos_shipping_cancellation_oldest_due_seconds").set(oldest);
+    }
     (
         [(
             header::CONTENT_TYPE,

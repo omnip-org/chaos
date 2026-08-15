@@ -149,8 +149,15 @@ async fn fulfillment_worker_loop(
 ) {
     let worker_id = Uuid::now_v7();
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = workers.run_batch(worker_id, clock.now(), 50).await {
+        let now = clock.now();
+        if let Err(error) = workers.run_batch(worker_id, now, 50).await {
             tracing::warn!(%worker_id, %error, "fulfillment event batch failed");
+        }
+        if let Err(error) = workers.run_tracking_batch(worker_id, now, 25).await {
+            tracing::warn!(%worker_id, %error, "shipping tracking batch failed");
+        }
+        if let Err(error) = workers.run_cancellation_batch(worker_id, now, 25).await {
+            tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

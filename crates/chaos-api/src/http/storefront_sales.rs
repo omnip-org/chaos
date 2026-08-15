@@ -748,7 +748,10 @@ fn order_line_data(line: OrderLineItem) -> OrderLineData {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use async_trait::async_trait;
     use axum::{
@@ -759,13 +762,20 @@ mod tests {
     use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
     use chaos_application::{
         ApplicationError,
+        fulfillment::{FulfillmentWorkers, ShippingProviderAdministration},
         payments::{PaymentProviderAdministration, PaymentWorkers},
         ports::{
-            IntegrationQueue, PaymentProviderOnboarding, PaymentProviderReadiness,
-            PaymentProviderReadinessQueue, PaymentRepository, ProviderCommandResult, QueueJob,
+            CancelShippingLabelCommand, IntegrationQueue, PaymentProviderOnboarding,
+            PaymentProviderReadiness, PaymentProviderReadinessQueue, PaymentRepository,
+            ProviderCommandResult, ProviderTrackingStatus, PurchaseShippingLabelCommand,
+            PurchasedShippingLabel, QueueJob, ReconcileShippingLabelCommand,
+            ReconciledShippingLabel, RefreshTrackingCommand, ShippingCancellationStatus,
+            ShippingProvider, ShippingQuoteCommand, ShippingRateQuote, ShippingTrackingQueue,
+            ShippingTrackingSnapshot,
         },
     };
     use chaos_domain::{
+        CurrencyCode,
         catalog::{ProductId, ProductVariantId},
         fulfillment::ShippingServiceId,
         identity::UserId,
@@ -775,7 +785,10 @@ mod tests {
         pricing::PriceListId,
     };
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
-    use chaos_infrastructure::repositories::{PostgresPaymentRepository, SandboxPaymentProvider};
+    use chaos_infrastructure::repositories::{
+        PostgresFulfillmentRepository, PostgresPaymentRepository,
+        PostgresShippingServiceRepository, SandboxPaymentProvider,
+    };
     use hmac::{Hmac, Mac};
     use secrecy::ExposeSecret;
     use serde_json::{Value, json};
@@ -833,6 +846,90 @@ mod tests {
             Err(ApplicationError::Unavailable {
                 service: "testpay",
                 source: anyhow::anyhow!("simulated readiness dependency failure"),
+            })
+        }
+    }
+
+    struct TestShippingProvider {
+        purchases: Arc<AtomicUsize>,
+        cancellation_requested: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ShippingProvider for TestShippingProvider {
+        fn name(&self) -> &'static str {
+            "easypost"
+        }
+
+        async fn quote_rates(
+            &self,
+            _command: ShippingQuoteCommand,
+        ) -> Result<Vec<ShippingRateQuote>, ApplicationError> {
+            Ok(vec![ShippingRateQuote {
+                provider_shipment_reference: "shp_test123".into(),
+                provider_rate_reference: "rate_test123".into(),
+                carrier: "USPS".into(),
+                service: "GroundAdvantage".into(),
+                amount_minor: 1_234,
+                currency: CurrencyCode::USD,
+                estimated_delivery_days: Some(4),
+                guaranteed: false,
+            }])
+        }
+
+        async fn purchase_label(
+            &self,
+            _command: PurchaseShippingLabelCommand,
+        ) -> Result<PurchasedShippingLabel, ApplicationError> {
+            self.purchases.fetch_add(1, Ordering::SeqCst);
+            Ok(PurchasedShippingLabel {
+                provider_shipment_reference: "shp_test123".into(),
+                carrier: "USPS".into(),
+                tracking_number: "9400111899223856928499".into(),
+                provider_tracker_reference: Some("trk_test123".into()),
+                label_url: "https://labels.example.com/test.png".into(),
+                label_media_type: "image/png".into(),
+            })
+        }
+
+        async fn reconcile_label(
+            &self,
+            _command: ReconcileShippingLabelCommand,
+        ) -> Result<ReconciledShippingLabel, ApplicationError> {
+            Ok(ReconciledShippingLabel {
+                label: Some(PurchasedShippingLabel {
+                    provider_shipment_reference: "shp_test123".into(),
+                    carrier: "USPS".into(),
+                    tracking_number: "9400111899223856928499".into(),
+                    provider_tracker_reference: Some("trk_test123".into()),
+                    label_url: "https://labels.example.com/test.png".into(),
+                    label_media_type: "image/png".into(),
+                }),
+                cancellation_status: self
+                    .cancellation_requested
+                    .load(Ordering::SeqCst)
+                    .then_some(ShippingCancellationStatus::Cancelled),
+            })
+        }
+
+        async fn cancel_label(
+            &self,
+            _command: CancelShippingLabelCommand,
+        ) -> Result<ShippingCancellationStatus, ApplicationError> {
+            self.cancellation_requested.store(true, Ordering::SeqCst);
+            Ok(ShippingCancellationStatus::Submitted)
+        }
+
+        async fn refresh_tracking(
+            &self,
+            _command: RefreshTrackingCommand,
+            observed_at: time::OffsetDateTime,
+        ) -> Result<ShippingTrackingSnapshot, ApplicationError> {
+            Ok(ShippingTrackingSnapshot {
+                status: ProviderTrackingStatus::Delivered,
+                status_detail: Some("delivered".into()),
+                estimated_delivery_at: Some(observed_at),
+                observed_at,
             })
         }
     }
@@ -1230,6 +1327,19 @@ mod tests {
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
+        let shipping_repository =
+            Arc::new(PostgresShippingServiceRepository::new(runtime_pool.clone()));
+        let shipping_purchase_count = Arc::new(AtomicUsize::new(0));
+        let shipping_cancellation_requested = Arc::new(AtomicBool::new(false));
+        let shipping_provider: Arc<dyn ShippingProvider> = Arc::new(TestShippingProvider {
+            purchases: shipping_purchase_count.clone(),
+            cancellation_requested: shipping_cancellation_requested,
+        });
+        state.shipping_provider_administration = Arc::new(ShippingProviderAdministration::new(
+            shipping_repository.clone(),
+            shipping_repository.clone(),
+            [shipping_provider.clone()],
+        ));
         state.payment_provider_administration = Arc::new(PaymentProviderAdministration::new(
             payment_repository.clone(),
             vec![
@@ -1267,7 +1377,11 @@ mod tests {
             Vec::new(),
             vec![Arc::new(SandboxPaymentProvider) as Arc<dyn PaymentProviderOnboarding>],
         );
-        let fulfillment_workers = state.fulfillment_workers.clone();
+        let fulfillment_workers = Arc::new(FulfillmentWorkers::new(
+            Arc::new(PostgresFulfillmentRepository::new(runtime_pool.clone())),
+            shipping_repository.clone(),
+            [shipping_provider],
+        ));
         let app = router(state);
 
         let provider_accounts_uri = format!(
@@ -2939,6 +3053,265 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(transition_count, 1);
+
+        let provider_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let shipping_provider_account = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &provider_uri,
+                Some("shipping-provider-create"),
+                Some(json!({
+                    "provider": "easypost",
+                    "display_name": "EasyPost Test",
+                    "credential_secret_reference": "env://CHAOS_SHIPPING_SECRET_EASYPOST",
+                    "origin": {
+                        "name": "Test Warehouse",
+                        "address_line_1": "10 Warehouse Road",
+                        "city": "Singapore",
+                        "postal_code": "018956",
+                        "country_code": "SG",
+                        "phone": "+6591234567",
+                        "email": "warehouse@example.com"
+                    },
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(shipping_provider_account.status(), StatusCode::CREATED);
+        let shipping_provider_account = response_json(shipping_provider_account).await;
+        let shipping_provider_account_id =
+            shipping_provider_account["data"]["id"].as_str().unwrap();
+
+        let provider_fulfillment = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &fulfillment_base,
+                Some("provider-fulfillment-create"),
+                Some(json!({
+                    "allocations": [{
+                        "product_variant_id": variant_id.as_uuid(),
+                        "quantity": 1
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(provider_fulfillment.status(), StatusCode::CREATED);
+        let provider_fulfillment = response_json(provider_fulfillment).await;
+        let provider_fulfillment_id = provider_fulfillment["data"]["id"].as_str().unwrap();
+        let provider_fulfillment_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/fulfillments/{provider_fulfillment_id}",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let quote_body = json!({
+            "provider_account_id": shipping_provider_account_id,
+            "length_millimetres": 254,
+            "width_millimetres": 127,
+            "height_millimetres": 51,
+            "weight_grams": 454
+        });
+        let cross_store_quote = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/fulfillments/{provider_fulfillment_id}/shipping-rates",
+                    account_id.as_uuid(),
+                    other_store_id.as_uuid()
+                ),
+                Some("cross-store-provider-rate-quote"),
+                Some(quote_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cross_store_quote.status(), StatusCode::CONFLICT);
+        let quote = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("{provider_fulfillment_uri}/shipping-rates"),
+                Some("provider-rate-quote"),
+                Some(quote_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(quote.status(), StatusCode::CREATED);
+        let quote = response_json(quote).await;
+        assert_eq!(quote["data"][0]["amount_minor"], 1234);
+        let rate_quote_id = quote["data"][0]["id"].as_str().unwrap();
+        let quote_replay = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("{provider_fulfillment_uri}/shipping-rates"),
+                Some("provider-rate-quote"),
+                Some(quote_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(quote_replay.status(), StatusCode::CREATED);
+        assert_eq!(
+            response_json(quote_replay).await["data"][0]["id"],
+            rate_quote_id
+        );
+
+        let label_body = json!({"rate_quote_id": rate_quote_id});
+        let label = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("{provider_fulfillment_uri}/shipping-label"),
+                Some("provider-label-purchase"),
+                Some(label_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(label.status(), StatusCode::CREATED);
+        let label = response_json(label).await;
+        assert_eq!(label["data"]["carrier"], "USPS");
+        assert_eq!(label["data"]["label_media_type"], "image/png");
+        let shipping_label_id = label["data"]["id"].as_str().unwrap();
+        let label_replay = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("{provider_fulfillment_uri}/shipping-label"),
+                Some("provider-label-purchase"),
+                Some(label_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(label_replay.status(), StatusCode::CREATED);
+        assert_eq!(
+            response_json(label_replay).await["data"]["id"],
+            shipping_label_id
+        );
+        assert_eq!(shipping_purchase_count.load(Ordering::SeqCst), 0);
+
+        let abandoned_tracking_worker = Uuid::now_v7();
+        let abandoned_tracking = shipping_repository
+            .claim_tracking(
+                abandoned_tracking_worker,
+                10,
+                test_clock.now(),
+                test_clock.now() - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(abandoned_tracking.len(), 1);
+        let recovered_tracking_at = test_clock.now() + time::Duration::minutes(2);
+        assert_eq!(
+            fulfillment_workers
+                .run_tracking_batch(Uuid::now_v7(), recovered_tracking_at, 10)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            shipping_repository
+                .finish_tracking(
+                    abandoned_tracking_worker,
+                    &abandoned_tracking[0],
+                    Ok(ShippingTrackingSnapshot {
+                        status: ProviderTrackingStatus::Delivered,
+                        status_detail: None,
+                        estimated_delivery_at: None,
+                        observed_at: recovered_tracking_at,
+                    }),
+                    recovered_tracking_at,
+                )
+                .await
+                .is_err()
+        );
+        let provider_fulfillment_status: String =
+            sqlx::query_scalar("SELECT status::text FROM fulfillment.fulfillments WHERE id = $1")
+                .bind(Uuid::parse_str(provider_fulfillment_id).unwrap())
+                .fetch_one(&owner_pool)
+                .await
+                .unwrap();
+        assert_eq!(provider_fulfillment_status, "delivered");
+        let tracking_status: String = sqlx::query_scalar(
+            "SELECT tracking_status FROM fulfillment.shipping_labels WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(shipping_label_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(tracking_status, "delivered");
+        assert!(
+            fulfillment_workers
+                .run_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::seconds(1),
+                    10,
+                )
+                .await
+                .unwrap()
+                >= 2
+        );
+
+        let cancellation = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &format!("{provider_fulfillment_uri}/shipping-label/cancel"),
+                Some("provider-label-cancel"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cancellation.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(cancellation).await["data"]["cancellation_status"],
+            "submitted"
+        );
+        let abandoned_cancellation_worker = Uuid::now_v7();
+        let cancellation_reconcile_at = test_clock.now() + time::Duration::minutes(15);
+        let abandoned_cancellation = shipping_repository
+            .claim_cancellations(
+                abandoned_cancellation_worker,
+                10,
+                cancellation_reconcile_at,
+                cancellation_reconcile_at - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(abandoned_cancellation.len(), 1);
+        let recovered_cancellation_at = cancellation_reconcile_at + time::Duration::minutes(2);
+        assert_eq!(
+            fulfillment_workers
+                .run_cancellation_batch(Uuid::now_v7(), recovered_cancellation_at, 10)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            shipping_repository
+                .finish_cancellation(
+                    abandoned_cancellation_worker,
+                    &abandoned_cancellation[0],
+                    Ok(ShippingCancellationStatus::Cancelled),
+                    recovered_cancellation_at,
+                )
+                .await
+                .is_err()
+        );
+        let cancellation_status: String = sqlx::query_scalar(
+            "SELECT cancellation_status FROM fulfillment.shipping_labels WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(shipping_label_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(cancellation_status, "cancelled");
 
         let return_base = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}/returns",

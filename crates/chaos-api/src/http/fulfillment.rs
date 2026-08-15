@@ -7,21 +7,22 @@ use axum::{
 use chaos_application::{
     ApplicationError,
     fulfillment::{
-        ChangeShippingServiceStatusInput, CreateFulfillmentInput, CreateReturnInput,
-        CreateShippingProviderAccountInput, CreateShippingServiceInput, TransitionFulfillmentInput,
-        TransitionReturnInput, UpdateShippingProviderAccountInput,
+        CancelPurchasedShippingLabelInput, ChangeShippingServiceStatusInput,
+        CreateFulfillmentInput, CreateReturnInput, CreateShippingProviderAccountInput,
+        CreateShippingServiceInput, PurchaseShippingLabelInput, QuoteShippingRatesInput,
+        TransitionFulfillmentInput, TransitionReturnInput, UpdateShippingProviderAccountInput,
     },
     ports::{
         FulfillmentAllocationInput, FulfillmentDetail, IdempotencyRequest, ReturnDetail,
-        ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingProviderAccountDetail,
-        ShippingServiceDetail,
+        ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingLabelDetail, ShippingParcel,
+        ShippingProviderAccountDetail, ShippingRateQuoteDetail, ShippingServiceDetail,
     },
 };
 use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
-        ShippingProviderAccountId, ShippingServiceId, ShippingServiceStatus,
+        ShippingProviderAccountId, ShippingRateQuoteId, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
     merchant::{MerchantAccountId, StoreId},
@@ -45,6 +46,18 @@ pub(super) fn routes() -> Router<ApiState> {
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/{operation}",
             post(transition_fulfillment),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-rates",
+            post(quote_shipping_rates),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label",
+            post(purchase_shipping_label),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label/cancel",
+            post(cancel_shipping_label),
         )
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}/returns",
@@ -90,6 +103,13 @@ struct FulfillmentPath {
     store_id: Uuid,
     fulfillment_id: Uuid,
     operation: String,
+}
+
+#[derive(Deserialize)]
+struct FulfillmentResourcePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    fulfillment_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -173,6 +193,63 @@ struct ShippingProviderAccountData {
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_rotation_expires_at: Option<ApiDateTime>,
     created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct QuoteShippingRatesBody {
+    provider_account_id: Uuid,
+    length_millimetres: u32,
+    width_millimetres: u32,
+    height_millimetres: u32,
+    weight_grams: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PurchaseShippingLabelBody {
+    rate_quote_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct ShippingRateData {
+    id: Uuid,
+    quote_request_id: Uuid,
+    carrier: String,
+    service: String,
+    amount_minor: i64,
+    currency: String,
+    estimated_delivery_days: Option<u16>,
+    guaranteed: bool,
+    expires_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct ShippingTrackingData {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_delivery_at: Option<ApiDateTime>,
+    observed_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct ShippingLabelData {
+    id: Uuid,
+    fulfillment_id: Uuid,
+    rate_quote_id: Uuid,
+    provider: String,
+    carrier: String,
+    tracking_number: String,
+    label_url: String,
+    label_media_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cancellation_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracking: Option<ShippingTrackingData>,
+    purchased_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
 
@@ -484,6 +561,139 @@ fn shipping_provider_account_data(
         enabled: value.account.enabled(),
         credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
         created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
+    }
+}
+
+async fn quote_shipping_rates(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<FulfillmentResourcePath>,
+    ApiJson(body): ApiJson<QuoteShippingRatesBody>,
+) -> Result<ApiResponse<Vec<ShippingRateData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(
+        &headers,
+        "quote_shipping_rates",
+        &(path.fulfillment_id, &body),
+    )?;
+    let rates = state
+        .shipping_provider_administration
+        .quote_rates(QuoteShippingRatesInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
+            provider_account_id: ShippingProviderAccountId::from_uuid(body.provider_account_id),
+            parcel: ShippingParcel {
+                length_millimetres: body.length_millimetres,
+                width_millimetres: body.width_millimetres,
+                height_millimetres: body.height_millimetres,
+                weight_grams: body.weight_grams,
+            },
+            now: state.clock.now(),
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(
+        rates.into_iter().map(shipping_rate_data).collect(),
+    ))
+}
+
+async fn purchase_shipping_label(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<FulfillmentResourcePath>,
+    ApiJson(body): ApiJson<PurchaseShippingLabelBody>,
+) -> Result<ApiResponse<ShippingLabelData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(
+        &headers,
+        "purchase_shipping_label",
+        &(path.fulfillment_id, &body),
+    )?;
+    let label = state
+        .shipping_provider_administration
+        .purchase_label(PurchaseShippingLabelInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
+            rate_quote_id: ShippingRateQuoteId::from_uuid(body.rate_quote_id),
+            now: state.clock.now(),
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(shipping_label_data(label)))
+}
+
+async fn cancel_shipping_label(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<FulfillmentResourcePath>,
+) -> Result<ApiResponse<ShippingLabelData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(&headers, "cancel_shipping_label", &path.fulfillment_id)?;
+    let label = state
+        .shipping_provider_administration
+        .cancel_label(CancelPurchasedShippingLabelInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
+            now: state.clock.now(),
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(shipping_label_data(label)))
+}
+
+fn shipping_rate_data(value: ShippingRateQuoteDetail) -> ShippingRateData {
+    ShippingRateData {
+        id: value.id.as_uuid(),
+        quote_request_id: value.quote_request_id.as_uuid(),
+        carrier: value.rate.carrier,
+        service: value.rate.service,
+        amount_minor: value.rate.amount_minor,
+        currency: value.rate.currency.as_str().into(),
+        estimated_delivery_days: value.rate.estimated_delivery_days,
+        guaranteed: value.rate.guaranteed,
+        expires_at: value.expires_at.into(),
+    }
+}
+
+fn shipping_label_data(value: ShippingLabelDetail) -> ShippingLabelData {
+    ShippingLabelData {
+        id: value.id.as_uuid(),
+        fulfillment_id: value.fulfillment_id.as_uuid(),
+        rate_quote_id: value.rate_quote_id.as_uuid(),
+        provider: value.provider,
+        carrier: value.label.carrier,
+        tracking_number: value.label.tracking_number,
+        label_url: value.label.label_url,
+        label_media_type: value.label.label_media_type,
+        cancellation_status: value.cancellation_status.map(|status| match status {
+            chaos_application::ports::ShippingCancellationStatus::Submitted => "submitted",
+            chaos_application::ports::ShippingCancellationStatus::Cancelled => "cancelled",
+            chaos_application::ports::ShippingCancellationStatus::Rejected => "rejected",
+            chaos_application::ports::ShippingCancellationStatus::NotAvailable => "not_available",
+        }),
+        tracking: value.tracking.map(|tracking| ShippingTrackingData {
+            status: match tracking.status {
+                chaos_application::ports::ProviderTrackingStatus::PreTransit => "pre_transit",
+                chaos_application::ports::ProviderTrackingStatus::InTransit => "in_transit",
+                chaos_application::ports::ProviderTrackingStatus::OutForDelivery => {
+                    "out_for_delivery"
+                }
+                chaos_application::ports::ProviderTrackingStatus::Delivered => "delivered",
+                chaos_application::ports::ProviderTrackingStatus::Failure => "failure",
+                chaos_application::ports::ProviderTrackingStatus::Unknown => "unknown",
+            },
+            status_detail: tracking.status_detail,
+            estimated_delivery_at: tracking.estimated_delivery_at.map(Into::into),
+            observed_at: tracking.observed_at.into(),
+        }),
+        purchased_at: value.purchased_at.into(),
         updated_at: value.updated_at.into(),
     }
 }

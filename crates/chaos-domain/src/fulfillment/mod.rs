@@ -36,6 +36,9 @@ operation_id!(FulfillmentId);
 operation_id!(ReturnId);
 operation_id!(ShippingServiceId);
 operation_id!(ShippingProviderAccountId);
+operation_id!(ShippingQuoteRequestId);
+operation_id!(ShippingRateQuoteId);
+operation_id!(ShippingLabelId);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShippingProviderAccount {

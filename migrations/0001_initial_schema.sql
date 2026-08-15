@@ -2054,7 +2054,7 @@ CREATE TABLE fulfillment.fulfillments (
     updated_at           TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (carrier, tracking_number),
+    UNIQUE (merchant_account_id, store_id, carrier, tracking_number),
     FOREIGN KEY (merchant_account_id, store_id, order_id)
         REFERENCES sales.orders(merchant_account_id, store_id, id),
     CONSTRAINT fulfillments_tracking_shape_check CHECK (
@@ -2104,6 +2104,241 @@ CREATE INDEX fulfillment_lines_variant_idx
         product_variant_id,
         fulfillment_id
     );
+
+CREATE TABLE fulfillment.shipping_quote_requests (
+    id                    UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID        NOT NULL,
+    store_id              UUID        NOT NULL,
+    fulfillment_id        UUID        NOT NULL,
+    provider_account_id   UUID        NOT NULL,
+    idempotency_key       TEXT        NOT NULL,
+    request_fingerprint   BYTEA       NOT NULL,
+    length_millimetres    INTEGER     NOT NULL,
+    width_millimetres     INTEGER     NOT NULL,
+    height_millimetres    INTEGER     NOT NULL,
+    weight_grams          INTEGER     NOT NULL,
+    state                 TEXT        NOT NULL DEFAULT 'pending',
+    expires_at            TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, idempotency_key),
+    FOREIGN KEY (merchant_account_id, store_id, fulfillment_id)
+        REFERENCES fulfillment.fulfillments(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
+        REFERENCES fulfillment.shipping_provider_accounts(merchant_account_id, store_id, id),
+    CONSTRAINT shipping_quote_requests_idempotency_length_check CHECK (
+        length(idempotency_key) BETWEEN 1 AND 128
+    ),
+    CONSTRAINT shipping_quote_requests_fingerprint_length_check CHECK (
+        octet_length(request_fingerprint) = 32
+    ),
+    CONSTRAINT shipping_quote_requests_parcel_check CHECK (
+        length_millimetres BETWEEN 1 AND 10000
+        AND width_millimetres BETWEEN 1 AND 10000
+        AND height_millimetres BETWEEN 1 AND 10000
+        AND weight_grams BETWEEN 1 AND 1000000
+    ),
+    CONSTRAINT shipping_quote_requests_state_check CHECK (state IN ('pending', 'completed')),
+    CONSTRAINT shipping_quote_requests_completion_check CHECK (
+        (state = 'pending' AND expires_at IS NULL)
+        OR (state = 'completed' AND expires_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX shipping_quote_requests_fulfillment_created_idx
+    ON fulfillment.shipping_quote_requests (
+        merchant_account_id,
+        store_id,
+        fulfillment_id,
+        created_at DESC,
+        id DESC
+    );
+
+CREATE TABLE fulfillment.shipping_rate_quotes (
+    id                            UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id           UUID        NOT NULL,
+    store_id                      UUID        NOT NULL,
+    quote_request_id              UUID        NOT NULL,
+    provider_shipment_reference   TEXT        NOT NULL,
+    provider_rate_reference       TEXT        NOT NULL,
+    carrier                       TEXT        NOT NULL,
+    service                       TEXT        NOT NULL,
+    amount_minor                  BIGINT      NOT NULL,
+    currency                      CHAR(3)     NOT NULL,
+    estimated_delivery_days       SMALLINT,
+    guaranteed                    BOOLEAN     NOT NULL,
+    expires_at                    TIMESTAMPTZ NOT NULL,
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, quote_request_id, provider_rate_reference),
+    FOREIGN KEY (merchant_account_id, store_id, quote_request_id)
+        REFERENCES fulfillment.shipping_quote_requests(merchant_account_id, store_id, id),
+    CONSTRAINT shipping_rate_quotes_shipment_reference_length_check CHECK (
+        length(trim(provider_shipment_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_rate_quotes_rate_reference_length_check CHECK (
+        length(trim(provider_rate_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_rate_quotes_carrier_length_check CHECK (
+        length(trim(carrier)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT shipping_rate_quotes_service_length_check CHECK (
+        length(trim(service)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_rate_quotes_amount_nonnegative_check CHECK (amount_minor >= 0),
+    CONSTRAINT shipping_rate_quotes_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT shipping_rate_quotes_delivery_days_check CHECK (
+        estimated_delivery_days IS NULL OR estimated_delivery_days BETWEEN 0 AND 365
+    )
+);
+
+CREATE INDEX shipping_rate_quotes_request_expiry_idx
+    ON fulfillment.shipping_rate_quotes (
+        merchant_account_id,
+        store_id,
+        quote_request_id,
+        expires_at,
+        id
+    );
+
+CREATE TABLE fulfillment.shipping_labels (
+    id                              UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id             UUID        NOT NULL,
+    store_id                        UUID        NOT NULL,
+    fulfillment_id                  UUID        NOT NULL,
+    provider_account_id             UUID        NOT NULL,
+    rate_quote_id                   UUID        NOT NULL,
+    purchase_idempotency_key        TEXT        NOT NULL,
+    purchase_request_fingerprint    BYTEA       NOT NULL,
+    purchase_state                  TEXT        NOT NULL DEFAULT 'purchasing',
+    provider_shipment_reference     TEXT        NOT NULL,
+    provider_rate_reference         TEXT        NOT NULL,
+    carrier                         TEXT,
+    tracking_number                 TEXT,
+    provider_tracker_reference      TEXT,
+    label_url                       TEXT,
+    label_media_type                TEXT,
+    cancellation_idempotency_key    TEXT,
+    cancellation_request_fingerprint BYTEA,
+    cancellation_status             TEXT,
+    cancellation_reconcile_at       TIMESTAMPTZ,
+    cancellation_locked_by          UUID,
+    cancellation_locked_at          TIMESTAMPTZ,
+    cancellation_attempts           INTEGER     NOT NULL DEFAULT 0,
+    cancellation_last_error         TEXT,
+    tracking_status                 TEXT,
+    tracking_status_detail          TEXT,
+    estimated_delivery_at           TIMESTAMPTZ,
+    tracking_observed_at            TIMESTAMPTZ,
+    next_tracking_refresh_at        TIMESTAMPTZ,
+    tracking_locked_by              UUID,
+    tracking_locked_at              TIMESTAMPTZ,
+    tracking_attempts               INTEGER     NOT NULL DEFAULT 0,
+    tracking_last_error             TEXT,
+    purchased_at                    TIMESTAMPTZ,
+    cancellation_requested_at       TIMESTAMPTZ,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, fulfillment_id),
+    CONSTRAINT shipping_labels_purchase_idempotency_key
+        UNIQUE (merchant_account_id, store_id, purchase_idempotency_key),
+    CONSTRAINT shipping_labels_cancellation_idempotency_key
+        UNIQUE (merchant_account_id, store_id, cancellation_idempotency_key),
+    UNIQUE (carrier, tracking_number),
+    FOREIGN KEY (merchant_account_id, store_id, fulfillment_id)
+        REFERENCES fulfillment.fulfillments(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
+        REFERENCES fulfillment.shipping_provider_accounts(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, rate_quote_id)
+        REFERENCES fulfillment.shipping_rate_quotes(merchant_account_id, store_id, id),
+    CONSTRAINT shipping_labels_purchase_idempotency_length_check CHECK (
+        length(purchase_idempotency_key) BETWEEN 1 AND 128
+    ),
+    CONSTRAINT shipping_labels_purchase_fingerprint_length_check CHECK (
+        octet_length(purchase_request_fingerprint) = 32
+    ),
+    CONSTRAINT shipping_labels_purchase_state_check CHECK (
+        purchase_state IN ('purchasing', 'purchased')
+    ),
+    CONSTRAINT shipping_labels_provider_reference_length_check CHECK (
+        length(trim(provider_shipment_reference)) BETWEEN 1 AND 255
+        AND length(trim(provider_rate_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_labels_purchase_shape_check CHECK (
+        (purchase_state = 'purchasing' AND carrier IS NULL AND tracking_number IS NULL
+            AND label_url IS NULL AND label_media_type IS NULL AND purchased_at IS NULL)
+        OR (purchase_state = 'purchased' AND carrier IS NOT NULL AND tracking_number IS NOT NULL
+            AND label_url IS NOT NULL AND label_media_type IS NOT NULL AND purchased_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_labels_carrier_length_check CHECK (
+        carrier IS NULL OR length(trim(carrier)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT shipping_labels_tracking_number_length_check CHECK (
+        tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_labels_tracker_reference_length_check CHECK (
+        provider_tracker_reference IS NULL
+        OR length(trim(provider_tracker_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_labels_label_url_check CHECK (
+        label_url IS NULL OR (length(label_url) BETWEEN 9 AND 2048 AND label_url ~ '^https://')
+    ),
+    CONSTRAINT shipping_labels_media_type_length_check CHECK (
+        label_media_type IS NULL OR length(trim(label_media_type)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT shipping_labels_cancellation_shape_check CHECK (
+        (cancellation_idempotency_key IS NULL AND cancellation_request_fingerprint IS NULL
+            AND cancellation_status IS NULL AND cancellation_requested_at IS NULL)
+        OR (length(cancellation_idempotency_key) BETWEEN 1 AND 128
+            AND octet_length(cancellation_request_fingerprint) = 32
+            AND cancellation_status IN ('submitted', 'cancelled', 'rejected', 'not_available')
+            AND cancellation_requested_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_labels_cancellation_lock_shape_check CHECK (
+        (cancellation_locked_by IS NULL AND cancellation_locked_at IS NULL)
+        OR (cancellation_locked_by IS NOT NULL AND cancellation_locked_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_labels_cancellation_attempts_check CHECK (
+        cancellation_attempts BETWEEN 0 AND 31
+    ),
+    CONSTRAINT shipping_labels_cancellation_error_length_check CHECK (
+        cancellation_last_error IS NULL OR length(cancellation_last_error) BETWEEN 1 AND 2000
+    ),
+    CONSTRAINT shipping_labels_tracking_status_check CHECK (
+        tracking_status IS NULL
+        OR tracking_status IN ('pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'failure', 'unknown')
+    ),
+    CONSTRAINT shipping_labels_tracking_detail_length_check CHECK (
+        tracking_status_detail IS NULL OR length(tracking_status_detail) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT shipping_labels_tracking_observation_shape_check CHECK (
+        (tracking_status IS NULL AND tracking_observed_at IS NULL)
+        OR (tracking_status IS NOT NULL AND tracking_observed_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_labels_tracking_lock_shape_check CHECK (
+        (tracking_locked_by IS NULL AND tracking_locked_at IS NULL)
+        OR (tracking_locked_by IS NOT NULL AND tracking_locked_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_labels_tracking_attempts_check CHECK (
+        tracking_attempts BETWEEN 0 AND 31
+    ),
+    CONSTRAINT shipping_labels_tracking_error_length_check CHECK (
+        tracking_last_error IS NULL OR length(tracking_last_error) BETWEEN 1 AND 2000
+    )
+);
+
+CREATE INDEX shipping_labels_tracking_due_idx
+    ON fulfillment.shipping_labels (next_tracking_refresh_at, id)
+    WHERE purchase_state = 'purchased' AND next_tracking_refresh_at IS NOT NULL;
+
+CREATE INDEX shipping_labels_cancellation_due_idx
+    ON fulfillment.shipping_labels (cancellation_reconcile_at, id)
+    WHERE cancellation_status = 'submitted' AND cancellation_reconcile_at IS NOT NULL;
 
 CREATE TABLE fulfillment.returns (
     id                   UUID                      NOT NULL PRIMARY KEY,
@@ -2687,6 +2922,73 @@ AS $$
       FROM notification.email_deliveries AS delivery;
 $$;
 
+CREATE FUNCTION fulfillment.shipping_tracking_metrics()
+RETURNS TABLE (
+    due BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    oldest_due_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (
+               WHERE label.next_tracking_refresh_at <= CURRENT_TIMESTAMP
+           ),
+           count(*) FILTER (WHERE label.tracking_locked_by IS NOT NULL),
+           count(*) FILTER (
+               WHERE label.next_tracking_refresh_at IS NULL
+                 AND label.tracking_attempts >= 8
+                 AND label.tracking_last_error IS NOT NULL
+           ),
+           COALESCE(
+               extract(
+                   epoch FROM CURRENT_TIMESTAMP -
+                       (min(label.next_tracking_refresh_at)
+                            FILTER (WHERE label.next_tracking_refresh_at <= CURRENT_TIMESTAMP))
+               ),
+               0
+           )::DOUBLE PRECISION
+      FROM fulfillment.shipping_labels AS label
+     WHERE label.purchase_state = 'purchased'
+       AND label.provider_tracker_reference IS NOT NULL;
+$$;
+
+CREATE FUNCTION fulfillment.shipping_cancellation_metrics()
+RETURNS TABLE (
+    due BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    oldest_due_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (
+               WHERE label.cancellation_reconcile_at <= CURRENT_TIMESTAMP
+           ),
+           count(*) FILTER (WHERE label.cancellation_locked_by IS NOT NULL),
+           count(*) FILTER (
+               WHERE label.cancellation_reconcile_at IS NULL
+                 AND label.cancellation_attempts >= 8
+                 AND label.cancellation_last_error IS NOT NULL
+           ),
+           COALESCE(
+               extract(
+                   epoch FROM CURRENT_TIMESTAMP -
+                       (min(label.cancellation_reconcile_at)
+                            FILTER (WHERE label.cancellation_reconcile_at <= CURRENT_TIMESTAMP))
+               ),
+               0
+           )::DOUBLE PRECISION
+      FROM fulfillment.shipping_labels AS label
+     WHERE label.cancellation_status = 'submitted';
+$$;
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
@@ -2743,6 +3045,9 @@ ALTER TABLE fulfillment.shipping_services ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.shipping_provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.shipping_service_regions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.fulfillment_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_quote_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_rate_quotes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_labels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.returns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.return_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.email_deliveries ENABLE ROW LEVEL SECURITY;
@@ -3324,6 +3629,36 @@ CREATE POLICY merchant_account_isolation ON fulfillment.shipping_service_regions
     );
 
 CREATE POLICY merchant_account_isolation ON fulfillment.fulfillment_lines
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_quote_requests
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_rate_quotes
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_labels
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -4056,6 +4391,105 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION fulfillment.claim_shipping_tracking(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    label_id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    fulfillment_id UUID,
+    provider TEXT,
+    provider_tracker_reference TEXT,
+    credential_secret_reference TEXT,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH claimable AS (
+        SELECT label.id
+        FROM fulfillment.shipping_labels AS label
+        WHERE label.purchase_state = 'purchased'
+          AND label.provider_tracker_reference IS NOT NULL
+          AND label.next_tracking_refresh_at <= claimed_at
+          AND (
+              label.tracking_locked_at IS NULL
+              OR label.tracking_locked_at <= stale_before
+          )
+        ORDER BY label.next_tracking_refresh_at, label.id
+        FOR UPDATE SKIP LOCKED
+        LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE fulfillment.shipping_labels AS label
+       SET tracking_locked_by = worker_id,
+           tracking_locked_at = claimed_at,
+           tracking_attempts = least(label.tracking_attempts, 30) + 1
+      FROM claimable,
+           fulfillment.shipping_provider_accounts AS account
+     WHERE label.id = claimable.id
+       AND account.id = label.provider_account_id
+       AND account.merchant_account_id = label.merchant_account_id
+       AND account.store_id = label.store_id
+    RETURNING label.id, label.merchant_account_id, label.store_id, label.fulfillment_id,
+              account.provider, label.provider_tracker_reference,
+              account.credential_secret_reference, label.tracking_attempts;
+$$;
+
+CREATE FUNCTION fulfillment.claim_shipping_cancellations(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    label_id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    fulfillment_id UUID,
+    provider TEXT,
+    provider_shipment_reference TEXT,
+    credential_secret_reference TEXT,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH claimable AS (
+        SELECT label.id
+        FROM fulfillment.shipping_labels AS label
+        WHERE label.cancellation_status = 'submitted'
+          AND label.cancellation_reconcile_at <= claimed_at
+          AND (
+              label.cancellation_locked_at IS NULL
+              OR label.cancellation_locked_at <= stale_before
+          )
+        ORDER BY label.cancellation_reconcile_at, label.id
+        FOR UPDATE SKIP LOCKED
+        LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE fulfillment.shipping_labels AS label
+       SET cancellation_locked_by = worker_id,
+           cancellation_locked_at = claimed_at,
+           cancellation_attempts = least(label.cancellation_attempts, 30) + 1
+      FROM claimable,
+           fulfillment.shipping_provider_accounts AS account
+     WHERE label.id = claimable.id
+       AND account.id = label.provider_account_id
+       AND account.merchant_account_id = label.merchant_account_id
+       AND account.store_id = label.store_id
+    RETURNING label.id, label.merchant_account_id, label.store_id, label.fulfillment_id,
+              account.provider, label.provider_shipment_reference,
+              account.credential_secret_reference, label.cancellation_attempts;
+$$;
+
 CREATE FUNCTION merchant.authenticate_api_key(
     presented_key_identifier  TEXT,
     presented_secret_digest  BYTEA
@@ -4151,9 +4585,17 @@ REVOKE ALL ON FUNCTION notification.finish_email_delivery(
 REVOKE ALL ON FUNCTION notification.record_resend_webhook(
     TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fulfillment.claim_shipping_tracking(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fulfillment.claim_shipping_cancellations(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.provider_readiness_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION notification.email_delivery_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION fulfillment.shipping_tracking_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION fulfillment.shipping_cancellation_metrics() FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -4230,10 +4672,18 @@ GRANT EXECUTE ON FUNCTION notification.finish_email_delivery(
 GRANT EXECUTE ON FUNCTION notification.record_resend_webhook(
     TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION fulfillment.claim_shipping_tracking(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION fulfillment.claim_shipping_cancellations(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.provider_readiness_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION notification.email_delivery_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION fulfillment.shipping_tracking_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION fulfillment.shipping_cancellation_metrics() TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE

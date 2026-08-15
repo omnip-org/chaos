@@ -4,8 +4,9 @@ use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
-        ShippingProviderAccount, ShippingProviderAccountId, ShippingSecretReference,
-        ShippingService, ShippingServiceId, ShippingServiceStatus,
+        ShippingLabelId, ShippingProviderAccount, ShippingProviderAccountId,
+        ShippingQuoteRequestId, ShippingRateQuoteId, ShippingSecretReference, ShippingService,
+        ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
     merchant::StoreId,
@@ -123,6 +124,174 @@ pub trait ShippingProviderAccountRepository: Send + Sync {
         configuration: &ShippingProviderAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingRateQuoteDetail {
+    pub id: ShippingRateQuoteId,
+    pub quote_request_id: ShippingQuoteRequestId,
+    pub rate: ShippingRateQuote,
+    pub expires_at: OffsetDateTime,
+}
+
+pub enum PreparedShippingQuote {
+    Completed(Vec<ShippingRateQuoteDetail>),
+    Pending {
+        quote_request_id: ShippingQuoteRequestId,
+        provider: String,
+        command: Box<ShippingQuoteCommand>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingLabelDetail {
+    pub id: ShippingLabelId,
+    pub fulfillment_id: FulfillmentId,
+    pub rate_quote_id: ShippingRateQuoteId,
+    pub provider: String,
+    pub label: PurchasedShippingLabel,
+    pub cancellation_status: Option<ShippingCancellationStatus>,
+    pub tracking: Option<ShippingTrackingSnapshot>,
+    pub purchased_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+pub enum PreparedShippingLabelPurchase {
+    Completed(Box<ShippingLabelDetail>),
+    Pending {
+        label_id: ShippingLabelId,
+        provider: String,
+        provider_shipment_reference: String,
+        provider_rate_reference: String,
+        credential_secret_reference: ShippingSecretReference,
+        operation_key: String,
+    },
+}
+
+pub enum PreparedShippingLabelCancellation {
+    Completed(Box<ShippingLabelDetail>),
+    Pending {
+        label_id: ShippingLabelId,
+        provider: String,
+        provider_shipment_reference: String,
+        credential_secret_reference: ShippingSecretReference,
+    },
+}
+
+pub struct ShippingTrackingJob {
+    pub label_id: ShippingLabelId,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub fulfillment_id: FulfillmentId,
+    pub provider: String,
+    pub provider_tracker_reference: String,
+    pub credential_secret_reference: ShippingSecretReference,
+    pub attempts: u32,
+}
+
+pub struct ShippingCancellationJob {
+    pub label_id: ShippingLabelId,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub fulfillment_id: FulfillmentId,
+    pub provider: String,
+    pub provider_shipment_reference: String,
+    pub credential_secret_reference: ShippingSecretReference,
+    pub attempts: u32,
+}
+
+#[async_trait]
+pub trait ShippingOperationRepository: Send + Sync {
+    async fn prepare_quote(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        fulfillment_id: FulfillmentId,
+        provider_account_id: ShippingProviderAccountId,
+        parcel: ShippingParcel,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<PreparedShippingQuote, ApplicationError>;
+
+    async fn complete_quote(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        quote_request_id: ShippingQuoteRequestId,
+        rates: Vec<ShippingRateQuote>,
+        completed_at: OffsetDateTime,
+    ) -> Result<Vec<ShippingRateQuoteDetail>, ApplicationError>;
+
+    async fn prepare_label_purchase(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        fulfillment_id: FulfillmentId,
+        rate_quote_id: ShippingRateQuoteId,
+        idempotency: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<PreparedShippingLabelPurchase, ApplicationError>;
+
+    async fn complete_label_purchase(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        label_id: ShippingLabelId,
+        label: PurchasedShippingLabel,
+        completed_at: OffsetDateTime,
+    ) -> Result<ShippingLabelDetail, ApplicationError>;
+
+    async fn prepare_label_cancellation(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        fulfillment_id: FulfillmentId,
+        idempotency: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<PreparedShippingLabelCancellation, ApplicationError>;
+
+    async fn complete_label_cancellation(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        label_id: ShippingLabelId,
+        status: ShippingCancellationStatus,
+        completed_at: OffsetDateTime,
+    ) -> Result<ShippingLabelDetail, ApplicationError>;
+}
+
+#[async_trait]
+pub trait ShippingTrackingQueue: Send + Sync {
+    async fn claim_tracking(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<ShippingTrackingJob>, ApplicationError>;
+
+    async fn finish_tracking(
+        &self,
+        worker_id: Uuid,
+        job: &ShippingTrackingJob,
+        result: Result<ShippingTrackingSnapshot, String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn claim_cancellations(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<ShippingCancellationJob>, ApplicationError>;
+
+    async fn finish_cancellation(
+        &self,
+        worker_id: Uuid,
+        job: &ShippingCancellationJob,
+        result: Result<ShippingCancellationStatus, String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]
@@ -294,6 +463,16 @@ pub struct CancelShippingLabelCommand {
     pub credential_secret_reference: ShippingSecretReference,
 }
 
+pub struct ReconcileShippingLabelCommand {
+    pub provider_shipment_reference: String,
+    pub credential_secret_reference: ShippingSecretReference,
+}
+
+pub struct ReconciledShippingLabel {
+    pub label: Option<PurchasedShippingLabel>,
+    pub cancellation_status: Option<ShippingCancellationStatus>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShippingCancellationStatus {
     Submitted,
@@ -346,6 +525,11 @@ pub trait ShippingProvider: Send + Sync {
         &self,
         command: PurchaseShippingLabelCommand,
     ) -> Result<PurchasedShippingLabel, ApplicationError>;
+
+    async fn reconcile_label(
+        &self,
+        command: ReconcileShippingLabelCommand,
+    ) -> Result<ReconciledShippingLabel, ApplicationError>;
 
     async fn cancel_label(
         &self,

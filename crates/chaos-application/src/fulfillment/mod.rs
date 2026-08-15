@@ -1,10 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use chaos_domain::{
     CurrencyCode,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnId, ReturnStatus, ShippingProviderAccount,
-        ShippingProviderAccountId, ShippingSecretReference,
+        ShippingProviderAccountId, ShippingRateQuoteId, ShippingSecretReference,
     },
     merchant::{MerchantRole, StoreId},
     pricing::Money,
@@ -17,11 +17,14 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventQueue,
-        FulfillmentRepository, IdempotencyRequest, ReturnDetail, ReturnLineInput,
-        ReturnReceiptInput, ShippingAddress, ShippingProvider,
-        ShippingProviderAccountConfiguration, ShippingProviderAccountDetail,
-        ShippingProviderAccountRepository, ShippingServiceDetail, ShippingServiceRepository,
+        CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail,
+        FulfillmentEventQueue, FulfillmentRepository, IdempotencyRequest,
+        PreparedShippingLabelCancellation, PreparedShippingLabelPurchase, PreparedShippingQuote,
+        PurchaseShippingLabelCommand, ReconcileShippingLabelCommand, ReturnDetail, ReturnLineInput,
+        ReturnReceiptInput, ShippingAddress, ShippingLabelDetail, ShippingOperationRepository,
+        ShippingParcel, ShippingProvider, ShippingProviderAccountConfiguration,
+        ShippingProviderAccountDetail, ShippingProviderAccountRepository, ShippingRateQuoteDetail,
+        ShippingServiceDetail, ShippingServiceRepository, ShippingTrackingQueue,
     },
 };
 use chaos_domain::fulfillment::{ShippingService, ShippingServiceId, ShippingServiceStatus};
@@ -70,11 +73,24 @@ pub struct FulfillmentManagement {
 
 pub struct FulfillmentWorkers {
     queue: Arc<dyn FulfillmentEventQueue>,
+    tracking_queue: Arc<dyn ShippingTrackingQueue>,
+    shipping_providers: HashMap<String, Arc<dyn ShippingProvider>>,
 }
 
 impl FulfillmentWorkers {
-    pub fn new(queue: Arc<dyn FulfillmentEventQueue>) -> Self {
-        Self { queue }
+    pub fn new(
+        queue: Arc<dyn FulfillmentEventQueue>,
+        tracking_queue: Arc<dyn ShippingTrackingQueue>,
+        providers: impl IntoIterator<Item = Arc<dyn ShippingProvider>>,
+    ) -> Self {
+        Self {
+            queue,
+            tracking_queue,
+            shipping_providers: providers
+                .into_iter()
+                .map(|provider| (provider.name().to_owned(), provider))
+                .collect(),
+        }
     }
 
     pub async fn run_batch(
@@ -95,6 +111,75 @@ impl FulfillmentWorkers {
                 .map_err(|error| error.to_string());
             self.queue
                 .finish_event(worker_id, job.id, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
+
+    pub async fn run_tracking_batch(
+        &self,
+        worker_id: Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .tracking_queue
+            .claim_tracking(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let result = match self.shipping_providers.get(&job.provider) {
+                Some(provider) => provider
+                    .refresh_tracking(
+                        crate::ports::RefreshTrackingCommand {
+                            provider_tracker_reference: job.provider_tracker_reference.clone(),
+                            credential_secret_reference: job.credential_secret_reference.clone(),
+                        },
+                        now,
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("Shipping Provider adapter is unavailable".into()),
+            };
+            self.tracking_queue
+                .finish_tracking(worker_id, job, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
+
+    pub async fn run_cancellation_batch(
+        &self,
+        worker_id: Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .tracking_queue
+            .claim_cancellations(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let result = match self.shipping_providers.get(&job.provider) {
+                Some(provider) => provider
+                    .reconcile_label(ReconcileShippingLabelCommand {
+                        provider_shipment_reference: job.provider_shipment_reference.clone(),
+                        credential_secret_reference: job.credential_secret_reference.clone(),
+                    })
+                    .await
+                    .and_then(|value| {
+                        value
+                            .cancellation_status
+                            .ok_or_else(|| ApplicationError::Unavailable {
+                                service: "shipping_provider",
+                                source: anyhow::anyhow!(
+                                    "Shipping Provider returned no cancellation state"
+                                ),
+                            })
+                    })
+                    .map_err(|error| error.to_string()),
+                None => Err("Shipping Provider adapter is unavailable".into()),
+            };
+            self.tracking_queue
+                .finish_cancellation(worker_id, job, result, now)
                 .await?;
         }
         Ok(jobs.len())
@@ -148,21 +233,51 @@ pub struct UpdateShippingProviderAccountInput {
     pub idempotency: IdempotencyRequest,
 }
 
+pub struct QuoteShippingRatesInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub fulfillment_id: FulfillmentId,
+    pub provider_account_id: ShippingProviderAccountId,
+    pub parcel: ShippingParcel,
+    pub now: OffsetDateTime,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct PurchaseShippingLabelInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub fulfillment_id: FulfillmentId,
+    pub rate_quote_id: ShippingRateQuoteId,
+    pub now: OffsetDateTime,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct CancelPurchasedShippingLabelInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub fulfillment_id: FulfillmentId,
+    pub now: OffsetDateTime,
+    pub idempotency: IdempotencyRequest,
+}
+
 pub struct ShippingProviderAdministration {
     repository: Arc<dyn ShippingProviderAccountRepository>,
-    supported_providers: HashSet<String>,
+    operations: Arc<dyn ShippingOperationRepository>,
+    providers: HashMap<String, Arc<dyn ShippingProvider>>,
 }
 
 impl ShippingProviderAdministration {
     pub fn new(
         repository: Arc<dyn ShippingProviderAccountRepository>,
+        operations: Arc<dyn ShippingOperationRepository>,
         providers: impl IntoIterator<Item = Arc<dyn ShippingProvider>>,
     ) -> Self {
         Self {
             repository,
-            supported_providers: providers
+            operations,
+            providers: providers
                 .into_iter()
-                .map(|provider| provider.name().to_owned())
+                .map(|provider| (provider.name().to_owned(), provider))
                 .collect(),
         }
     }
@@ -245,8 +360,162 @@ impl ShippingProviderAdministration {
             .await
     }
 
+    pub async fn quote_rates(
+        &self,
+        input: QuoteShippingRatesInput,
+    ) -> Result<Vec<ShippingRateQuoteDetail>, ApplicationError> {
+        require_operator(input.actor)?;
+        let prepared = self
+            .operations
+            .prepare_quote(
+                input.actor,
+                input.store_id,
+                input.fulfillment_id,
+                input.provider_account_id,
+                input.parcel,
+                &input.idempotency,
+            )
+            .await?;
+        let PreparedShippingQuote::Pending {
+            quote_request_id,
+            provider,
+            command,
+        } = prepared
+        else {
+            return match prepared {
+                PreparedShippingQuote::Completed(rates) => Ok(rates),
+                PreparedShippingQuote::Pending { .. } => unreachable!(),
+            };
+        };
+        let adapter = self.provider(&provider)?;
+        let rates = adapter.quote_rates(*command).await?;
+        self.operations
+            .complete_quote(
+                input.actor,
+                input.store_id,
+                quote_request_id,
+                rates,
+                input.now,
+            )
+            .await
+    }
+
+    pub async fn purchase_label(
+        &self,
+        input: PurchaseShippingLabelInput,
+    ) -> Result<ShippingLabelDetail, ApplicationError> {
+        require_operator(input.actor)?;
+        let prepared = self
+            .operations
+            .prepare_label_purchase(
+                input.actor,
+                input.store_id,
+                input.fulfillment_id,
+                input.rate_quote_id,
+                &input.idempotency,
+                input.now,
+            )
+            .await?;
+        let PreparedShippingLabelPurchase::Pending {
+            label_id,
+            provider,
+            provider_shipment_reference,
+            provider_rate_reference,
+            credential_secret_reference,
+            operation_key,
+        } = prepared
+        else {
+            return match prepared {
+                PreparedShippingLabelPurchase::Completed(label) => Ok(*label),
+                PreparedShippingLabelPurchase::Pending { .. } => unreachable!(),
+            };
+        };
+        let adapter = self.provider(&provider)?;
+        let reconciled = adapter
+            .reconcile_label(ReconcileShippingLabelCommand {
+                provider_shipment_reference: provider_shipment_reference.clone(),
+                credential_secret_reference: credential_secret_reference.clone(),
+            })
+            .await?;
+        let label = match reconciled.label {
+            Some(label) => label,
+            None => {
+                adapter
+                    .purchase_label(PurchaseShippingLabelCommand {
+                        provider_shipment_reference,
+                        provider_rate_reference,
+                        idempotency_key: operation_key,
+                        credential_secret_reference,
+                    })
+                    .await?
+            }
+        };
+        self.operations
+            .complete_label_purchase(input.actor, input.store_id, label_id, label, input.now)
+            .await
+    }
+
+    pub async fn cancel_label(
+        &self,
+        input: CancelPurchasedShippingLabelInput,
+    ) -> Result<ShippingLabelDetail, ApplicationError> {
+        require_operator(input.actor)?;
+        let prepared = self
+            .operations
+            .prepare_label_cancellation(
+                input.actor,
+                input.store_id,
+                input.fulfillment_id,
+                &input.idempotency,
+                input.now,
+            )
+            .await?;
+        let PreparedShippingLabelCancellation::Pending {
+            label_id,
+            provider,
+            provider_shipment_reference,
+            credential_secret_reference,
+        } = prepared
+        else {
+            return match prepared {
+                PreparedShippingLabelCancellation::Completed(label) => Ok(*label),
+                PreparedShippingLabelCancellation::Pending { .. } => unreachable!(),
+            };
+        };
+        let adapter = self.provider(&provider)?;
+        let reconciled = adapter
+            .reconcile_label(ReconcileShippingLabelCommand {
+                provider_shipment_reference: provider_shipment_reference.clone(),
+                credential_secret_reference: credential_secret_reference.clone(),
+            })
+            .await?;
+        let status = match reconciled.cancellation_status {
+            Some(status) => status,
+            None => {
+                adapter
+                    .cancel_label(CancelShippingLabelCommand {
+                        provider_shipment_reference,
+                        credential_secret_reference,
+                    })
+                    .await?
+            }
+        };
+        self.operations
+            .complete_label_cancellation(input.actor, input.store_id, label_id, status, input.now)
+            .await
+    }
+
+    fn provider(&self, provider: &str) -> Result<&Arc<dyn ShippingProvider>, ApplicationError> {
+        self.providers
+            .get(provider)
+            .ok_or(ApplicationError::Unavailable {
+                service: "shipping_provider",
+                source: anyhow::anyhow!("Shipping Provider adapter is unavailable"),
+            })
+    }
+
     fn require_supported(&self, provider: &str, enabled: bool) -> Result<(), ApplicationError> {
-        if !enabled || self.supported_providers.contains(provider) {
+        if !enabled || self.providers.contains_key(provider) {
             Ok(())
         } else {
             Err(ApplicationError::Conflict {

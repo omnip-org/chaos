@@ -6,9 +6,9 @@ use chaos_application::{
     ApplicationError,
     ports::{
         CancelShippingLabelCommand, ProviderTrackingStatus, PurchaseShippingLabelCommand,
-        PurchasedShippingLabel, RefreshTrackingCommand, ShippingAddress,
-        ShippingCancellationStatus, ShippingProvider, ShippingQuoteCommand, ShippingRateQuote,
-        ShippingSecretResolver, ShippingTrackingSnapshot,
+        PurchasedShippingLabel, ReconcileShippingLabelCommand, ReconciledShippingLabel,
+        RefreshTrackingCommand, ShippingAddress, ShippingCancellationStatus, ShippingProvider,
+        ShippingQuoteCommand, ShippingRateQuote, ShippingSecretResolver, ShippingTrackingSnapshot,
     },
 };
 use chaos_domain::{CurrencyCode, fulfillment::ShippingSecretReference};
@@ -198,25 +198,31 @@ impl ShippingProvider for EasyPostShippingProvider {
                 Some(&request),
             )
             .await?;
-        validate_reference(&shipment.id, "shp_")?;
-        let label = shipment.postage_label.ok_or_else(invalid_response)?;
-        let selected_rate = shipment.selected_rate.ok_or_else(invalid_response)?;
-        let tracking_number = bounded_text(
-            shipment.tracking_code.ok_or_else(invalid_response)?,
-            "tracking_number",
-            255,
-        )?;
-        let label_url = validate_https_url(label.label_url)?;
-        Ok(PurchasedShippingLabel {
-            provider_shipment_reference: shipment.id,
-            carrier: bounded_text(selected_rate.carrier, "carrier", 100)?,
-            tracking_number,
-            provider_tracker_reference: shipment
-                .tracker
-                .map(|tracker| validate_reference(&tracker.id, "trk_").map(|()| tracker.id))
-                .transpose()?,
-            label_url,
-            label_media_type: bounded_text(label.label_file_type, "label_media_type", 100)?,
+        purchased_label(shipment)?.ok_or_else(invalid_response)
+    }
+
+    async fn reconcile_label(
+        &self,
+        command: ReconcileShippingLabelCommand,
+    ) -> Result<ReconciledShippingLabel, ApplicationError> {
+        validate_reference(&command.provider_shipment_reference, "shp_")?;
+        let secret = self
+            .credentials(&command.credential_secret_reference)
+            .await?;
+        let shipment: EasyPostShipment = self
+            .get(
+                &format!("v2/shipments/{}", command.provider_shipment_reference),
+                &secret,
+            )
+            .await?;
+        let cancellation_status = shipment
+            .refund_status
+            .as_deref()
+            .map(cancellation_status)
+            .transpose()?;
+        Ok(ReconciledShippingLabel {
+            label: purchased_label(shipment)?,
+            cancellation_status,
         })
     }
 
@@ -238,13 +244,12 @@ impl ShippingProvider for EasyPostShippingProvider {
                 None,
             )
             .await?;
-        match shipment.refund_status.as_deref() {
-            Some("submitted") => Ok(ShippingCancellationStatus::Submitted),
-            Some("refunded") => Ok(ShippingCancellationStatus::Cancelled),
-            Some("rejected") => Ok(ShippingCancellationStatus::Rejected),
-            Some("not_applicable") => Ok(ShippingCancellationStatus::NotAvailable),
-            _ => Err(invalid_response()),
-        }
+        cancellation_status(
+            shipment
+                .refund_status
+                .as_deref()
+                .ok_or_else(invalid_response)?,
+        )
     }
 
     async fn refresh_tracking(
@@ -534,6 +539,42 @@ fn validate_https_url(value: String) -> Result<String, ApplicationError> {
     Ok(value)
 }
 
+fn purchased_label(
+    shipment: EasyPostShipment,
+) -> Result<Option<PurchasedShippingLabel>, ApplicationError> {
+    validate_reference(&shipment.id, "shp_")?;
+    let Some(label) = shipment.postage_label else {
+        return Ok(None);
+    };
+    let selected_rate = shipment.selected_rate.ok_or_else(invalid_response)?;
+    let tracking_number = bounded_text(
+        shipment.tracking_code.ok_or_else(invalid_response)?,
+        "tracking_number",
+        255,
+    )?;
+    Ok(Some(PurchasedShippingLabel {
+        provider_shipment_reference: shipment.id,
+        carrier: bounded_text(selected_rate.carrier, "carrier", 100)?,
+        tracking_number,
+        provider_tracker_reference: shipment
+            .tracker
+            .map(|tracker| validate_reference(&tracker.id, "trk_").map(|()| tracker.id))
+            .transpose()?,
+        label_url: validate_https_url(label.label_url)?,
+        label_media_type: bounded_text(label.label_file_type, "label_media_type", 100)?,
+    }))
+}
+
+fn cancellation_status(value: &str) -> Result<ShippingCancellationStatus, ApplicationError> {
+    match value {
+        "submitted" => Ok(ShippingCancellationStatus::Submitted),
+        "refunded" => Ok(ShippingCancellationStatus::Cancelled),
+        "rejected" => Ok(ShippingCancellationStatus::Rejected),
+        "not_applicable" => Ok(ShippingCancellationStatus::NotAvailable),
+        _ => Err(invalid_response()),
+    }
+}
+
 fn bounded_text(
     value: String,
     _field: &'static str,
@@ -621,7 +662,7 @@ mod tests {
             serde_json::from_slice(&body).expect("request JSON")
         };
         requests.0.lock().expect("requests").push((
-            method,
+            method.clone(),
             uri.path().to_owned(),
             headers[AUTHORIZATION]
                 .to_str()
@@ -629,8 +670,8 @@ mod tests {
                 .to_owned(),
             payload,
         ));
-        let response = match uri.path() {
-            "/v2/shipments" => json!({
+        let response = match (method, uri.path()) {
+            (Method::POST, "/v2/shipments") => json!({
                 "id": "shp_quote123",
                 "rates": [{
                     "id": "rate_ground123",
@@ -648,7 +689,8 @@ mod tests {
                 "tracker": null,
                 "refund_status": null
             }),
-            "/v2/shipments/shp_quote123/buy" => json!({
+            (Method::POST, "/v2/shipments/shp_quote123/buy")
+            | (Method::GET, "/v2/shipments/shp_quote123") => json!({
                 "id": "shp_quote123",
                 "rates": [],
                 "selected_rate": {
@@ -669,7 +711,7 @@ mod tests {
                 "tracker": {"id": "trk_label123"},
                 "refund_status": null
             }),
-            "/v2/shipments/shp_quote123/refund" => json!({
+            (Method::POST, "/v2/shipments/shp_quote123/refund") => json!({
                 "id": "shp_quote123",
                 "rates": [],
                 "selected_rate": null,
@@ -678,7 +720,7 @@ mod tests {
                 "tracker": null,
                 "refund_status": "submitted"
             }),
-            "/v2/trackers/trk_label123" => json!({
+            (Method::GET, "/v2/trackers/trk_label123") => json!({
                 "id": "trk_label123",
                 "status": "in_transit",
                 "status_detail": "arrived_at_facility",
@@ -699,6 +741,7 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let app = Router::new()
             .route("/v2/shipments", post(easypost_mock))
+            .route("/v2/shipments/{id}", get(easypost_mock))
             .route("/v2/shipments/{id}/buy", post(easypost_mock))
             .route("/v2/shipments/{id}/refund", post(easypost_mock))
             .route("/v2/trackers/{id}", get(easypost_mock))
@@ -773,6 +816,21 @@ mod tests {
         );
         assert_eq!(label.label_media_type, "image/png");
 
+        let reconciled = provider
+            .reconcile_label(ReconcileShippingLabelCommand {
+                provider_shipment_reference: "shp_quote123".into(),
+                credential_secret_reference: secret_reference(),
+            })
+            .await
+            .expect("reconcile label");
+        assert_eq!(
+            reconciled
+                .label
+                .as_ref()
+                .map(|label| label.tracking_number.as_str()),
+            Some("9400111899223856928499")
+        );
+
         let cancellation = provider
             .cancel_label(CancelShippingLabelCommand {
                 provider_shipment_reference: label.provider_shipment_reference,
@@ -797,7 +855,7 @@ mod tests {
         assert_eq!(tracking.observed_at, observed_at);
 
         let requests = requests.0.lock().expect("requests");
-        assert_eq!(requests.len(), 4);
+        assert_eq!(requests.len(), 5);
         assert!(requests.iter().all(|request| {
             request.2 == format!("Basic {}", STANDARD.encode("EZAK_test_key:"))
         }));

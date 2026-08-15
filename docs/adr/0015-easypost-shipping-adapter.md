@@ -11,7 +11,7 @@ The first production adapter must support multiple carriers without placing carr
 
 ## Decision
 
-EasyPost is the first shipping provider adapter. The application `ShippingProvider` port exposes four separate capabilities: rate quotation, label purchase, label cancellation where available, and tracking refresh. EasyPost request and response types remain in infrastructure.
+EasyPost is the first shipping provider adapter. The application `ShippingProvider` port exposes four business capabilities—rate quotation, label purchase, label cancellation where available, and tracking refresh—plus an internal Shipment reconciliation capability used before retrying an uncertain mutation. EasyPost request and response types remain in infrastructure.
 
 Chaos uses millimetres, grams, ISO currency codes, and integer minor units at the port. The adapter converts dimensions to inches, weight to ounces, and decimal rate strings to minor units without floating-point money arithmetic. Provider identifiers are validated before use in URL paths, and label URLs must be HTTPS.
 

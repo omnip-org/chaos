@@ -277,10 +277,10 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let fulfillment_management = FulfillmentManagement::new(fulfillment_repository.clone());
-        let fulfillment_workers = FulfillmentWorkers::new(fulfillment_repository);
-        let shipping_management = ShippingManagement::new(Arc::new(
-            PostgresShippingServiceRepository::new(infrastructure.runtime_pool()),
+        let shipping_repository = Arc::new(PostgresShippingServiceRepository::new(
+            infrastructure.runtime_pool(),
         ));
+        let shipping_management = ShippingManagement::new(shipping_repository.clone());
         let shipping_provider: Arc<dyn chaos_application::ports::ShippingProvider> =
             Arc::new(EasyPostShippingProvider::new(
                 settings.easypost_api_base_url.clone(),
@@ -288,9 +288,13 @@ impl ApiState {
                 Arc::new(EnvironmentShippingSecretResolver),
             )?);
         let shipping_provider_administration = ShippingProviderAdministration::new(
-            Arc::new(PostgresShippingServiceRepository::new(
-                infrastructure.runtime_pool(),
-            )),
+            shipping_repository.clone(),
+            shipping_repository.clone(),
+            [shipping_provider.clone()],
+        );
+        let fulfillment_workers = FulfillmentWorkers::new(
+            fulfillment_repository,
+            shipping_repository,
             [shipping_provider],
         );
         let search_indexer = PostgresSearchIndexer::new(infrastructure.runtime_pool());

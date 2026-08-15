@@ -37,12 +37,16 @@ pub use clock::Clock;
 pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
     CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,
-    FulfillmentEventQueue, FulfillmentRepository, ProviderTrackingStatus,
-    PurchaseShippingLabelCommand, PurchasedShippingLabel, RefreshTrackingCommand, ReturnDetail,
-    ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingCancellationStatus,
-    ShippingParcel, ShippingProvider, ShippingProviderAccountConfiguration,
-    ShippingProviderAccountDetail, ShippingProviderAccountRepository, ShippingQuoteCommand,
-    ShippingRateQuote, ShippingSecretResolver, ShippingServiceDetail, ShippingServiceRepository,
+    FulfillmentEventQueue, FulfillmentRepository, PreparedShippingLabelCancellation,
+    PreparedShippingLabelPurchase, PreparedShippingQuote, ProviderTrackingStatus,
+    PurchaseShippingLabelCommand, PurchasedShippingLabel, ReconcileShippingLabelCommand,
+    ReconciledShippingLabel, RefreshTrackingCommand, ReturnDetail, ReturnLineInput,
+    ReturnReceiptInput, ShippingAddress, ShippingCancellationJob, ShippingCancellationStatus,
+    ShippingLabelDetail, ShippingOperationRepository, ShippingParcel, ShippingProvider,
+    ShippingProviderAccountConfiguration, ShippingProviderAccountDetail,
+    ShippingProviderAccountRepository, ShippingQuoteCommand, ShippingRateQuote,
+    ShippingRateQuoteDetail, ShippingSecretResolver, ShippingServiceDetail,
+    ShippingServiceRepository, ShippingTrackingJob, ShippingTrackingQueue,
     ShippingTrackingSnapshot,
 };
 pub use inventory::{
