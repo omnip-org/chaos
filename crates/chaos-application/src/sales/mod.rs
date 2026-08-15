@@ -17,7 +17,12 @@ use crate::{
     },
 };
 
+mod customer;
 mod order_management;
+pub use customer::{
+    AssociateCustomerInput, CreateCustomerAddressInput, CustomerService,
+    DeleteCustomerAddressInput, UpdateCustomerInput,
+};
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 
 const EXPIRY_LEASE_TIMEOUT: Duration = Duration::minutes(1);

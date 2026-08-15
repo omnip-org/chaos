@@ -5,7 +5,10 @@ use chaos_domain::{
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
     pricing::{PriceListId, PromotionSnapshot, TaxRuleSnapshot},
-    sales::{CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderId, OrderStatus, ShopperId},
+    sales::{
+        CartId, CartStatus, CheckoutId, CheckoutIdentity, CustomerId, OrderId, OrderStatus,
+        ShopperId,
+    },
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -60,6 +63,7 @@ pub struct CheckoutLineItem {
 pub struct CheckoutDetail {
     pub id: CheckoutId,
     pub shopper_id: ShopperId,
+    pub customer_id: Option<CustomerId>,
     pub cart_id: CartId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -109,6 +113,7 @@ pub struct OrderTransitionItem {
 pub struct OrderDetail {
     pub id: OrderId,
     pub shopper_id: ShopperId,
+    pub customer_id: Option<CustomerId>,
     pub checkout_id: CheckoutId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -128,6 +133,17 @@ pub struct OrderDetail {
     pub transitions: Vec<OrderTransitionItem>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+pub struct OrderListFilter {
+    pub status: Option<OrderStatus>,
+    pub customer_id: Option<CustomerId>,
+    pub email: Option<String>,
+}
+
+pub struct OrderPage {
+    pub items: Vec<OrderDetail>,
+    pub has_more: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,6 +247,15 @@ pub trait CheckoutExpiryQueue: Send + Sync {
 
 #[async_trait]
 pub trait OrderManagementRepository: Send + Sync {
+    async fn list_orders(
+        &self,
+        actor: MerchantActor,
+        store_id: chaos_domain::merchant::StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+        filter: &OrderListFilter,
+    ) -> Result<OrderPage, ApplicationError>;
+
     async fn get_order(
         &self,
         actor: MerchantActor,

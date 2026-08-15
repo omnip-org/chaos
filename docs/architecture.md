@@ -74,10 +74,10 @@ Suggested implementation order:
 3. catalog: products, variants, options, and publication; collections and media are reserved;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;
-6. sales: carts, line items, Checkout, Orders, and immutable guest contact/address snapshots;
+6. sales: Store Customers, saved addresses, carts, line items, Checkout, Orders, and immutable contact/address snapshots;
 7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;
 8. payment: provider accounts, Payment Attempts, captures, Refunds, and webhook inboxes;
-9. customer: a planned context for reusable authenticated Customer profiles, saved addresses, and segments;
+9. customer: Customer profiles and saved addresses currently live within Sales because association is part of checkout ownership; segmentation remains a future boundary that may justify extraction;
 10. notifications: a planned integration capability for semantic delivery requests and provider status;
 11. analytics: a planned boundary for behavior events, sessions, consent, attribution, aggregates, and conversion exports.
 

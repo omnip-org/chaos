@@ -7,7 +7,7 @@
 
 A publishable Store API key identifies a Store and Sales Channel, not an individual browser, guest, or Customer. It is intentionally present in public clients. Scoping a Cart, Checkout, Payment Attempt, or Order only by that key and an unguessable resource identifier does not establish shopper authorization and lets idempotency keys collide across unrelated shoppers in the same merchant account.
 
-Phase 6 requires a possession-bound guest boundary before Storefront sales resources can be exposed to untrusted browser clients. Phase 7 may later associate that guest boundary with an authenticated Customer without changing ownership of resources that already exist.
+Phase 6 requires a possession-bound guest boundary before Storefront sales resources can be exposed to untrusted browser clients. Phase 7 associates that guest boundary with an authenticated Customer without changing ownership of resources that already exist.
 
 ## Decision
 
@@ -50,7 +50,7 @@ Shopper-session creation is intentionally stateless and creates no idempotency r
 
 The shopper credential is a possession credential, not a login session. It authorizes only resources that carry its identifier and only while the accompanying publishable key still authorizes the route. Terminal resource state continues to reject invalid mutations independently of credential validity.
 
-Phase 7 may link a shopper identifier to a Store-owned Customer after verified authentication or Checkout identification. That link is additive: it enables Customer order history and credential recovery but does not rewrite resource ownership or expose one Store's identity graph to another Store.
+Phase 7 links a shopper identifier to a Store-owned Customer after verified authentication. That link is additive: it enables Customer order history and credential recovery but does not rewrite resource ownership or expose one Store's identity graph to another Store. ADR 0011 defines the implemented association and recovery contract.
 
 Compromise is handled by resource abandonment or a future explicit credential-rotation workflow. Operational signing-key rotation uses overlap keys. Tokens never appear in URLs, logs, metrics, traces, analytics events, or idempotency snapshots.
 
@@ -61,7 +61,7 @@ Compromise is handled by resource abandonment or a future explicit credential-ro
 - Storefront idempotency becomes correctly isolated between browsers and Customers.
 - Signed derivation permits safe Cart-creation replay without recoverable token storage.
 - Signing-key configuration and overlap rotation become production requirements.
-- Customer authentication remains a separate Phase 7 capability instead of being conflated with guest possession.
+- Customer authentication remains a separate credential boundary instead of being conflated with guest possession.
 
 ## Rejected alternatives
 

@@ -75,6 +75,10 @@ An exact amount in integer minor units paired with one ISO 4217 currency. Arithm
 
 A revocable machine credential bound to one Store and an explicit set of capabilities. Publishable keys identify public Store API clients. Secret keys authenticate trusted integrations and MCP clients. Plaintext secrets are visible only when a key is created.
 
+### Customer
+
+A Store-owned shopping profile linked to one verified global User. Customers hold reusable contact data and saved addresses. Immutable shopper links recover Order history across devices without replacing possession-bound guest ownership. The same User has independent Customer profiles in different Stores.
+
 ## Isolation rules
 
 - `merchant_account_id` is the primary RLS and authorization boundary.
@@ -91,16 +95,13 @@ A revocable machine credential bound to one Store and an explicit set of capabil
 ### Current
 
 - Passwordless identity, merchant accounts, memberships, Stores, and Sales Channels.
-- Product, Variant, publication, Price List, Inventory, Cart, Checkout, and Order foundations.
+- Product, Variant, publication, Price List, Inventory, Customer, saved address, Cart, Checkout, and Order capabilities.
 - Provider-neutral Payment Attempt and Refund state machines with a sandbox adapter.
 - Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
 
 ### Next
 
-- Shopper-level Cart, Checkout, and Order ownership.
-- Recoverable workers, deterministic reservation expiry, and complete event consumers.
-- Authenticated Customer profiles and saved addresses; guest Checkout and Order contact/address snapshots are implemented.
-- Authenticated Customer pricing. Store Promotions, deterministic discount allocation, shipping options, destination Tax Rules, and complete Checkout totals are implemented.
+- Customer-specific pricing and segmentation; Store Promotions, deterministic discount allocation, shipping options, destination Tax Rules, and complete Checkout totals are implemented.
 - Stripe payment, Resend notification, and shipping provider adapters with Store-owned configuration.
 - First-party behavior events, active engagement, consent-aware attribution, analytics read models, and conversion exports.
 

@@ -3,6 +3,7 @@ mod catalog;
 mod catalog_management;
 mod catalog_read;
 mod clock;
+mod customer;
 mod fulfillment;
 mod inventory;
 mod merchant;
@@ -32,6 +33,7 @@ pub use catalog_read::{
     CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,
 };
 pub use clock::Clock;
+pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
     FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, ReturnDetail,
     ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail, ShippingServiceRepository,
@@ -58,10 +60,10 @@ pub use pricing_management::{
 pub use promotion::{PromotionDetail, PromotionRepository};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
-    CheckoutLineItem, OrderDetail, OrderLineItem, OrderManagementRepository, OrderTransitionItem,
-    StorefrontSalesRepository,
+    CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
+    OrderPage, OrderTransitionItem, StorefrontSalesRepository,
 };
-pub use shopper::{ShopperActor, ShopperCredentialCodec};
+pub use shopper::{CustomerActor, ShopperActor, ShopperCredentialCodec};
 pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,

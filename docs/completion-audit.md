@@ -13,7 +13,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
-| 7 — Real Checkout | Partial | Guest identity, address snapshots, Store-owned shipping, promotion, and tax configuration, Storefront shipping quotes, server-revalidated calculation inputs, deterministic discount and tax allocation, explicit recalculation rules, and Checkout-to-Order promotion/tax/shipping snapshots are implemented; authenticated Customer association and Customer Order history remain open. |
+| 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
 | 8–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
@@ -48,6 +48,8 @@ This audit records current evidence and open gates. A passing test for an implem
 | Tax calculation | Store-owned Tax Rules permit one active rule per destination country and store rates as integer basis points. Domain tests prove aggregate half-up rounding, stable line allocation, and tax-inclusive extraction. The real-router matrix covers tax-exclusive addition, tax-inclusive extraction, missing-rule rejection, Checkout-to-Order evidence copying, and runtime denial of snapshot mutation. |
 | Promotion calculation | Store-owned automatic and code-triggered Promotions support percentage and fixed values, settlement currency, minimum subtotal, percentage caps, priority, and activation windows. Domain tests prove aggregate rounding, capping, eligibility, and stable allocation. PostgreSQL and real-router matrices prove best-rule application before tax, invalid-code rejection, idempotent replay, and immutable Checkout-to-Order evidence. |
 | Recalculation | ADR 0010 defines Checkout creation as the sole recalculation boundary, the resolution order for mutable inputs, idempotent replay behavior, and the rule that configuration changes never mutate an existing Checkout or Order. |
+| Authenticated Customer | ADR 0011 defines Store ownership, dual credentials, additive immutable shopper association, and snapshot boundaries. Domain tests cover profile validation; the real-router PostgreSQL matrix associates a Customer, creates a saved address, propagates Customer identity through Checkout and Order, and recovers Order history without the shopper credential. |
+| Admin Order discovery | The Admin API provides opaque cursor pagination and optional status, Customer, and canonical email filters. The real-router matrix verifies the combined filter against the Customer-owned Order, while application queries remain account- and Store-scoped under RLS. |
 
 ## Required release commands
 

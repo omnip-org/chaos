@@ -97,6 +97,12 @@ mod tests {
         let tax_rule_b = Uuid::now_v7();
         let promotion_a = Uuid::now_v7();
         let promotion_b = Uuid::now_v7();
+        let customer_a = Uuid::now_v7();
+        let customer_b = Uuid::now_v7();
+        let customer_address_a = Uuid::now_v7();
+        let customer_address_b = Uuid::now_v7();
+        let shopper_a = Uuid::now_v7();
+        let shopper_b = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id)
@@ -246,6 +252,67 @@ mod tests {
             .await
             .unwrap();
         }
+        for (customer_id, address_id, shopper_id, store_id, channel_id, account_id, label) in [
+            (
+                customer_a,
+                customer_address_a,
+                shopper_a,
+                store_a,
+                channel_a,
+                account_a,
+                "Home A",
+            ),
+            (
+                customer_b,
+                customer_address_b,
+                shopper_b,
+                store_b,
+                channel_b,
+                account_b,
+                "Home B",
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO sales.customers \
+                 (id, merchant_account_id, store_id, user_id, email) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(customer_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(user_id)
+            .bind(format!("{customer_id}@example.com"))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO sales.customer_addresses \
+                 (id, merchant_account_id, store_id, customer_id, label, full_name, \
+                  address_line1, locality, country_code) \
+                 VALUES ($1, $2, $3, $4, $5, 'RLS Customer', '1 Main', 'Town', 'US')",
+            )
+            .bind(address_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(customer_id)
+            .bind(label)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO sales.customer_shopper_links \
+                 (merchant_account_id, store_id, customer_id, shopper_id, sales_channel_id) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(customer_id)
+            .bind(shopper_id)
+            .bind(channel_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
 
         let mut transaction = MerchantAccountTransaction::begin(&pool, account_a)
             .await
@@ -290,6 +357,22 @@ mod tests {
         .fetch_one(transaction.connection())
         .await
         .unwrap();
+        let visible_customer_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM sales.customers ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
+        let visible_customer_address_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM sales.customer_addresses ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
+        let visible_shopper_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT shopper_id FROM sales.customer_shopper_links ORDER BY shopper_id",
+        )
+        .fetch_all(transaction.connection())
+        .await
+        .unwrap();
         transaction.rollback().await.unwrap();
 
         assert_eq!(visible_ids, vec![store_a]);
@@ -299,6 +382,9 @@ mod tests {
         assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
         assert_eq!(visible_promotion_ids, vec![promotion_a]);
         assert_eq!(visible_scope_count, 1);
+        assert_eq!(visible_customer_ids, vec![customer_a]);
+        assert_eq!(visible_customer_address_ids, vec![customer_address_a]);
+        assert_eq!(visible_shopper_ids, vec![shopper_a]);
 
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
             .bind(vec![account_a.as_uuid(), account_b.as_uuid()])

@@ -1,6 +1,7 @@
 mod api_key;
 mod auth;
 mod catalog;
+mod customer;
 mod error;
 mod extract;
 mod fulfillment;
@@ -29,7 +30,7 @@ use chaos_application::{
     payments::{PaymentService, PaymentWorkers},
     ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
-    sales::{CheckoutExpiryWorkers, OrderManagement, StorefrontSales},
+    sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
 };
 use std::sync::Arc;
@@ -41,7 +42,7 @@ use chaos_infrastructure::{
     repositories::{
         HmacPaymentWebhookVerifier, PostgresApiKeyRepository, PostgresCatalogManagementUnitOfWork,
         PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresFulfillmentRepository, PostgresInventoryRepository,
+        PostgresCustomerRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
         PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
@@ -64,7 +65,7 @@ use crate::lifecycle::Lifecycle;
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
     ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CartShopper, CheckoutShopper,
-    MerchantContext, StorefrontMachine,
+    CustomerCheckout, CustomerMachine, CustomerSession, MerchantContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -90,6 +91,7 @@ pub struct ApiState {
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
+    pub customer_service: Arc<CustomerService>,
     pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
@@ -171,6 +173,10 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let storefront_sales = StorefrontSales::new(storefront_sales_repository.clone());
+        let customer_service = CustomerService::new(Arc::new(PostgresCustomerRepository::new(
+            infrastructure.runtime_pool(),
+            infrastructure.control_plane_pool(),
+        )));
         let checkout_expiry_workers = CheckoutExpiryWorkers::new(storefront_sales_repository);
         let order_management = OrderManagement::new(Arc::new(
             PostgresOrderManagementRepository::new(infrastructure.runtime_pool()),
@@ -226,6 +232,7 @@ impl ApiState {
             api_key_authentication: Arc::new(api_key_authentication),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
+            customer_service: Arc::new(customer_service),
             checkout_expiry_workers: Arc::new(checkout_expiry_workers),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
@@ -255,6 +262,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
         .nest("/store/v1", storefront_sales::routes())
+        .nest("/store/v1", customer::routes())
         .nest("/openapi", openapi::routes())
         .with_state(state)
         .layer(axum::middleware::from_fn(metrics::track_http_request))

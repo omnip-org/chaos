@@ -1,3 +1,4 @@
+use chaos_domain::identity::UserId;
 use chaos_domain::sales::ShopperId;
 use secrecy::SecretString;
 
@@ -9,6 +10,12 @@ use super::MachineActor;
 pub struct ShopperActor {
     pub machine: MachineActor,
     pub shopper_id: ShopperId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomerActor {
+    pub machine: MachineActor,
+    pub user_id: UserId,
 }
 
 pub trait ShopperCredentialCodec: Send + Sync {

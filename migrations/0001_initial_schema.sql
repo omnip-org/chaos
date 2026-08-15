@@ -919,12 +919,95 @@ CREATE INDEX stock_ledger_entries_stock_item_created_idx
 ALTER TABLE pricing.price_lists
     ADD UNIQUE (merchant_account_id, store_id, id, currency);
 
+CREATE TABLE sales.customers (
+    id                  UUID              NOT NULL PRIMARY KEY,
+    merchant_account_id UUID              NOT NULL,
+    store_id            UUID              NOT NULL,
+    user_id             UUID              NOT NULL,
+    email               extensions.citext NOT NULL,
+    phone               TEXT,
+    created_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, user_id),
+    UNIQUE (merchant_account_id, store_id, email),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES identity.users(id),
+    CONSTRAINT customers_email_length_check CHECK (length(trim(email::text)) BETWEEN 3 AND 320),
+    CONSTRAINT customers_phone_format_check CHECK (phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$')
+);
+
+CREATE INDEX customers_store_created_idx
+    ON sales.customers (merchant_account_id, store_id, created_at DESC, id DESC);
+
+CREATE TABLE sales.customer_addresses (
+    id                   UUID     NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID     NOT NULL,
+    store_id             UUID     NOT NULL,
+    customer_id          UUID     NOT NULL,
+    label                TEXT     NOT NULL,
+    full_name            TEXT     NOT NULL,
+    company              TEXT,
+    address_line1        TEXT     NOT NULL,
+    address_line2        TEXT,
+    locality             TEXT     NOT NULL,
+    administrative_area  TEXT,
+    postal_code          TEXT,
+    country_code         CHAR(2)  NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, customer_id, id),
+    CONSTRAINT customer_addresses_customer_label_key
+        UNIQUE (merchant_account_id, store_id, customer_id, label),
+    CONSTRAINT customer_addresses_customer_fkey
+        FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT customer_addresses_label_length_check CHECK (length(trim(label)) BETWEEN 1 AND 64),
+    CONSTRAINT customer_addresses_full_name_length_check CHECK (length(trim(full_name)) BETWEEN 1 AND 200),
+    CONSTRAINT customer_addresses_company_length_check CHECK (company IS NULL OR length(trim(company)) BETWEEN 1 AND 200),
+    CONSTRAINT customer_addresses_line1_length_check CHECK (length(trim(address_line1)) BETWEEN 1 AND 255),
+    CONSTRAINT customer_addresses_line2_length_check CHECK (address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255),
+    CONSTRAINT customer_addresses_locality_length_check CHECK (length(trim(locality)) BETWEEN 1 AND 100),
+    CONSTRAINT customer_addresses_area_length_check CHECK (administrative_area IS NULL OR length(trim(administrative_area)) BETWEEN 1 AND 100),
+    CONSTRAINT customer_addresses_postal_code_length_check CHECK (postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32),
+    CONSTRAINT customer_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
+);
+
+CREATE INDEX customer_addresses_customer_idx
+    ON sales.customer_addresses (merchant_account_id, store_id, customer_id, created_at, id);
+
+CREATE TABLE sales.customer_shopper_links (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    customer_id         UUID        NOT NULL,
+    shopper_id          UUID        NOT NULL,
+    sales_channel_id    UUID        NOT NULL,
+    linked_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, store_id, shopper_id),
+    CONSTRAINT customer_shopper_links_customer_fkey
+        FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT customer_shopper_links_channel_fkey
+        FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX customer_shopper_links_history_idx
+    ON sales.customer_shopper_links (
+        merchant_account_id, store_id, customer_id, sales_channel_id, shopper_id
+    );
+
 CREATE TABLE sales.carts (
     id                   UUID                NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                NOT NULL,
     store_id             UUID                NOT NULL,
     sales_channel_id     UUID                NOT NULL,
     shopper_id           UUID                NOT NULL,
+    customer_id          UUID,
     price_list_id        UUID                NOT NULL,
     currency             CHAR(3)             NOT NULL,
     status               sales.cart_status   NOT NULL DEFAULT 'active',
@@ -938,6 +1021,8 @@ CREATE TABLE sales.carts (
         REFERENCES merchant.stores(merchant_account_id, id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
         REFERENCES pricing.price_lists(merchant_account_id, store_id, id, currency),
     CONSTRAINT carts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
@@ -998,6 +1083,7 @@ CREATE TABLE sales.checkouts (
     store_id               UUID                    NOT NULL,
     cart_id                UUID                    NOT NULL,
     shopper_id             UUID                    NOT NULL,
+    customer_id            UUID,
     sales_channel_id       UUID                    NOT NULL,
     price_list_id          UUID                    NOT NULL,
     inventory_reservation_id UUID,
@@ -1022,6 +1108,8 @@ CREATE TABLE sales.checkouts (
     UNIQUE (merchant_account_id, store_id, inventory_reservation_id),
     FOREIGN KEY (merchant_account_id, store_id, cart_id, shopper_id)
         REFERENCES sales.carts(merchant_account_id, store_id, id, shopper_id),
+    FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
@@ -1249,6 +1337,7 @@ CREATE TABLE sales.orders (
     sales_channel_id         UUID                  NOT NULL,
     checkout_id              UUID                  NOT NULL,
     shopper_id               UUID                  NOT NULL,
+    customer_id              UUID,
     inventory_reservation_id UUID,
     price_list_id            UUID                  NOT NULL,
     currency                 CHAR(3)               NOT NULL,
@@ -1267,6 +1356,8 @@ CREATE TABLE sales.orders (
     UNIQUE (merchant_account_id, store_id, checkout_id),
     FOREIGN KEY (merchant_account_id, store_id, checkout_id, shopper_id)
         REFERENCES sales.checkouts(merchant_account_id, store_id, id, shopper_id),
+    FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
@@ -1312,6 +1403,11 @@ CREATE TABLE sales.order_contacts (
         phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
     )
 );
+
+CREATE INDEX orders_customer_created_idx
+    ON sales.orders (
+        merchant_account_id, store_id, customer_id, created_at DESC, id DESC
+    ) WHERE customer_id IS NOT NULL;
 
 CREATE TABLE sales.order_addresses (
     merchant_account_id  UUID               NOT NULL,
@@ -2172,6 +2268,9 @@ ALTER TABLE inventory.stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_reservation_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.stock_ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.customer_addresses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.customer_shopper_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkouts ENABLE ROW LEVEL SECURITY;
@@ -2467,6 +2566,36 @@ CREATE POLICY merchant_account_isolation ON inventory.stock_ledger_entries
     );
 
 CREATE POLICY merchant_account_isolation ON sales.carts
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.customers
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.customer_addresses
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.customer_shopper_links
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -3157,6 +3286,8 @@ GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_run
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 REVOKE UPDATE, DELETE
     ON inventory.stock_ledger_entries FROM chaos_runtime;
+REVOKE UPDATE, DELETE
+    ON sales.customer_shopper_links FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines,
        sales.checkout_shipping_selections, sales.checkout_tax_calculations,

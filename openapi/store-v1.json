@@ -274,6 +274,113 @@
         }
       }
     },
+    "/customer/associate": {
+      "post": {
+        "operationId": "associateCustomer",
+        "tags": ["Customers"],
+        "summary": "Associate the possession-bound shopper with the authenticated Store Customer",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ShopperToken" },
+          { "$ref": "#/components/parameters/CustomerSession" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "201": { "description": "Customer associated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/customer": {
+      "get": {
+        "operationId": "getCustomer",
+        "tags": ["Customers"],
+        "summary": "Get the authenticated Store Customer and saved addresses",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }],
+        "responses": {
+          "200": { "description": "Customer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "updateCustomer",
+        "tags": ["Customers"],
+        "summary": "Update the authenticated Store Customer phone",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateCustomer" } } } },
+        "responses": {
+          "200": { "description": "Customer updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/customer/addresses": {
+      "post": {
+        "operationId": "createCustomerAddress",
+        "tags": ["Customers"],
+        "summary": "Create a saved address for the authenticated Store Customer",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCustomerAddress" } } } },
+        "responses": {
+          "201": { "description": "Saved address created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerAddressEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/customer/addresses/{address_id}": {
+      "delete": {
+        "operationId": "deleteCustomerAddress",
+        "tags": ["Customers"],
+        "summary": "Delete a saved address without changing Checkout or Order snapshots",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "parameters": [
+          { "name": "address_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "$ref": "#/components/parameters/CustomerSession" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "200": { "description": "Saved address deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerMutationEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/customer/orders": {
+      "get": {
+        "operationId": "listCustomerOrders",
+        "tags": ["Customers", "Orders"],
+        "summary": "List Order history for the authenticated Store Customer",
+        "security": [{ "publishableKey": ["checkout:write"] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CustomerSession" },
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" }
+        ],
+        "responses": {
+          "200": { "description": "Customer Order page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderCollectionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/orders/{order_id}/payment-attempts": {
       "post": {
         "operationId": "createPaymentAttempt",
@@ -355,6 +462,13 @@
         "in": "header",
         "required": true,
         "description": "Signed possession credential returned by shopper-session creation and echoed by Cart creation. Never place this value in URLs or logs.",
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "CustomerSession": {
+        "name": "x-chaos-customer-session",
+        "in": "header",
+        "required": true,
+        "description": "Opaque verified User session used in addition to the Store publishable key.",
         "schema": { "type": "string", "minLength": 1 }
       },
       "CartId": {
@@ -633,6 +747,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "cart_id": { "type": "string", "format": "uuid" },
+          "customer_id": { "type": "string", "format": "uuid" },
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
@@ -695,6 +810,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
+          "customer_id": { "type": "string", "format": "uuid" },
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
@@ -722,6 +838,70 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/Order" } }
+      },
+      "UpdateCustomer": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "phone": { "type": ["string", "null"], "pattern": "^\\+[1-9][0-9]{7,14}$" } }
+      },
+      "CreateCustomerAddress": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "full_name", "address_line1", "locality", "country_code"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" }
+        }
+      },
+      "CustomerAddress": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "full_name", "address_line1", "locality", "country_code", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "email", "addresses", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "phone": { "type": "string", "pattern": "^\\+[1-9][0-9]{7,14}$" },
+          "addresses": { "type": "array", "items": { "$ref": "#/components/schemas/CustomerAddress" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CustomerEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Customer" } } },
+      "CustomerAddressEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/CustomerAddress" } } },
+      "CustomerMutationEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "object", "required": ["customer_id"], "properties": { "customer_id": { "type": "string", "format": "uuid" } } } } },
+      "OrderCollectionEnvelope": {
+        "type": "object",
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/Order" } },
+          "meta": { "$ref": "#/components/schemas/Meta" }
+        }
       },
       "CreatePaymentAttempt": {
         "type": "object",

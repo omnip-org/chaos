@@ -176,6 +176,8 @@ struct CheckoutData {
     id: Uuid,
     cart_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
+    customer_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
@@ -233,6 +235,8 @@ struct OrderTransitionData {
 pub(super) struct OrderData {
     id: Uuid,
     checkout_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customer_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -638,6 +642,7 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
     Ok(CheckoutData {
         id: checkout.id.as_uuid(),
         cart_id: checkout.cart_id.as_uuid(),
+        customer_id: checkout.customer_id.map(|id| id.as_uuid()),
         inventory_reservation_id: checkout.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: checkout.price_list_id.as_uuid(),
         currency: checkout.currency.as_str().to_owned(),
@@ -682,6 +687,7 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
     Ok(OrderData {
         id: order.id.as_uuid(),
         checkout_id: order.checkout_id.as_uuid(),
+        customer_id: order.customer_id.map(|id| id.as_uuid()),
         inventory_reservation_id: order.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
@@ -850,6 +856,14 @@ mod tests {
         request.headers_mut().insert(
             "x-chaos-shopper-token",
             HeaderValue::from_str(shopper_token).unwrap(),
+        );
+        request
+    }
+
+    fn with_customer_session(mut request: Request<Body>) -> Request<Body> {
+        request.headers_mut().insert(
+            "x-chaos-customer-session",
+            HeaderValue::from_static("customer-session"),
         );
         request
     }
@@ -1138,7 +1152,7 @@ mod tests {
             account_id,
             other_store_id,
             user_id,
-            &["checkout:write"],
+            &["carts:write", "checkout:write"],
         )
         .await;
         let full_secret = full_key.plaintext.expose_secret();
@@ -1305,6 +1319,90 @@ mod tests {
         assert_eq!(updated.status(), StatusCode::OK);
         let updated = response_json(updated).await;
         assert_eq!(updated["data"]["subtotal_amount_minor"], 2500);
+
+        let associated = app
+            .clone()
+            .oneshot(with_customer_session(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    "/store/v1/customer/associate",
+                    Some(full_secret),
+                    Some("associate-customer"),
+                    None,
+                ),
+                shopper_token,
+            )))
+            .await
+            .unwrap();
+        let associated_status = associated.status();
+        let associated = response_json(associated).await;
+        assert_eq!(associated_status, StatusCode::CREATED, "{associated}");
+        let customer_id = associated["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            associated["data"]["email"],
+            format!("sales-http-{suffix}@example.com")
+        );
+
+        let missing_customer_session = app
+            .clone()
+            .oneshot(store_request(
+                Method::GET,
+                "/store/v1/customer",
+                Some(full_secret),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_customer_session.status(), StatusCode::UNAUTHORIZED);
+        let other_store_customer = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::GET,
+                "/store/v1/customer",
+                Some(other_store_secret),
+                None,
+                None,
+            )))
+            .await
+            .unwrap();
+        assert_eq!(other_store_customer.status(), StatusCode::NOT_FOUND);
+
+        let address = json!({
+            "label": "Home",
+            "full_name": "Customer Buyer",
+            "address_line1": "2 Market Street",
+            "locality": "San Francisco",
+            "administrative_area": "CA",
+            "postal_code": "94105",
+            "country_code": "US"
+        });
+        let saved_address_body = address;
+        let saved_address = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/customer/addresses",
+                Some(full_secret),
+                Some("save-customer-address"),
+                Some(saved_address_body.clone()),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(saved_address.status(), StatusCode::CREATED);
+        assert_eq!(response_json(saved_address).await["data"]["label"], "Home");
+        let duplicate_address = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/customer/addresses",
+                Some(full_secret),
+                Some("duplicate-customer-address"),
+                Some(saved_address_body),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(duplicate_address.status(), StatusCode::CONFLICT);
 
         let quotes = app
             .clone()
@@ -1483,6 +1581,7 @@ mod tests {
         assert!(checkout["data"]["inventory_reservation_id"].is_string());
         assert_eq!(checkout["data"]["contact"]["email"], "guest@example.com");
         assert_eq!(checkout["data"]["shipping_address"]["country_code"], "US");
+        assert_eq!(checkout["data"]["customer_id"], customer_id);
 
         let replay = app
             .clone()
@@ -1531,6 +1630,39 @@ mod tests {
             "1 Market Street"
         );
         assert_eq!(order["data"]["transitions"][0]["kind"], "created");
+        assert_eq!(order["data"]["customer_id"], customer_id);
+
+        let customer_orders = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::GET,
+                "/store/v1/customer/orders?limit=10",
+                Some(full_secret),
+                None,
+                None,
+            )))
+            .await
+            .unwrap();
+        assert_eq!(customer_orders.status(), StatusCode::OK);
+        let customer_orders = response_json(customer_orders).await;
+        assert_eq!(customer_orders["data"][0]["id"], order_id);
+
+        let admin_orders = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/orders?customer_id={customer_id}&email=guest%40example.com&status=pending",
+                    account_id.as_uuid(),
+                    store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(admin_orders.status(), StatusCode::OK);
+        assert_eq!(response_json(admin_orders).await["data"][0]["id"], order_id);
         let order_replay = app
             .clone()
             .oneshot(with_shopper_token(
@@ -1569,6 +1701,16 @@ mod tests {
             .execute(&mut *snapshot_connection)
             .await
             .unwrap();
+        assert!(
+            sqlx::query(
+                "UPDATE sales.customer_shopper_links SET customer_id = customer_id \
+                 WHERE customer_id = $1",
+            )
+            .bind(Uuid::parse_str(&customer_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
         assert!(
             sqlx::query(
                 "UPDATE sales.order_contacts SET email = 'tampered@example.com' \
@@ -1777,7 +1919,11 @@ mod tests {
             assert_eq!(response_json(duplicate).await["data"]["accepted"], false);
             assert_eq!(
                 payment_workers
-                    .run_webhook_batch(Uuid::now_v7(), test_clock.now(), 10)
+                    .run_webhook_batch(
+                        Uuid::now_v7(),
+                        test_clock.now() + time::Duration::seconds(1),
+                        10,
+                    )
                     .await
                     .unwrap(),
                 1
@@ -1849,7 +1995,11 @@ mod tests {
         assert_eq!(refund_webhook.status(), StatusCode::ACCEPTED);
         assert_eq!(
             payment_workers
-                .run_webhook_batch(Uuid::now_v7(), test_clock.now(), 10)
+                .run_webhook_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::seconds(1),
+                    10,
+                )
                 .await
                 .unwrap(),
             1
@@ -1864,7 +2014,7 @@ mod tests {
 
         let first_worker = Uuid::now_v7();
         let second_worker = Uuid::now_v7();
-        let claimed_at = test_clock.now();
+        let claimed_at = test_clock.now() + time::Duration::seconds(1);
         let (first_jobs, second_jobs) = tokio::join!(
             payment_repository.claim_outbox(
                 first_worker,
@@ -1910,7 +2060,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        let lease_started = test_clock.now();
+        let lease_started = test_clock.now() + time::Duration::seconds(1);
         let abandoned = payment_repository
             .claim_outbox(
                 first_worker,
@@ -2186,7 +2336,11 @@ mod tests {
         }
 
         let _ = payment_workers
-            .run_outbox_batch(Uuid::now_v7(), test_clock.now(), 100)
+            .run_outbox_batch(
+                Uuid::now_v7(),
+                test_clock.now() + time::Duration::seconds(1),
+                100,
+            )
             .await;
         let return_event_status: String = sqlx::query_scalar(
             "SELECT status::text FROM integration.outbox_events WHERE aggregate_type = 'return' \

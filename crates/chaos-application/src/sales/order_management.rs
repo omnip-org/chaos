@@ -9,7 +9,9 @@ use time::OffsetDateTime;
 use crate::{
     ApplicationError,
     merchant::MerchantActor,
-    ports::{IdempotencyRequest, OrderDetail, OrderManagementRepository},
+    ports::{
+        IdempotencyRequest, OrderDetail, OrderListFilter, OrderManagementRepository, OrderPage,
+    },
 };
 
 pub struct ChangeOrderStatusInput {
@@ -40,6 +42,19 @@ impl OrderManagement {
             .get_order(actor, store_id, order_id)
             .await?
             .ok_or_else(|| order_not_found(order_id))
+    }
+
+    pub async fn list_orders(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        after: Option<uuid::Uuid>,
+        limit: u16,
+        filter: OrderListFilter,
+    ) -> Result<OrderPage, ApplicationError> {
+        self.repository
+            .list_orders(actor, store_id, after, limit, &filter)
+            .await
     }
 
     pub async fn change_status(

@@ -1025,6 +1025,32 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "listOrders",
+        "tags": ["Orders"],
+        "summary": "List and filter Store Orders",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Cursor" },
+          { "$ref": "#/components/parameters/Limit" },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] } },
+          { "name": "customer_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "email", "in": "query", "schema": { "type": "string", "format": "email", "maxLength": 320 } }
+        ],
+        "responses": {
+          "200": { "description": "Order page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderCollectionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}": {
       "parameters": [
         { "$ref": "#/components/parameters/MerchantAccountId" },
@@ -2067,6 +2093,7 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
+          "customer_id": { "type": "string", "format": "uuid" },
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
@@ -2094,6 +2121,15 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/Order" } }
+      },
+      "OrderCollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/Order" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
       },
       "CreateRefund": {
         "type": "object",

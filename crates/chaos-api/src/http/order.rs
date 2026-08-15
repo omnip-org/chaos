@@ -1,21 +1,28 @@
 use axum::{Router, extract::State, http::HeaderMap, routing::get};
-use chaos_application::{ports::IdempotencyRequest, sales::ChangeOrderStatusInput};
+use chaos_application::{
+    ports::{IdempotencyRequest, OrderListFilter},
+    sales::ChangeOrderStatusInput,
+};
 use chaos_domain::{
     merchant::{MerchantAccountId, StoreId},
-    sales::{OrderId, OrderStatus},
+    sales::{CheckoutContact, CustomerId, OrderId, OrderStatus},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiPath, ApiResponse, ApiState, MerchantContext,
-    merchant::idempotency_key,
+    ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
     storefront_sales::{OrderData, order_data},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders",
+            get(list_orders),
+        )
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}",
             get(get_order),
@@ -35,6 +42,87 @@ struct OrderPath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     order_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct OrderCollectionPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OrderListQuery {
+    cursor: Option<String>,
+    limit: Option<u16>,
+    status: Option<String>,
+    customer_id: Option<Uuid>,
+    email: Option<String>,
+}
+
+async fn list_orders(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<OrderCollectionPath>,
+    ApiQuery(query): ApiQuery<OrderListQuery>,
+) -> Result<ApiResponse<Vec<OrderData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let after = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor(cursor, CursorKind::AdminOrder))
+        .transpose()?;
+    let status = query
+        .status
+        .as_deref()
+        .map(|value| {
+            OrderStatus::parse(value).ok_or_else(|| {
+                chaos_application::ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "status",
+                        reason: "must be pending, confirmed, or cancelled".into(),
+                    }],
+                }
+            })
+        })
+        .transpose()?;
+    let email = query
+        .email
+        .map(|value| {
+            CheckoutContact::new(value, None)
+                .map(|contact| contact.email().to_owned())
+                .map_err(chaos_application::ApplicationError::from)
+        })
+        .transpose()?;
+    let limit = page_limit(query.limit)?;
+    let page = state
+        .order_management
+        .list_orders(
+            actor,
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+            OrderListFilter {
+                status,
+                customer_id: query.customer_id.map(CustomerId::from_uuid),
+                email,
+            },
+        )
+        .await?;
+    let next_cursor = page
+        .has_more
+        .then(|| {
+            page.items
+                .last()
+                .map(|order| encode_cursor(order.id.as_uuid(), CursorKind::AdminOrder))
+        })
+        .flatten();
+    let data = page
+        .items
+        .into_iter()
+        .map(order_data)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ApiResponse::ok(data).with_meta(page_meta(page.has_more, next_cursor)))
 }
 
 async fn get_order(

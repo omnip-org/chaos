@@ -3,8 +3,8 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, OrderDetail, OrderLineItem, OrderManagementRepository,
-        OrderTransitionItem,
+        IdempotencyRequest, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
+        OrderPage, OrderTransitionItem,
     },
 };
 use chaos_domain::{
@@ -18,8 +18,8 @@ use chaos_domain::{
         TaxRuleId, TaxRuleSnapshot,
     },
     sales::{
-        CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderId, OrderStatus, PostalAddress,
-        ShopperId,
+        CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderId, OrderStatus,
+        PostalAddress, ShopperId,
     },
 };
 use serde_json::json;
@@ -38,6 +38,7 @@ const CANCEL_OPERATION: &str = "orders.cancel.v1";
 type HeaderRow = (
     Uuid,
     Uuid,
+    Option<Uuid>,
     Uuid,
     Option<Uuid>,
     Uuid,
@@ -115,6 +116,57 @@ impl PostgresOrderManagementRepository {
 
 #[async_trait]
 impl OrderManagementRepository for PostgresOrderManagementRepository {
+    async fn list_orders(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+        filter: &OrderListFilter,
+    ) -> Result<OrderPage, ApplicationError> {
+        let account_id = actor.merchant_account_id().as_uuid();
+        let mut transaction = self.begin(actor).await?;
+        let ids = sqlx::query_scalar::<_, Uuid>(
+            "SELECT DISTINCT o.id FROM sales.orders o \
+             JOIN sales.order_contacts contact ON contact.merchant_account_id = o.merchant_account_id \
+               AND contact.store_id = o.store_id AND contact.order_id = o.id \
+             LEFT JOIN sales.customer_shopper_links link ON link.merchant_account_id = o.merchant_account_id \
+               AND link.store_id = o.store_id AND link.shopper_id = o.shopper_id \
+             WHERE o.merchant_account_id = $1 AND o.store_id = $2 \
+               AND ($3::uuid IS NULL OR o.id < $3) \
+               AND ($4::text IS NULL OR o.status::text = $4) \
+               AND ($5::uuid IS NULL OR o.customer_id = $5 OR link.customer_id = $5) \
+               AND ($6::text IS NULL OR contact.email = lower($6)) \
+             ORDER BY o.id DESC LIMIT $7",
+        )
+        .bind(account_id)
+        .bind(store_id.as_uuid())
+        .bind(after)
+        .bind(filter.status.map(OrderStatus::as_str))
+        .bind(filter.customer_id.map(CustomerId::as_uuid))
+        .bind(filter.email.as_deref())
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let has_more = ids.len() > usize::from(limit);
+        let mut items = Vec::with_capacity(ids.len().min(usize::from(limit)));
+        for id in ids.into_iter().take(usize::from(limit)) {
+            items.push(
+                load_order(
+                    &mut transaction,
+                    account_id,
+                    store_id,
+                    OrderId::from_uuid(id),
+                )
+                .await?
+                .ok_or_else(|| order_not_found(OrderId::from_uuid(id)))?,
+            );
+        }
+        transaction.commit().await.map_err(database_error)?;
+        Ok(OrderPage { items, has_more })
+    }
+
     async fn get_order(
         &self,
         actor: MerchantActor,
@@ -255,7 +307,7 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, HeaderRow>(
-        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -310,21 +362,22 @@ async fn load_order(
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.0),
         shopper_id: ShopperId::from_uuid(row.1),
-        checkout_id: CheckoutId::from_uuid(row.2),
-        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.4),
-        currency: CurrencyCode::parse(&row.5)?,
-        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_state)?,
+        customer_id: row.2.map(CustomerId::from_uuid),
+        checkout_id: CheckoutId::from_uuid(row.3),
+        inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.5),
+        currency: CurrencyCode::parse(&row.6)?,
+        status: OrderStatus::parse(&row.7).ok_or_else(corrupt_state)?,
         identity,
-        subtotal_amount_minor: row.7,
-        discount_amount_minor: row.8,
-        tax_amount_minor: row.9,
+        subtotal_amount_minor: row.8,
+        discount_amount_minor: row.9,
+        tax_amount_minor: row.10,
         tax_rule,
         promotion,
-        tax_inclusive: row.10,
+        tax_inclusive: row.11,
         shipping,
-        shipping_amount_minor: row.11,
-        total_amount_minor: row.12,
+        shipping_amount_minor: row.12,
+        total_amount_minor: row.13,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -364,8 +417,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.13,
-        updated_at: row.14,
+        created_at: row.14,
+        updated_at: row.15,
     }))
 }
 
