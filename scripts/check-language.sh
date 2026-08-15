@@ -5,11 +5,13 @@ cjk_pattern='[\x{4e00}-\x{9fff}]'
 
 if rg --line-number "$cjk_pattern" \
     AGENTS.md CONTRIBUTING.md README.md Dockerfile .env.example \
-    compose.yaml compose.ha.yaml docs crates migrations scripts .githooks \
+    compose.yaml compose.ha.yaml docs crates migrations packages scripts .githooks \
     --glob '*.md' \
     --glob '*.rs' \
     --glob '*.sql' \
     --glob '*.sh' \
+    --glob '*.js' \
+    --glob '*.json' \
     --glob '*.yaml' \
     --glob 'Dockerfile' \
     --glob '.env.example'; then

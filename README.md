@@ -66,6 +66,7 @@ docker compose -f compose.yaml -f compose.ha.yaml down
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
+npm test --prefix packages/storefront-analytics
 ./scripts/check-language.sh
 ```
 

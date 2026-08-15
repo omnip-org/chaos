@@ -44,5 +44,6 @@ docs(architecture): document blue-green deployment
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
+npm test --prefix packages/storefront-analytics
 ./scripts/check-language.sh
 ```
