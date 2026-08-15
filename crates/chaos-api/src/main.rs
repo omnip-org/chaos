@@ -26,6 +26,11 @@ async fn main() -> anyhow::Result<()> {
         state.clock.clone(),
         lifecycle.clone(),
     ));
+    let checkout_expiry_worker = tokio::spawn(checkout_expiry_worker_loop(
+        state.checkout_expiry_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
     let app = http::router(state);
     let listener = TcpListener::bind(settings.bind_addr)
         .await
@@ -39,6 +44,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
+        drain_worker(
+            "checkout-expiry",
+            checkout_expiry_worker,
+            worker_shutdown_timeout
+        ),
     );
     if let Some(provider) = trace_provider {
         provider
@@ -98,6 +108,20 @@ async fn payment_worker_loop(
         }
         if let Err(error) = workers.run_webhook_batch(worker_id, now, 50).await {
             tracing::warn!(%worker_id, %error, "payment webhook batch failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+async fn checkout_expiry_worker_loop(
+    workers: std::sync::Arc<chaos_application::sales::CheckoutExpiryWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        if let Err(error) = workers.run_batch(worker_id, clock.now(), 100).await {
+            tracing::warn!(%worker_id, %error, "Checkout expiry batch failed");
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

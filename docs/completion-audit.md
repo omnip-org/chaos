@@ -9,10 +9,10 @@ This audit records current evidence and open gates. A passing test for an implem
 | 0 — Platform | Complete | — |
 | 1 — Identity and Merchant | Complete for the declared phase scope | — |
 | 2 — Catalog and Pricing | Complete for the declared phase scope | — |
-| 3 — Selling | Partial | Possession-bound Cart-to-Order ownership is implemented; authenticated Customer association, Order history, and a production reservation-expiry scheduler remain open. |
+| 3 — Selling | Complete for the declared phase scope | Recoverable automatic Checkout and reservation expiry closes the final Phase 3 gate. Customer association and Order history belong to Phase 7. |
 | 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
-| 6 — Transaction Hardening | Partial | Shopper ownership, stale lease recovery, and bounded worker drain are implemented; automatic expiry scheduling and declared event-consumer ownership remain open. |
+| 6 — Transaction Hardening | Partial | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, and bounded worker drain are implemented; declared event-consumer ownership remains open. |
 | 7–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
@@ -25,6 +25,16 @@ This audit records current evidence and open gates. A passing test for an implem
 | Telemetry | `telemetry.rs` exports tracing spans through OTLP/HTTP when configured and flushes on shutdown. Prometheus exposes bounded HTTP labels, checkout conversions, payment failures, reservation conflicts, dependency health, database pool use, queue depth, dead letters, and queue age. Worker logs include `worker_id`; HTTP spans retain request IDs without logging credentials. |
 | Capacity | `scripts/capacity-test.sh`, `scripts/capacity.js`, and `docs/capacity.md` define the environment, dataset, duration, concurrency, output, and release thresholds. A dated, production-like result with system measurements must be retained before this gate is complete. |
 | Runbooks | `docs/operations-runbook.md` covers migration failure, dependency degradation, queue backlog, webhook replay, credential rotation, rollback, and search rebuild. |
+
+## Current Phase 6 evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Shopper ownership | Signed shopper credentials bind Cart, Checkout, Order, and Payment Attempt lineage to one Store and Sales Channel; runtime-role and real-router tests deny cross-shopper and cross-Store access. |
+| Automatic expiry | A database claim function leases due Checkouts across tenants with `SKIP LOCKED`. The expiry worker establishes tenant context, expires the Checkout, releases active tracked-inventory reservations, and appends `reservation_expired` ledger entries in one transaction. |
+| Lease recovery | Payment inbox, payment outbox, and Checkout expiry claims recover one-minute-old leases. Integration tests abandon claims, advance the Clock, prove another worker can complete them, and reject the former owner. |
+| Shutdown | Every in-process worker stops claiming when draining begins and receives the configured bounded interval to finish before forced cancellation. |
+| Event ownership | Open. Event types and their responsible consumers still require an explicit registry plus evidence that unowned events remain visible and unreconciled. |
 
 ## Required release commands
 

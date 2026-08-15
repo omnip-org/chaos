@@ -2,16 +2,16 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        CartDetail, CartLineItem, CheckoutDetail, CheckoutLineItem, IdempotencyRequest,
-        MachineActor, OrderDetail, OrderLineItem, OrderTransitionItem, ShopperActor,
-        StorefrontSalesRepository,
+        CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
+        CheckoutLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
+        OrderTransitionItem, ShopperActor, StorefrontSalesRepository,
     },
 };
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
     inventory::{InventoryReservationId, StockBalance},
-    merchant::SalesChannelId,
+    merchant::{SalesChannelId, StoreId},
     pricing::{Money, PriceListId},
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutId, CommercialAdjustments, Order,
@@ -25,6 +25,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::idempotency::{self, IdempotencyScope};
+use super::inventory::{ReservationClosure, close_reservation};
 
 const CREATE_CART_OPERATION: &str = "carts.create.v1";
 const SET_CART_LINE_OPERATION: &str = "cart_lines.set.v1";
@@ -566,7 +567,8 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "UPDATE sales.checkouts SET status = 'completed', closed_at = $5, updated_at = $5 \
+            "UPDATE sales.checkouts SET status = 'completed', closed_at = $5, updated_at = $5, \
+                    expiry_locked_by = NULL, expiry_locked_at = NULL \
              WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
                AND id = $4 AND status = 'pending'",
         )
@@ -605,6 +607,121 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let detail = load_order(&mut transaction, actor, order_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
+    }
+}
+
+#[async_trait]
+impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
+    async fn claim_due_checkouts(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<CheckoutExpiryJob>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>)>(
+            "SELECT id, merchant_account_id, store_id, inventory_reservation_id \
+             FROM sales.claim_expired_checkouts($1, $2, $3, $4)",
+        )
+        .bind(worker_id)
+        .bind(i32::from(limit))
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, merchant_account_id, store_id, inventory_reservation_id)| CheckoutExpiryJob {
+                    id: CheckoutId::from_uuid(id),
+                    merchant_account_id,
+                    store_id,
+                    inventory_reservation_id: inventory_reservation_id
+                        .map(InventoryReservationId::from_uuid),
+                },
+            )
+            .collect())
+    }
+
+    async fn expire_checkout(
+        &self,
+        worker_id: Uuid,
+        job: CheckoutExpiryJob,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(job.merchant_account_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        let checkout = sqlx::query_as::<_, (Option<Uuid>, String, OffsetDateTime)>(
+            "SELECT inventory_reservation_id, status::text, expires_at \
+             FROM sales.checkouts \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+               AND expiry_locked_by = $4 FOR UPDATE",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id)
+        .bind(job.id.as_uuid())
+        .bind(worker_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(checkout_expiry_lease_lost)?;
+        if checkout.1 != "pending" || checkout.2 > now {
+            return Err(checkout_expiry_lease_lost());
+        }
+        if checkout.0
+            != job
+                .inventory_reservation_id
+                .map(InventoryReservationId::as_uuid)
+        {
+            return Err(checkout_expiry_lease_lost());
+        }
+        if let Some(reservation_id) = job.inventory_reservation_id {
+            let reservation_status: Option<String> = sqlx::query_scalar(
+                "SELECT status::text FROM inventory.inventory_reservations \
+                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id)
+            .bind(reservation_id.as_uuid())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if reservation_status.as_deref() == Some("active") {
+                close_reservation(
+                    &mut transaction,
+                    job.merchant_account_id,
+                    StoreId::from_uuid(job.store_id),
+                    reservation_id,
+                    ReservationClosure::Expired,
+                    now,
+                )
+                .await?;
+            }
+        }
+        let result = sqlx::query(
+            "UPDATE sales.checkouts \
+             SET status = 'expired', closed_at = $5, updated_at = $5, \
+                 expiry_locked_by = NULL, expiry_locked_at = NULL \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+               AND expiry_locked_by = $4 AND status = 'pending'",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id)
+        .bind(job.id.as_uuid())
+        .bind(worker_id)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if result.rows_affected() != 1 {
+            return Err(checkout_expiry_lease_lost());
+        }
+        transaction.commit().await.map_err(database_error)
     }
 }
 
@@ -1867,6 +1984,13 @@ fn checkout_expired() -> ApplicationError {
     }
 }
 
+fn checkout_expiry_lease_lost() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_expiry_lease_lost",
+        message: "the Checkout expiry lease is no longer owned by this worker",
+    }
+}
+
 fn cart_not_active() -> ApplicationError {
     ApplicationError::Conflict {
         code: "cart_not_active",
@@ -1923,7 +2047,7 @@ mod tests {
     use std::sync::Arc;
 
     use chaos_application::{
-        ports::IdempotencyRequest,
+        ports::{CheckoutExpiryQueue, IdempotencyRequest},
         sales::{CreateCartInput, CreateCheckoutInput, SetCartLineInput, StorefrontSales},
     };
     use chaos_domain::{
@@ -1936,6 +2060,7 @@ mod tests {
         },
     };
     use sqlx::postgres::PgPoolOptions;
+    use time::Duration;
 
     use super::*;
 
@@ -2136,9 +2261,8 @@ mod tests {
             machine,
             shopper_id: ShopperId::new(),
         };
-        let service = Arc::new(StorefrontSales::new(Arc::new(
-            PostgresStorefrontSalesRepository::new(runtime_pool.clone()),
-        )));
+        let repository = Arc::new(PostgresStorefrontSalesRepository::new(runtime_pool.clone()));
+        let service = Arc::new(StorefrontSales::new(repository.clone()));
         let cart = service
             .create_cart(CreateCartInput {
                 actor: actor.clone(),
@@ -2265,6 +2389,111 @@ mod tests {
             .execute(&mut *runtime_connection)
             .await
             .is_err()
+        );
+
+        let reservation_id = first.inventory_reservation_id.unwrap();
+        let initial_expiry_worker = Uuid::now_v7();
+        let first_expiry_attempt = first.expires_at + Duration::seconds(1);
+        let jobs = repository
+            .claim_due_checkouts(
+                initial_expiry_worker,
+                10,
+                first_expiry_attempt,
+                first_expiry_attempt - Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, first.id);
+        assert!(
+            repository
+                .claim_due_checkouts(
+                    Uuid::now_v7(),
+                    10,
+                    first_expiry_attempt,
+                    first_expiry_attempt - Duration::minutes(1),
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let recovery_worker = Uuid::now_v7();
+        let recovery_time = first_expiry_attempt + Duration::minutes(1);
+        let recovered = repository
+            .claim_due_checkouts(
+                recovery_worker,
+                10,
+                recovery_time,
+                recovery_time - Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered, jobs);
+        assert!(
+            repository
+                .expire_checkout(initial_expiry_worker, jobs[0], recovery_time)
+                .await
+                .is_err()
+        );
+        repository
+            .expire_checkout(recovery_worker, recovered[0], recovery_time)
+            .await
+            .unwrap();
+
+        let checkout_state: (
+            String,
+            Option<OffsetDateTime>,
+            Option<Uuid>,
+            Option<OffsetDateTime>,
+        ) = sqlx::query_as(
+            "SELECT status::text, closed_at, expiry_locked_by, expiry_locked_at \
+                 FROM sales.checkouts WHERE id = $1",
+        )
+        .bind(first.id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            checkout_state,
+            ("expired".into(), Some(recovery_time), None, None)
+        );
+        let reservation_state: (String, Option<OffsetDateTime>) = sqlx::query_as(
+            "SELECT status::text, closed_at FROM inventory.inventory_reservations WHERE id = $1",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(reservation_state, ("expired".into(), Some(recovery_time)));
+        let released_stock: (i64, i64) = sqlx::query_as(
+            "SELECT on_hand_quantity, reserved_quantity FROM inventory.stock_items WHERE id = $1",
+        )
+        .bind(stock_item_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(released_stock, (5, 0));
+        let expiry_ledger_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM inventory.stock_ledger_entries \
+             WHERE reservation_id = $1 AND kind = 'reservation_expired'",
+        )
+        .bind(reservation_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(expiry_ledger_count, 1);
+        assert!(
+            repository
+                .claim_due_checkouts(
+                    Uuid::now_v7(),
+                    10,
+                    recovery_time,
+                    recovery_time - Duration::minutes(1),
+                )
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }

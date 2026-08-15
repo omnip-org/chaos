@@ -7,6 +7,7 @@ use chaos_domain::{
     sales::{CartId, CartStatus, CheckoutId, OrderId, OrderStatus, ShopperId},
 };
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
@@ -116,6 +117,14 @@ pub struct OrderDetail {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CheckoutExpiryJob {
+    pub id: CheckoutId,
+    pub merchant_account_id: Uuid,
+    pub store_id: Uuid,
+    pub inventory_reservation_id: Option<InventoryReservationId>,
+}
+
 #[async_trait]
 pub trait StorefrontSalesRepository: Send + Sync {
     async fn create_cart(
@@ -176,6 +185,24 @@ pub trait StorefrontSalesRepository: Send + Sync {
         actor: &ShopperActor,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
+}
+
+#[async_trait]
+pub trait CheckoutExpiryQueue: Send + Sync {
+    async fn claim_due_checkouts(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<CheckoutExpiryJob>, ApplicationError>;
+
+    async fn expire_checkout(
+        &self,
+        worker_id: Uuid,
+        job: CheckoutExpiryJob,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]

@@ -29,7 +29,7 @@ use chaos_application::{
     payments::{PaymentService, PaymentWorkers},
     ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement},
-    sales::{OrderManagement, StorefrontSales},
+    sales::{CheckoutExpiryWorkers, OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
 };
 use std::sync::Arc;
@@ -87,6 +87,7 @@ pub struct ApiState {
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
+    pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub payment_workers: Arc<PaymentWorkers>,
@@ -156,9 +157,11 @@ impl ApiState {
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
-        let storefront_sales = StorefrontSales::new(Arc::new(
-            PostgresStorefrontSalesRepository::new(infrastructure.runtime_pool()),
+        let storefront_sales_repository = Arc::new(PostgresStorefrontSalesRepository::new(
+            infrastructure.runtime_pool(),
         ));
+        let storefront_sales = StorefrontSales::new(storefront_sales_repository.clone());
+        let checkout_expiry_workers = CheckoutExpiryWorkers::new(storefront_sales_repository);
         let order_management = OrderManagement::new(Arc::new(
             PostgresOrderManagementRepository::new(infrastructure.runtime_pool()),
         ));
@@ -208,6 +211,7 @@ impl ApiState {
             api_key_authentication: Arc::new(api_key_authentication),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
+            checkout_expiry_workers: Arc::new(checkout_expiry_workers),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             payment_workers: Arc::new(payment_workers),

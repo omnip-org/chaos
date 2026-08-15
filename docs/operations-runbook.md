@@ -16,6 +16,10 @@ Alert when `chaos_outbox_oldest_pending_seconds` exceeds 60 seconds, any dead le
 
 Verify the provider signature and event identifier against provider records. Durable inbox uniqueness makes exact replay safe. Reset only a confirmed failed inbox row to pending in a reviewed transaction, retain its attempt history, and monitor the associated aggregate to completion.
 
+## Checkout expiry backlog
+
+Due Checkouts are claimed in bounded batches with one-minute recoverable leases. Each completion expires the Checkout and, when an active tracked-inventory reservation exists, releases its quantity and records `reservation_expired` in the inventory ledger in the same transaction. If a worker exits after claiming, another instance reclaims the Checkout after the lease timeout. Investigate database pool saturation and worker logs by `worker_id` when expired pending Checkouts are older than two minutes. Do not close Checkouts or edit reserved balances independently; replay the normal expiry worker after correcting the underlying fault.
+
 ## Credential rotation
 
 Create a replacement API key or webhook secret, deploy it to every instance, validate both paths during the overlap window, then revoke the previous credential. Never log plaintext secrets. Record owner, issue time, expiry, and revocation evidence.

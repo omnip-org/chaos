@@ -917,6 +917,8 @@ CREATE TABLE sales.checkouts (
     total_amount_minor     BIGINT                  NOT NULL,
     expires_at             TIMESTAMPTZ             NOT NULL,
     closed_at              TIMESTAMPTZ,
+    expiry_locked_by       UUID,
+    expiry_locked_at       TIMESTAMPTZ,
     created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -944,6 +946,10 @@ CREATE TABLE sales.checkouts (
     CONSTRAINT checkouts_closure_check CHECK (
         (status = 'pending' AND closed_at IS NULL)
         OR (status <> 'pending' AND closed_at IS NOT NULL)
+    ),
+    CONSTRAINT checkouts_expiry_lease_shape_check CHECK (
+        (expiry_locked_by IS NULL) = (expiry_locked_at IS NULL)
+        AND (status = 'pending' OR expiry_locked_by IS NULL)
     )
 );
 
@@ -955,6 +961,13 @@ CREATE INDEX checkouts_channel_created_idx
         created_at DESC,
         id DESC
     );
+
+CREATE INDEX checkouts_expiry_claim_idx
+    ON sales.checkouts (expires_at, id)
+    WHERE status = 'pending';
+
+COMMENT ON INDEX sales.checkouts_expiry_claim_idx IS
+    'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
 
 CREATE TABLE sales.checkout_lines (
     merchant_account_id      UUID        NOT NULL,
@@ -2132,6 +2145,45 @@ AS $$
               event.event_type, event.payload, event.attempts;
 $$;
 
+CREATE FUNCTION sales.claim_expired_checkouts(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    inventory_reservation_id UUID
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH claimable AS (
+        SELECT checkout.id
+        FROM sales.checkouts AS checkout
+        WHERE checkout.status = 'pending'
+          AND checkout.expires_at <= claimed_at
+          AND (
+              checkout.expiry_locked_at IS NULL
+              OR checkout.expiry_locked_at <= stale_before
+          )
+        ORDER BY checkout.expires_at, checkout.id
+        FOR UPDATE SKIP LOCKED
+        LIMIT greatest(least(batch_size, 500), 1)
+    )
+    UPDATE sales.checkouts AS checkout
+       SET expiry_locked_by = worker_id,
+           expiry_locked_at = claimed_at
+      FROM claimable
+     WHERE checkout.id = claimable.id
+    RETURNING checkout.id, checkout.merchant_account_id, checkout.store_id,
+              checkout.inventory_reservation_id;
+$$;
+
 CREATE FUNCTION integration.claim_webhook_events(
     worker_id UUID,
     batch_size INTEGER,
@@ -2318,6 +2370,9 @@ REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION sales.claim_expired_checkouts(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_webhook_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -2363,6 +2418,10 @@ GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
     TO chaos_runtime;

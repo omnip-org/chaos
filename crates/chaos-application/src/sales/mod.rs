@@ -11,13 +11,15 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        CartDetail, CheckoutDetail, IdempotencyRequest, MachineActor, ShopperActor,
-        StorefrontSalesRepository,
+        CartDetail, CheckoutDetail, CheckoutExpiryQueue, IdempotencyRequest, MachineActor,
+        ShopperActor, StorefrontSalesRepository,
     },
 };
 
 mod order_management;
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
+
+const EXPIRY_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 
 pub struct CreateCartInput {
     pub actor: ShopperActor,
@@ -56,6 +58,40 @@ pub struct CreateOrderInput {
 
 pub struct StorefrontSales {
     repository: Arc<dyn StorefrontSalesRepository>,
+}
+
+pub struct CheckoutExpiryWorkers {
+    queue: Arc<dyn CheckoutExpiryQueue>,
+}
+
+impl CheckoutExpiryWorkers {
+    pub fn new(queue: Arc<dyn CheckoutExpiryQueue>) -> Self {
+        Self { queue }
+    }
+
+    pub async fn run_batch(
+        &self,
+        worker_id: uuid::Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .queue
+            .claim_due_checkouts(worker_id, limit, now, now - EXPIRY_LEASE_TIMEOUT)
+            .await?;
+        let mut first_error = None;
+        for job in jobs.iter().copied() {
+            if let Err(error) = self.queue.expire_checkout(worker_id, job, now).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(jobs.len())
+    }
 }
 
 impl StorefrontSales {

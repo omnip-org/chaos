@@ -54,8 +54,9 @@ pub use pricing_management::{
     PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
 };
 pub use sales::{
-    CartDetail, CartLineItem, CheckoutDetail, CheckoutLineItem, OrderDetail, OrderLineItem,
-    OrderManagementRepository, OrderTransitionItem, StorefrontSalesRepository,
+    CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
+    CheckoutLineItem, OrderDetail, OrderLineItem, OrderManagementRepository, OrderTransitionItem,
+    StorefrontSalesRepository,
 };
 pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
