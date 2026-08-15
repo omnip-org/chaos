@@ -516,3 +516,251 @@ fn ensure_account_path(actual: MerchantAccountId, extracted: Uuid) -> Result<(),
 const fn enabled() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Method, Request, StatusCode},
+    };
+    use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use crate::http::{
+        pricing::tests::{request, response_json, test_state},
+        router,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn product_http_matrix_covers_crud_lifecycle_publication_and_errors() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let owner_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let owner_id = UserId::new();
+        let support_id = UserId::new();
+        let account_id = MerchantAccountId::new();
+        let store_id = StoreId::new();
+        let channel_id = SalesChannelId::new();
+        let suffix = Uuid::now_v7().simple().to_string();
+
+        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+                .bind(id.as_uuid())
+                .bind(format!("catalog-http-{role}-{suffix}@example.com"))
+                .execute(&owner_pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
+             VALUES ($1, $2, 'Catalog HTTP Test')",
+        )
+        .bind(account_id.as_uuid())
+        .bind(format!("catalog-http-{suffix}"))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+            sqlx::query(
+                "INSERT INTO merchant.merchant_account_memberships \
+                 (merchant_account_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.merchant_role)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(id.as_uuid())
+            .bind(role)
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
+             VALUES ($1, $2, 'catalog-http', 'Catalog HTTP')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.sales_channels \
+             (id, merchant_account_id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+        )
+        .bind(channel_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+
+        let collection_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/products",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let product_body = json!({
+            "handle": "http-shirt",
+            "title": "HTTP Shirt",
+            "description": "Created through the real HTTP router",
+            "variants": [{
+                "title": "Default",
+                "sku": "HTTP-SHIRT",
+                "requires_shipping": true,
+                "track_inventory": true
+            }]
+        });
+        let owner_state = test_state(&database_url, owner_id);
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &collection_uri,
+                Some(&format!("create-product-{suffix}")),
+                Some(product_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let product_id = response_json(response).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let detail_uri = format!("{collection_uri}/{product_id}");
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &collection_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &detail_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]["handle"],
+            "http-shirt"
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::PUT,
+                &detail_uri,
+                Some(&format!("update-product-{suffix}")),
+                Some(json!({
+                    "handle": "http-shirt-updated",
+                    "title": "Updated HTTP Shirt",
+                    "description": "Updated"
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        for (action, key) in [
+            ("activate", format!("activate-product-{suffix}")),
+            ("archive", format!("archive-product-{suffix}")),
+        ] {
+            let response = router(owner_state.clone())
+                .oneshot(request(
+                    Method::POST,
+                    &format!("{detail_uri}/{action}"),
+                    Some(&key),
+                    None,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            if action == "activate" {
+                let publication_uri = format!("{detail_uri}/publications/{}", channel_id.as_uuid());
+                for (method, key) in [
+                    (Method::PUT, format!("publish-product-{suffix}")),
+                    (Method::DELETE, format!("unpublish-product-{suffix}")),
+                ] {
+                    let response = router(owner_state.clone())
+                        .oneshot(request(method, &publication_uri, Some(&key), None))
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK);
+                }
+            }
+        }
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &collection_uri,
+                Some(&format!("invalid-product-{suffix}")),
+                Some(json!({ "handle": "INVALID", "title": "Invalid" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &collection_uri,
+                Some(&format!("conflict-product-{suffix}")),
+                Some(json!({ "handle": "http-shirt-updated", "title": "Conflict" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(response).await["error"]["code"],
+            "product_handle_taken"
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::GET,
+                &format!("{collection_uri}/{}", Uuid::now_v7()),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let support_state = test_state(&database_url, support_id);
+        let response = router(support_state)
+            .oneshot(request(
+                Method::POST,
+                &collection_uri,
+                Some(&format!("forbidden-product-{suffix}")),
+                Some(json!({ "handle": "support-product", "title": "No" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let unauthenticated = router(test_state(&database_url, owner_id))
+            .oneshot(
+                Request::builder()
+                    .uri(&collection_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    }
+}

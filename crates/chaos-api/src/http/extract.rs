@@ -5,8 +5,12 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Path, Query, Request},
     http::{HeaderMap, header::AUTHORIZATION, request::Parts},
 };
-use chaos_application::{ApplicationError, merchant::MerchantActor};
-use chaos_domain::{FieldViolation, identity::UserId, merchant::MerchantAccountId};
+use chaos_application::{ApplicationError, merchant::MerchantActor, ports::MachineActor};
+use chaos_domain::{
+    FieldViolation,
+    identity::UserId,
+    merchant::{ApiKeyScope, MerchantAccountId},
+};
 use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -70,6 +74,49 @@ pub struct AuthenticatedSession {
     pub user_id: UserId,
     pub token: SecretString,
 }
+
+pub struct StorefrontMachine(pub MachineActor);
+pub struct CartMachine(pub MachineActor);
+pub struct CheckoutMachine(pub MachineActor);
+
+impl FromRequestParts<ApiState> for StorefrontMachine {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer_token(&parts.headers)?;
+        let actor = state
+            .api_key_authentication
+            .authenticate(&token, &[ApiKeyScope::CatalogRead])
+            .await?;
+        Ok(Self(actor))
+    }
+}
+
+macro_rules! storefront_machine_extractor {
+    ($name:ident, $scope:expr) => {
+        impl FromRequestParts<ApiState> for $name {
+            type Rejection = ApiError;
+
+            async fn from_request_parts(
+                parts: &mut Parts,
+                state: &ApiState,
+            ) -> Result<Self, Self::Rejection> {
+                let token = bearer_token(&parts.headers)?;
+                let actor = state
+                    .api_key_authentication
+                    .authenticate(&token, &[$scope])
+                    .await?;
+                Ok(Self(actor))
+            }
+        }
+    };
+}
+
+storefront_machine_extractor!(CartMachine, ApiKeyScope::CartsWrite);
+storefront_machine_extractor!(CheckoutMachine, ApiKeyScope::CheckoutWrite);
 
 impl FromRequestParts<ApiState> for AuthenticatedSession {
     type Rejection = ApiError;

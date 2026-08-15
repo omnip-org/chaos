@@ -2,9 +2,13 @@
 //! caches, serialization formats, or other delivery mechanisms.
 
 pub mod catalog;
+pub mod fulfillment;
 pub mod identity;
+pub mod inventory;
 pub mod merchant;
+pub mod payments;
 pub mod pricing;
+pub mod sales;
 
 mod currency;
 mod region;

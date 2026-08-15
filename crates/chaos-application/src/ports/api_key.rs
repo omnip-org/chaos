@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::merchant::{
-    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, StoreId,
+    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+    StoreId,
 };
 use secrecy::SecretString;
 use time::OffsetDateTime;
@@ -43,6 +44,7 @@ pub struct MachineActor {
     pub api_key_id: ApiKeyId,
     pub merchant_account_id: MerchantAccountId,
     pub store_id: StoreId,
+    pub sales_channel_id: Option<SalesChannelId>,
     pub class: ApiKeyClass,
     pub mode: ApiKeyMode,
     pub scopes: Vec<ApiKeyScope>,

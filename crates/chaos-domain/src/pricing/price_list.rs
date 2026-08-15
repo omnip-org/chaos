@@ -221,24 +221,38 @@ impl PriceList {
     }
 
     pub fn activate(&mut self, active_variant_ids: &[ProductVariantId]) -> Result<(), DomainError> {
-        if self.prices.is_empty() {
+        Self::validate_activation(
+            &self
+                .prices
+                .iter()
+                .map(Price::product_variant_id)
+                .collect::<Vec<_>>(),
+            active_variant_ids,
+        )?;
+        self.status = PriceListStatus::Active;
+        Ok(())
+    }
+
+    pub fn validate_activation(
+        priced_variant_ids: &[ProductVariantId],
+        active_variant_ids: &[ProductVariantId],
+    ) -> Result<(), DomainError> {
+        if priced_variant_ids.is_empty() {
             return Err(validation(
                 "prices",
                 "must contain at least one price before activation",
             ));
         }
         let active = active_variant_ids.iter().copied().collect::<HashSet<_>>();
-        if self
-            .prices
+        if priced_variant_ids
             .iter()
-            .any(|price| !active.contains(&price.product_variant_id))
+            .any(|variant_id| !active.contains(variant_id))
         {
             return Err(validation(
                 "prices",
                 "may reference only active product variants",
             ));
         }
-        self.status = PriceListStatus::Active;
         Ok(())
     }
 

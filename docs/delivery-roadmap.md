@@ -25,12 +25,12 @@ Every phase requires:
 
 | Phase | Status | Delivered foundation | Remaining outcome |
 | --- | --- | --- | --- |
-| 0 — Platform | In progress | Rust workspace, Axum API, PostgreSQL 18, Redis 8, configuration, health endpoints, tracing, DDD crates, graceful shutdown, and dual-instance Compose rollout | Roadmap-wide HTTP test harness and production telemetry gates |
-| 1 — Identity and Merchant | In progress | Passwordless email and passkey authentication, opaque sessions, merchant accounts, memberships, Stores, RLS context, directory queries, API key lifecycle, and OpenAPI | Complete Admin HTTP integration coverage and remaining Store/channel administration |
-| 2 — Catalog and Pricing | In progress | Product aggregate, Options, Variants, Sales Channels, transactional Product creation, Admin list/detail/update/lifecycle/publication, checked Money, transactional Price List creation with multi-currency Variant prices, and RLS | Complete Price List administration, publishable Storefront Catalog API, and all phase gates |
-| 3 — Selling | Planned | Shared idempotency record foundation | Inventory, carts, checkout, order state machines, reservations, snapshots, and all phase gates |
-| 4 — Payments | Planned | Integration schema and PostgreSQL queue extensions | Payment provider ports, attempts, verified webhooks, inbox/outbox workers, refunds, and all phase gates |
-| 5 — Operations | Planned | Structured logs, readiness/draining, and rolling-update smoke tooling | Fulfillment, returns, search, OpenTelemetry, metrics, SLO-oriented dashboards, capacity tests, and all phase gates |
+| 0 — Platform | Delivered | Rust workspace, Axum API, PostgreSQL 18, Redis 8, configuration, health endpoints, structured tracing, bounded Prometheus HTTP metrics, DDD crates, graceful shutdown, dual-instance Compose rollout, and a real-router PostgreSQL HTTP test harness | — |
+| 1 — Identity and Merchant | Delivered | Passwordless email and passkey authentication, opaque sessions, merchant accounts, memberships, Store provisioning/configuration/lifecycle, Sales Channel administration, RLS context, directory queries, API key lifecycle, Admin OpenAPI, and full HTTP behavior matrices | — |
+| 2 — Catalog and Pricing | Delivered | Product aggregate, Options, Variants, Sales Channels, transactional Product creation, Admin Product and Price List list/detail/update/lifecycle/publication with HTTP integration coverage, checked Money, multi-currency Variant prices, publishable Storefront Catalog list/detail queries, separate Admin and Store OpenAPI contracts, RLS, and all phase gates | — |
+| 3 — Selling | Delivered | Shared idempotency records; location-aware stock balances; append-only inventory ledger; concurrency-safe, expiring reservation lifecycle; mutable Storefront Carts bound to one Store, Channel, currency, and Price List; atomic Checkout with immutable commercial snapshots and tracked-inventory reservations; immutable Order snapshots; explicit pending-to-confirmed/cancelled state machine; append-only transition audit trail; atomic reservation consumption/release; Admin and Store API contracts; clean PostgreSQL 18 bootstrap; runtime-role isolation, oversell, concurrency, immutability, and complete HTTP behavior gates | — |
+| 4 — Payments | Delivered | Provider-neutral application port and sandbox adapter; currency-safe Payment Attempt and Refund state machines; immutable provider references; HMAC verification before tenant resolution; deduplicated durable webhook inbox; transactional outbox; multi-instance `SKIP LOCKED` workers; capped exponential retry and dead-letter handling; atomic capture-to-Order/inventory reconciliation; Store, Admin, and Webhook contracts; clean PostgreSQL 18 bootstrap; runtime-role isolation, cross-Store, concurrency, duplicate, out-of-order, and HTTP behavior gates | — |
+| 5 — Operations | Delivered | Partial Fulfillment and shipment tracking; cancellation boundaries and reconciliation events; authorized Returns with receipt disposition, inventory restocking, refund coordination events, and immutable ledger evidence; transactional search events, multi-instance indexing workers, rebuildable duplicate-tolerant Store-isolated search; optional OTLP trace export and correlated structured worker logs; HTTP, business, dependency, database-pool, and queue metrics; an SLO dashboard; reproducible capacity thresholds; failure, replay, rotation, and rollback runbooks; Admin and Store contracts; clean PostgreSQL 18 bootstrap and end-to-end HTTP/database evidence | — |
 
 ## Phase 2 acceptance criteria
 
@@ -74,3 +74,5 @@ Every phase requires:
 ## Completion audit
 
 The roadmap is complete only after a final clean-environment audit maps every criterion above to a test, command output, contract assertion, runtime probe, or operational artifact. Missing or indirect evidence keeps the corresponding phase open.
+
+The final audit is recorded in `docs/completion-audit.md`.

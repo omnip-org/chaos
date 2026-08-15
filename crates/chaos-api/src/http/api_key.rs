@@ -218,10 +218,22 @@ fn ensure_account_path(actual: Uuid, extracted: Uuid) -> Result<(), ApiError> {
 
 #[cfg(test)]
 mod tests {
+    use axum::{
+        body::Body,
+        http::{Method, Request, StatusCode},
+    };
     use chaos_domain::merchant::{ApiKeyClass, ApiKeyMode};
+    use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
 
     use super::*;
+    use crate::http::{
+        pricing::tests::{request, response_json, test_state},
+        router,
+    };
     use chaos_application::ports::ApiKeyMaterialGenerator;
 
     #[test]
@@ -247,5 +259,202 @@ mod tests {
                 .starts_with("cc_v1_test_secret_")
         );
         assert!(json.get("secret_digest").is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn api_key_http_lifecycle_preserves_one_time_secrets_and_immediate_revocation() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let owner_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let owner_id = UserId::new();
+        let support_id = UserId::new();
+        let account_id = MerchantAccountId::new();
+        let store_id = StoreId::new();
+        let channel_id = chaos_domain::merchant::SalesChannelId::new();
+        let suffix = Uuid::now_v7().simple().to_string();
+
+        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+                .bind(id.as_uuid())
+                .bind(format!("api-key-http-{role}-{suffix}@example.com"))
+                .execute(&owner_pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
+             VALUES ($1, $2, 'API Key HTTP Test')",
+        )
+        .bind(account_id.as_uuid())
+        .bind(format!("api-key-http-{suffix}"))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+            sqlx::query(
+                "INSERT INTO merchant.merchant_account_memberships \
+                 (merchant_account_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.merchant_role)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(id.as_uuid())
+            .bind(role)
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
+             VALUES ($1, $2, 'api-key-http', 'API Key HTTP')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.sales_channels \
+             (id, merchant_account_id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, $3, 'web', 'Online Store', 'web', true)",
+        )
+        .bind(channel_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+
+        let keys_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/api-keys",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let key_body = json!({
+            "name": "Browser test",
+            "class": "publishable",
+            "mode": "test",
+            "scopes": ["catalog:read"]
+        });
+        let owner_state = test_state(&database_url, owner_id);
+        let creation_key = format!("create-api-key-http-{suffix}");
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &keys_uri,
+                Some(&creation_key),
+                Some(key_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = response_json(response).await;
+        let api_key_id = created["data"]["id"].as_str().unwrap().to_owned();
+        let secret = created["data"]["secret"].as_str().unwrap().to_owned();
+        assert!(secret.starts_with("cc_v1_test_publishable_"));
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &keys_uri,
+                Some(&creation_key),
+                Some(key_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(response).await["error"]["code"],
+            "api_key_secret_already_issued"
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &keys_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let listed = response_json(response).await;
+        assert!(listed["data"][0].get("secret").is_none());
+
+        let response = router(owner_state.clone())
+            .oneshot(
+                Request::get("/store/v1/products")
+                    .header("authorization", format!("Bearer {secret}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let key_uri = format!("{keys_uri}/{api_key_id}");
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::DELETE,
+                &key_uri,
+                Some(&format!("revoke-api-key-http-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = router(owner_state.clone())
+            .oneshot(
+                Request::get("/store/v1/products")
+                    .header("authorization", format!("Bearer {secret}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &keys_uri,
+                Some(&format!("invalid-api-key-http-{suffix}")),
+                Some(json!({
+                    "name": "Invalid",
+                    "class": "publishable",
+                    "mode": "test",
+                    "scopes": ["orders:read"]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = router(owner_state)
+            .oneshot(request(
+                Method::DELETE,
+                &format!("{keys_uri}/{}", Uuid::now_v7()),
+                Some(&format!("missing-api-key-http-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let support_state = test_state(&database_url, support_id);
+        let response = router(support_state)
+            .oneshot(request(
+                Method::POST,
+                &keys_uri,
+                Some(&format!("forbidden-api-key-http-{suffix}")),
+                Some(json!({
+                    "name": "Support",
+                    "class": "secret",
+                    "mode": "test",
+                    "scopes": ["mcp:tools"]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

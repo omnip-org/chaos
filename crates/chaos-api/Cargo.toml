@@ -15,6 +15,11 @@ base64.workspace = true
 chaos-application = { path = "../chaos-application" }
 chaos-domain = { path = "../chaos-domain" }
 chaos-infrastructure = { path = "../chaos-infrastructure" }
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,9 +29,12 @@ time.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+hmac.workspace = true
 redis.workspace = true
 tower.workspace = true

@@ -1,0 +1,383 @@
+use uuid::Uuid;
+
+use crate::{DomainError, FieldViolation, pricing::Money, sales::OrderId};
+
+macro_rules! payment_id {
+    ($name:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(Uuid);
+
+        impl $name {
+            pub fn new() -> Self {
+                Self(Uuid::now_v7())
+            }
+
+            pub const fn from_uuid(value: Uuid) -> Self {
+                Self(value)
+            }
+
+            pub const fn as_uuid(self) -> Uuid {
+                self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
+payment_id!(PaymentAttemptId);
+payment_id!(RefundId);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaymentAttemptStatus {
+    Pending,
+    Authorized,
+    Captured,
+    Failed,
+    Cancelled,
+}
+
+impl PaymentAttemptStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Authorized => "authorized",
+            Self::Captured => "captured",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "authorized" => Some(Self::Authorized),
+            "captured" => Some(Self::Captured),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentAttempt {
+    id: PaymentAttemptId,
+    order_id: OrderId,
+    amount: Money,
+    status: PaymentAttemptStatus,
+    provider_reference: Option<String>,
+}
+
+impl PaymentAttempt {
+    pub fn create(order_id: OrderId, amount: Money) -> Result<Self, DomainError> {
+        if amount.amount_minor() <= 0 {
+            return Err(validation("amount", "must be greater than zero"));
+        }
+        Ok(Self {
+            id: PaymentAttemptId::new(),
+            order_id,
+            amount,
+            status: PaymentAttemptStatus::Pending,
+            provider_reference: None,
+        })
+    }
+
+    pub fn rehydrate(
+        id: PaymentAttemptId,
+        order_id: OrderId,
+        amount: Money,
+        status: PaymentAttemptStatus,
+        provider_reference: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            order_id,
+            amount,
+            status,
+            provider_reference,
+        }
+    }
+
+    pub const fn id(&self) -> PaymentAttemptId {
+        self.id
+    }
+
+    pub const fn order_id(&self) -> OrderId {
+        self.order_id
+    }
+
+    pub const fn amount(&self) -> &Money {
+        &self.amount
+    }
+
+    pub const fn status(&self) -> PaymentAttemptStatus {
+        self.status
+    }
+
+    pub fn provider_reference(&self) -> Option<&str> {
+        self.provider_reference.as_deref()
+    }
+
+    pub fn authorize(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.bind_provider_reference(provider_reference)?;
+        self.advance(PaymentAttemptStatus::Authorized)
+    }
+
+    pub fn capture(&mut self) -> Result<bool, DomainError> {
+        self.advance(PaymentAttemptStatus::Captured)
+    }
+
+    pub fn fail(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
+        if let Some(reference) = provider_reference {
+            self.bind_provider_reference(reference)?;
+        }
+        self.advance(PaymentAttemptStatus::Failed)
+    }
+
+    pub fn cancel(&mut self) -> Result<bool, DomainError> {
+        self.advance(PaymentAttemptStatus::Cancelled)
+    }
+
+    fn bind_provider_reference(&mut self, value: String) -> Result<(), DomainError> {
+        if value.trim().is_empty() || value.chars().count() > 255 {
+            return Err(validation(
+                "provider_reference",
+                "must contain 1-255 characters",
+            ));
+        }
+        match &self.provider_reference {
+            Some(existing) if existing != &value => Err(validation(
+                "provider_reference",
+                "is immutable once assigned",
+            )),
+            Some(_) => Ok(()),
+            None => {
+                self.provider_reference = Some(value);
+                Ok(())
+            }
+        }
+    }
+
+    fn advance(&mut self, target: PaymentAttemptStatus) -> Result<bool, DomainError> {
+        if self.status == target {
+            return Ok(false);
+        }
+        let allowed = matches!(
+            (self.status, target),
+            (
+                PaymentAttemptStatus::Pending,
+                PaymentAttemptStatus::Authorized
+            ) | (PaymentAttemptStatus::Pending, PaymentAttemptStatus::Failed)
+                | (
+                    PaymentAttemptStatus::Pending,
+                    PaymentAttemptStatus::Cancelled
+                )
+                | (
+                    PaymentAttemptStatus::Authorized,
+                    PaymentAttemptStatus::Captured
+                )
+                | (
+                    PaymentAttemptStatus::Authorized,
+                    PaymentAttemptStatus::Failed
+                )
+                | (
+                    PaymentAttemptStatus::Authorized,
+                    PaymentAttemptStatus::Cancelled
+                )
+        );
+        if !allowed {
+            return Err(invalid_transition(self.status.as_str(), target.as_str()));
+        }
+        self.status = target;
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefundStatus {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+impl RefundStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Refund {
+    id: RefundId,
+    payment_attempt_id: PaymentAttemptId,
+    amount: Money,
+    status: RefundStatus,
+    provider_reference: Option<String>,
+}
+
+impl Refund {
+    pub fn create(
+        payment_attempt: &PaymentAttempt,
+        amount: Money,
+        already_refunded_amount_minor: i64,
+    ) -> Result<Self, DomainError> {
+        if payment_attempt.status != PaymentAttemptStatus::Captured {
+            return Err(validation("payment_attempt", "must be captured"));
+        }
+        if amount.currency() != payment_attempt.amount.currency() {
+            return Err(validation("currency", "must match the Payment Attempt"));
+        }
+        if amount.amount_minor() <= 0
+            || already_refunded_amount_minor < 0
+            || amount
+                .amount_minor()
+                .checked_add(already_refunded_amount_minor)
+                .is_none_or(|total| total > payment_attempt.amount.amount_minor())
+        {
+            return Err(validation(
+                "amount",
+                "must fit within the remaining captured amount",
+            ));
+        }
+        Ok(Self {
+            id: RefundId::new(),
+            payment_attempt_id: payment_attempt.id,
+            amount,
+            status: RefundStatus::Pending,
+            provider_reference: None,
+        })
+    }
+
+    pub fn rehydrate(
+        id: RefundId,
+        payment_attempt_id: PaymentAttemptId,
+        amount: Money,
+        status: RefundStatus,
+        provider_reference: Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            payment_attempt_id,
+            amount,
+            status,
+            provider_reference,
+        }
+    }
+
+    pub const fn id(&self) -> RefundId {
+        self.id
+    }
+
+    pub const fn payment_attempt_id(&self) -> PaymentAttemptId {
+        self.payment_attempt_id
+    }
+
+    pub const fn amount(&self) -> &Money {
+        &self.amount
+    }
+
+    pub const fn status(&self) -> RefundStatus {
+        self.status
+    }
+
+    pub fn provider_reference(&self) -> Option<&str> {
+        self.provider_reference.as_deref()
+    }
+
+    pub fn succeed(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.finish(RefundStatus::Succeeded, provider_reference)
+    }
+
+    pub fn fail(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.finish(RefundStatus::Failed, provider_reference)
+    }
+
+    fn finish(
+        &mut self,
+        target: RefundStatus,
+        provider_reference: String,
+    ) -> Result<bool, DomainError> {
+        if self.status == target && self.provider_reference.as_deref() == Some(&provider_reference)
+        {
+            return Ok(false);
+        }
+        if self.status != RefundStatus::Pending {
+            return Err(invalid_transition(self.status.as_str(), target.as_str()));
+        }
+        if provider_reference.trim().is_empty() || provider_reference.chars().count() > 255 {
+            return Err(validation(
+                "provider_reference",
+                "must contain 1-255 characters",
+            ));
+        }
+        self.provider_reference = Some(provider_reference);
+        self.status = target;
+        Ok(true)
+    }
+}
+
+fn validation(field: &'static str, reason: &'static str) -> DomainError {
+    DomainError::Validation(vec![FieldViolation {
+        field,
+        reason: reason.into(),
+    }])
+}
+
+fn invalid_transition(from: &str, to: &str) -> DomainError {
+    DomainError::Validation(vec![FieldViolation {
+        field: "status",
+        reason: format!("cannot transition from {from} to {to}"),
+    }])
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{CurrencyCode, pricing::Money};
+
+    use super::*;
+
+    #[test]
+    fn payment_attempt_rejects_out_of_order_and_changed_provider_events() {
+        let usd = CurrencyCode::parse("USD").unwrap();
+        let mut attempt = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
+
+        assert!(attempt.capture().is_err());
+        assert!(attempt.authorize("provider-payment-1".into()).unwrap());
+        assert!(!attempt.authorize("provider-payment-1".into()).unwrap());
+        assert!(attempt.authorize("provider-payment-2".into()).is_err());
+        assert!(attempt.capture().unwrap());
+        assert!(attempt.fail(None).is_err());
+    }
+
+    #[test]
+    fn refunds_are_currency_safe_and_cannot_exceed_capture() {
+        let usd = CurrencyCode::parse("USD").unwrap();
+        let mut attempt = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
+        attempt.authorize("payment".into()).unwrap();
+        attempt.capture().unwrap();
+
+        assert!(Refund::create(&attempt, Money::new(1_500, usd), 1_001).is_err());
+        let mut refund = Refund::create(&attempt, Money::new(1_500, usd), 1_000).unwrap();
+        assert!(refund.succeed("refund".into()).unwrap());
+        assert!(!refund.succeed("refund".into()).unwrap());
+        assert!(refund.fail("other".into()).is_err());
+    }
+}

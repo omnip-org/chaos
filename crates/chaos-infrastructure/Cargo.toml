@@ -11,6 +11,7 @@ base64.workspace = true
 chaos-application = { path = "../chaos-application" }
 chaos-domain = { path = "../chaos-domain" }
 lettre.workspace = true
+hmac.workspace = true
 rand.workspace = true
 redis.workspace = true
 secrecy.workspace = true

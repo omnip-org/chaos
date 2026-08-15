@@ -9,7 +9,8 @@ use chaos_application::{
     },
 };
 use chaos_domain::merchant::{
-    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, StoreId,
+    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+    StoreId,
 };
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
@@ -291,22 +292,25 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
             return Ok(None);
         };
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Vec<String>)>(
-            "SELECT api_key_id, merchant_account_id, store_id, class, mode, scopes \
+        let row =
+            sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>, String, String, Vec<String>)>(
+                "SELECT api_key_id, merchant_account_id, store_id, sales_channel_id, \
+                    class, mode, scopes \
              FROM merchant.authenticate_api_key($1, $2)",
-        )
-        .bind(key_identifier)
-        .bind(digest.as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(database_error)?;
+            )
+            .bind(key_identifier)
+            .bind(digest.as_slice())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(database_error)?;
 
         row.map(
-            |(api_key_id, merchant_account_id, store_id, class, mode, scopes)| {
+            |(api_key_id, merchant_account_id, store_id, sales_channel_id, class, mode, scopes)| {
                 Ok(MachineActor {
                     api_key_id: ApiKeyId::from_uuid(api_key_id),
                     merchant_account_id: MerchantAccountId::from_uuid(merchant_account_id),
                     store_id: StoreId::from_uuid(store_id),
+                    sales_channel_id: sales_channel_id.map(SalesChannelId::from_uuid),
                     class: ApiKeyClass::parse(&class)
                         .ok_or_else(|| corrupt_enum("API key class", &class))?,
                     mode: ApiKeyMode::parse(&mode)

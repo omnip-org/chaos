@@ -18,6 +18,7 @@ pub struct Settings {
     pub auth_public_base_url: String,
     pub smtp_url: String,
     pub email_from: String,
+    pub payment_webhook_secret: String,
     pub dependency_timeout: Duration,
     pub shutdown_drain_delay: Duration,
     pub log_filter: String,
@@ -47,6 +48,7 @@ impl Settings {
             auth_public_base_url: required("AUTH_PUBLIC_BASE_URL")?,
             smtp_url: required("SMTP_URL")?,
             email_from: required("EMAIL_FROM")?,
+            payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             dependency_timeout: Duration::from_millis(parse_or("DEPENDENCY_TIMEOUT_MS", "1000")?),
             shutdown_drain_delay: Duration::from_millis(parse_or(
                 "SHUTDOWN_DRAIN_DELAY_MS",

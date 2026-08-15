@@ -101,7 +101,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 6. API conventions
 
-- Routes are grouped under `/admin/v1`, `/store/v1`, and `/webhooks/v1`. Health endpoints are under `/health`.
+- Routes are grouped under `/admin/v1`, `/store/v1`, and `/webhooks/v1`. Health endpoints are under `/health`; the internal Prometheus scrape endpoint is `/metrics`.
 - IDs use UUIDv7. Time is stored as UTC `timestamptz` and emitted as RFC 3339.
 - Pagination uses opaque cursors rather than large offsets.
 - Successful responses use `{ "data": ..., "meta?": ... }`.
@@ -139,7 +139,7 @@ Docker Compose runs blue and green API instances behind Caddy. A deployment repl
 
 Application instances never own sessions, WebAuthn ceremonies, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
 
-Observability targets include JSON logs, OpenTelemetry traces, and Prometheus metrics. Core metrics cover request latency and error rate, database pool pressure, Redis health, checkout conversion, payment failures, inventory reservation conflicts, and outbox lag.
+The platform foundation emits structured logs and Prometheus request totals and latency histograms using bounded route labels. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network. Phase 5 extends this foundation with OpenTelemetry traces and metrics for database pool pressure, Redis health, checkout conversion, payment failures, inventory reservation conflicts, and outbox lag.
 
 ## 10. Delivery roadmap
 

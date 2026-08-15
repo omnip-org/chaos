@@ -2,8 +2,13 @@
 
 pub mod catalog;
 mod error;
+pub mod fulfillment;
+pub mod inventory;
 pub mod merchant;
+pub mod payments;
 pub mod ports;
 pub mod pricing;
+pub mod sales;
+pub mod storefront;
 
 pub use error::ApplicationError;

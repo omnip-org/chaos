@@ -42,6 +42,11 @@ pub(super) enum CursorKind {
     Store = 2,
     ApiKey = 3,
     Product = 4,
+    StorefrontProduct = 5,
+    PriceList = 6,
+    SalesChannel = 7,
+    InventoryLocation = 8,
+    StockItem = 9,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -307,7 +312,16 @@ pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::HeaderValue;
+    use axum::http::{HeaderValue, Method, StatusCode};
+    use chaos_domain::identity::UserId;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use crate::http::{
+        pricing::tests::{request, response_json, test_state},
+        router,
+    };
 
     use super::*;
 
@@ -356,5 +370,145 @@ mod tests {
         assert!(!cursor.contains(&id.to_string()));
         assert!(decode_cursor(&cursor, CursorKind::Store).is_err());
         assert!(decode_cursor("not-a-cursor", CursorKind::MerchantAccount).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn merchant_and_store_provisioning_http_paths_are_end_to_end() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let owner_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let owner_id = UserId::new();
+        let support_id = UserId::new();
+        let suffix = Uuid::now_v7().simple().to_string();
+        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+                .bind(id.as_uuid())
+                .bind(format!("merchant-http-{role}-{suffix}@example.com"))
+                .execute(&owner_pool)
+                .await
+                .unwrap();
+        }
+        let owner_state = test_state(&database_url, owner_id);
+        let account_body = json!({
+            "slug": format!("merchant-http-{suffix}"),
+            "display_name": "Merchant HTTP"
+        });
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                "/admin/v1/merchant-accounts",
+                Some(&format!("create-account-http-{suffix}")),
+                Some(account_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let account_id = response_json(response).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::GET,
+                "/admin/v1/merchant-accounts",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let stores_uri = format!("/admin/v1/merchant-accounts/{account_id}/stores");
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &stores_uri,
+                Some(&format!("create-store-http-{suffix}")),
+                Some(json!({
+                    "code": "primary-store",
+                    "name": "Primary Store",
+                    "default_region": "SG",
+                    "default_currency": "SGD"
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &stores_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["data"][0]["default_currency"], "SGD");
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                "/admin/v1/merchant-accounts",
+                Some(&format!("invalid-account-http-{suffix}")),
+                Some(json!({ "slug": "INVALID", "display_name": "Invalid" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                "/admin/v1/merchant-accounts",
+                Some(&format!("conflict-account-http-{suffix}")),
+                Some(account_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let account_uuid = Uuid::parse_str(&account_id).unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.merchant_account_memberships \
+             (merchant_account_id, user_id, role) VALUES ($1, $2, 'support')",
+        )
+        .bind(account_uuid)
+        .bind(support_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let support_state = test_state(&database_url, support_id);
+        let response = router(support_state)
+            .oneshot(request(
+                Method::POST,
+                &stores_uri,
+                Some(&format!("forbidden-store-http-{suffix}")),
+                Some(json!({ "code": "support-store", "name": "No" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = router(owner_state)
+            .oneshot(request(
+                Method::POST,
+                &format!("/admin/v1/merchant-accounts/{}/stores", Uuid::now_v7()),
+                Some(&format!("unknown-account-http-{suffix}")),
+                Some(json!({ "code": "unknown-store", "name": "No" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

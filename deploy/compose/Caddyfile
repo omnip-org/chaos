@@ -8,6 +8,9 @@
 
     respond /health/gateway 200
 
+    @internal_metrics path /metrics /metrics/*
+    respond @internal_metrics 404
+
     reverse_proxy api-blue:8080 api-green:8080 {
         lb_policy round_robin
         health_uri /health/ready

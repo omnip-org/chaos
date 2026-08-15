@@ -73,6 +73,17 @@ impl SalesChannelKind {
             Self::Custom => "custom",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "web" => Some(Self::Web),
+            "mobile" => Some(Self::Mobile),
+            "point_of_sale" => Some(Self::PointOfSale),
+            "marketplace" => Some(Self::Marketplace),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +97,14 @@ impl SalesChannelStatus {
         match self {
             Self::Active => "active",
             Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            _ => None,
         }
     }
 }
@@ -103,6 +122,32 @@ pub struct SalesChannel {
 }
 
 impl SalesChannel {
+    pub fn create(
+        merchant_account_id: MerchantAccountId,
+        store_id: StoreId,
+        code: SalesChannelCode,
+        name: impl Into<String>,
+        kind: SalesChannelKind,
+    ) -> Result<Self, DomainError> {
+        let name = name.into();
+        if name.trim().is_empty() || name.chars().count() > 120 {
+            return Err(DomainError::Validation(vec![FieldViolation {
+                field: "name",
+                reason: "must contain 1-120 characters".into(),
+            }]));
+        }
+        Ok(Self {
+            id: SalesChannelId::new(),
+            merchant_account_id,
+            store_id,
+            code,
+            name,
+            kind,
+            status: SalesChannelStatus::Active,
+            is_default: false,
+        })
+    }
+
     pub fn default_web(merchant_account_id: MerchantAccountId, store_id: StoreId) -> Self {
         Self {
             id: SalesChannelId::new(),
@@ -147,6 +192,17 @@ impl SalesChannel {
     pub const fn is_default(&self) -> bool {
         self.is_default
     }
+
+    pub fn validate_archival(is_default: bool) -> Result<(), DomainError> {
+        if is_default {
+            Err(DomainError::Validation(vec![FieldViolation {
+                field: "sales_channel_id",
+                reason: "the default Sales Channel cannot be archived".into(),
+            }]))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -161,5 +217,20 @@ mod tests {
         assert_eq!(channel.kind(), SalesChannelKind::Web);
         assert_eq!(channel.status(), SalesChannelStatus::Active);
         assert!(channel.is_default());
+    }
+
+    #[test]
+    fn custom_channel_validates_content_and_default_archival() {
+        let channel = SalesChannel::create(
+            MerchantAccountId::new(),
+            StoreId::new(),
+            SalesChannelCode::parse("mobile-app").unwrap(),
+            "Mobile App",
+            SalesChannelKind::Mobile,
+        )
+        .unwrap();
+        assert!(!channel.is_default());
+        assert!(SalesChannel::validate_archival(false).is_ok());
+        assert!(SalesChannel::validate_archival(true).is_err());
     }
 }

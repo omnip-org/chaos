@@ -144,6 +144,30 @@ impl Store {
     pub const fn status(&self) -> StoreStatus {
         self.status
     }
+
+    pub fn validate_activation(
+        default_currency_enabled: bool,
+        active_default_channel_exists: bool,
+    ) -> Result<(), DomainError> {
+        let mut violations = Vec::new();
+        if !default_currency_enabled {
+            violations.push(FieldViolation {
+                field: "default_currency",
+                reason: "must be enabled before Store activation".into(),
+            });
+        }
+        if !active_default_channel_exists {
+            violations.push(FieldViolation {
+                field: "sales_channels",
+                reason: "must contain an active default channel before Store activation".into(),
+            });
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(DomainError::Validation(violations))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +187,12 @@ mod tests {
         assert_eq!(store.status(), StoreStatus::Draft);
         assert_eq!(store.default_region(), RegionCode::US);
         assert_eq!(store.default_currency(), CurrencyCode::USD);
+    }
+
+    #[test]
+    fn activation_requires_currency_and_default_channel_readiness() {
+        assert!(Store::validate_activation(true, true).is_ok());
+        let error = Store::validate_activation(false, false).unwrap_err();
+        assert!(matches!(error, DomainError::Validation(violations) if violations.len() == 2));
     }
 }

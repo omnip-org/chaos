@@ -110,7 +110,10 @@ impl ApiKeyScope {
     }
 
     const fn allowed_for_publishable_key(self) -> bool {
-        matches!(self, Self::CatalogRead)
+        matches!(
+            self,
+            Self::CatalogRead | Self::CartsWrite | Self::CheckoutWrite
+        )
     }
 }
 
@@ -160,7 +163,7 @@ impl ApiKey {
         {
             return Err(DomainError::Validation(vec![FieldViolation {
                 field: "scopes",
-                reason: "publishable keys may contain only public read scopes".into(),
+                reason: "publishable keys may contain only Storefront scopes".into(),
             }]));
         }
 
@@ -225,16 +228,30 @@ mod tests {
     }
 
     #[test]
-    fn publishable_key_rejects_private_scopes() {
-        let result = ApiKey::issue(
+    fn publishable_key_accepts_storefront_writes_and_rejects_private_scopes() {
+        let key = ApiKey::issue(
             MerchantAccountId::new(),
             StoreId::new(),
             "Browser",
             ApiKeyClass::Publishable,
             ApiKeyMode::Live,
-            vec![ApiKeyScope::CheckoutWrite],
-        );
+            vec![
+                ApiKeyScope::CatalogRead,
+                ApiKeyScope::CartsWrite,
+                ApiKeyScope::CheckoutWrite,
+            ],
+        )
+        .unwrap();
+        assert!(key.scopes().contains(&ApiKeyScope::CheckoutWrite));
 
+        let result = ApiKey::issue(
+            MerchantAccountId::new(),
+            StoreId::new(),
+            "Private Browser",
+            ApiKeyClass::Publishable,
+            ApiKeyMode::Live,
+            vec![ApiKeyScope::OrdersRead],
+        );
         assert!(matches!(result, Err(DomainError::Validation(_))));
     }
 

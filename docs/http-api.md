@@ -8,6 +8,14 @@ Every operation has a stable and unique `operationId`. Additive fields remain op
 
 Admin, Store, webhook, and future MCP surfaces have separate contracts and authentication boundaries. The Admin API uses human sessions. Store and MCP access never accepts a human session as a substitute for a scoped machine credential.
 
+The versioned Store API source of truth is `openapi/store-v1.json`, served from `GET /openapi/store-v1.json`. Storefront operations are rooted at `/store/v1` and require a publishable bearer key with the declared public scope.
+
+## Operational endpoints
+
+`GET /health/live` reports process liveness and `GET /health/ready` verifies that the instance is accepting traffic and can reach PostgreSQL and Redis. `GET /metrics` exposes Prometheus text format directly from an API instance. It records request totals by method, matched route, and status, plus request latency histograms by method and matched route. Raw paths, query strings, tenant identifiers, credentials, and request bodies are never metric labels.
+
+The Compose gateway does not proxy `/metrics`; collectors must scrape API instances over the internal service network. This keeps operational data outside the public HTTP surface while retaining a standard scrape contract.
+
 Credential-issuing operations are a security-specific exception to response replay. They still require `Idempotency-Key`, but a repeated request never returns the plaintext secret again. If the original one-time response is lost, the client must create a replacement key and revoke the inaccessible key.
 
 ## Success responses
@@ -114,6 +122,10 @@ The default region is the store's initial operating configuration. It does not r
 
 `GET /admin/v1/merchant-accounts/{merchant_account_id}/stores` returns stores only after resolving the authenticated user's merchant membership. Each item includes the Store identity, code, name, defaults, and status.
 
+`GET` and `PUT` on `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}` read and replace Store configuration. Changing the default currency enables that currency for the Store atomically. `POST` actions beneath `/activate` and `/archive` perform explicit lifecycle transitions. Activation requires the default currency to be enabled and an active default Sales Channel. Only owners and administrators may change Store configuration or lifecycle.
+
+Sales Channels are administered beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels`. The collection supports cursor-paginated reads and idempotent creation; the item path supports detail and full update. Explicit `/activate` and `/archive` actions control lifecycle. A Store's automatically provisioned default Web channel cannot be archived, preserving a stable Storefront routing target. Owners and administrators may mutate Channels; all merchant members may read them.
+
 Both list endpoints accept `limit` from 1 to 100, defaulting to 20, and an opaque `cursor`. Results use ascending UUIDv7 keyset pagination. When more results exist, `meta.page.has_more` is true and `meta.page.next_cursor` contains the cursor for the next request. Clients must not parse or construct cursors.
 
 ## Catalog
@@ -138,12 +150,66 @@ Every Product write requires `Idempotency-Key`. Owners, administrators, develope
 
 Draft lists may be empty. Creating an active list requires at least one Price and every referenced Variant must be active in the same Store. Owners, administrators, developers, and managers may create Price Lists; support members are read-only.
 
+`GET /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists` returns cursor-paginated Price List summaries. `GET` on the corresponding `/{price_list_id}` path returns the complete list with its Variant prices. Price Lists are resolved through both merchant-account and Store boundaries.
+
+`PUT` on `/{price_list_id}` atomically replaces the Price List configuration and all Variant prices while preserving its lifecycle status. Updating an active list revalidates that every replacement Price references an active Variant. `POST` actions beneath `/activate` and `/archive` perform explicit lifecycle transitions. Every Price List mutation requires `Idempotency-Key`; activation requires at least one Price and only active Variants in the same Store.
+
+## Inventory
+
+Inventory is location-aware. `GET` and `POST` on `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-locations` list and create active locations. `GET /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-items` returns location-and-Variant-specific on-hand, reserved, and available quantities. Both collection endpoints use opaque cursor pagination.
+
+`POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-adjustments` applies an idempotent, non-zero on-hand delta and requires a human-readable reason. The location must be active, the Variant must belong to the Store and track inventory, and an adjustment cannot reduce on-hand quantity below the currently reserved quantity. Owners, administrators, developers, and managers may mutate inventory; support members have read-only access.
+
+Every balance mutation appends an immutable ledger entry in the same PostgreSQL transaction. Reservations lock stock items in stable identifier order, reject quantities above current availability, and record reserved deltas in that ledger. Release and expiration restore availability; consumption reduces both on-hand and reserved quantities. Expiration compares an explicit timestamp against `expires_at`, and concurrent workers claim due reservations with `FOR UPDATE SKIP LOCKED`.
+
 ## API keys
 
 Store API keys are managed beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys`. Only owners, administrators, and developers may create, list, or revoke them. Every key is bound to the Store in its path and cannot authorize a different Store.
 
 `POST` requires an `Idempotency-Key` and returns the plaintext `secret` exactly once. The stored record contains only a searchable random identifier, SHA-256 digest, and four-character display suffix. Replaying the same creation request returns HTTP 409 with `api_key_secret_already_issued`; it never returns the secret again. Losing the response requires creating a replacement key and revoking the inaccessible key.
 
-Keys have an explicit `test` or `live` mode and are either `publishable` or `secret`. Publishable keys may contain only public read scopes. Secret keys can receive server-side scopes such as `orders:read` and `mcp:tools`. The exact scope allowlist is part of the versioned API contract.
+Keys have an explicit `test` or `live` mode and are either `publishable` or `secret`. Publishable keys may contain only Storefront scopes: `catalog:read`, `carts:write`, and `checkout:write`. Secret keys can receive server-side scopes such as `orders:read` and `mcp:tools`. The exact scope allowlist is part of the versioned API contract.
 
 `GET` returns metadata for active and revoked keys but never secret material or digests. `DELETE` requires an `Idempotency-Key`, records the revoking user, and is safely replayable. Revocation is authoritative in PostgreSQL and immediately causes machine authentication to fail.
+
+## Storefront Catalog
+
+`GET /store/v1/products` and `GET /store/v1/products/{handle}` authenticate a publishable API key with `catalog:read`. The credential resolves the merchant account, Store, Sales Channel, mode, and scopes; these identifiers are never accepted from path or query input.
+
+The optional `currency` query parameter selects an enabled Store currency and defaults to the Store default currency. Pricing uses one currently active Price List selected deterministically for that currency. Results include only active Stores, Sales Channels, Products, Variants, publications, enabled currencies, active Price Lists, and explicit Variant Prices. Products without at least one currently priced active Variant are omitted and are indistinguishable from unavailable Products on the detail endpoint.
+
+Storefront responses deliberately omit lifecycle status, drafts, archived records, unpublished Products, inventory cost, API key metadata, secret material, and merchant-account identifiers. Collection pagination uses the same opaque cursor behavior as the Admin API.
+
+## Storefront Carts and Checkout
+
+`POST /store/v1/carts` creates an active Cart for the publishable key's Store and Sales Channel. The optional currency must be enabled for that Store and defaults to its default currency. Cart creation selects one currently active Price List deterministically. `GET /store/v1/carts/{cart_id}` reads the current Cart, while `PUT` and `DELETE` on `/store/v1/carts/{cart_id}/lines/{product_variant_id}` add, replace, or remove a line. Cart operations require `carts:write`; mutations also require `Idempotency-Key`.
+
+A Cart line can reference only an active Variant of an active Product published to the credential's active Sales Channel with a price in the Cart's Price List. Each line records customer-facing Product and Variant text, shipping and inventory behavior, quantity, unit price, tax inclusion, and subtotal. Mutations serialize through a Cart row lock, increment its version, and reject terminal Carts.
+
+`POST /store/v1/carts/{cart_id}/checkout` requires `checkout:write` and `Idempotency-Key`. It locks the Cart, revalidates every publication and price, refreshes the commercial snapshots, locks tracked stock in stable order, and creates the Checkout, its immutable lines, the inventory reservation, reservation lines, ledger entries, and Cart completion in one PostgreSQL transaction. A Checkout expires after 15 minutes. Digital or otherwise untracked Carts do not create an inventory reservation.
+
+`GET /store/v1/checkouts/{checkout_id}` returns the frozen Checkout calculation. Checkout data includes subtotal, discount, tax, total, currency, expiry, and line snapshots, but never accepts or returns merchant-account or Store identifiers. Idempotent retries return the original response snapshot even after later state changes; reusing a key with a different request is a conflict.
+
+## Orders
+
+`POST /store/v1/checkouts/{checkout_id}/order` requires `checkout:write` and `Idempotency-Key`. It locks a pending, unexpired Checkout, copies its header and every line into immutable Order snapshots, records the initial `created` transition, and completes the Checkout in one transaction. A Checkout can produce at most one Order. `GET /store/v1/orders/{order_id}` returns only Orders owned by the publishable key's Store and Sales Channel.
+
+Merchant operators read an Order at `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}`. Owners, administrators, and managers may call the idempotent `/confirm` and `/cancel` actions. Confirmation moves only a pending Order to `confirmed`, consumes its active inventory reservation, and records `reservation_consumed` ledger entries. Cancellation moves only a pending Order to `cancelled`, releases the reservation, and records release entries. Both actions append an immutable Order transition carrying the acting user and timestamp; terminal Orders reject further transitions.
+
+## Payments and Refunds
+
+`POST /store/v1/orders/{order_id}/payment-attempts` requires `checkout:write` and `Idempotency-Key`. It creates one active Payment Attempt for a pending Order and writes a `payment.create_requested` outbox event in the same transaction. The Attempt copies the Order's exact amount and settlement currency. `GET /store/v1/payment-attempts/{payment_attempt_id}` is restricted to the publishable key's Store and Sales Channel.
+
+Payment provider adapters implement an application port; provider-specific request and response types remain in infrastructure. The built-in `testpay` sandbox adapter is deterministic and intended for development and integration testing. Workers claim outbox rows through a security-definer PostgreSQL function using `FOR UPDATE SKIP LOCKED`, so multiple instances never lease the same delivery concurrently. Failed work receives capped exponential backoff and moves to `dead_letter` after eight attempts.
+
+`POST /webhooks/v1/payments/{provider}` requires `x-payment-signature`, a base64 HMAC-SHA256 over the exact request body using `PAYMENT_WEBHOOK_SECRET`. Signature verification happens before provider-account lookup or tenant context is set. Verified events are durably inserted into the inbox with a unique `(provider, provider_event_id)` key; duplicates return HTTP 202 with `accepted: false`. Inbox workers use the same lease, retry, and dead-letter mechanics as outbox workers.
+
+Payment Attempts transition from `pending` to `authorized`, then to `captured`; failure and cancellation are terminal. Duplicate state events are no-ops, provider references become immutable when first assigned, and out-of-order events cannot skip a state. A capture confirms the Order and consumes its inventory reservation in the same transaction. `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds` creates a currency-safe Refund against a captured Attempt. Pending and successful refunds together cannot exceed the captured amount. Refund completion is driven only by a verified provider event.
+
+The webhook contract is versioned separately in `openapi/webhooks-v1.json` and served from `GET /openapi/webhooks-v1.json`.
+
+## Fulfillment, Returns, and Search
+
+Admin operators create partial Fulfillments under a confirmed Order, then use the `ship`, `deliver`, or `cancel` operation. Shipping requires a carrier and tracking number. Delivered quantities bound Return requests; Returns proceed through authorization, receipt with a per-line `restock` or `discard` disposition, and completion. Every mutation requires an idempotency key. Fulfillment transitions and completed Returns publish transactional outbox events for downstream Order and refund coordination.
+
+Storefront product listing accepts `q` for Store-isolated full-text search. Catalog writes refresh the rebuildable search read model and publish duplicate-tolerant change events in the same transaction.

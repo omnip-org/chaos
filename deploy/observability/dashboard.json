@@ -1,0 +1,15 @@
+{
+  "title": "Chaos Commerce SLOs",
+  "schemaVersion": 39,
+  "panels": [
+    { "type": "timeseries", "title": "HTTP p95 latency", "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, route) (rate(chaos_http_request_duration_seconds_bucket[5m])))" }] },
+    { "type": "timeseries", "title": "HTTP error rate", "targets": [{ "expr": "sum(rate(chaos_http_requests_total{status=~\"5..\"}[5m])) / sum(rate(chaos_http_requests_total[5m]))" }] },
+    { "type": "timeseries", "title": "Database pool utilization", "targets": [{ "expr": "1 - chaos_database_pool_idle / chaos_database_pool_size" }] },
+    { "type": "timeseries", "title": "Outbox age", "targets": [{ "expr": "chaos_outbox_oldest_pending_seconds" }] },
+    { "type": "stat", "title": "Dead letters", "targets": [{ "expr": "chaos_outbox_dead_letter" }] },
+    { "type": "stat", "title": "Dependencies healthy", "targets": [{ "expr": "chaos_dependencies_healthy" }] },
+    { "type": "timeseries", "title": "Checkout conversion throughput", "targets": [{ "expr": "rate(chaos_checkout_conversions_total[5m])" }] },
+    { "type": "timeseries", "title": "Payment failures", "targets": [{ "expr": "rate(chaos_payment_failures_total[5m])" }] },
+    { "type": "timeseries", "title": "Inventory reservation conflicts", "targets": [{ "expr": "rate(chaos_inventory_reservation_conflicts_total[5m])" }] }
+  ]
+}

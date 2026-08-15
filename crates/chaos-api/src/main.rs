@@ -5,15 +5,25 @@ use chaos_api::{
     telemetry,
 };
 use chaos_infrastructure::{config::Settings, state::AppState};
+use time::OffsetDateTime;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
-    telemetry::init(&settings.log_filter, settings.log_json)?;
+    let trace_provider = telemetry::init(&settings.log_filter, settings.log_json)?;
 
     let lifecycle = Lifecycle::new();
     let state = ApiState::new(AppState::new(&settings)?, lifecycle.clone(), &settings)?;
+    let payment_worker = tokio::spawn(payment_worker_loop(
+        state.payment_workers.clone(),
+        lifecycle.clone(),
+    ));
+    let search_worker = tokio::spawn(search_worker_loop(
+        state.search_indexer.clone(),
+        lifecycle.clone(),
+    ));
     let app = http::router(state);
     let listener = TcpListener::bind(settings.bind_addr)
         .await
@@ -24,8 +34,48 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal(lifecycle, settings.shutdown_drain_delay))
         .await
         .context("HTTP server failed")?;
+    payment_worker.abort();
+    search_worker.abort();
+    if let Some(provider) = trace_provider {
+        provider
+            .shutdown()
+            .context("failed to shut down trace exporter")?;
+    }
 
     Ok(())
+}
+
+async fn search_worker_loop(
+    indexer: std::sync::Arc<chaos_infrastructure::repositories::PostgresSearchIndexer>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        if let Err(error) = indexer
+            .run_batch(worker_id, 100, OffsetDateTime::now_utc())
+            .await
+        {
+            tracing::warn!(%worker_id, %error, "search indexing batch failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+async fn payment_worker_loop(
+    workers: std::sync::Arc<chaos_application::payments::PaymentWorkers>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        let now = OffsetDateTime::now_utc();
+        if let Err(error) = workers.run_outbox_batch(worker_id, now, 50).await {
+            tracing::warn!(%worker_id, %error, "payment outbox batch failed");
+        }
+        if let Err(error) = workers.run_webhook_batch(worker_id, now, 50).await {
+            tracing::warn!(%worker_id, %error, "payment webhook batch failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 async fn shutdown_signal(lifecycle: Lifecycle, drain_delay: std::time::Duration) {

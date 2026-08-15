@@ -1,0 +1,116 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chaos Payment Webhooks API",
+    "version": "1.0.0",
+    "description": "Provider callbacks authenticated before merchant resolution and durably deduplicated."
+  },
+  "servers": [{ "url": "/webhooks/v1" }],
+  "paths": {
+    "/payments/{provider}": {
+      "post": {
+        "operationId": "receivePaymentWebhook",
+        "tags": ["Payment webhooks"],
+        "summary": "Verify and enqueue a payment provider event",
+        "security": [{ "paymentSignature": [] }],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentWebhookEvent" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Verified event accepted or recognized as a duplicate",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookReceiptEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "paymentSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-payment-signature",
+        "description": "Base64-encoded HMAC-SHA256 of the exact request body."
+      }
+    },
+    "schemas": {
+      "PaymentWebhookEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "event_type", "account", "object", "aggregate_id"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "event_type": {
+            "type": "string",
+            "enum": ["payment.authorized", "payment.captured", "payment.failed", "refund.succeeded", "refund.failed"]
+          },
+          "account": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "object": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "aggregate_id": { "type": "string", "format": "uuid" },
+          "failure_code": { "type": "string", "minLength": 1, "maxLength": 255 }
+        }
+      },
+      "WebhookReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accepted"],
+        "properties": { "accepted": { "type": "boolean" } }
+      },
+      "WebhookReceiptEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/WebhookReceipt" } }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "reason"],
+        "properties": { "field": { "type": "string" }, "reason": { "type": "string" } }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": "array", "items": { "$ref": "#/components/schemas/ErrorDetail" } }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": { "error": { "$ref": "#/components/schemas/Error" } }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid provider signature",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "NotFound": {
+        "description": "Provider or enabled Provider Account not found",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "ValidationFailed": {
+        "description": "Invalid verified event payload",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      }
+    }
+  }
+}
