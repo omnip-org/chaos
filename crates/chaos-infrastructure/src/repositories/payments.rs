@@ -50,6 +50,8 @@ type ProviderAccountRow = (
     String,
     bool,
     bool,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
     OffsetDateTime,
     OffsetDateTime,
 );
@@ -246,6 +248,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, external_account_reference, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                    credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
              FROM payments.provider_accounts \
              WHERE merchant_account_id = $1 AND store_id = $2 \
@@ -366,7 +369,24 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         }
         let result = sqlx::query(
             "UPDATE payments.provider_accounts SET display_name = $4, \
-                    credential_secret_reference = $5, webhook_secret_reference = $6, \
+                    previous_credential_secret_reference = CASE \
+                        WHEN credential_secret_reference IS NOT NULL \
+                             AND credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN credential_secret_reference ELSE previous_credential_secret_reference END, \
+                    credential_rotation_expires_at = CASE \
+                        WHEN credential_secret_reference IS NOT NULL \
+                             AND credential_secret_reference IS DISTINCT FROM $5 \
+                        THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE credential_rotation_expires_at END, \
+                    credential_secret_reference = $5, \
+                    previous_webhook_secret_reference = CASE \
+                        WHEN webhook_secret_reference IS NOT NULL \
+                             AND webhook_secret_reference IS DISTINCT FROM $6 \
+                        THEN webhook_secret_reference ELSE previous_webhook_secret_reference END, \
+                    webhook_rotation_expires_at = CASE \
+                        WHEN webhook_secret_reference IS NOT NULL \
+                             AND webhook_secret_reference IS DISTINCT FROM $6 \
+                        THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE webhook_rotation_expires_at END, \
+                    webhook_secret_reference = $6, \
                     enabled = $7, updated_at = CURRENT_TIMESTAMP \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
@@ -401,25 +421,26 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
 
 #[async_trait]
 impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
-    async fn webhook_secret_reference(
+    async fn webhook_secret_references(
         &self,
         provider: &str,
         external_account_reference: &str,
-    ) -> Result<Option<PaymentSecretReference>, ApplicationError> {
+    ) -> Result<Vec<PaymentSecretReference>, ApplicationError> {
         sqlx::query_scalar::<_, String>(
             "SELECT secret_reference \
-             FROM payments.resolve_provider_webhook_secret_reference($1, $2)",
+             FROM payments.resolve_provider_webhook_secret_references($1, $2)",
         )
         .bind(provider)
         .bind(external_account_reference)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
+        .into_iter()
         .map(|reference| {
             PaymentSecretReference::new("webhook_secret_reference", reference)
                 .map_err(ApplicationError::from)
         })
-        .transpose()
+        .collect()
     }
 }
 
@@ -1622,6 +1643,7 @@ async fn load_provider_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, external_account_reference, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                credential_rotation_expires_at, webhook_rotation_expires_at, \
                 created_at, updated_at FROM payments.provider_accounts \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
     )
@@ -1647,8 +1669,10 @@ fn provider_account_detail(
             row.4,
         )?,
         credentials_configured: row.5,
-        created_at: row.6,
-        updated_at: row.7,
+        credential_rotation_expires_at: row.6,
+        webhook_rotation_expires_at: row.7,
+        created_at: row.8,
+        updated_at: row.9,
     })
 }
 

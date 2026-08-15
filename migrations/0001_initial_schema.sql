@@ -1621,7 +1621,11 @@ CREATE TABLE payments.provider_accounts (
     display_name               TEXT        NOT NULL DEFAULT 'Payment provider',
     external_account_reference TEXT        NOT NULL,
     credential_secret_reference TEXT,
+    previous_credential_secret_reference TEXT,
+    credential_rotation_expires_at TIMESTAMPTZ,
     webhook_secret_reference    TEXT,
+    previous_webhook_secret_reference TEXT,
+    webhook_rotation_expires_at TIMESTAMPTZ,
     enabled                    BOOLEAN     NOT NULL DEFAULT true,
     created_by_user_id          UUID,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1647,9 +1651,25 @@ CREATE TABLE payments.provider_accounts (
         credential_secret_reference IS NULL
         OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
     ),
+    CONSTRAINT provider_accounts_previous_credential_reference_check CHECK (
+        previous_credential_secret_reference IS NULL
+        OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+    ),
+    CONSTRAINT provider_accounts_credential_rotation_shape_check CHECK (
+        (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
+        OR (previous_credential_secret_reference IS NOT NULL AND credential_rotation_expires_at IS NOT NULL)
+    ),
     CONSTRAINT provider_accounts_webhook_reference_check CHECK (
         webhook_secret_reference IS NULL
         OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+    ),
+    CONSTRAINT provider_accounts_previous_webhook_reference_check CHECK (
+        previous_webhook_secret_reference IS NULL
+        OR previous_webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+    ),
+    CONSTRAINT provider_accounts_webhook_rotation_shape_check CHECK (
+        (previous_webhook_secret_reference IS NULL AND webhook_rotation_expires_at IS NULL)
+        OR (previous_webhook_secret_reference IS NOT NULL AND webhook_rotation_expires_at IS NOT NULL)
     )
 );
 
@@ -2981,7 +3001,7 @@ AS $$
       AND account.external_account_reference = requested_external_account_reference;
 $$;
 
-CREATE FUNCTION payments.resolve_provider_webhook_secret_reference(
+CREATE FUNCTION payments.resolve_provider_webhook_secret_references(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
 )
@@ -2991,11 +3011,21 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT account.webhook_secret_reference
+    SELECT candidate.secret_reference
     FROM payments.provider_accounts AS account
+    CROSS JOIN LATERAL (
+        VALUES
+            (account.webhook_secret_reference, 0),
+            (
+                CASE WHEN account.webhook_rotation_expires_at > CURRENT_TIMESTAMP
+                     THEN account.previous_webhook_secret_reference END,
+                1
+            )
+    ) AS candidate(secret_reference, priority)
     WHERE account.provider = requested_provider
       AND account.external_account_reference = requested_external_account_reference
-      AND account.webhook_secret_reference IS NOT NULL;
+      AND candidate.secret_reference IS NOT NULL
+    ORDER BY candidate.priority;
 $$;
 
 CREATE FUNCTION integration.claim_outbox_events(
@@ -3334,7 +3364,7 @@ $$;
 
 REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_reference(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -3390,7 +3420,7 @@ GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE
-    ON FUNCTION payments.resolve_provider_webhook_secret_reference(TEXT, TEXT) TO chaos_runtime;
+    ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )

@@ -1171,26 +1171,27 @@ mod tests {
         let runtime_pool = state.infrastructure.runtime_pool();
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
         assert_eq!(
-            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
                 payment_repository.as_ref(),
                 "testpay",
                 &provider_account_reference,
             )
             .await
             .unwrap()
-            .unwrap()
-            .expose_reference(),
-            "test://webhook"
+            .iter()
+            .map(|reference| reference.expose_reference())
+            .collect::<Vec<_>>(),
+            vec!["test://webhook"]
         );
         assert!(
-            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
                 payment_repository.as_ref(),
                 "testpay",
                 "unknown-account",
             )
             .await
             .unwrap()
-            .is_none()
+            .is_empty()
         );
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
@@ -1277,21 +1278,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(disabled_stripe.status(), StatusCode::OK);
+        let disabled_stripe = response_json(disabled_stripe).await;
+        assert_eq!(disabled_stripe["data"]["enabled"], false);
+        assert!(disabled_stripe["data"]["credential_rotation_expires_at"].is_string());
+        assert!(disabled_stripe["data"]["webhook_rotation_expires_at"].is_string());
         assert_eq!(
-            response_json(disabled_stripe).await["data"]["enabled"],
-            false
-        );
-        assert_eq!(
-            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_reference(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
                 payment_repository.as_ref(),
                 "stripe",
                 &format!("acct_stripe_{suffix}"),
             )
             .await
             .unwrap()
+            .iter()
+            .map(|reference| reference.expose_reference())
+            .collect::<Vec<_>>(),
+            vec![
+                "vault://payments/stripe/webhook-secret-v2",
+                "vault://payments/stripe/webhook-secret"
+            ]
+        );
+
+        let rotation_expiry: (time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT credential_rotation_expires_at, webhook_rotation_expires_at \
+             FROM payments.provider_accounts WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(&stripe_account_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        let unchanged_rotation = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &stripe_account_uri,
+                Some("retain-stripe-rotation-window"),
+                Some(json!({
+                    "display_name": "Stripe",
+                    "credential_secret_reference": "vault://payments/stripe/api-key-v2",
+                    "webhook_secret_reference": "vault://payments/stripe/webhook-secret-v2",
+                    "enabled": false
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unchanged_rotation.status(), StatusCode::OK);
+        assert_eq!(
+            sqlx::query_as::<_, (time::OffsetDateTime, time::OffsetDateTime)>(
+                "SELECT credential_rotation_expires_at, webhook_rotation_expires_at \
+                 FROM payments.provider_accounts WHERE id = $1",
+            )
+            .bind(Uuid::parse_str(&stripe_account_id).unwrap())
+            .fetch_one(&owner_pool)
+            .await
+            .unwrap(),
+            rotation_expiry
+        );
+        sqlx::query(
+            "UPDATE payments.provider_accounts \
+             SET webhook_rotation_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' \
+             WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(&stripe_account_id).unwrap())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
+                payment_repository.as_ref(),
+                "stripe",
+                &format!("acct_stripe_{suffix}"),
+            )
+            .await
             .unwrap()
-            .expose_reference(),
-            "vault://payments/stripe/webhook-secret-v2"
+            .iter()
+            .map(|reference| reference.expose_reference())
+            .collect::<Vec<_>>(),
+            vec!["vault://payments/stripe/webhook-secret-v2"]
         );
 
         let cross_store_provider = app

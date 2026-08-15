@@ -14,7 +14,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 5 — Operations | Partial | Fulfillment and Return consumers plus the security and operational release path are verified; the capacity harness still has no retained production-like 10-minute execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
-| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch and webhook foundations are delivered. Automated onboarding readiness, overlap rotation, reconciliation, Resend, and the first shipping adapter remain open. |
+| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch, signed webhooks, and bounded overlap rotation are delivered. Automated onboarding readiness, reconciliation, Resend, and the first shipping adapter remain open. |
 | 9–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 4 evidence
@@ -26,6 +26,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | Payment state | Domain tests cover ordered Payment Attempt and Refund transitions, immutable provider references, exact settlement currency, and refund bounds. Provider command results bind immutable references before queue completion. The PostgreSQL matrix covers command preparation, payment and refund result persistence, possession-bound client handoff, idempotent creation, and capture-to-Order reconciliation. |
 | Delivery reliability | Verified webhooks enter a deduplicated inbox; provider commands enter a transactional outbox. Runtime tests cover concurrent claims, stale lease recovery, capped retry, dead letters, and former-owner rejection. |
 | Stripe production adapter | ADR 0013 selects Connect direct charges and records merchant-of-record, funds-flow, fee, refund, dispute, and payout consequences. Real HTTP tests verify PaymentIntent creation, client-secret retrieval, Refund creation, Connect and API-version headers, stable idempotency keys, exact form encoding, timestamp tolerance, and signature mapping. The environment secret adapter accepts only constrained payment-secret references. |
+| Credential rotation | Provider updates atomically activate new outbound and webhook references, retain one previous reference with a 24-hour deadline, and do not extend the window for an unchanged update. The narrow webhook lookup returns active then previous only before expiry; verifier tests and the real-router PostgreSQL matrix cover the bounded overlap without returning either reference through the API. |
 | Phase evidence | A clean PostgreSQL 18 bootstrap and all 8 API plus 16 infrastructure integration tests pass with the runtime role. Normal workspace tests, Clippy with warnings denied, formatting, language, and OpenAPI reference checks also pass. |
 
 ## Current Phase 5 evidence

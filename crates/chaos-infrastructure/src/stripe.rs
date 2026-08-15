@@ -278,13 +278,26 @@ impl PaymentWebhookVerifier for StripeWebhookVerifier {
         {
             return Err(invalid_webhook());
         }
-        let reference = self
+        let references = self
             .configurations
-            .webhook_secret_reference(provider, &envelope.account)
-            .await?
-            .ok_or(ApplicationError::Unauthorized)?;
-        let secret = self.secrets.resolve(&reference).await?;
-        verify_stripe_signature(signature, payload, secret.expose_secret(), received_at)?;
+            .webhook_secret_references(provider, &envelope.account)
+            .await?;
+        if references.is_empty() {
+            return Err(ApplicationError::Unauthorized);
+        }
+        let mut verified = false;
+        for reference in references {
+            let secret = self.secrets.resolve(&reference).await?;
+            if verify_stripe_signature(signature, payload, secret.expose_secret(), received_at)
+                .is_ok()
+            {
+                verified = true;
+                break;
+            }
+        }
+        if !verified {
+            return Err(ApplicationError::Unauthorized);
+        }
         let (event_type, aggregate_id, failure_code) = map_stripe_event(&envelope)?;
         let object_reference = envelope.data.object.id.clone();
         Ok(VerifiedWebhookEvent {
@@ -615,18 +628,21 @@ mod tests {
         }
     }
 
-    struct StaticWebhookConfiguration(PaymentSecretReference);
+    struct StaticWebhookConfiguration(Vec<PaymentSecretReference>);
 
     #[async_trait]
     impl PaymentWebhookConfigurationRepository for StaticWebhookConfiguration {
-        async fn webhook_secret_reference(
+        async fn webhook_secret_references(
             &self,
             provider: &str,
             external_account_reference: &str,
-        ) -> Result<Option<PaymentSecretReference>, ApplicationError> {
+        ) -> Result<Vec<PaymentSecretReference>, ApplicationError> {
             Ok(
-                (provider == "stripe" && external_account_reference == "acct_connected")
-                    .then(|| self.0.clone()),
+                if provider == "stripe" && external_account_reference == "acct_connected" {
+                    self.0.clone()
+                } else {
+                    Vec::new()
+                },
             )
         }
     }
@@ -768,13 +784,22 @@ mod tests {
 
     #[tokio::test]
     async fn stripe_webhook_verifies_timestamped_signature_before_mapping_event() {
-        let reference = PaymentSecretReference::new("webhook", "test://webhook").unwrap();
+        let active_reference =
+            PaymentSecretReference::new("webhook", "test://webhook-active").unwrap();
+        let previous_reference =
+            PaymentSecretReference::new("webhook", "test://webhook-previous").unwrap();
         let verifier = StripeWebhookVerifier::new(
-            Arc::new(StaticWebhookConfiguration(reference)),
-            Arc::new(StaticSecrets(HashMap::from([(
-                "test://webhook".into(),
-                "whsec_test_value".into(),
-            )]))),
+            Arc::new(StaticWebhookConfiguration(vec![
+                active_reference,
+                previous_reference,
+            ])),
+            Arc::new(StaticSecrets(HashMap::from([
+                ("test://webhook-active".into(), "whsec_active_value".into()),
+                (
+                    "test://webhook-previous".into(),
+                    "whsec_previous_value".into(),
+                ),
+            ]))),
         );
         let aggregate_id = Uuid::now_v7();
         let payload = serde_json::to_vec(&serde_json::json!({
@@ -794,7 +819,7 @@ mod tests {
             received_at.unix_timestamp(),
             String::from_utf8_lossy(&payload)
         );
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"whsec_test_value").unwrap();
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"whsec_previous_value").unwrap();
         mac.update(signed.as_bytes());
         let signature = mac
             .finalize()

@@ -189,6 +189,10 @@ struct PaymentProviderAccountData {
     external_account_reference: String,
     enabled: bool,
     credentials_configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_rotation_expires_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webhook_rotation_expires_at: Option<ApiDateTime>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -459,6 +463,8 @@ fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProvider
         external_account_reference: value.account.external_account_reference().into(),
         enabled: value.account.enabled(),
         credentials_configured: value.credentials_configured,
+        credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
+        webhook_rotation_expires_at: value.webhook_rotation_expires_at.map(Into::into),
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
     }

@@ -2254,6 +2254,8 @@
           "external_account_reference": { "type": "string", "minLength": 1, "maxLength": 255 },
           "enabled": { "type": "boolean" },
           "credentials_configured": { "type": "boolean" },
+          "credential_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the rollback window for the previous outbound credential reference, when a rotation is active." },
+          "webhook_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the verification overlap window for the previous webhook secret reference, when a rotation is active." },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }

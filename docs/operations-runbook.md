@@ -24,7 +24,7 @@ Due Checkouts are claimed in bounded batches with one-minute recoverable leases.
 
 ## Credential rotation
 
-Create a replacement API key or webhook secret, deploy it to every instance, validate both paths during the overlap window, then revoke the previous credential. Never log plaintext secrets. Record owner, issue time, expiry, and revocation evidence.
+Create replacement values in the external secret manager, then update the Provider account with their opaque references. The outbound credential changes immediately and retains a 24-hour rollback deadline. Webhook verification tries the active reference first and accepts the immediately previous reference for the same 24-hour overlap. Repeating the update with unchanged references does not extend these deadlines. Confirm the deadlines through the Admin API, validate outbound calls with the new credential and inbound signatures with both webhook secrets, then revoke the previous external values after expiry. A later rotation replaces the previous references, so do not start another rotation before the current window closes. Never log plaintext secrets or secret references. Record owner, issue time, expiry, validation, and revocation evidence.
 
 ## Rollback
 

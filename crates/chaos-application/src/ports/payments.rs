@@ -17,6 +17,8 @@ use super::{IdempotencyRequest, ShopperActor};
 pub struct PaymentProviderAccountDetail {
     pub account: chaos_domain::payments::PaymentProviderAccount,
     pub credentials_configured: bool,
+    pub credential_rotation_expires_at: Option<OffsetDateTime>,
+    pub webhook_rotation_expires_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -130,11 +132,11 @@ pub trait PaymentWebhookVerifier: Send + Sync {
 
 #[async_trait]
 pub trait PaymentWebhookConfigurationRepository: Send + Sync {
-    async fn webhook_secret_reference(
+    async fn webhook_secret_references(
         &self,
         provider: &str,
         external_account_reference: &str,
-    ) -> Result<Option<chaos_domain::payments::PaymentSecretReference>, ApplicationError>;
+    ) -> Result<Vec<chaos_domain::payments::PaymentSecretReference>, ApplicationError>;
 }
 
 #[async_trait]
