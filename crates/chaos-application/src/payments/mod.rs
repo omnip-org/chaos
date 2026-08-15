@@ -8,6 +8,8 @@ use chaos_domain::{
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
+
 use crate::{
     ApplicationError,
     merchant::MerchantActor,
@@ -137,7 +139,10 @@ impl PaymentWorkers {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_outbox(worker_id, limit, now).await?;
+        let jobs = self
+            .queue
+            .claim_outbox(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
+            .await?;
         for job in &jobs {
             let result = self
                 .execute_provider_job(job)
@@ -156,7 +161,10 @@ impl PaymentWorkers {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_webhooks(worker_id, limit, now).await?;
+        let jobs = self
+            .queue
+            .claim_webhooks(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
+            .await?;
         for job in &jobs {
             let result = self
                 .repository

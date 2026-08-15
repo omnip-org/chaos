@@ -279,6 +279,7 @@ mod tests {
             shopper_token_previous_key: None,
             dependency_timeout: Duration::from_millis(10),
             shutdown_drain_delay: Duration::ZERO,
+            shutdown_worker_timeout: Duration::from_secs(1),
             log_filter: "off".into(),
             log_json: false,
         };

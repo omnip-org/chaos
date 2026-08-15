@@ -1285,8 +1285,18 @@ mod tests {
         let second_worker = Uuid::now_v7();
         let claimed_at = test_clock.now();
         let (first_jobs, second_jobs) = tokio::join!(
-            payment_repository.claim_outbox(first_worker, 10, claimed_at),
-            payment_repository.claim_outbox(second_worker, 10, claimed_at),
+            payment_repository.claim_outbox(
+                first_worker,
+                10,
+                claimed_at,
+                claimed_at - time::Duration::minutes(1),
+            ),
+            payment_repository.claim_outbox(
+                second_worker,
+                10,
+                claimed_at,
+                claimed_at - time::Duration::minutes(1),
+            ),
         );
         let first_jobs = first_jobs.unwrap();
         let second_jobs = second_jobs.unwrap();
@@ -1305,6 +1315,106 @@ mod tests {
                 .await
                 .unwrap();
         }
+
+        let recoverable_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, $3, 'payment_attempt', $4, 'payment.create_requested', '{}'::jsonb)",
+        )
+        .bind(recoverable_id)
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::now_v7())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let lease_started = test_clock.now();
+        let abandoned = payment_repository
+            .claim_outbox(
+                first_worker,
+                1,
+                lease_started,
+                lease_started - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(abandoned[0].id, recoverable_id);
+        assert_eq!(abandoned[0].attempts, 1);
+        let not_stale = payment_repository
+            .claim_outbox(
+                second_worker,
+                1,
+                lease_started,
+                lease_started - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert!(not_stale.is_empty());
+        let recovered_at = lease_started + time::Duration::seconds(61);
+        let recovered = payment_repository
+            .claim_outbox(
+                second_worker,
+                1,
+                recovered_at,
+                recovered_at - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered[0].id, recoverable_id);
+        assert_eq!(recovered[0].attempts, 2);
+        payment_repository
+            .finish_outbox(second_worker, recoverable_id, Ok(()), recovered_at)
+            .await
+            .unwrap();
+        assert!(
+            payment_repository
+                .finish_outbox(first_worker, recoverable_id, Ok(()), recovered_at)
+                .await
+                .is_err()
+        );
+
+        let recoverable_webhook_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO integration.webhook_inbox \
+             (id, merchant_account_id, store_id, provider, provider_event_id, event_type, \
+              external_account_reference, payload, available_at, verified_at) \
+             VALUES ($1, $2, $3, 'testpay', $4, 'payment.authorized', $5, '{}'::jsonb, $6, $6)",
+        )
+        .bind(recoverable_webhook_id)
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(format!("recoverable-{suffix}"))
+        .bind(&provider_account_reference)
+        .bind(lease_started)
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let abandoned_webhook = payment_repository
+            .claim_webhooks(
+                first_worker,
+                1,
+                lease_started,
+                lease_started - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(abandoned_webhook[0].id, recoverable_webhook_id);
+        let recovered_webhook = payment_repository
+            .claim_webhooks(
+                second_worker,
+                1,
+                recovered_at,
+                recovered_at - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered_webhook[0].id, recoverable_webhook_id);
+        assert_eq!(recovered_webhook[0].attempts, 2);
+        payment_repository
+            .finish_webhook(second_worker, recoverable_webhook_id, Ok(()), recovered_at)
+            .await
+            .unwrap();
 
         let dead_letter_id = Uuid::now_v7();
         sqlx::query(
@@ -1329,7 +1439,12 @@ mod tests {
                 .unwrap();
             let worker_id = Uuid::now_v7();
             let jobs = payment_repository
-                .claim_outbox(worker_id, 1, claim_time)
+                .claim_outbox(
+                    worker_id,
+                    1,
+                    claim_time,
+                    claim_time - time::Duration::minutes(1),
+                )
                 .await
                 .unwrap();
             assert_eq!(jobs.len(), 1);

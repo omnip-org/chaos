@@ -7,7 +7,7 @@ Storefront sales resources follow [ADR 0009](adr/0009-possession-bound-shopper-c
 
 ## 1. Architecture style
 
-The first production version uses a modular monolith. The current binary hosts the stateless HTTP server plus payment and search worker loops; database claims preserve multi-instance correctness. Phase 6 hardens worker recovery and shutdown before worker categories may become independent deployment units. Code is organized by business domain rather than by one global technical layer. Modules interact only through public application services or domain events.
+The first production version uses a modular monolith. The current binary hosts the stateless HTTP server plus payment and search worker loops; database claims preserve multi-instance correctness. Payment workers recover abandoned leases, stop claiming when the instance begins draining, and receive a bounded interval to finish in-flight batches before forced cancellation. Worker categories may later become independent deployment units. Code is organized by business domain rather than by one global technical layer. Modules interact only through public application services or domain events.
 
 This design keeps reliable transaction boundaries around checkout, inventory reservation, payment state, and refunds. Services should be extracted only when throughput, team ownership, or fault-isolation requirements justify the operational cost. Transactional outbox events provide future extraction seams.
 
@@ -141,7 +141,7 @@ Redis currently provides distributed authentication rate limiting and short-live
 
 ## 9. Deployment topology
 
-The API is stateless and horizontally replicated. Payment and search workers currently run inside each API process and use database claims. Phase 6 will add recoverable leases and graceful drain; later deployment units may scale worker categories independently. Production should use managed PostgreSQL with point-in-time recovery, connection pooling, and appropriate replicas, plus highly available Redis. Migrations run as a separate release step and follow expand/migrate/contract. Application startup never runs migrations automatically.
+The API is stateless and horizontally replicated. Payment and search workers currently run inside each API process and use database claims. Payment inbox and outbox claims recover processing rows after a one-minute lease, while shutdown stops new claims and waits up to `SHUTDOWN_WORKER_TIMEOUT_MS` for active batches. Later deployment units may scale worker categories independently. Production should use managed PostgreSQL with point-in-time recovery, connection pooling, and appropriate replicas, plus highly available Redis. Migrations run as a separate release step and follow expand/migrate/contract. Application startup never runs migrations automatically.
 
 Docker Compose runs blue and green API instances behind Caddy. A deployment replaces one instance at a time and waits for readiness before replacing the other. On SIGTERM, an instance starts draining and returns 503 from readiness, waits for Caddy to remove it, closes its listener, and lets Axum finish in-flight connections. Compose `stop_grace_period` provides the hard deadline. Configuration lives in `compose.ha.yaml` and `deploy/compose/Caddyfile`.
 

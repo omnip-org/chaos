@@ -1403,6 +1403,10 @@ CREATE TABLE integration.webhook_inbox (
     CONSTRAINT webhook_inbox_processed_shape_check CHECK (
         (status = 'processed' AND processed_at IS NOT NULL)
         OR (status <> 'processed' AND processed_at IS NULL)
+    ),
+    CONSTRAINT webhook_inbox_lease_shape_check CHECK (
+        (status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
+        OR (status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
     )
 );
 
@@ -1434,6 +1438,10 @@ CREATE TABLE integration.outbox_events (
     CONSTRAINT outbox_events_processed_shape_check CHECK (
         (status = 'processed' AND processed_at IS NOT NULL)
         OR (status <> 'processed' AND processed_at IS NULL)
+    ),
+    CONSTRAINT outbox_events_lease_shape_check CHECK (
+        (status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
+        OR (status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
     )
 );
 
@@ -2075,7 +2083,8 @@ $$;
 CREATE FUNCTION integration.claim_outbox_events(
     worker_id UUID,
     batch_size INTEGER,
-    claimed_at TIMESTAMPTZ
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
 )
 RETURNS TABLE (
     id UUID,
@@ -2090,10 +2099,23 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH claimable AS (
+    WITH expired AS (
+        UPDATE integration.outbox_events AS event
+           SET status = 'dead_letter',
+               locked_by = NULL,
+               locked_at = NULL,
+               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
+         WHERE event.status = 'processing' AND event.locked_at <= stale_before
+           AND event.attempts >= 8
+        RETURNING event.id
+    ), claimable AS (
         SELECT event.id
         FROM integration.outbox_events AS event
-        WHERE event.status = 'pending' AND event.available_at <= claimed_at
+        WHERE (
+                (event.status = 'pending' AND event.available_at <= claimed_at)
+                OR (event.status = 'processing' AND event.locked_at <= stale_before)
+              )
+          AND event.attempts < 8
           AND event.event_type IN ('payment.create_requested', 'refund.create_requested')
         ORDER BY event.available_at, event.created_at, event.id
         FOR UPDATE SKIP LOCKED
@@ -2113,7 +2135,8 @@ $$;
 CREATE FUNCTION integration.claim_webhook_events(
     worker_id UUID,
     batch_size INTEGER,
-    claimed_at TIMESTAMPTZ
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
 )
 RETURNS TABLE (
     id UUID,
@@ -2129,10 +2152,23 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH claimable AS (
+    WITH expired AS (
+        UPDATE integration.webhook_inbox AS event
+           SET status = 'dead_letter',
+               locked_by = NULL,
+               locked_at = NULL,
+               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
+         WHERE event.status = 'processing' AND event.locked_at <= stale_before
+           AND event.attempts >= 8
+        RETURNING event.id
+    ), claimable AS (
         SELECT event.id
         FROM integration.webhook_inbox AS event
-        WHERE event.status = 'pending' AND event.available_at <= claimed_at
+        WHERE (
+                (event.status = 'pending' AND event.available_at <= claimed_at)
+                OR (event.status = 'processing' AND event.locked_at <= stale_before)
+              )
+          AND event.attempts < 8
         ORDER BY event.available_at, event.created_at, event.id
         FOR UPDATE SKIP LOCKED
         LIMIT greatest(least(batch_size, 100), 1)
@@ -2279,8 +2315,12 @@ $$;
 
 REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_outbox_events(UUID, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_webhook_events(UUID, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.claim_outbox_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.claim_webhook_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_outbox_event(
     UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -2322,9 +2362,13 @@ GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog, pricing, inven
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(UUID, INTEGER, TIMESTAMPTZ)
+GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
     TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.claim_webhook_events(UUID, INTEGER, TIMESTAMPTZ)
+GRANT EXECUTE ON FUNCTION integration.claim_webhook_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
     TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_outbox_event(
     UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ

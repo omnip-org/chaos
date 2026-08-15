@@ -10,7 +10,7 @@ Use `/health/ready` and `chaos_dependencies_healthy` to identify PostgreSQL or R
 
 ## Queue backlog
 
-Alert when `chaos_outbox_oldest_pending_seconds` exceeds 60 seconds, any dead letter exists, or pending work grows for 10 minutes. Confirm provider health, database pool saturation, and worker logs by `worker_id`. Scale workers only after confirming downstream capacity. Replay dead letters with a new audited event; never mutate payloads in place.
+Alert when `chaos_outbox_oldest_pending_seconds` exceeds 60 seconds, any dead letter exists, or pending work grows for 10 minutes. Confirm provider health, database pool saturation, and worker logs by `worker_id`. Processing rows older than one minute are automatically reclaimed by another worker; repeated lease expiry on the eighth attempt moves the row to `dead_letter`. Scale workers only after confirming downstream capacity. Replay dead letters with a new audited event; never mutate payloads in place.
 
 ## Webhook replay
 

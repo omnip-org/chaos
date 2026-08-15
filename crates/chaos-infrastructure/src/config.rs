@@ -24,6 +24,7 @@ pub struct Settings {
     pub shopper_token_previous_key: Option<(String, String)>,
     pub dependency_timeout: Duration,
     pub shutdown_drain_delay: Duration,
+    pub shutdown_worker_timeout: Duration,
     pub log_filter: String,
     pub log_json: bool,
 }
@@ -62,6 +63,10 @@ impl Settings {
             shutdown_drain_delay: Duration::from_millis(parse_or(
                 "SHUTDOWN_DRAIN_DELAY_MS",
                 "5000",
+            )?),
+            shutdown_worker_timeout: Duration::from_millis(parse_or(
+                "SHUTDOWN_WORKER_TIMEOUT_MS",
+                "30000",
             )?),
             log_filter: env::var("RUST_LOG")
                 .unwrap_or_else(|_| "chaos=debug,chaos_api=debug,tower_http=info".into()),

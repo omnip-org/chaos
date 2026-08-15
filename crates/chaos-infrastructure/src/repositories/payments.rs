@@ -534,14 +534,16 @@ impl IntegrationQueue for PostgresPaymentRepository {
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
+        stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
             "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
-             FROM integration.claim_outbox_events($1, $2, $3)",
+             FROM integration.claim_outbox_events($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
         .bind(now)
+        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
@@ -555,14 +557,16 @@ impl IntegrationQueue for PostgresPaymentRepository {
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
+        stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Value, i32)>(
             "SELECT id, merchant_account_id, store_id, provider, event_type, payload, attempts \
-             FROM integration.claim_webhook_events($1, $2, $3)",
+             FROM integration.claim_webhook_events($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
         .bind(now)
+        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?

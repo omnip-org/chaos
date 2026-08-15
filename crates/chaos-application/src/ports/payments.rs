@@ -131,6 +131,7 @@ pub trait IntegrationQueue: Send + Sync {
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
+        stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError>;
 
     async fn claim_webhooks(
@@ -138,6 +139,7 @@ pub trait IntegrationQueue: Send + Sync {
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
+        stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError>;
 
     async fn finish_outbox(

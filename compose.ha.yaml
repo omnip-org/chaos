@@ -21,6 +21,7 @@ x-api: &api
     RUST_LOG: chaos=info,chaos_api=info,tower_http=info
     LOG_JSON: "true"
     SHUTDOWN_DRAIN_DELAY_MS: "5000"
+    SHUTDOWN_WORKER_TIMEOUT_MS: "30000"
   expose:
     - "8080"
   depends_on:

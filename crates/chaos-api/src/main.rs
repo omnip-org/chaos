@@ -11,6 +11,7 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let settings = Settings::from_env()?;
+    let worker_shutdown_timeout = settings.shutdown_worker_timeout;
     let trace_provider = telemetry::init(&settings.log_filter, settings.log_json)?;
 
     let lifecycle = Lifecycle::new();
@@ -35,8 +36,10 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal(lifecycle, settings.shutdown_drain_delay))
         .await
         .context("HTTP server failed")?;
-    payment_worker.abort();
-    search_worker.abort();
+    tokio::join!(
+        drain_worker("payment", payment_worker, worker_shutdown_timeout),
+        drain_worker("search", search_worker, worker_shutdown_timeout),
+    );
     if let Some(provider) = trace_provider {
         provider
             .shutdown()
@@ -44,6 +47,28 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn drain_worker(
+    worker_name: &'static str,
+    mut worker: tokio::task::JoinHandle<()>,
+    timeout: std::time::Duration,
+) {
+    match tokio::time::timeout(timeout, &mut worker).await {
+        Ok(Ok(())) => tracing::info!(worker = worker_name, "worker drained"),
+        Ok(Err(error)) => {
+            tracing::warn!(worker = worker_name, %error, "worker stopped unexpectedly");
+        }
+        Err(_) => {
+            tracing::warn!(
+                worker = worker_name,
+                ?timeout,
+                "worker drain timed out; aborting task"
+            );
+            worker.abort();
+            let _ = worker.await;
+        }
+    }
 }
 
 async fn search_worker_loop(
@@ -108,4 +133,50 @@ async fn shutdown_signal(lifecycle: Lifecycle, drain_delay: std::time::Duration)
     );
     tokio::time::sleep(drain_delay).await;
     tracing::info!("load-balancer drain delay elapsed; stopping HTTP listener");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::drain_worker;
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_drain_waits_for_normal_completion() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = completed.clone();
+        let worker = tokio::spawn(async move {
+            worker_completed.store(true, Ordering::SeqCst);
+        });
+
+        drain_worker("test", worker, std::time::Duration::from_secs(1)).await;
+
+        assert!(completed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn worker_drain_aborts_after_the_bounded_timeout() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let worker_dropped = dropped.clone();
+        let worker = tokio::spawn(async move {
+            let _drop_signal = DropSignal(worker_dropped);
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        drain_worker("test", worker, std::time::Duration::from_millis(1)).await;
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
 }
