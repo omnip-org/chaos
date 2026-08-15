@@ -3,18 +3,21 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsRetentionPurgeResult,
-        AnalyticsSessionizationJob, AnalyticsSessionizationQueue, IdempotencyRequest, MachineActor,
-        ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
+        AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
+        AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRetentionPurgeResult,
+        AnalyticsSessionizationJob, AnalyticsSessionizationQueue, CustomerActor,
+        IdempotencyRequest, MachineActor, ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
     analytics::{
-        AnalyticsPolicy, BrowserEvent, BrowserEventName, BrowserEventProperties,
+        AnalyticsPolicy, BrowserEvent, BrowserEventName, BrowserEventProperties, ConsentSnapshot,
         SESSION_INACTIVITY_MINUTES, SessionEventContribution, capped_session_engagement,
     },
     identity::UserId,
     merchant::{SalesChannelId, StoreId},
+    sales::CustomerId,
 };
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
@@ -24,6 +27,8 @@ use uuid::Uuid;
 use super::idempotency::{self, IdempotencyScope};
 
 const UPDATE_POLICY_OPERATION: &str = "analytics_policies.update.v1";
+const LINK_IDENTITY_OPERATION: &str = "analytics_identity_links.create.v1";
+const REQUEST_ERASURE_OPERATION: &str = "analytics_erasure_requests.create.v1";
 
 #[derive(Clone)]
 pub struct PostgresAnalyticsEventRepository {
@@ -182,6 +187,33 @@ struct PolicyRow {
     created_at: OffsetDateTime,
 }
 
+#[derive(FromRow)]
+struct IdentityLinkRow {
+    id: Uuid,
+    store_id: Uuid,
+    anonymous_id: Uuid,
+    customer_id: Uuid,
+    consent_policy_version: String,
+    collection_policy_version: String,
+    linked_at: OffsetDateTime,
+    retention_expires_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct ErasureRequestRow {
+    id: Uuid,
+    store_id: Uuid,
+    anonymous_id: Option<Uuid>,
+    customer_id: Option<Uuid>,
+    status: String,
+    requested_by: Uuid,
+    behavior_events_deleted: i64,
+    sessions_deleted: i64,
+    identity_links_deleted: i64,
+    requested_at: OffsetDateTime,
+    completed_at: Option<OffsetDateTime>,
+}
+
 #[async_trait]
 impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
     async fn get_store_policy(
@@ -314,6 +346,266 @@ impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
         .ok_or_else(invalid_policy_snapshot)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
+    }
+}
+
+#[async_trait]
+impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
+    async fn link_customer_identity(
+        &self,
+        actor: &CustomerActor,
+        anonymous_id: Uuid,
+        consent: &ConsentSnapshot,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsIdentityLink, ApplicationError> {
+        let machine = &actor.machine;
+        let sales_channel_id = machine
+            .sales_channel_id
+            .ok_or(ApplicationError::Forbidden)?;
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            machine.merchant_account_id.as_uuid(),
+            Some(actor.user_id.as_uuid()),
+        )
+        .await?;
+        if let Some(link_id) = reserve_identity_link(&mut transaction, actor, request).await? {
+            let link = load_identity_link_by_id(
+                &mut transaction,
+                machine.merchant_account_id.as_uuid(),
+                machine.store_id,
+                link_id,
+            )
+            .await?
+            .ok_or_else(invalid_identity_link_snapshot)?;
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(link);
+        }
+        let customer_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT customer.id FROM sales.customers AS customer \
+             INNER JOIN merchant.stores AS store \
+               ON store.merchant_account_id = customer.merchant_account_id \
+              AND store.id = customer.store_id \
+             INNER JOIN merchant.sales_channels AS channel \
+               ON channel.merchant_account_id = customer.merchant_account_id \
+              AND channel.store_id = customer.store_id \
+             WHERE customer.merchant_account_id = $1 AND customer.store_id = $2 \
+               AND customer.user_id = $3 AND store.status = 'active' \
+               AND channel.id = $4 AND channel.status = 'active'",
+        )
+        .bind(machine.merchant_account_id.as_uuid())
+        .bind(machine.store_id.as_uuid())
+        .bind(actor.user_id.as_uuid())
+        .bind(sales_channel_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or(ApplicationError::NotFound {
+            resource: "customer",
+            id: actor.user_id.as_uuid().to_string(),
+        })?;
+        let resolved = load_current_policy(
+            &mut transaction,
+            machine.merchant_account_id.as_uuid(),
+            machine.store_id,
+            now,
+        )
+        .await?
+        .unwrap_or_else(|| builtin_policy(machine.store_id));
+        if !resolved.policy.identity_linking_enabled() {
+            return Err(ApplicationError::Conflict {
+                code: "analytics_identity_linking_disabled",
+                message: "the effective Store Analytics Policy does not allow identity linking",
+            });
+        }
+        let consent_evidence_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM analytics.behavior_events \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3 \
+               AND consent_policy_version = $4 AND analytics_storage_consent)",
+        )
+        .bind(machine.merchant_account_id.as_uuid())
+        .bind(machine.store_id.as_uuid())
+        .bind(anonymous_id)
+        .bind(consent.policy_version())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !consent_evidence_exists {
+            return Err(ApplicationError::NotFound {
+                resource: "analytics_anonymous_identity",
+                id: anonymous_id.to_string(),
+            });
+        }
+        let link_id = Uuid::now_v7();
+        let inserted = sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO analytics.identity_links \
+             (id, merchant_account_id, store_id, anonymous_id, customer_id, \
+              consent_policy_version, collection_policy_version, linked_at, \
+              retention_expires_at, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$8) \
+             ON CONFLICT (merchant_account_id, store_id, anonymous_id) DO NOTHING \
+             RETURNING id",
+        )
+        .bind(link_id)
+        .bind(machine.merchant_account_id.as_uuid())
+        .bind(machine.store_id.as_uuid())
+        .bind(anonymous_id)
+        .bind(customer_id)
+        .bind(consent.policy_version())
+        .bind(&resolved.policy_version)
+        .bind(now)
+        .bind(now + time::Duration::days(i64::from(resolved.policy.raw_event_retention_days())))
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let actual_id = if let Some(id) = inserted {
+            id
+        } else {
+            let existing = load_identity_link_by_anonymous(
+                &mut transaction,
+                machine.merchant_account_id.as_uuid(),
+                machine.store_id,
+                anonymous_id,
+            )
+            .await?
+            .ok_or_else(invalid_identity_link_snapshot)?;
+            if existing.customer_id.as_uuid() != customer_id {
+                return Err(ApplicationError::Conflict {
+                    code: "analytics_identity_already_linked",
+                    message: "the anonymous Analytics identity is already linked",
+                });
+            }
+            existing.id
+        };
+        complete_identity_link(&mut transaction, actor, request, actual_id).await?;
+        let link = load_identity_link_by_id(
+            &mut transaction,
+            machine.merchant_account_id.as_uuid(),
+            machine.store_id,
+            actual_id,
+        )
+        .await?
+        .ok_or_else(invalid_identity_link_snapshot)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(link)
+    }
+
+    async fn request_erasure(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        selector: AnalyticsErasureSelector,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsErasureRequest, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        if let Some(request_id) = reserve_erasure(&mut transaction, actor, request).await? {
+            let item = load_erasure_request(
+                &mut transaction,
+                actor.merchant_account_id().as_uuid(),
+                store_id,
+                request_id,
+            )
+            .await?
+            .ok_or_else(invalid_erasure_snapshot)?;
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(item);
+        }
+        let store_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2)",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !store_exists {
+            return Err(store_not_found(store_id));
+        }
+        let (anonymous_id, customer_id) = match selector {
+            AnalyticsErasureSelector::Anonymous(id) => (Some(id), None),
+            AnalyticsErasureSelector::Customer(id) => (None, Some(id.as_uuid())),
+        };
+        let request_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO analytics.erasure_requests \
+             (id, merchant_account_id, store_id, anonymous_id, customer_id, requested_by, \
+              requested_at, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)",
+        )
+        .bind(request_id)
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(anonymous_id)
+        .bind(customer_id)
+        .bind(actor.user_id().as_uuid())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        complete_erasure(&mut transaction, actor, request, request_id).await?;
+        let item = load_erasure_request(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            store_id,
+            request_id,
+        )
+        .await?
+        .ok_or_else(invalid_erasure_snapshot)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(item)
+    }
+
+    async fn get_erasure_request(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        request_id: Uuid,
+    ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        let item = load_erasure_request(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            store_id,
+            request_id,
+        )
+        .await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(item)
+    }
+
+    async fn process_erasure_requests(
+        &self,
+        limit: u16,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsErasureBatchResult, ApplicationError> {
+        let row: (i64, i64, i64, i64) =
+            sqlx::query_as("SELECT * FROM analytics.process_erasure_requests($1,$2)")
+                .bind(i32::from(limit))
+                .bind(now)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(database_error)?;
+        Ok(AnalyticsErasureBatchResult {
+            requests_completed: u64::try_from(row.0).map_err(conversion_error)?,
+            behavior_events_deleted: u64::try_from(row.1).map_err(conversion_error)?,
+            sessions_deleted: u64::try_from(row.2).map_err(conversion_error)?,
+            identity_links_deleted: u64::try_from(row.3).map_err(conversion_error)?,
+        })
     }
 }
 
@@ -463,7 +755,7 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<AnalyticsRetentionPurgeResult, ApplicationError> {
-        let (behavior_events_deleted, sessions_deleted): (i64, i64) =
+        let (behavior_events_deleted, sessions_deleted, identity_links_deleted): (i64, i64, i64) =
             sqlx::query_as("SELECT * FROM analytics.purge_expired_data($1,$2)")
                 .bind(i32::from(limit))
                 .bind(now)
@@ -474,6 +766,8 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
             behavior_events_deleted: u64::try_from(behavior_events_deleted)
                 .map_err(conversion_error)?,
             sessions_deleted: u64::try_from(sessions_deleted).map_err(conversion_error)?,
+            identity_links_deleted: u64::try_from(identity_links_deleted)
+                .map_err(conversion_error)?,
         })
     }
 }
@@ -720,6 +1014,229 @@ async fn set_merchant_context(
     Ok(())
 }
 
+async fn load_identity_link_by_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    link_id: Uuid,
+) -> Result<Option<AnalyticsIdentityLink>, ApplicationError> {
+    load_identity_link(transaction, merchant_account_id, store_id, "id", link_id).await
+}
+
+async fn load_identity_link_by_anonymous(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    anonymous_id: Uuid,
+) -> Result<Option<AnalyticsIdentityLink>, ApplicationError> {
+    load_identity_link(
+        transaction,
+        merchant_account_id,
+        store_id,
+        "anonymous_id",
+        anonymous_id,
+    )
+    .await
+}
+
+async fn load_identity_link(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    discriminator: &'static str,
+    value: Uuid,
+) -> Result<Option<AnalyticsIdentityLink>, ApplicationError> {
+    let query = match discriminator {
+        "id" => {
+            "SELECT id, store_id, anonymous_id, customer_id, consent_policy_version, \
+                    collection_policy_version, linked_at, retention_expires_at \
+             FROM analytics.identity_links \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3"
+        }
+        "anonymous_id" => {
+            "SELECT id, store_id, anonymous_id, customer_id, consent_policy_version, \
+                    collection_policy_version, linked_at, retention_expires_at \
+             FROM analytics.identity_links \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3"
+        }
+        _ => return Err(invalid_identity_link_snapshot()),
+    };
+    let row = sqlx::query_as::<_, IdentityLinkRow>(query)
+        .bind(merchant_account_id)
+        .bind(store_id.as_uuid())
+        .bind(value)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    Ok(row.map(identity_link_item))
+}
+
+fn identity_link_item(row: IdentityLinkRow) -> AnalyticsIdentityLink {
+    AnalyticsIdentityLink {
+        id: row.id,
+        store_id: StoreId::from_uuid(row.store_id),
+        anonymous_id: row.anonymous_id,
+        customer_id: CustomerId::from_uuid(row.customer_id),
+        consent_policy_version: row.consent_policy_version,
+        collection_policy_version: row.collection_policy_version,
+        linked_at: row.linked_at,
+        retention_expires_at: row.retention_expires_at,
+    }
+}
+
+async fn load_erasure_request(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    request_id: Uuid,
+) -> Result<Option<AnalyticsErasureRequest>, ApplicationError> {
+    let row = sqlx::query_as::<_, ErasureRequestRow>(
+        "SELECT id, store_id, anonymous_id, customer_id, status::text, requested_by, \
+                behavior_events_deleted, sessions_deleted, identity_links_deleted, \
+                requested_at, completed_at \
+         FROM analytics.erasure_requests \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(request_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(erasure_request_item).transpose()
+}
+
+fn erasure_request_item(
+    row: ErasureRequestRow,
+) -> Result<AnalyticsErasureRequest, ApplicationError> {
+    let selector = match (row.anonymous_id, row.customer_id) {
+        (Some(id), None) => AnalyticsErasureSelector::Anonymous(id),
+        (None, Some(id)) => AnalyticsErasureSelector::Customer(CustomerId::from_uuid(id)),
+        _ => return Err(invalid_erasure_snapshot()),
+    };
+    let status = match row.status.as_str() {
+        "pending" => AnalyticsErasureStatus::Pending,
+        "completed" => AnalyticsErasureStatus::Completed,
+        _ => return Err(invalid_erasure_snapshot()),
+    };
+    Ok(AnalyticsErasureRequest {
+        id: row.id,
+        store_id: StoreId::from_uuid(row.store_id),
+        selector,
+        status,
+        requested_by: UserId::from_uuid(row.requested_by),
+        behavior_events_deleted: u64::try_from(row.behavior_events_deleted)
+            .map_err(conversion_error)?,
+        sessions_deleted: u64::try_from(row.sessions_deleted).map_err(conversion_error)?,
+        identity_links_deleted: u64::try_from(row.identity_links_deleted)
+            .map_err(conversion_error)?,
+        requested_at: row.requested_at,
+        completed_at: row.completed_at,
+    })
+}
+
+async fn reserve_identity_link(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &CustomerActor,
+    request: &IdempotencyRequest,
+) -> Result<Option<Uuid>, ApplicationError> {
+    reserve_snapshot_id(
+        transaction,
+        &IdempotencyScope::User(actor.user_id.as_uuid()),
+        LINK_IDENTITY_OPERATION,
+        request,
+    )
+    .await
+}
+
+async fn complete_identity_link(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &CustomerActor,
+    request: &IdempotencyRequest,
+    link_id: Uuid,
+) -> Result<(), ApplicationError> {
+    complete_snapshot_id(
+        transaction,
+        &IdempotencyScope::User(actor.user_id.as_uuid()),
+        LINK_IDENTITY_OPERATION,
+        request,
+        201,
+        link_id,
+    )
+    .await
+}
+
+async fn reserve_erasure(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: MerchantActor,
+    request: &IdempotencyRequest,
+) -> Result<Option<Uuid>, ApplicationError> {
+    reserve_snapshot_id(
+        transaction,
+        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        REQUEST_ERASURE_OPERATION,
+        request,
+    )
+    .await
+}
+
+async fn complete_erasure(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: MerchantActor,
+    request: &IdempotencyRequest,
+    request_id: Uuid,
+) -> Result<(), ApplicationError> {
+    complete_snapshot_id(
+        transaction,
+        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        REQUEST_ERASURE_OPERATION,
+        request,
+        202,
+        request_id,
+    )
+    .await
+}
+
+async fn reserve_snapshot_id(
+    transaction: &mut Transaction<'static, Postgres>,
+    scope: &IdempotencyScope,
+    operation: &'static str,
+    request: &IdempotencyRequest,
+) -> Result<Option<Uuid>, ApplicationError> {
+    let Some(snapshot) = idempotency::reserve(transaction, scope, operation, request).await? else {
+        return Ok(None);
+    };
+    snapshot
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "completed Analytics privacy idempotency record is invalid"
+            ))
+        })
+}
+
+async fn complete_snapshot_id(
+    transaction: &mut Transaction<'static, Postgres>,
+    scope: &IdempotencyScope,
+    operation: &'static str,
+    request: &IdempotencyRequest,
+    status: i16,
+    id: Uuid,
+) -> Result<(), ApplicationError> {
+    idempotency::complete(
+        transaction,
+        scope,
+        operation,
+        request,
+        status,
+        json!({ "data": { "id": id } }),
+    )
+    .await
+}
+
 async fn load_current_policy(
     transaction: &mut Transaction<'_, Postgres>,
     merchant_account_id: Uuid,
@@ -838,6 +1355,18 @@ async fn complete_policy(
 fn invalid_policy_snapshot() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "completed Analytics Policy idempotency record is invalid"
+    ))
+}
+
+fn invalid_identity_link_snapshot() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "completed Analytics Identity Link record is invalid"
+    ))
+}
+
+fn invalid_erasure_snapshot() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "completed Analytics Erasure Request record is invalid"
     ))
 }
 

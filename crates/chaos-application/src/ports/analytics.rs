@@ -1,15 +1,18 @@
 use async_trait::async_trait;
 use chaos_domain::{
-    analytics::{AnalyticsPolicy, BrowserEvent, BrowserEventName, SessionEventContribution},
+    analytics::{
+        AnalyticsPolicy, BrowserEvent, BrowserEventName, ConsentSnapshot, SessionEventContribution,
+    },
     identity::UserId,
     merchant::{SalesChannelId, StoreId},
+    sales::CustomerId,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::IdempotencyRequest;
+use super::{CustomerActor, IdempotencyRequest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedAnalyticsPolicy {
@@ -85,6 +88,53 @@ pub struct AnalyticsSessionizationJob {
 pub struct AnalyticsRetentionPurgeResult {
     pub behavior_events_deleted: u64,
     pub sessions_deleted: u64,
+    pub identity_links_deleted: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsIdentityLink {
+    pub id: Uuid,
+    pub store_id: StoreId,
+    pub anonymous_id: Uuid,
+    pub customer_id: CustomerId,
+    pub consent_policy_version: String,
+    pub collection_policy_version: String,
+    pub linked_at: OffsetDateTime,
+    pub retention_expires_at: OffsetDateTime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnalyticsErasureSelector {
+    Anonymous(Uuid),
+    Customer(CustomerId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnalyticsErasureStatus {
+    Pending,
+    Completed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsErasureRequest {
+    pub id: Uuid,
+    pub store_id: StoreId,
+    pub selector: AnalyticsErasureSelector,
+    pub status: AnalyticsErasureStatus,
+    pub requested_by: UserId,
+    pub behavior_events_deleted: u64,
+    pub sessions_deleted: u64,
+    pub identity_links_deleted: u64,
+    pub requested_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnalyticsErasureBatchResult {
+    pub requests_completed: u64,
+    pub behavior_events_deleted: u64,
+    pub sessions_deleted: u64,
+    pub identity_links_deleted: u64,
 }
 
 #[async_trait]
@@ -110,4 +160,38 @@ pub trait AnalyticsSessionizationQueue: Send + Sync {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<AnalyticsRetentionPurgeResult, ApplicationError>;
+}
+
+#[async_trait]
+pub trait AnalyticsPrivacyRepository: Send + Sync {
+    async fn link_customer_identity(
+        &self,
+        actor: &CustomerActor,
+        anonymous_id: Uuid,
+        consent: &ConsentSnapshot,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsIdentityLink, ApplicationError>;
+
+    async fn request_erasure(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        selector: AnalyticsErasureSelector,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsErasureRequest, ApplicationError>;
+
+    async fn get_erasure_request(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        request_id: Uuid,
+    ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError>;
+
+    async fn process_erasure_requests(
+        &self,
+        limit: u16,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsErasureBatchResult, ApplicationError>;
 }

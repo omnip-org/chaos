@@ -146,6 +146,7 @@ CREATE TYPE analytics.browser_event_name AS ENUM (
     'checkout_started',
     'engagement_heartbeat'
 );
+CREATE TYPE analytics.erasure_status AS ENUM ('pending', 'completed');
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
     'shipped',
@@ -2600,6 +2601,51 @@ CREATE INDEX store_policy_versions_current_idx
         version DESC
     );
 
+CREATE TABLE analytics.identity_links (
+    id                         UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id        UUID        NOT NULL,
+    store_id                   UUID        NOT NULL,
+    anonymous_id               UUID        NOT NULL,
+    customer_id                UUID        NOT NULL,
+    consent_policy_version     TEXT        NOT NULL,
+    collection_policy_version  TEXT        NOT NULL,
+    linked_at                  TIMESTAMPTZ NOT NULL,
+    retention_expires_at       TIMESTAMPTZ NOT NULL,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, anonymous_id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, customer_id)
+        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT identity_links_anonymous_id_check CHECK (
+        anonymous_id <> '00000000-0000-0000-0000-000000000000'::UUID
+    ),
+    CONSTRAINT identity_links_consent_policy_check CHECK (
+        consent_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
+    ),
+    CONSTRAINT identity_links_collection_policy_check CHECK (
+        collection_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
+    ),
+    CONSTRAINT identity_links_retention_check CHECK (
+        retention_expires_at > linked_at
+        AND retention_expires_at <= linked_at + INTERVAL '400 days'
+    )
+);
+
+CREATE INDEX identity_links_customer_idx
+    ON analytics.identity_links (
+        merchant_account_id,
+        store_id,
+        customer_id,
+        linked_at,
+        id
+    );
+
+CREATE INDEX identity_links_retention_idx
+    ON analytics.identity_links (merchant_account_id, retention_expires_at, id);
+
 CREATE TABLE analytics.behavior_events (
     id                            UUID                         NOT NULL PRIMARY KEY,
     event_id                      UUID                         NOT NULL,
@@ -2761,6 +2807,48 @@ CREATE INDEX sessions_identity_time_idx
 
 CREATE INDEX sessions_retention_idx
     ON analytics.sessions (merchant_account_id, retention_expires_at, id);
+
+CREATE TABLE analytics.erasure_requests (
+    id                       UUID                      NOT NULL PRIMARY KEY,
+    merchant_account_id      UUID                      NOT NULL,
+    store_id                 UUID                      NOT NULL,
+    anonymous_id             UUID,
+    customer_id              UUID,
+    status                   analytics.erasure_status NOT NULL DEFAULT 'pending',
+    requested_by             UUID                      NOT NULL,
+    behavior_events_deleted  BIGINT                    NOT NULL DEFAULT 0,
+    sessions_deleted         BIGINT                    NOT NULL DEFAULT 0,
+    identity_links_deleted   BIGINT                    NOT NULL DEFAULT 0,
+    requested_at             TIMESTAMPTZ               NOT NULL,
+    completed_at             TIMESTAMPTZ,
+    created_at               TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (requested_by) REFERENCES identity.users(id),
+    CONSTRAINT erasure_requests_selector_check CHECK (
+        (anonymous_id IS NOT NULL)::INTEGER + (customer_id IS NOT NULL)::INTEGER = 1
+    ),
+    CONSTRAINT erasure_requests_anonymous_id_check CHECK (
+        anonymous_id IS NULL
+        OR anonymous_id <> '00000000-0000-0000-0000-000000000000'::UUID
+    ),
+    CONSTRAINT erasure_requests_counts_check CHECK (
+        behavior_events_deleted >= 0
+        AND sessions_deleted >= 0
+        AND identity_links_deleted >= 0
+    ),
+    CONSTRAINT erasure_requests_completion_check CHECK (
+        (status = 'completed' AND completed_at IS NOT NULL)
+        OR (status = 'pending' AND completed_at IS NULL)
+    )
+);
+
+CREATE INDEX erasure_requests_pending_idx
+    ON analytics.erasure_requests (status, requested_at, id)
+    WHERE status = 'pending';
 
 CREATE TABLE integration.webhook_inbox (
     id                         UUID                     NOT NULL PRIMARY KEY,
@@ -3226,6 +3314,7 @@ CREATE FUNCTION analytics.retention_metrics()
 RETURNS TABLE (
     expired_behavior_events BIGINT,
     expired_sessions BIGINT,
+    expired_identity_links BIGINT,
     oldest_expired_seconds DOUBLE PRECISION
 )
 LANGUAGE SQL
@@ -3237,6 +3326,8 @@ AS $$
              WHERE event.retention_expires_at <= CURRENT_TIMESTAMP),
            (SELECT count(*) FROM analytics.sessions AS session
              WHERE session.retention_expires_at <= CURRENT_TIMESTAMP),
+           (SELECT count(*) FROM analytics.identity_links AS link
+             WHERE link.retention_expires_at <= CURRENT_TIMESTAMP),
            greatest(
                COALESCE((
                    SELECT extract(epoch FROM CURRENT_TIMESTAMP - min(event.retention_expires_at))
@@ -3247,6 +3338,11 @@ AS $$
                    SELECT extract(epoch FROM CURRENT_TIMESTAMP - min(session.retention_expires_at))
                      FROM analytics.sessions AS session
                     WHERE session.retention_expires_at <= CURRENT_TIMESTAMP
+               ), 0),
+               COALESCE((
+                   SELECT extract(epoch FROM CURRENT_TIMESTAMP - min(link.retention_expires_at))
+                     FROM analytics.identity_links AS link
+                    WHERE link.retention_expires_at <= CURRENT_TIMESTAMP
                ), 0)
            )::DOUBLE PRECISION;
 $$;
@@ -3256,7 +3352,11 @@ CREATE FUNCTION analytics.apply_store_retention_policy(
     requested_store_id UUID,
     retention_days INTEGER
 )
-RETURNS TABLE (behavior_events_updated BIGINT, sessions_updated BIGINT)
+RETURNS TABLE (
+    behavior_events_updated BIGINT,
+    sessions_updated BIGINT,
+    identity_links_updated BIGINT
+)
 LANGUAGE SQL
 VOLATILE
 SECURITY DEFINER
@@ -3287,13 +3387,30 @@ AS $$
            AND requested_merchant_account_id =
                nullif(current_setting('app.merchant_account_id', true), '')::uuid
         RETURNING 1
+    ), updated_links AS (
+        UPDATE analytics.identity_links AS link
+           SET retention_expires_at = least(
+                   link.retention_expires_at,
+                   link.linked_at + make_interval(days => retention_days)
+               )
+         WHERE link.merchant_account_id = requested_merchant_account_id
+           AND link.store_id = requested_store_id
+           AND retention_days BETWEEN 1 AND 400
+           AND requested_merchant_account_id =
+               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        RETURNING 1
     )
     SELECT (SELECT count(*) FROM updated_events),
-           (SELECT count(*) FROM updated_sessions);
+           (SELECT count(*) FROM updated_sessions),
+           (SELECT count(*) FROM updated_links);
 $$;
 
 CREATE FUNCTION analytics.purge_expired_data(batch_size INTEGER, purged_at TIMESTAMPTZ)
-RETURNS TABLE (behavior_events_deleted BIGINT, sessions_deleted BIGINT)
+RETURNS TABLE (
+    behavior_events_deleted BIGINT,
+    sessions_deleted BIGINT,
+    identity_links_deleted BIGINT
+)
 LANGUAGE SQL
 VOLATILE
 SECURITY DEFINER
@@ -3323,9 +3440,138 @@ AS $$
          USING expired_events
          WHERE event.id = expired_events.id
         RETURNING 1
+    ), expired_links AS (
+        SELECT link.id
+          FROM analytics.identity_links AS link
+         WHERE link.retention_expires_at <= purged_at
+         ORDER BY link.retention_expires_at, link.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 1000), 1)
+    ), deleted_links AS (
+        DELETE FROM analytics.identity_links AS link
+         USING expired_links
+         WHERE link.id = expired_links.id
+        RETURNING 1
     )
     SELECT (SELECT count(*) FROM deleted_events),
-           (SELECT count(*) FROM deleted_sessions);
+           (SELECT count(*) FROM deleted_sessions),
+           (SELECT count(*) FROM deleted_links);
+$$;
+
+CREATE FUNCTION analytics.process_erasure_requests(batch_size INTEGER, processed_at TIMESTAMPTZ)
+RETURNS TABLE (
+    requests_completed BIGINT,
+    behavior_events_deleted BIGINT,
+    sessions_deleted BIGINT,
+    identity_links_deleted BIGINT
+)
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    request_row RECORD;
+    target_anonymous_ids UUID[];
+    request_behavior_events BIGINT;
+    request_sessions BIGINT;
+    request_identity_links BIGINT;
+    total_requests BIGINT := 0;
+    total_behavior_events BIGINT := 0;
+    total_sessions BIGINT := 0;
+    total_identity_links BIGINT := 0;
+BEGIN
+    FOR request_row IN
+        SELECT request.id,
+               request.merchant_account_id,
+               request.store_id,
+               request.anonymous_id,
+               request.customer_id
+          FROM analytics.erasure_requests AS request
+         WHERE request.status = 'pending'
+         ORDER BY request.requested_at, request.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
+    LOOP
+        SELECT coalesce(array_agg(target.anonymous_id), ARRAY[]::UUID[])
+          INTO target_anonymous_ids
+          FROM (
+              SELECT request_row.anonymous_id AS anonymous_id
+               WHERE request_row.anonymous_id IS NOT NULL
+              UNION
+              SELECT link.anonymous_id
+                FROM analytics.identity_links AS link
+               WHERE link.merchant_account_id = request_row.merchant_account_id
+                 AND link.store_id = request_row.store_id
+                 AND link.customer_id = request_row.customer_id
+          ) AS target;
+
+        DELETE FROM analytics.behavior_events AS event
+         WHERE event.merchant_account_id = request_row.merchant_account_id
+           AND event.store_id = request_row.store_id
+           AND event.anonymous_id = ANY(target_anonymous_ids);
+        GET DIAGNOSTICS request_behavior_events = ROW_COUNT;
+
+        DELETE FROM analytics.sessions AS session
+         WHERE session.merchant_account_id = request_row.merchant_account_id
+           AND session.store_id = request_row.store_id
+           AND session.anonymous_id = ANY(target_anonymous_ids);
+        GET DIAGNOSTICS request_sessions = ROW_COUNT;
+
+        DELETE FROM analytics.identity_links AS link
+         WHERE link.merchant_account_id = request_row.merchant_account_id
+           AND link.store_id = request_row.store_id
+           AND (
+               link.anonymous_id = ANY(target_anonymous_ids)
+               OR (
+                   request_row.customer_id IS NOT NULL
+                   AND link.customer_id = request_row.customer_id
+               )
+           );
+        GET DIAGNOSTICS request_identity_links = ROW_COUNT;
+
+        UPDATE analytics.erasure_requests AS request
+           SET status = 'completed',
+               behavior_events_deleted = request_behavior_events,
+               sessions_deleted = request_sessions,
+               identity_links_deleted = request_identity_links,
+               completed_at = processed_at,
+               updated_at = processed_at
+         WHERE request.id = request_row.id
+           AND request.status = 'pending';
+
+        total_requests := total_requests + 1;
+        total_behavior_events := total_behavior_events + request_behavior_events;
+        total_sessions := total_sessions + request_sessions;
+        total_identity_links := total_identity_links + request_identity_links;
+    END LOOP;
+
+    RETURN QUERY SELECT total_requests,
+                        total_behavior_events,
+                        total_sessions,
+                        total_identity_links;
+END;
+$$;
+
+CREATE FUNCTION analytics.erasure_metrics()
+RETURNS TABLE (
+    pending BIGINT,
+    oldest_pending_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (WHERE request.status = 'pending'),
+           COALESCE(
+               extract(
+                   epoch FROM CURRENT_TIMESTAMP -
+                       min(request.requested_at) FILTER (WHERE request.status = 'pending')
+               ),
+               0
+           )::DOUBLE PRECISION
+      FROM analytics.erasure_requests AS request;
 $$;
 
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
@@ -3394,8 +3640,10 @@ ALTER TABLE notification.email_suppressions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.webhook_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.store_policy_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.identity_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_event_processing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.erasure_requests ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -4081,6 +4329,16 @@ CREATE POLICY merchant_account_isolation ON analytics.store_policy_versions
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON analytics.identity_links
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON analytics.behavior_event_processing
     USING (
         merchant_account_id =
@@ -4092,6 +4350,16 @@ CREATE POLICY merchant_account_isolation ON analytics.behavior_event_processing
     );
 
 CREATE POLICY merchant_account_isolation ON analytics.sessions
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.erasure_requests
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -5057,6 +5325,8 @@ REVOKE ALL ON FUNCTION analytics.sessionization_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.retention_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.process_erasure_requests(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.erasure_metrics() FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -5154,6 +5424,9 @@ GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INT
     TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ)
     TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.process_erasure_requests(INTEGER, TIMESTAMPTZ)
+    TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.erasure_metrics() TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
@@ -5177,7 +5450,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA analytics TO chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.store_policy_versions FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON analytics.identity_links FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.behavior_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON analytics.erasure_requests FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

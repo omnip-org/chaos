@@ -2531,6 +2531,351 @@ mod tests {
             format!("sales-http-{suffix}@example.com")
         );
 
+        let identity_anonymous_id = Uuid::now_v7();
+        let identity_session_id = Uuid::now_v7();
+        let identity_link_body = json!({
+            "anonymous_id": identity_anonymous_id,
+            "consent": {
+                "analytics_storage": true,
+                "advertising_storage": false,
+                "policy_version": "cmp-v2"
+            }
+        });
+        let identity_link_disabled = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/analytics/identity-links",
+                Some(full_secret),
+                Some("identity-link-disabled"),
+                Some(identity_link_body.clone()),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(identity_link_disabled.status(), StatusCode::CONFLICT);
+        let identity_policy = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("enable-analytics-identity-linking"),
+                Some(json!({
+                    "behavior_collection_enabled": true,
+                    "advertising_exports_enabled": false,
+                    "identity_linking_enabled": true,
+                    "raw_event_retention_days": 7
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(identity_policy.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(identity_policy).await["data"]["policy_version"],
+            "store-v3"
+        );
+        let identity_event_id = Uuid::now_v7();
+        let identity_event = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(json!({
+                    "events": [{
+                        "event_id": identity_event_id,
+                        "event_name": "page_viewed",
+                        "schema_version": 1,
+                        "occurred_at": test_clock.now()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap(),
+                        "anonymous_id": identity_anonymous_id,
+                        "session_id": identity_session_id,
+                        "consent": {
+                            "analytics_storage": true,
+                            "advertising_storage": false,
+                            "policy_version": "cmp-v2"
+                        },
+                        "properties": {"path": "/identified"}
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(identity_event.status(), StatusCode::OK);
+        assert_eq!(response_json(identity_event).await["data"]["stored"], 1);
+        assert_eq!(
+            analytics_workers
+                .run_sessionization_batch(Uuid::now_v7(), test_clock.now(), 100)
+                .await
+                .unwrap(),
+            1
+        );
+        let identity_link_without_consent = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/analytics/identity-links",
+                Some(full_secret),
+                Some("identity-link-no-consent"),
+                Some(json!({
+                    "anonymous_id": Uuid::now_v7(),
+                    "consent": {
+                        "analytics_storage": false,
+                        "advertising_storage": false,
+                        "policy_version": "cmp-v2"
+                    }
+                })),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            identity_link_without_consent.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let identity_link = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/analytics/identity-links",
+                Some(full_secret),
+                Some("identity-link"),
+                Some(identity_link_body.clone()),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(identity_link.status(), StatusCode::CREATED);
+        let identity_link = response_json(identity_link).await;
+        assert_eq!(
+            identity_link["data"]["anonymous_id"],
+            identity_anonymous_id.to_string()
+        );
+        assert_eq!(
+            identity_link["data"]["collection_policy_version"],
+            "store-v3"
+        );
+        assert!(identity_link["data"].get("customer_id").is_none());
+        let identity_link_replay = app
+            .clone()
+            .oneshot(with_customer_session(store_request(
+                Method::POST,
+                "/store/v1/analytics/identity-links",
+                Some(full_secret),
+                Some("identity-link"),
+                Some(identity_link_body),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(identity_link_replay.status(), StatusCode::CREATED);
+        assert_eq!(
+            response_json(identity_link_replay).await["data"]["id"],
+            identity_link["data"]["id"]
+        );
+        let stored_identity_customer_id: Uuid = sqlx::query_scalar(
+            "SELECT customer_id FROM analytics.identity_links \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(identity_anonymous_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_identity_customer_id.to_string(), customer_id);
+
+        let erasure_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-erasure-requests",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let customer_erasure_body = json!({"customer_id": customer_id});
+        let erasure = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &erasure_uri,
+                Some("erase-customer-analytics"),
+                Some(customer_erasure_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(erasure.status(), StatusCode::ACCEPTED);
+        let erasure = response_json(erasure).await;
+        let erasure_id = erasure["data"]["id"].as_str().unwrap();
+        assert_eq!(erasure["data"]["status"], "pending");
+        let erasure_replay = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &erasure_uri,
+                Some("erase-customer-analytics"),
+                Some(customer_erasure_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(erasure_replay.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            response_json(erasure_replay).await["data"]["id"],
+            erasure_id
+        );
+        let invalid_erasure_selector = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &erasure_uri,
+                Some("invalid-erasure-selector"),
+                Some(json!({
+                    "customer_id": customer_id,
+                    "anonymous_id": identity_anonymous_id
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            invalid_erasure_selector.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            analytics_workers
+                .run_erasure_batch(test_clock.now(), 100)
+                .await
+                .unwrap()
+                .requests_completed,
+            1
+        );
+        let completed_erasure = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{erasure_uri}/{erasure_id}"),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(completed_erasure.status(), StatusCode::OK);
+        let completed_erasure = response_json(completed_erasure).await;
+        assert_eq!(completed_erasure["data"]["status"], "completed");
+        assert_eq!(completed_erasure["data"]["behavior_events_deleted"], 1);
+        assert_eq!(completed_erasure["data"]["sessions_deleted"], 1);
+        assert_eq!(completed_erasure["data"]["identity_links_deleted"], 1);
+        let retained_customer_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sales.customers \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(&customer_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(retained_customer_count, 1);
+        let mut immutable_erasure_audit = runtime_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *immutable_erasure_audit)
+            .await
+            .unwrap();
+        let erasure_mutation = sqlx::query(
+            "UPDATE analytics.erasure_requests SET behavior_events_deleted = 0 WHERE id = $1",
+        )
+        .bind(Uuid::parse_str(erasure_id).unwrap())
+        .execute(&mut *immutable_erasure_audit)
+        .await;
+        assert!(erasure_mutation.is_err());
+        immutable_erasure_audit.rollback().await.unwrap();
+
+        let direct_erasure_anonymous_id = Uuid::now_v7();
+        let direct_erasure_event = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(json!({
+                    "events": [{
+                        "event_id": Uuid::now_v7(),
+                        "event_name": "page_viewed",
+                        "schema_version": 1,
+                        "occurred_at": test_clock.now()
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap(),
+                        "anonymous_id": direct_erasure_anonymous_id,
+                        "session_id": Uuid::now_v7(),
+                        "consent": {
+                            "analytics_storage": true,
+                            "advertising_storage": false,
+                            "policy_version": "cmp-v2"
+                        },
+                        "properties": {"path": "/anonymous-erasure"}
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(direct_erasure_event.status(), StatusCode::OK);
+        assert_eq!(
+            analytics_workers
+                .run_sessionization_batch(Uuid::now_v7(), test_clock.now(), 100)
+                .await
+                .unwrap(),
+            1
+        );
+        let direct_erasure = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &erasure_uri,
+                Some("erase-anonymous-analytics"),
+                Some(json!({"anonymous_id": direct_erasure_anonymous_id})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(direct_erasure.status(), StatusCode::ACCEPTED);
+        let direct_erasure_id = response_json(direct_erasure).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            analytics_workers
+                .run_erasure_batch(test_clock.now(), 100)
+                .await
+                .unwrap()
+                .requests_completed,
+            1
+        );
+        let completed_direct_erasure = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{erasure_uri}/{direct_erasure_id}"),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        let completed_direct_erasure = response_json(completed_direct_erasure).await;
+        assert_eq!(
+            completed_direct_erasure["data"]["behavior_events_deleted"],
+            1
+        );
+        assert_eq!(completed_direct_erasure["data"]["sessions_deleted"], 1);
+        assert_eq!(
+            completed_direct_erasure["data"]["identity_links_deleted"],
+            0
+        );
+        let surviving_other_store_analytics: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.behavior_events \
+             WHERE merchant_account_id = $1 AND store_id = $2",
+        )
+        .bind(account_id.as_uuid())
+        .bind(other_store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(surviving_other_store_analytics, 1);
+
         let missing_customer_session = app
             .clone()
             .oneshot(store_request(

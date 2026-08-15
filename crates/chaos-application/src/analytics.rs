@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use chaos_domain::{
     FieldViolation,
-    analytics::{AnalyticsPolicy, BrowserEvent, SessionEventContribution},
-    merchant::{ApiKeyClass, MerchantRole, StoreId},
+    analytics::{AnalyticsPolicy, BrowserEvent, ConsentSnapshot, SessionEventContribution},
+    merchant::{ApiKeyClass, ApiKeyScope, MerchantRole, StoreId},
 };
 use time::{Duration, OffsetDateTime};
 
@@ -11,8 +11,10 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsSessionizationQueue,
-        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
+        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsEventRepository,
+        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
+        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
+        StoreAnalyticsPolicy,
     },
 };
 
@@ -42,6 +44,105 @@ pub struct AnalyticsCollection {
 
 pub struct AnalyticsWorkers {
     sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
+    privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
+}
+
+pub struct LinkAnalyticsIdentityInput {
+    pub actor: CustomerActor,
+    pub anonymous_id: uuid::Uuid,
+    pub consent: ConsentSnapshot,
+    pub idempotency: IdempotencyRequest,
+    pub now: OffsetDateTime,
+}
+
+pub struct RequestAnalyticsErasureInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub selector: AnalyticsErasureSelector,
+    pub idempotency: IdempotencyRequest,
+    pub now: OffsetDateTime,
+}
+
+pub struct AnalyticsPrivacy {
+    repository: Arc<dyn AnalyticsPrivacyRepository>,
+}
+
+impl AnalyticsPrivacy {
+    pub fn new(repository: Arc<dyn AnalyticsPrivacyRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn link_identity(
+        &self,
+        input: LinkAnalyticsIdentityInput,
+    ) -> Result<AnalyticsIdentityLink, ApplicationError> {
+        let machine = &input.actor.machine;
+        if machine.class != ApiKeyClass::Publishable
+            || machine.sales_channel_id.is_none()
+            || !machine.scopes.contains(&ApiKeyScope::AnalyticsWrite)
+        {
+            return Err(ApplicationError::Forbidden);
+        }
+        if input.anonymous_id.is_nil() {
+            return Err(validation(
+                "anonymous_id",
+                "must be a non-zero opaque identifier",
+            ));
+        }
+        if !input.consent.analytics_storage() {
+            return Err(validation(
+                "consent.analytics_storage",
+                "must be granted before identity linking",
+            ));
+        }
+        self.repository
+            .link_customer_identity(
+                &input.actor,
+                input.anonymous_id,
+                &input.consent,
+                &input.idempotency,
+                input.now,
+            )
+            .await
+    }
+
+    pub async fn request_erasure(
+        &self,
+        input: RequestAnalyticsErasureInput,
+    ) -> Result<AnalyticsErasureRequest, ApplicationError> {
+        require_privacy_administrator(input.actor)?;
+        let selector_id = match input.selector {
+            AnalyticsErasureSelector::Anonymous(id) => id,
+            AnalyticsErasureSelector::Customer(id) => id.as_uuid(),
+        };
+        if selector_id.is_nil() {
+            return Err(validation("selector", "must contain a non-zero identifier"));
+        }
+        self.repository
+            .request_erasure(
+                input.actor,
+                input.store_id,
+                input.selector,
+                &input.idempotency,
+                input.now,
+            )
+            .await
+    }
+
+    pub async fn get_erasure_request(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        request_id: uuid::Uuid,
+    ) -> Result<AnalyticsErasureRequest, ApplicationError> {
+        self.repository
+            .get_erasure_request(actor, store_id, request_id)
+            .await?
+            .ok_or(ApplicationError::NotFound {
+                resource: "analytics_erasure_request",
+                id: request_id.to_string(),
+            })
+    }
 }
 
 pub struct UpdateAnalyticsPolicyInput {
@@ -105,9 +206,13 @@ impl AnalyticsAdministration {
 }
 
 impl AnalyticsWorkers {
-    pub fn new(sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>) -> Self {
+    pub fn new(
+        sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
+        privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
+    ) -> Self {
         Self {
             sessionization_queue,
+            privacy_repository,
         }
     }
 
@@ -141,6 +246,16 @@ impl AnalyticsWorkers {
     ) -> Result<crate::ports::AnalyticsRetentionPurgeResult, ApplicationError> {
         self.sessionization_queue
             .purge_expired_data(limit, now)
+            .await
+    }
+
+    pub async fn run_erasure_batch(
+        &self,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<crate::ports::AnalyticsErasureBatchResult, ApplicationError> {
+        self.privacy_repository
+            .process_erasure_requests(limit, now)
             .await
     }
 }
@@ -221,6 +336,15 @@ fn store_not_found(store_id: StoreId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "store",
         id: store_id.as_uuid().to_string(),
+    }
+}
+
+fn require_privacy_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
+    match actor.role() {
+        MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
+        MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
+            Err(ApplicationError::Forbidden)
+        }
     }
 }
 

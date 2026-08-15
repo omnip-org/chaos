@@ -1424,6 +1424,49 @@
           "422": { "$ref": "#/components/responses/ValidationFailed" }
         }
       }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests": {
+      "post": {
+        "operationId": "requestStoreAnalyticsErasure",
+        "tags": ["Analytics"],
+        "summary": "Request deletion of Store Analytics data for one anonymous identity or Customer",
+        "description": "Creates an asynchronous immutable audit request. Commercial Customer and Order records are not deleted.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/MerchantAccountId" },
+          { "$ref": "#/components/parameters/StoreId" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RequestAnalyticsErasure" } } } },
+        "responses": {
+          "202": { "description": "Erasure request accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsErasureRequestEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests/{request_id}": {
+      "get": {
+        "operationId": "getStoreAnalyticsErasureRequest",
+        "tags": ["Analytics"],
+        "summary": "Get an Analytics erasure request and deletion counts",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/MerchantAccountId" },
+          { "$ref": "#/components/parameters/StoreId" },
+          { "name": "request_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Erasure request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsErasureRequestEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
     }
   },
   "components": {
@@ -2156,6 +2199,42 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/AnalyticsPolicy" } }
+      },
+      "RequestAnalyticsErasure": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "anonymous_id": { "type": "string", "format": "uuid", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
+          "customer_id": { "type": "string", "format": "uuid", "not": { "const": "00000000-0000-0000-0000-000000000000" } }
+        },
+        "oneOf": [
+          { "required": ["anonymous_id"] },
+          { "required": ["customer_id"] }
+        ]
+      },
+      "AnalyticsErasureRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "store_id", "selector_kind", "selector_id", "status", "requested_by", "behavior_events_deleted", "sessions_deleted", "identity_links_deleted", "requested_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "store_id": { "type": "string", "format": "uuid" },
+          "selector_kind": { "type": "string", "enum": ["anonymous", "customer"] },
+          "selector_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["pending", "completed"] },
+          "requested_by": { "type": "string", "format": "uuid" },
+          "behavior_events_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
+          "sessions_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
+          "identity_links_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
+          "requested_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AnalyticsErasureRequestEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsErasureRequest" } }
       },
       "SalesChannel": {
         "type": "object",

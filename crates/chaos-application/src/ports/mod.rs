@@ -23,7 +23,9 @@ mod storefront_catalog;
 mod tax;
 
 pub use analytics::{
-    AnalyticsEventRepository, AnalyticsPolicyRepository, AnalyticsRetentionPurgeResult,
+    AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
+    AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
+    AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRetentionPurgeResult,
     AnalyticsSessionizationJob, AnalyticsSessionizationQueue, ResolvedAnalyticsPolicy,
     StoreAnalyticsPolicy,
 };

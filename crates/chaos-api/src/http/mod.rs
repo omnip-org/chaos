@@ -22,7 +22,7 @@ mod storefront_sales;
 
 use axum::Router;
 use chaos_application::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsWorkers},
+    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsWorkers},
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -75,9 +75,9 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CartShopper,
-    CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession, MerchantContext,
-    StorefrontMachine,
+    AnalyticsCustomer, AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedSession,
+    CartMachine, CartShopper, CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession,
+    MerchantContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -103,6 +103,7 @@ pub struct ApiState {
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
+    pub analytics_privacy: Arc<AnalyticsPrivacy>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -201,7 +202,9 @@ impl ApiState {
         ));
         let analytics_collection = AnalyticsCollection::new(analytics_repository.clone());
         let analytics_administration = AnalyticsAdministration::new(analytics_repository.clone());
-        let analytics_workers = AnalyticsWorkers::new(analytics_repository);
+        let analytics_privacy = AnalyticsPrivacy::new(analytics_repository.clone());
+        let analytics_workers =
+            AnalyticsWorkers::new(analytics_repository.clone(), analytics_repository);
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
@@ -339,6 +342,7 @@ impl ApiState {
             api_key_authentication: Arc::new(api_key_authentication),
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
+            analytics_privacy: Arc::new(analytics_privacy),
             analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),

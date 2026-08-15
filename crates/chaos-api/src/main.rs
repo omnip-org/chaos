@@ -84,6 +84,7 @@ async fn analytics_worker_loop(
 ) {
     let worker_id = Uuid::now_v7();
     let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
+    let mut next_erasure_at = time::OffsetDateTime::UNIX_EPOCH;
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         if let Err(error) = workers.run_sessionization_batch(worker_id, now, 100).await {
@@ -96,11 +97,32 @@ async fn analytics_worker_loop(
                         .increment(result.behavior_events_deleted);
                     ::metrics::counter!("chaos_analytics_retention_sessions_deleted_total")
                         .increment(result.sessions_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_identity_links_deleted_total")
+                        .increment(result.identity_links_deleted);
                     next_retention_at = now + time::Duration::minutes(1);
                 }
                 Err(error) => {
                     tracing::warn!(%worker_id, %error, "analytics retention batch failed");
                     next_retention_at = now + time::Duration::seconds(5);
+                }
+            }
+        }
+        if now >= next_erasure_at {
+            match workers.run_erasure_batch(now, 100).await {
+                Ok(result) => {
+                    ::metrics::counter!("chaos_analytics_erasure_requests_completed_total")
+                        .increment(result.requests_completed);
+                    ::metrics::counter!("chaos_analytics_erasure_behavior_events_deleted_total")
+                        .increment(result.behavior_events_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_sessions_deleted_total")
+                        .increment(result.sessions_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_identity_links_deleted_total")
+                        .increment(result.identity_links_deleted);
+                    next_erasure_at = now + time::Duration::seconds(1);
+                }
+                Err(error) => {
+                    tracing::warn!(%worker_id, %error, "analytics erasure batch failed");
+                    next_erasure_at = now + time::Duration::seconds(5);
                 }
             }
         }
