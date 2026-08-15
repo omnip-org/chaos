@@ -20,7 +20,8 @@ User
             │    ├─ Inventory
             │    ├─ Customers and Carts
             │    ├─ Orders and Fulfillment
-            │    └─ Payment Configuration
+            │    ├─ Payment Configuration
+            │    └─ Analytics and Destinations
             └─ Store
 ```
 
@@ -100,8 +101,10 @@ A revocable machine credential bound to one Store and an explicit set of capabil
 - Recoverable workers, deterministic reservation expiry, and complete event consumers.
 - Customer contact, addresses, shipping, tax, promotion, and complete checkout totals.
 - Stripe payment, Resend notification, and shipping provider adapters with Store-owned configuration.
+- First-party behavior events, active engagement, consent-aware attribution, analytics read models, and conversion exports.
 
 ### Reserved
 
 - Collections, media, localization, domains, customer segments, exchanges, and advanced logistics.
 - MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.
+- Advanced experimentation, recommendations, customer scoring, and cross-Store analytics.

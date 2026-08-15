@@ -34,7 +34,8 @@ Every phase requires:
 | 6 — Transaction Hardening | Planned | Existing idempotency, inbox, outbox, RLS, and state-machine foundations | Shopper access boundaries; lease recovery; deterministic expiry scheduling; event consumer ownership; graceful worker drain; process-crash and replay evidence. |
 | 7 — Real Checkout | Planned | Cart, immutable Checkout, Order, Money, Price List, and inventory snapshot foundations | Customer or guest contact; billing and shipping addresses; shipping options and rates; tax; promotions; complete total allocation; customer Order access. |
 | 8 — Provider Integrations | Planned | Payment and webhook ports, Fulfillment state, transactional events, and SMTP-based authentication delivery | Stripe adapter and onboarding decision; Resend notification delivery; shipping provider port and first adapter; provider administration, secrets, rotation, signed webhooks, and reconciliation. |
-| 9 — Extensibility and Ecosystem | Planned | Versioned Admin, Store, and Webhook contracts; scoped API keys; search read model | Store domains; collections and media; localization; outbound webhooks; MCP; generated SDKs; compatibility automation; third-party application workflows. |
+| 9 — Analytics and Attribution | Planned | Transactional commerce events, Store and Channel boundaries, search, immutable snapshots, and queue infrastructure | First-party event contract; Storefront collection SDK; active engagement; consent and retention; sessionization; attribution; isolated analytics read models; Meta CAPI and GA4 destinations. |
+| 10 — Extensibility and Ecosystem | Planned | Versioned Admin, Store, and Webhook contracts; scoped API keys; search read model | Store domains; collections and media; localization; outbound webhooks; MCP; generated SDKs; compatibility automation; third-party application workflows. |
 
 ## Phase 2 acceptance criteria
 
@@ -102,6 +103,16 @@ Every phase requires:
 - The first shipping adapter supports rate quotation, label purchase, cancellation where available, and tracking reconciliation.
 
 ## Phase 9 acceptance criteria
+
+- Browser collection accepts only versioned, allowlisted, size-bounded events and never trusts client-supplied commercial outcomes.
+- Active engagement time is derived from bounded visible and focused intervals and is explicitly documented as an estimate.
+- Trusted Order, Payment, Refund, Fulfillment, and Return facts enter analytics through transactional events with stable event identities.
+- Anonymous, session, and Customer identity linking is consent-aware, Store-isolated, reversible through deletion workflows, and free of secrets or payment data.
+- Attribution inputs, consent snapshots, policy versions, retention, and destination eligibility are explicit and auditable.
+- Analytics queries and exports cannot exhaust the OLTP transaction pool or block commerce commits.
+- Meta CAPI and GA4 adapters map canonical events without leaking destination schemas into domain or application code, and equivalent browser and server events are deduplicated.
+
+## Phase 10 acceptance criteria
 
 - Extensibility capabilities have independent authorization scopes, versioned contracts, audit trails, and compatibility tests.
 - Store domain resolution cannot broaden Store context and external callbacks defend against SSRF and credential leakage.

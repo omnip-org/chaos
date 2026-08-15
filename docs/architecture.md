@@ -2,6 +2,7 @@
 
 Cross-cutting time handling follows [Time conventions](time-conventions.md).
 External payment, shipping, and notification integrations follow [ADR 0007](adr/0007-external-provider-boundaries.md).
+First-party behavior analytics and conversion exports follow [ADR 0008](adr/0008-first-party-analytics-and-conversion-exports.md).
 
 ## 1. Architecture style
 
@@ -76,7 +77,8 @@ Suggested implementation order:
 7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;
 8. payment: provider accounts, Payment Attempts, captures, Refunds, and webhook inboxes;
 9. customer: a planned context for customers, addresses, and segments;
-10. notifications: a planned integration capability for semantic delivery requests and provider status.
+10. notifications: a planned integration capability for semantic delivery requests and provider status;
+11. analytics: a planned boundary for behavior events, sessions, consent, attribution, aggregates, and conversion exports.
 
 The Cargo workspace enforces dependency direction with separate packages:
 
@@ -102,6 +104,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Provider webhooks are signature-verified and written to an inbox before asynchronous processing. Provider event IDs enforce deduplication.
 - Payment providers are adapters. Payment state advances only from verified provider responses or webhooks.
 - Shipping providers are Fulfillment adapters. Notification providers deliver semantic requests without owning commerce state.
+- Analytics consumes immutable commerce facts and untrusted browser behavior without becoming the source of truth for either commerce state or authorization.
 
 ## 6. API conventions
 
@@ -156,6 +159,7 @@ The platform emits structured logs, optional OpenTelemetry traces, and Prometheu
 - Phase 6: shopper ownership, scheduler and worker recovery, event consumers, and transaction hardening.
 - Phase 7: customers, addresses, shipping, tax, promotions, and real checkout totals.
 - Phase 8: Stripe, Resend, shipping adapters, provider administration, and reconciliation.
-- Phase 9: domains, richer Catalog, outbound integrations, MCP, SDKs, and ecosystem compatibility.
+- Phase 9: first-party analytics, behavior collection, attribution, reporting, and conversion destinations.
+- Phase 10: domains, richer Catalog, outbound integrations, MCP, SDKs, and ecosystem compatibility.
 
 Every phase requires migration tests, domain unit tests, cross-account isolation tests, HTTP integration tests, and an OpenAPI update.

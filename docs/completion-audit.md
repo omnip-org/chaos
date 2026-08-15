@@ -12,7 +12,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 3 — Selling | Partial | Shopper-level Cart and Order ownership and a production reservation-expiry scheduler are not implemented. |
 | 4 — Payments | Partial | The sandbox flow is verified; stale processing leases, graceful worker drain, provider administration, and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
-| 6–9 | Planned | Acceptance evidence will be added as each capability is implemented. |
+| 6–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
 
