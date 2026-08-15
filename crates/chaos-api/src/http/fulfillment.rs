@@ -7,17 +7,20 @@ use axum::{
 use chaos_application::{
     ApplicationError,
     fulfillment::{
-        CreateFulfillmentInput, CreateReturnInput, TransitionFulfillmentInput,
-        TransitionReturnInput,
+        ChangeShippingServiceStatusInput, CreateFulfillmentInput, CreateReturnInput,
+        CreateShippingServiceInput, TransitionFulfillmentInput, TransitionReturnInput,
     },
     ports::{
         FulfillmentAllocationInput, FulfillmentDetail, IdempotencyRequest, ReturnDetail,
-        ReturnLineInput, ReturnReceiptInput,
+        ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail,
     },
 };
 use chaos_domain::{
     catalog::ProductVariantId,
-    fulfillment::{FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus},
+    fulfillment::{
+        FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
+        ShippingServiceId, ShippingServiceStatus,
+    },
     inventory::InventoryLocationId,
     merchant::{MerchantAccountId, StoreId},
     sales::OrderId,
@@ -49,6 +52,14 @@ pub(super) fn routes() -> Router<ApiState> {
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}/{operation}",
             post(transition_return),
         )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-services",
+            post(create_shipping_service).get(list_shipping_services),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-services/{shipping_service_id}/{operation}",
+            post(change_shipping_service_status),
+        )
         .layer(DefaultBodyLimit::max(32 * 1024))
 }
 
@@ -73,6 +84,47 @@ struct ReturnPath {
     store_id: Uuid,
     return_id: Uuid,
     operation: String,
+}
+
+#[derive(Deserialize)]
+struct StorePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct ShippingServicePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    shipping_service_id: Uuid,
+    operation: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateShippingServiceBody {
+    code: String,
+    name: String,
+    amount_minor: i64,
+    currency: String,
+    estimated_min_days: u16,
+    estimated_max_days: u16,
+    destination_countries: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ShippingServiceData {
+    id: Uuid,
+    code: String,
+    name: String,
+    amount_minor: i64,
+    currency: String,
+    estimated_min_days: u16,
+    estimated_max_days: u16,
+    destination_countries: Vec<String>,
+    status: &'static str,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -136,6 +188,94 @@ struct ReturnData {
     lines: Vec<QuantityLine>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+}
+
+async fn create_shipping_service(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<CreateShippingServiceBody>,
+) -> Result<ApiResponse<ShippingServiceData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(&headers, "create_shipping_service", &body)?;
+    let detail = state
+        .shipping_management
+        .create(CreateShippingServiceInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            code: body.code,
+            name: body.name,
+            currency: body.currency,
+            amount_minor: body.amount_minor,
+            estimated_min_days: body.estimated_min_days,
+            estimated_max_days: body.estimated_max_days,
+            destination_countries: body.destination_countries,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(shipping_service_data(detail)))
+}
+
+async fn list_shipping_services(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<Vec<ShippingServiceData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let services = state
+        .shipping_management
+        .list(actor, StoreId::from_uuid(path.store_id))
+        .await?;
+    Ok(ApiResponse::ok(
+        services.into_iter().map(shipping_service_data).collect(),
+    ))
+}
+
+async fn change_shipping_service_status(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ShippingServicePath>,
+) -> Result<ApiResponse<ShippingServiceData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let status = match path.operation.as_str() {
+        "activate" => ShippingServiceStatus::Active,
+        "archive" => ShippingServiceStatus::Archived,
+        _ => return Err(operation_not_found(path.operation)),
+    };
+    let idempotency = request(
+        &headers,
+        "change_shipping_service_status",
+        &(path.shipping_service_id, status.as_str()),
+    )?;
+    let detail = state
+        .shipping_management
+        .change_status(ChangeShippingServiceStatusInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            service_id: ShippingServiceId::from_uuid(path.shipping_service_id),
+            status,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(shipping_service_data(detail)))
+}
+
+fn shipping_service_data(detail: ShippingServiceDetail) -> ShippingServiceData {
+    ShippingServiceData {
+        id: detail.service.id().as_uuid(),
+        code: detail.service.code().into(),
+        name: detail.service.name().into(),
+        amount_minor: detail.service.rate().amount_minor(),
+        currency: detail.service.rate().currency().as_str().into(),
+        estimated_min_days: detail.service.estimated_min_days(),
+        estimated_max_days: detail.service.estimated_max_days(),
+        destination_countries: detail.service.destination_countries().to_vec(),
+        status: detail.service.status().as_str(),
+        created_at: detail.created_at.into(),
+        updated_at: detail.updated_at.into(),
+    }
 }
 
 async fn create_fulfillment(

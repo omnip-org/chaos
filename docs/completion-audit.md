@@ -13,7 +13,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
-| 7 — Real Checkout | Partial | Guest contact and billing/shipping snapshots are implemented; authenticated Customer association, shipping selection, tax, promotions, recalculation, and Customer Order history remain open. |
+| 7 — Real Checkout | Partial | Guest identity, address snapshots, Store-owned shipping configuration, Storefront quotes, server-revalidated selection, and Checkout-to-Order shipping snapshots are implemented; authenticated Customer association, tax, promotions, recalculation, and Customer Order history remain open. |
 | 8–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
@@ -44,6 +44,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | Guest identity | Domain tests canonicalize valid email, require optional phones to use E.164, and reject malformed contact data. The Store API requires contact input when creating a Checkout. |
 | Address snapshots | Billing addresses are required and shipping addresses are conditionally required for shippable lines. Typed Checkout and Order snapshot tables use Store-scoped composite foreign keys, RLS, bounded text, ISO country constraints, and revoked update/delete privileges. |
 | Access and immutability | The real-router PostgreSQL matrix proves invalid contact and missing shipping validation, canonical response data, idempotent replay, Checkout-to-Order copying, cross-shopper not-found behavior, and runtime-role denial of contact/address mutation. |
+| Shipping quote and selection | Store-owned services normalize destination countries and use one settlement currency. Possession-bound Storefront quotes expose only active matching services. Checkout revalidates the selected service in its transaction, includes its server-owned amount in the total, and copies the immutable service name, amount, currency, and delivery estimate into the Order. |
 
 ## Required release commands
 

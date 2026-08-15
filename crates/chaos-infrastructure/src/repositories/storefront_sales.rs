@@ -10,6 +10,7 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::{InventoryReservationId, StockBalance},
     merchant::{SalesChannelId, StoreId},
     pricing::{Money, PriceListId},
@@ -68,6 +69,7 @@ type CheckoutHeaderRow = (
     i64,
     i64,
     i64,
+    i64,
     OffsetDateTime,
     OffsetDateTime,
 );
@@ -94,6 +96,7 @@ type OrderHeaderRow = (
     Uuid,
     String,
     String,
+    i64,
     i64,
     i64,
     i64,
@@ -361,6 +364,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
         identity: CheckoutIdentity,
+        shipping_service_id: Option<ShippingServiceId>,
         request: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -422,6 +426,34 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             CartStatus::Active,
             lines,
         )?;
+        let shipping = match (
+            cart.lines().iter().any(CartLine::requires_shipping),
+            shipping_service_id,
+        ) {
+            (true, Some(service_id)) => {
+                let country = identity
+                    .shipping_address()
+                    .ok_or_else(|| ApplicationError::Validation {
+                        violations: vec![chaos_domain::FieldViolation {
+                            field: "shipping_address",
+                            reason: "is required when the Cart contains shippable lines".into(),
+                        }],
+                    })?
+                    .country_code();
+                Some(
+                    load_active_shipping_service(
+                        &mut transaction,
+                        actor,
+                        service_id,
+                        currency,
+                        country,
+                    )
+                    .await?,
+                )
+            }
+            (false, None) => None,
+            _ => return Err(invalid_shipping_selection()),
+        };
         let reservation_id =
             reserve_inventory(&mut transaction, actor, channel_id, &cart, expires_at).await?;
         let checkout = Checkout::freeze(
@@ -429,6 +461,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             reservation_id,
             expires_at,
             identity,
+            shipping,
             cart.lines()
                 .iter()
                 .map(|_| CommercialAdjustments::zero(currency))
@@ -470,6 +503,54 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
+    }
+
+    async fn quote_shipping(
+        &self,
+        shopper: &ShopperActor,
+        cart_id: CartId,
+        destination_country: &str,
+    ) -> Result<Vec<ShippingSelection>, ApplicationError> {
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
+        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        let currency = parse_currency(&header.2)?;
+        let shippable: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sales.cart_lines \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND cart_id = $3 \
+               AND requires_shipping)",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !shippable {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
+            "SELECT s.id, s.code, s.name, s.amount_minor, s.currency::text, \
+                    s.estimated_min_days, s.estimated_max_days \
+             FROM fulfillment.shipping_services s \
+             JOIN fulfillment.shipping_service_regions r \
+               ON r.merchant_account_id = s.merchant_account_id \
+              AND r.store_id = s.store_id AND r.shipping_service_id = s.id \
+             WHERE s.merchant_account_id = $1 AND s.store_id = $2 \
+               AND s.currency = $3 AND s.status = 'active' AND r.country_code = $4 \
+             ORDER BY s.amount_minor, s.code, s.id",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(currency.as_str())
+        .bind(destination_country)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        rows.into_iter().map(shipping_selection_from_row).collect()
     }
 
     async fn get_checkout(
@@ -530,10 +611,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             "INSERT INTO sales.orders \
              (id, merchant_account_id, store_id, sales_channel_id, checkout_id, \
               shopper_id, inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
-              discount_amount_minor, tax_amount_minor, total_amount_minor, created_at, updated_at) \
+              discount_amount_minor, tax_amount_minor, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
              SELECT $5, merchant_account_id, store_id, sales_channel_id, id, shopper_id, \
                     inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
-                    discount_amount_minor, tax_amount_minor, total_amount_minor, $6, $6 \
+                    discount_amount_minor, tax_amount_minor, shipping_amount_minor, total_amount_minor, $6, $6 \
              FROM sales.checkouts WHERE merchant_account_id = $1 AND store_id = $2 \
                AND sales_channel_id = $3 AND id = $4",
         )
@@ -568,6 +649,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         copy_checkout_identity_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
+        copy_checkout_shipping_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
              (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
@@ -1194,8 +1276,8 @@ async fn insert_checkout(
         "INSERT INTO sales.checkouts \
          (id, merchant_account_id, store_id, cart_id, shopper_id, sales_channel_id, price_list_id, \
           inventory_reservation_id, currency, subtotal_amount_minor, discount_amount_minor, \
-          tax_amount_minor, total_amount_minor, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+          tax_amount_minor, shipping_amount_minor, total_amount_minor, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(checkout.id().as_uuid())
     .bind(actor.merchant_account_id.as_uuid())
@@ -1213,12 +1295,20 @@ async fn insert_checkout(
     .bind(checkout.subtotal().amount_minor())
     .bind(checkout.discount().amount_minor())
     .bind(checkout.tax().amount_minor())
+    .bind(
+        checkout
+            .shipping()
+            .map_or(0, |selection| selection.amount().amount_minor()),
+    )
     .bind(checkout.total().amount_minor())
     .bind(checkout.expires_at())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     insert_checkout_identity(transaction, actor, checkout).await?;
+    if let Some(selection) = checkout.shipping() {
+        insert_checkout_shipping(transaction, actor, checkout.id(), selection).await?;
+    }
     for (position, line) in checkout.lines().iter().enumerate() {
         let cart_line = line.cart_line();
         sqlx::query(
@@ -1285,6 +1375,34 @@ async fn insert_checkout_identity(
     if let Some(address) = identity.shipping_address() {
         insert_checkout_address(transaction, actor, checkout.id(), "shipping", address).await?;
     }
+    Ok(())
+}
+
+async fn insert_checkout_shipping(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    selection: &ShippingSelection,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO sales.checkout_shipping_selections \
+         (merchant_account_id, store_id, checkout_id, shipping_service_id, service_code, \
+          service_name, amount_minor, currency, estimated_min_days, estimated_max_days) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(selection.service_id().as_uuid())
+    .bind(selection.code())
+    .bind(selection.name())
+    .bind(selection.amount().amount_minor())
+    .bind(selection.amount().currency().as_str())
+    .bind(i16::try_from(selection.estimated_min_days()).map_err(unexpected_conversion)?)
+    .bind(i16::try_from(selection.estimated_max_days()).map_err(unexpected_conversion)?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     Ok(())
 }
 
@@ -1358,6 +1476,27 @@ async fn copy_checkout_identity_to_order(
     if contact.rows_affected() != 1 || addresses.rows_affected() == 0 {
         return Err(corrupt_sales_state());
     }
+    Ok(())
+}
+
+async fn copy_checkout_shipping_to_order(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    order_id: OrderId,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO sales.order_shipping_selections \
+         (merchant_account_id, store_id, order_id, shipping_service_id, service_code, service_name, \
+          amount_minor, currency, estimated_min_days, estimated_max_days) \
+         SELECT merchant_account_id, store_id, $4, shipping_service_id, service_code, service_name, \
+                amount_minor, currency, estimated_min_days, estimated_max_days \
+         FROM sales.checkout_shipping_selections \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid()).bind(order_id.as_uuid())
+    .execute(&mut **transaction).await.map_err(database_error)?;
     Ok(())
 }
 
@@ -1451,6 +1590,91 @@ fn postal_address_from_row(row: AddressRow) -> Result<PostalAddress, Application
         .map_err(ApplicationError::from)
 }
 
+async fn load_active_shipping_service(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    service_id: ShippingServiceId,
+    currency: CurrencyCode,
+    country_code: &str,
+) -> Result<ShippingSelection, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
+        "SELECT s.id, s.code, s.name, s.amount_minor, s.currency::text, \
+                s.estimated_min_days, s.estimated_max_days \
+         FROM fulfillment.shipping_services s \
+         JOIN fulfillment.shipping_service_regions r \
+           ON r.merchant_account_id = s.merchant_account_id AND r.store_id = s.store_id \
+          AND r.shipping_service_id = s.id \
+         WHERE s.merchant_account_id = $1 AND s.store_id = $2 AND s.id = $3 \
+           AND s.currency = $4 AND s.status = 'active' AND r.country_code = $5 \
+         FOR SHARE OF s",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(service_id.as_uuid())
+    .bind(currency.as_str())
+    .bind(country_code)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(invalid_shipping_selection)?;
+    shipping_selection_from_row(row)
+}
+
+fn shipping_selection_from_row(
+    row: (Uuid, String, String, i64, String, i16, i16),
+) -> Result<ShippingSelection, ApplicationError> {
+    let currency = parse_currency(&row.4)?;
+    ShippingSelection::rehydrate(
+        ShippingServiceId::from_uuid(row.0),
+        row.1,
+        row.2,
+        Money::new(row.3, currency),
+        u16::try_from(row.5).map_err(unexpected_conversion)?,
+        u16::try_from(row.6).map_err(unexpected_conversion)?,
+    )
+    .map_err(ApplicationError::from)
+}
+
+async fn load_checkout_shipping(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+) -> Result<Option<ShippingSelection>, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
+        "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
+                estimated_min_days, estimated_max_days \
+         FROM sales.checkout_shipping_selections \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(shipping_selection_from_row).transpose()
+}
+
+async fn load_order_shipping(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+) -> Result<Option<ShippingSelection>, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
+        "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
+                estimated_min_days, estimated_max_days \
+         FROM sales.order_shipping_selections \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(shipping_selection_from_row).transpose()
+}
+
 async fn load_checkout(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1459,7 +1683,7 @@ async fn load_checkout(
     let row = sqlx::query_as::<_, CheckoutHeaderRow>(
         "SELECT id, shopper_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                total_amount_minor, expires_at, created_at FROM sales.checkouts \
+                shipping_amount_minor, total_amount_minor, expires_at, created_at FROM sales.checkouts \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
     )
     .bind(actor.merchant_account_id.as_uuid())
@@ -1473,6 +1697,7 @@ async fn load_checkout(
         return Ok(None);
     };
     let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
+    let shipping = load_checkout_shipping(transaction, actor, checkout_id).await?;
     let lines = sqlx::query_as::<_, CheckoutLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, quantity, unit_price_amount_minor, subtotal_amount_minor, \
@@ -1498,13 +1723,15 @@ async fn load_checkout(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
-        total_amount_minor: row.10,
-        expires_at: row.11,
+        shipping,
+        shipping_amount_minor: row.10,
+        total_amount_minor: row.11,
+        expires_at: row.12,
         lines: lines
             .into_iter()
             .map(checkout_line_item)
             .collect::<Result<Vec<_>, _>>()?,
-        created_at: row.12,
+        created_at: row.13,
     }))
 }
 
@@ -1534,7 +1761,7 @@ async fn load_order(
     let row = sqlx::query_as::<_, OrderHeaderRow>(
         "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                total_amount_minor, created_at, updated_at FROM sales.orders \
+                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
     )
     .bind(actor.merchant_account_id.as_uuid())
@@ -1548,6 +1775,7 @@ async fn load_order(
         return Ok(None);
     };
     let identity = load_order_identity(transaction, actor, order_id).await?;
+    let shipping = load_order_shipping(transaction, actor, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -1594,7 +1822,9 @@ async fn load_order(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
-        total_amount_minor: row.10,
+        shipping,
+        shipping_amount_minor: row.10,
+        total_amount_minor: row.11,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -1617,8 +1847,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.11,
-        updated_at: row.12,
+        created_at: row.12,
+        updated_at: row.13,
     }))
 }
 
@@ -1683,6 +1913,8 @@ struct CheckoutSnapshot {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    shipping: Option<ShippingSelectionSnapshot>,
+    shipping_amount_minor: i64,
     total_amount_minor: i64,
     expires_at: String,
     lines: Vec<CheckoutLineSnapshot>,
@@ -1719,6 +1951,8 @@ struct OrderSnapshot {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    shipping: Option<ShippingSelectionSnapshot>,
+    shipping_amount_minor: i64,
     total_amount_minor: i64,
     lines: Vec<OrderLineSnapshot>,
     transitions: Vec<OrderTransitionSnapshot>,
@@ -1752,6 +1986,17 @@ struct OrderTransitionSnapshot {
     kind: String,
     actor_user_id: Option<Uuid>,
     occurred_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ShippingSelectionSnapshot {
+    service_id: Uuid,
+    code: String,
+    name: String,
+    amount_minor: i64,
+    currency: String,
+    estimated_min_days: u16,
+    estimated_max_days: u16,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1826,6 +2071,11 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
+        shipping: detail
+            .shipping
+            .as_ref()
+            .map(ShippingSelectionSnapshot::from),
+        shipping_amount_minor: detail.shipping_amount_minor,
         total_amount_minor: detail.total_amount_minor,
         expires_at: format_time(detail.expires_at)?,
         lines: detail
@@ -1854,6 +2104,11 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
+        shipping: snapshot
+            .shipping
+            .map(ShippingSelection::try_from)
+            .transpose()?,
+        shipping_amount_minor: snapshot.shipping_amount_minor,
         total_amount_minor: snapshot.total_amount_minor,
         expires_at: parse_time(&snapshot.expires_at)?,
         lines: snapshot
@@ -1880,6 +2135,11 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
+        shipping: detail
+            .shipping
+            .as_ref()
+            .map(ShippingSelectionSnapshot::from),
+        shipping_amount_minor: detail.shipping_amount_minor,
         total_amount_minor: detail.total_amount_minor,
         lines: detail.lines.iter().map(OrderLineSnapshot::from).collect(),
         transitions: detail
@@ -1918,6 +2178,11 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
+        shipping: snapshot
+            .shipping
+            .map(ShippingSelection::try_from)
+            .transpose()?,
+        shipping_amount_minor: snapshot.shipping_amount_minor,
         total_amount_minor: snapshot.total_amount_minor,
         lines: snapshot
             .lines
@@ -1959,6 +2224,36 @@ impl From<&CheckoutIdentity> for CheckoutIdentitySnapshot {
             billing_address: PostalAddressSnapshot::from(value.billing_address()),
             shipping_address: value.shipping_address().map(PostalAddressSnapshot::from),
         }
+    }
+}
+
+impl From<&ShippingSelection> for ShippingSelectionSnapshot {
+    fn from(value: &ShippingSelection) -> Self {
+        Self {
+            service_id: value.service_id().as_uuid(),
+            code: value.code().into(),
+            name: value.name().into(),
+            amount_minor: value.amount().amount_minor(),
+            currency: value.amount().currency().as_str().into(),
+            estimated_min_days: value.estimated_min_days(),
+            estimated_max_days: value.estimated_max_days(),
+        }
+    }
+}
+
+impl TryFrom<ShippingSelectionSnapshot> for ShippingSelection {
+    type Error = ApplicationError;
+
+    fn try_from(value: ShippingSelectionSnapshot) -> Result<Self, Self::Error> {
+        ShippingSelection::rehydrate(
+            ShippingServiceId::from_uuid(value.service_id),
+            value.code,
+            value.name,
+            Money::new(value.amount_minor, parse_currency(&value.currency)?),
+            value.estimated_min_days,
+            value.estimated_max_days,
+        )
+        .map_err(ApplicationError::from)
     }
 }
 
@@ -2268,6 +2563,15 @@ fn checkout_not_found(checkout_id: CheckoutId) -> ApplicationError {
     }
 }
 
+fn invalid_shipping_selection() -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "shipping_service_id",
+            reason: "must reference an active service for the Cart currency and destination".into(),
+        }],
+    }
+}
+
 fn order_not_found(order_id: OrderId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "order",
@@ -2450,6 +2754,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
+
         for (id, code) in [
             (store_id, "sales-store"),
             (other_store_id, "other-sales-store"),
@@ -2475,6 +2780,30 @@ mod tests {
             .await
             .unwrap();
         }
+        let shipping_service_id = ShippingServiceId::new();
+        sqlx::query(
+            "INSERT INTO fulfillment.shipping_services \
+             (id, merchant_account_id, store_id, code, name, amount_minor, currency, \
+              estimated_min_days, estimated_max_days) \
+             VALUES ($1, $2, $3, 'standard', 'Standard shipping', 0, 'USD', 2, 5)",
+        )
+        .bind(shipping_service_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO fulfillment.shipping_service_regions \
+             (merchant_account_id, store_id, shipping_service_id, country_code) \
+             VALUES ($1, $2, $3, 'US')",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(shipping_service_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         for (id, store, code) in [
             (channel_id, store_id, "web"),
             (other_channel_id, other_store_id, "other-web"),
@@ -2640,6 +2969,7 @@ mod tests {
                     contact: contact_input(),
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
+                    shipping_service_id: Some(shipping_service_id),
                     now,
                     idempotency: request(first_key, 3),
                 })
@@ -2656,6 +2986,7 @@ mod tests {
                     contact: contact_input(),
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
+                    shipping_service_id: Some(shipping_service_id),
                     now,
                     idempotency: request(second_key, 3),
                 })
@@ -2709,6 +3040,7 @@ mod tests {
                     contact: contact_input(),
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
+                    shipping_service_id: Some(shipping_service_id),
                     now,
                     idempotency: request(format!("second-checkout-{suffix}"), 4),
                 })

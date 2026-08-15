@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
     pricing::PriceListId,
     sales::{CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderId, OrderStatus, ShopperId},
@@ -68,6 +69,8 @@ pub struct CheckoutDetail {
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
+    pub shipping: Option<ShippingSelection>,
+    pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
     pub expires_at: OffsetDateTime,
     pub lines: Vec<CheckoutLineItem>,
@@ -112,6 +115,8 @@ pub struct OrderDetail {
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
+    pub shipping: Option<ShippingSelection>,
+    pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
     pub lines: Vec<OrderLineItem>,
     pub transitions: Vec<OrderTransitionItem>,
@@ -159,6 +164,14 @@ pub trait StorefrontSalesRepository: Send + Sync {
         idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
+    async fn quote_shipping(
+        &self,
+        actor: &ShopperActor,
+        cart_id: CartId,
+        destination_country: &str,
+    ) -> Result<Vec<ShippingSelection>, ApplicationError>;
+
+    #[allow(clippy::too_many_arguments)]
     async fn create_checkout(
         &self,
         actor: &ShopperActor,
@@ -166,6 +179,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
         identity: CheckoutIdentity,
+        shipping_service_id: Option<ShippingServiceId>,
         idempotency: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError>;
 

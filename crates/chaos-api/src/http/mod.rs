@@ -20,7 +20,7 @@ mod storefront_sales;
 use axum::Router;
 use chaos_application::{
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
-    fulfillment::FulfillmentManagement,
+    fulfillment::{FulfillmentManagement, ShippingManagement},
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
@@ -45,9 +45,10 @@ use chaos_infrastructure::{
         PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresSearchIndexer, PostgresStoreAdministrationRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
+        PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
@@ -92,6 +93,7 @@ pub struct ApiState {
     pub payment_service: Arc<PaymentService>,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
+    pub shipping_management: Arc<ShippingManagement>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
@@ -183,6 +185,9 @@ impl ApiState {
         let fulfillment_management = FulfillmentManagement::new(Arc::new(
             PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
         ));
+        let shipping_management = ShippingManagement::new(Arc::new(
+            PostgresShippingServiceRepository::new(infrastructure.runtime_pool()),
+        ));
         let search_indexer = PostgresSearchIndexer::new(infrastructure.runtime_pool());
         let shopper_credentials = HmacShopperCredentialCodec::new(
             settings.shopper_token_active_key_id.clone(),
@@ -216,6 +221,7 @@ impl ApiState {
             payment_service: Arc::new(payment_service),
             payment_workers: Arc::new(payment_workers),
             fulfillment_management: Arc::new(fulfillment_management),
+            shipping_management: Arc::new(shipping_management),
             search_indexer: Arc::new(search_indexer),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),

@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::{
     CurrencyCode, DomainError, FieldViolation,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
     merchant::{MerchantAccountId, SalesChannelId, StoreId},
     pricing::{Money, PriceListId},
@@ -433,6 +434,7 @@ pub struct Checkout {
     currency: CurrencyCode,
     expires_at: OffsetDateTime,
     identity: CheckoutIdentity,
+    shipping: Option<ShippingSelection>,
     lines: Vec<CheckoutLine>,
     subtotal: Money,
     discount: Money,
@@ -446,6 +448,7 @@ impl Checkout {
         reservation_id: Option<InventoryReservationId>,
         expires_at: OffsetDateTime,
         identity: CheckoutIdentity,
+        shipping: Option<ShippingSelection>,
         adjustments: Vec<CommercialAdjustments>,
     ) -> Result<Self, DomainError> {
         if cart.status != CartStatus::Active {
@@ -468,6 +471,22 @@ impl Checkout {
                 "is required when the Cart contains shippable lines",
             ));
         }
+        let requires_shipping = cart.lines.iter().any(CartLine::requires_shipping);
+        if requires_shipping != shipping.is_some() {
+            return Err(validation(
+                "shipping_service_id",
+                "is required exactly when the Cart contains shippable lines",
+            ));
+        }
+        if shipping
+            .as_ref()
+            .is_some_and(|selection| selection.amount().currency() != cart.currency)
+        {
+            return Err(validation(
+                "currency",
+                "Shipping selection must use the Cart currency",
+            ));
+        }
         let lines = cart
             .lines
             .iter()
@@ -477,7 +496,12 @@ impl Checkout {
         let subtotal = sum(lines.iter().map(CheckoutLine::subtotal), cart.currency)?;
         let discount = sum(lines.iter().map(CheckoutLine::discount), cart.currency)?;
         let tax = sum(lines.iter().map(CheckoutLine::tax), cart.currency)?;
-        let total = sum(lines.iter().map(CheckoutLine::total), cart.currency)?;
+        let line_total = sum(lines.iter().map(CheckoutLine::total), cart.currency)?;
+        let total = if let Some(selection) = &shipping {
+            line_total.checked_add(selection.amount())?
+        } else {
+            line_total
+        };
         Ok(Self {
             id: CheckoutId::new(),
             cart_id: cart.id,
@@ -486,6 +510,7 @@ impl Checkout {
             currency: cart.currency,
             expires_at,
             identity,
+            shipping,
             lines,
             subtotal,
             discount,
@@ -520,6 +545,10 @@ impl Checkout {
 
     pub const fn identity(&self) -> &CheckoutIdentity {
         &self.identity
+    }
+
+    pub const fn shipping(&self) -> Option<&ShippingSelection> {
+        self.shipping.as_ref()
     }
 
     pub fn lines(&self) -> &[CheckoutLine] {
@@ -624,6 +653,19 @@ mod tests {
         )
     }
 
+    fn shipping_selection() -> ShippingSelection {
+        let service = crate::fulfillment::ShippingService::create(
+            "standard",
+            "Standard shipping",
+            Money::new(250, CurrencyCode::USD),
+            2,
+            5,
+            vec!["US".into()],
+        )
+        .unwrap();
+        ShippingSelection::from_service(&service).unwrap()
+    }
+
     #[test]
     fn cart_upserts_variant_lines_and_totals_checked_money() {
         let variant_id = ProductVariantId::new();
@@ -660,13 +702,14 @@ mod tests {
             Some(InventoryReservationId::new()),
             OffsetDateTime::UNIX_EPOCH,
             checkout_identity(),
+            Some(shipping_selection()),
             vec![adjustments],
         )
         .unwrap();
         assert_eq!(checkout.subtotal().amount_minor(), 1_000);
         assert_eq!(checkout.discount().amount_minor(), 100);
         assert_eq!(checkout.tax().amount_minor(), 90);
-        assert_eq!(checkout.total().amount_minor(), 990);
+        assert_eq!(checkout.total().amount_minor(), 1_240);
         assert_eq!(checkout.lines()[0].cart_line().product_title(), "Product");
     }
 
@@ -686,6 +729,7 @@ mod tests {
                 Some(InventoryReservationId::new()),
                 OffsetDateTime::UNIX_EPOCH,
                 checkout_identity(),
+                Some(shipping_selection()),
                 vec![adjustment],
             )
             .is_err()
@@ -720,6 +764,7 @@ mod tests {
                 Some(InventoryReservationId::new()),
                 OffsetDateTime::UNIX_EPOCH,
                 identity,
+                None,
                 vec![CommercialAdjustments::zero(CurrencyCode::USD)],
             )
             .is_err()

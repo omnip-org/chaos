@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
+    fulfillment::{ShippingSelection, ShippingServiceId},
     merchant::{ApiKeyClass, ApiKeyScope},
     sales::{CartId, CheckoutContact, CheckoutId, CheckoutIdentity, OrderId, PostalAddress},
 };
@@ -48,8 +49,15 @@ pub struct CreateCheckoutInput {
     pub contact: CheckoutContactInput,
     pub billing_address: PostalAddressInput,
     pub shipping_address: Option<PostalAddressInput>,
+    pub shipping_service_id: Option<ShippingServiceId>,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
+}
+
+pub struct QuoteShippingInput {
+    pub actor: ShopperActor,
+    pub cart_id: CartId,
+    pub destination_country: String,
 }
 
 pub struct CheckoutContactInput {
@@ -196,8 +204,26 @@ impl StorefrontSales {
                 input.now,
                 input.now + Duration::minutes(15),
                 identity,
+                input.shipping_service_id,
                 &input.idempotency,
             )
+            .await
+    }
+
+    pub async fn quote_shipping(
+        &self,
+        input: QuoteShippingInput,
+    ) -> Result<Vec<ShippingSelection>, ApplicationError> {
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CheckoutWrite)?;
+        let country = input.destination_country.trim().to_ascii_uppercase();
+        if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return Err(validation(
+                "destination_country",
+                "must be an ISO 3166-1 alpha-2 country code",
+            ));
+        }
+        self.repository
+            .quote_shipping(&input.actor, input.cart_id, &country)
             .await
     }
 

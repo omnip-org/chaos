@@ -113,6 +113,7 @@ CREATE TYPE fulfillment.return_status AS ENUM (
     'rejected'
 );
 CREATE TYPE fulfillment.return_disposition AS ENUM ('restock', 'discard');
+CREATE TYPE fulfillment.shipping_service_status AS ENUM ('active', 'archived');
 
 CREATE TABLE identity.users (
     id          UUID                    NOT NULL PRIMARY KEY,
@@ -915,6 +916,7 @@ CREATE TABLE sales.checkouts (
     subtotal_amount_minor  BIGINT                  NOT NULL,
     discount_amount_minor  BIGINT                  NOT NULL,
     tax_amount_minor       BIGINT                  NOT NULL,
+    shipping_amount_minor  BIGINT                  NOT NULL,
     total_amount_minor     BIGINT                  NOT NULL,
     expires_at             TIMESTAMPTZ             NOT NULL,
     closed_at              TIMESTAMPTZ,
@@ -941,7 +943,9 @@ CREATE TABLE sales.checkouts (
         AND discount_amount_minor >= 0
         AND discount_amount_minor <= subtotal_amount_minor
         AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor + tax_amount_minor
+        AND shipping_amount_minor >= 0
+        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
+            + tax_amount_minor + shipping_amount_minor
     ),
     CONSTRAINT checkouts_expiration_check CHECK (expires_at > created_at),
     CONSTRAINT checkouts_closure_check CHECK (
@@ -1090,6 +1094,7 @@ CREATE TABLE sales.orders (
     subtotal_amount_minor    BIGINT                NOT NULL,
     discount_amount_minor    BIGINT                NOT NULL,
     tax_amount_minor         BIGINT                NOT NULL,
+    shipping_amount_minor    BIGINT                NOT NULL,
     total_amount_minor       BIGINT                NOT NULL,
     created_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1111,7 +1116,9 @@ CREATE TABLE sales.orders (
         AND discount_amount_minor >= 0
         AND discount_amount_minor <= subtotal_amount_minor
         AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor + tax_amount_minor
+        AND shipping_amount_minor >= 0
+        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
+            + tax_amount_minor + shipping_amount_minor
     )
 );
 
@@ -1372,6 +1379,119 @@ CREATE INDEX refunds_attempt_created_idx
         created_at DESC,
         id DESC
     );
+
+CREATE TABLE fulfillment.shipping_services (
+    id                         UUID                                NOT NULL PRIMARY KEY,
+    merchant_account_id        UUID                                NOT NULL,
+    store_id                   UUID                                NOT NULL,
+    code                       TEXT                                NOT NULL,
+    name                       TEXT                                NOT NULL,
+    amount_minor               BIGINT                              NOT NULL,
+    currency                   CHAR(3)                             NOT NULL,
+    estimated_min_days         SMALLINT                            NOT NULL,
+    estimated_max_days         SMALLINT                            NOT NULL,
+    status                     fulfillment.shipping_service_status NOT NULL DEFAULT 'active',
+    created_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, code),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, currency)
+        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    CONSTRAINT shipping_services_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT shipping_services_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT shipping_services_amount_nonnegative_check CHECK (amount_minor >= 0),
+    CONSTRAINT shipping_services_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT shipping_services_estimate_check CHECK (
+        estimated_min_days BETWEEN 0 AND 365
+        AND estimated_max_days BETWEEN estimated_min_days AND 365
+    )
+);
+
+CREATE INDEX shipping_services_quote_idx
+    ON fulfillment.shipping_services (
+        merchant_account_id,
+        store_id,
+        currency,
+        status,
+        id
+    );
+
+CREATE TABLE fulfillment.shipping_service_regions (
+    merchant_account_id UUID    NOT NULL,
+    store_id            UUID    NOT NULL,
+    shipping_service_id UUID    NOT NULL,
+    country_code        CHAR(2) NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, shipping_service_id, country_code),
+    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    CONSTRAINT shipping_service_regions_country_check CHECK (country_code ~ '^[A-Z]{2}$')
+);
+
+CREATE INDEX shipping_service_regions_quote_idx
+    ON fulfillment.shipping_service_regions (
+        merchant_account_id,
+        store_id,
+        country_code,
+        shipping_service_id
+    );
+
+CREATE TABLE sales.checkout_shipping_selections (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    checkout_id         UUID        NOT NULL,
+    shipping_service_id UUID        NOT NULL,
+    service_code        TEXT        NOT NULL,
+    service_name        TEXT        NOT NULL,
+    amount_minor        BIGINT      NOT NULL,
+    currency            CHAR(3)     NOT NULL,
+    estimated_min_days  SMALLINT    NOT NULL,
+    estimated_max_days  SMALLINT    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    CONSTRAINT checkout_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
+    CONSTRAINT checkout_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
+    CONSTRAINT checkout_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
+    CONSTRAINT checkout_shipping_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT checkout_shipping_estimate_check CHECK (
+        estimated_min_days BETWEEN 0 AND 365
+        AND estimated_max_days BETWEEN estimated_min_days AND 365
+    )
+);
+
+CREATE TABLE sales.order_shipping_selections (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    order_id            UUID        NOT NULL,
+    shipping_service_id UUID        NOT NULL,
+    service_code        TEXT        NOT NULL,
+    service_name        TEXT        NOT NULL,
+    amount_minor        BIGINT      NOT NULL,
+    currency            CHAR(3)     NOT NULL,
+    estimated_min_days  SMALLINT    NOT NULL,
+    estimated_max_days  SMALLINT    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, order_id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    CONSTRAINT order_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
+    CONSTRAINT order_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
+    CONSTRAINT order_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
+    CONSTRAINT order_shipping_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT order_shipping_estimate_check CHECK (
+        estimated_min_days BETWEEN 0 AND 365
+        AND estimated_max_days BETWEEN estimated_min_days AND 365
+    )
+);
 
 CREATE TABLE fulfillment.fulfillments (
     id                   UUID                           NOT NULL PRIMARY KEY,
@@ -1822,10 +1942,12 @@ ALTER TABLE sales.checkouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.checkout_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.payment_attempts ENABLE ROW LEVEL SECURITY;
@@ -1834,6 +1956,8 @@ ALTER TABLE integration.webhook_inbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search.product_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.fulfillments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_service_regions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.fulfillment_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.returns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.return_lines ENABLE ROW LEVEL SECURITY;
@@ -2142,6 +2266,16 @@ CREATE POLICY merchant_account_isolation ON sales.checkout_lines
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON sales.checkout_shipping_selections
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON sales.orders
     USING (
         merchant_account_id =
@@ -2173,6 +2307,16 @@ CREATE POLICY merchant_account_isolation ON sales.order_addresses
     );
 
 CREATE POLICY merchant_account_isolation ON sales.order_lines
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.order_shipping_selections
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -2253,6 +2397,26 @@ CREATE POLICY merchant_account_isolation ON search.product_documents
     );
 
 CREATE POLICY merchant_account_isolation ON fulfillment.fulfillments
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_services
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_service_regions
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -2694,9 +2858,11 @@ GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO c
 REVOKE UPDATE, DELETE
     ON inventory.stock_ledger_entries FROM chaos_runtime;
 REVOKE UPDATE, DELETE
-    ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines FROM chaos_runtime;
+    ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines,
+       sales.checkout_shipping_selections FROM chaos_runtime;
 REVOKE UPDATE, DELETE
-    ON sales.order_contacts, sales.order_addresses, sales.order_lines, sales.order_transitions
+    ON sales.order_contacts, sales.order_addresses, sales.order_lines,
+       sales.order_shipping_selections, sales.order_transitions
     FROM chaos_runtime;
 REVOKE DELETE ON sales.checkouts, sales.orders FROM chaos_runtime;
 REVOKE UPDATE, DELETE

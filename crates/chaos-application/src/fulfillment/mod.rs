@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
+    CurrencyCode,
     fulfillment::{FulfillmentId, FulfillmentStatus, ReturnId, ReturnStatus},
     merchant::{MerchantRole, StoreId},
+    pricing::Money,
     sales::OrderId,
 };
 use time::OffsetDateTime;
@@ -12,9 +14,11 @@ use crate::{
     merchant::MerchantActor,
     ports::{
         FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, IdempotencyRequest,
-        ReturnDetail, ReturnLineInput, ReturnReceiptInput,
+        ReturnDetail, ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail,
+        ShippingServiceRepository,
     },
 };
+use chaos_domain::fulfillment::{ShippingService, ShippingServiceId, ShippingServiceStatus};
 
 pub struct CreateFulfillmentInput {
     pub actor: MerchantActor,
@@ -56,6 +60,83 @@ pub struct TransitionReturnInput {
 
 pub struct FulfillmentManagement {
     repository: Arc<dyn FulfillmentRepository>,
+}
+
+pub struct CreateShippingServiceInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub code: String,
+    pub name: String,
+    pub currency: String,
+    pub amount_minor: i64,
+    pub estimated_min_days: u16,
+    pub estimated_max_days: u16,
+    pub destination_countries: Vec<String>,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct ChangeShippingServiceStatusInput {
+    pub actor: MerchantActor,
+    pub store_id: StoreId,
+    pub service_id: ShippingServiceId,
+    pub status: ShippingServiceStatus,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct ShippingManagement {
+    repository: Arc<dyn ShippingServiceRepository>,
+}
+
+impl ShippingManagement {
+    pub fn new(repository: Arc<dyn ShippingServiceRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn create(
+        &self,
+        input: CreateShippingServiceInput,
+    ) -> Result<ShippingServiceDetail, ApplicationError> {
+        require_operator(input.actor)?;
+        let currency = CurrencyCode::parse(&input.currency)?;
+        let service = ShippingService::create(
+            input.code,
+            input.name,
+            Money::new(input.amount_minor, currency),
+            input.estimated_min_days,
+            input.estimated_max_days,
+            input.destination_countries,
+        )?;
+        self.repository
+            .create_shipping_service(input.actor, input.store_id, &service, &input.idempotency)
+            .await
+    }
+
+    pub async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Vec<ShippingServiceDetail>, ApplicationError> {
+        require_operator(actor)?;
+        self.repository
+            .list_shipping_services(actor, store_id)
+            .await
+    }
+
+    pub async fn change_status(
+        &self,
+        input: ChangeShippingServiceStatusInput,
+    ) -> Result<ShippingServiceDetail, ApplicationError> {
+        require_operator(input.actor)?;
+        self.repository
+            .change_shipping_service_status(
+                input.actor,
+                input.store_id,
+                input.service_id,
+                input.status,
+                &input.idempotency,
+            )
+            .await
+    }
 }
 
 impl FulfillmentManagement {

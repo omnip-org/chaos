@@ -530,6 +530,57 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
+        let shipping_uri = format!("{store_uri}/shipping-services");
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &shipping_uri,
+                Some(&format!("create-shipping-http-{suffix}")),
+                Some(json!({
+                    "code": "standard",
+                    "name": "Standard shipping",
+                    "amount_minor": 700,
+                    "currency": "SGD",
+                    "estimated_min_days": 2,
+                    "estimated_max_days": 5,
+                    "destination_countries": ["sg", "MY"]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let shipping = response_json(response).await;
+        let shipping_id = shipping["data"]["id"].as_str().unwrap();
+        assert_eq!(
+            shipping["data"]["destination_countries"],
+            json!(["MY", "SG"])
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &shipping_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{shipping_uri}/{shipping_id}/archive"),
+                Some(&format!("archive-shipping-http-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["data"]["status"], "archived");
+
         let response = router(owner_state.clone())
             .oneshot(request(
                 Method::POST,

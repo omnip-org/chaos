@@ -41,6 +41,8 @@ Stripe Connect is a separate product decision, not an adapter detail. Before imp
 
 `fulfillment` remains the business bounded context. It owns allocations, Fulfillments, shipments, delivery, Returns, and the rules that constrain quantities and state transitions. An application `ShippingProvider` port may provide capabilities such as rate quotation, label purchase, shipment cancellation, and tracking refresh.
 
+Store-configured manual Shipping Services are the provider-neutral baseline. Fulfillment owns their service identity, rate, settlement currency, destination countries, lifecycle, and delivery estimate. Storefront quotation reads this capability through an application port. Sales accepts only a service identifier, revalidates it against the Cart currency and shipping destination in the Checkout transaction, and freezes the selected values. This baseline does not impersonate a carrier quote and remains usable when no external provider is configured.
+
 Carrier names, service codes, label formats, customs payloads, tracking event names, and provider errors remain adapter concerns. Purchased label and tracking snapshots are persisted as fulfillment evidence after a successful provider command. Provider callbacks enter a signed, deduplicated inbox and advance fulfillment state only through application use cases.
 
 A separate `logistics` bounded context is deferred. It becomes justified only when Chaos owns multi-leg routing, warehouse selection, split shipment planning, cross-dock or transfer workflows, or carrier procurement independently of one Order Fulfillment. Until then, a new top-level context would duplicate Fulfillment ownership.

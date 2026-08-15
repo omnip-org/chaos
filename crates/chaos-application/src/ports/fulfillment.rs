@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use chaos_domain::{
     catalog::ProductVariantId,
-    fulfillment::{FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus},
+    fulfillment::{
+        FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
+        ShippingService, ShippingServiceId, ShippingServiceStatus,
+    },
     inventory::InventoryLocationId,
     merchant::StoreId,
     sales::OrderId,
@@ -46,6 +49,39 @@ pub struct ReturnDetail {
     pub lines: Vec<ReturnLineInput>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+#[derive(Clone)]
+pub struct ShippingServiceDetail {
+    pub service: ShippingService,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[async_trait]
+pub trait ShippingServiceRepository: Send + Sync {
+    async fn create_shipping_service(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        service: &ShippingService,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<ShippingServiceDetail, ApplicationError>;
+
+    async fn list_shipping_services(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Vec<ShippingServiceDetail>, ApplicationError>;
+
+    async fn change_shipping_service_status(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        service_id: ShippingServiceId,
+        status: ShippingServiceStatus,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<ShippingServiceDetail, ApplicationError>;
 }
 
 #[async_trait]

@@ -104,7 +104,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Every Outbox event type references an immutable consumer registry. A registered event has at most one owner; claim functions verify that owner before using `FOR UPDATE SKIP LOCKED`. Unowned events remain pending and visible in the consumer backlog until a consumer is deliberately assigned. Delivery is at least once, so consumers must be idempotent.
 - Provider webhooks are signature-verified and written to an inbox before asynchronous processing. Provider event IDs enforce deduplication.
 - Payment providers are adapters. Payment state advances only from verified provider responses or webhooks.
-- Shipping providers are Fulfillment adapters. Notification providers deliver semantic requests without owning commerce state.
+- Store-owned Shipping Services and destination regions are Fulfillment data. Sales requests a server-authoritative quote and freezes the selected service, amount, currency, and delivery estimate in Checkout and Order snapshots. External shipping providers remain Fulfillment infrastructure adapters. Notification providers deliver semantic requests without owning commerce state.
 - Analytics consumes immutable commerce facts and untrusted browser behavior without becoming the source of truth for either commerce state or authorization.
 
 ## 6. API conventions

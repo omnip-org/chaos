@@ -32,7 +32,7 @@ pub use catalog_read::{
 pub use clock::Clock;
 pub use fulfillment::{
     FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, ReturnDetail,
-    ReturnLineInput, ReturnReceiptInput,
+    ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail, ShippingServiceRepository,
 };
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,

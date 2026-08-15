@@ -165,6 +165,27 @@
         }
       }
     },
+    "/carts/{cart_id}/shipping-options": {
+      "post": {
+        "operationId": "quoteShippingOptions",
+        "tags": ["Checkout"],
+        "summary": "Quote active Shipping Services for a Cart destination",
+        "security": [{ "publishableKey": ["checkout:write"] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CartId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuoteShippingRequest" } } } },
+        "responses": {
+          "200": { "description": "Available Shipping Services", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingOptionCollectionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/carts/{cart_id}/checkout": {
       "post": {
         "operationId": "createCheckout",
@@ -535,13 +556,44 @@
           "shipping_address": {
             "allOf": [{ "$ref": "#/components/schemas/PostalAddress" }],
             "description": "Required when any Cart line requires shipping"
+          },
+          "shipping_service_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Required for shippable Carts and revalidated when Checkout is created"
           }
         }
+      },
+      "QuoteShippingRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["destination_country"],
+        "properties": { "destination_country": { "type": "string", "pattern": "^[A-Za-z]{2}$" } }
+      },
+      "ShippingOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service_id", "code", "name", "amount_minor", "currency", "estimated_min_days", "estimated_max_days"],
+        "properties": {
+          "service_id": { "type": "string", "format": "uuid" },
+          "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "estimated_min_days": { "type": "integer", "minimum": 0, "maximum": 365 },
+          "estimated_max_days": { "type": "integer", "minimum": 0, "maximum": 365 }
+        }
+      },
+      "ShippingOptionCollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ShippingOption" } } }
       },
       "Checkout": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "cart_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "total_amount_minor", "expires_at", "lines", "created_at"],
+        "required": ["id", "cart_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "shipping_amount_minor", "total_amount_minor", "expires_at", "lines", "created_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "cart_id": { "type": "string", "format": "uuid" },
@@ -552,9 +604,11 @@
           "contact": { "$ref": "#/components/schemas/CheckoutContact" },
           "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
           "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
+          "shipping": { "$ref": "#/components/schemas/ShippingOption" },
           "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "shipping_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "expires_at": { "type": "string", "format": "date-time" },
           "lines": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/CheckoutLine" } },
@@ -598,7 +652,7 @@
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
@@ -609,9 +663,11 @@
           "contact": { "$ref": "#/components/schemas/CheckoutContact" },
           "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
           "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
+          "shipping": { "$ref": "#/components/schemas/ShippingOption" },
           "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "shipping_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "lines": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/OrderLine" } },
           "transitions": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/OrderTransition" } },

@@ -1,6 +1,9 @@
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, catalog::ProductVariantId, sales::OrderId};
+use crate::{
+    CurrencyCode, DomainError, FieldViolation, catalog::ProductVariantId, pricing::Money,
+    sales::OrderId,
+};
 
 macro_rules! operation_id {
     ($name:ident) => {
@@ -31,6 +34,274 @@ macro_rules! operation_id {
 
 operation_id!(FulfillmentId);
 operation_id!(ReturnId);
+operation_id!(ShippingServiceId);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShippingServiceStatus {
+    Active,
+    Archived,
+}
+
+impl ShippingServiceStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "archived" => Some(Self::Archived),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingService {
+    id: ShippingServiceId,
+    code: String,
+    name: String,
+    rate: Money,
+    estimated_min_days: u16,
+    estimated_max_days: u16,
+    destination_countries: Vec<String>,
+    status: ShippingServiceStatus,
+}
+
+impl ShippingService {
+    pub fn create(
+        code: impl Into<String>,
+        name: impl Into<String>,
+        rate: Money,
+        estimated_min_days: u16,
+        estimated_max_days: u16,
+        destination_countries: Vec<String>,
+    ) -> Result<Self, DomainError> {
+        Self::build(
+            ShippingServiceId::new(),
+            code,
+            name,
+            rate,
+            estimated_min_days,
+            estimated_max_days,
+            destination_countries,
+            ShippingServiceStatus::Active,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rehydrate(
+        id: ShippingServiceId,
+        code: impl Into<String>,
+        name: impl Into<String>,
+        rate: Money,
+        estimated_min_days: u16,
+        estimated_max_days: u16,
+        destination_countries: Vec<String>,
+        status: ShippingServiceStatus,
+    ) -> Result<Self, DomainError> {
+        Self::build(
+            id,
+            code,
+            name,
+            rate,
+            estimated_min_days,
+            estimated_max_days,
+            destination_countries,
+            status,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        id: ShippingServiceId,
+        code: impl Into<String>,
+        name: impl Into<String>,
+        rate: Money,
+        estimated_min_days: u16,
+        estimated_max_days: u16,
+        mut destination_countries: Vec<String>,
+        status: ShippingServiceStatus,
+    ) -> Result<Self, DomainError> {
+        let code = code.into();
+        let name = name.into();
+        if code.is_empty()
+            || code.len() > 64
+            || !code
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(validation(
+                "code",
+                "must contain 1-64 lowercase letters, digits, or hyphens",
+            ));
+        }
+        validate_text("name", &name, 120)?;
+        if rate.amount_minor() < 0 {
+            return Err(validation("amount_minor", "must be zero or greater"));
+        }
+        if estimated_min_days > estimated_max_days || estimated_max_days > 365 {
+            return Err(validation(
+                "estimated_delivery_days",
+                "must be ordered and no greater than 365 days",
+            ));
+        }
+        if destination_countries.is_empty() {
+            return Err(validation(
+                "destination_countries",
+                "must contain at least one country",
+            ));
+        }
+        for country in &mut destination_countries {
+            *country = country.trim().to_ascii_uppercase();
+            if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
+                return Err(validation(
+                    "destination_countries",
+                    "must contain ISO 3166-1 alpha-2 country codes",
+                ));
+            }
+        }
+        destination_countries.sort();
+        destination_countries.dedup();
+        Ok(Self {
+            id,
+            code,
+            name,
+            rate,
+            estimated_min_days,
+            estimated_max_days,
+            destination_countries,
+            status,
+        })
+    }
+
+    pub const fn id(&self) -> ShippingServiceId {
+        self.id
+    }
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub const fn rate(&self) -> &Money {
+        &self.rate
+    }
+    pub const fn estimated_min_days(&self) -> u16 {
+        self.estimated_min_days
+    }
+    pub const fn estimated_max_days(&self) -> u16 {
+        self.estimated_max_days
+    }
+    pub fn destination_countries(&self) -> &[String] {
+        &self.destination_countries
+    }
+    pub const fn status(&self) -> ShippingServiceStatus {
+        self.status
+    }
+
+    pub fn serves(&self, currency: CurrencyCode, country_code: &str) -> bool {
+        self.status == ShippingServiceStatus::Active
+            && self.rate.currency() == currency
+            && self
+                .destination_countries
+                .binary_search(&country_code.to_ascii_uppercase())
+                .is_ok()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingSelection {
+    service_id: ShippingServiceId,
+    code: String,
+    name: String,
+    amount: Money,
+    estimated_min_days: u16,
+    estimated_max_days: u16,
+}
+
+impl ShippingSelection {
+    pub fn from_service(service: &ShippingService) -> Result<Self, DomainError> {
+        if service.status() != ShippingServiceStatus::Active {
+            return Err(validation(
+                "shipping_service_id",
+                "must reference an active service",
+            ));
+        }
+        Ok(Self {
+            service_id: service.id(),
+            code: service.code().into(),
+            name: service.name().into(),
+            amount: service.rate().clone(),
+            estimated_min_days: service.estimated_min_days(),
+            estimated_max_days: service.estimated_max_days(),
+        })
+    }
+
+    pub fn rehydrate(
+        service_id: ShippingServiceId,
+        code: impl Into<String>,
+        name: impl Into<String>,
+        amount: Money,
+        estimated_min_days: u16,
+        estimated_max_days: u16,
+    ) -> Result<Self, DomainError> {
+        let code = code.into();
+        let name = name.into();
+        if code.is_empty() || code.len() > 64 {
+            return Err(validation(
+                "shipping_code",
+                "must contain valid snapshot text",
+            ));
+        }
+        validate_text("shipping_name", &name, 120)?;
+        if amount.amount_minor() < 0 || estimated_min_days > estimated_max_days {
+            return Err(validation("shipping_selection", "contains invalid values"));
+        }
+        Ok(Self {
+            service_id,
+            code,
+            name,
+            amount,
+            estimated_min_days,
+            estimated_max_days,
+        })
+    }
+
+    pub const fn service_id(&self) -> ShippingServiceId {
+        self.service_id
+    }
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub const fn amount(&self) -> &Money {
+        &self.amount
+    }
+    pub const fn estimated_min_days(&self) -> u16 {
+        self.estimated_min_days
+    }
+    pub const fn estimated_max_days(&self) -> u16 {
+        self.estimated_max_days
+    }
+}
+
+fn validate_text(field: &'static str, value: &str, max: usize) -> Result<(), DomainError> {
+    if value.trim().is_empty() || value.chars().count() > max || value.chars().any(char::is_control)
+    {
+        Err(validation(
+            field,
+            "must contain printable text within the allowed length",
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FulfillmentStatus {
@@ -317,5 +588,48 @@ mod tests {
         returned.receive().unwrap();
         returned.complete().unwrap();
         assert_eq!(returned.status(), ReturnStatus::Completed);
+    }
+
+    #[test]
+    fn shipping_service_normalizes_regions_and_matches_currency() {
+        let service = ShippingService::create(
+            "express",
+            "Express",
+            Money::new(1_500, CurrencyCode::USD),
+            1,
+            2,
+            vec!["us".into(), "CA".into(), "US".into()],
+        )
+        .unwrap();
+
+        assert_eq!(service.destination_countries(), &["CA", "US"]);
+        assert!(service.serves(CurrencyCode::USD, "us"));
+        assert!(!service.serves(CurrencyCode::parse("EUR").unwrap(), "US"));
+    }
+
+    #[test]
+    fn shipping_service_rejects_invalid_estimates_and_regions() {
+        assert!(
+            ShippingService::create(
+                "standard",
+                "Standard",
+                Money::new(500, CurrencyCode::USD),
+                5,
+                2,
+                vec!["US".into()],
+            )
+            .is_err()
+        );
+        assert!(
+            ShippingService::create(
+                "standard",
+                "Standard",
+                Money::new(500, CurrencyCode::USD),
+                2,
+                5,
+                vec![],
+            )
+            .is_err()
+        );
     }
 }

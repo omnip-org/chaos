@@ -10,9 +10,10 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
     merchant::StoreId,
-    pricing::PriceListId,
+    pricing::{Money, PriceListId},
     sales::{
         CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderId, OrderStatus, PostalAddress,
         ShopperId,
@@ -39,6 +40,7 @@ type HeaderRow = (
     Uuid,
     String,
     String,
+    i64,
     i64,
     i64,
     i64,
@@ -251,7 +253,7 @@ async fn load_order(
     let row = sqlx::query_as::<_, HeaderRow>(
         "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                total_amount_minor, created_at, updated_at FROM sales.orders \
+                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
     )
     .bind(account_id)
@@ -264,6 +266,7 @@ async fn load_order(
         return Ok(None);
     };
     let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
+    let shipping = load_order_shipping(transaction, account_id, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -310,7 +313,9 @@ async fn load_order(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
-        total_amount_minor: row.10,
+        shipping,
+        shipping_amount_minor: row.10,
+        total_amount_minor: row.11,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -350,9 +355,41 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.11,
-        updated_at: row.12,
+        created_at: row.12,
+        updated_at: row.13,
     }))
+}
+
+async fn load_order_shipping(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    order_id: OrderId,
+) -> Result<Option<ShippingSelection>, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
+        "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
+                estimated_min_days, estimated_max_days \
+         FROM sales.order_shipping_selections \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(|row| {
+        ShippingSelection::rehydrate(
+            ShippingServiceId::from_uuid(row.0),
+            row.1,
+            row.2,
+            Money::new(row.3, CurrencyCode::parse(&row.4)?),
+            u16::try_from(row.5).map_err(|error| ApplicationError::Unexpected(error.into()))?,
+            u16::try_from(row.6).map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
+        .map_err(ApplicationError::from)
+    })
+    .transpose()
 }
 
 async fn load_order_identity(
