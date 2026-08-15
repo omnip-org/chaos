@@ -182,7 +182,7 @@ Storefront responses deliberately omit lifecycle status, drafts, archived record
 
 ## Storefront Carts and Checkout
 
-The current Store API authenticates Cart, Checkout, Payment Attempt, and Order access with a Store-and-Channel-scoped publishable key. This is a commerce-kernel boundary, not a production shopper-ownership boundary. Phase 6 adds possession-bound guest credentials and authenticated-customer ownership before these resource APIs are exposed to untrusted browser clients.
+The current Store API authenticates Cart, Checkout, Payment Attempt, and Order access with a Store-and-Channel-scoped publishable key. This is a commerce-kernel boundary, not a production shopper-ownership boundary. Phase 6 adds a signed credential returned by Cart creation and required in `x-chaos-shopper-token` for descendant resource access. Authenticated-Customer association follows in Phase 7. These resource APIs must not be exposed to untrusted browser clients before the Phase 6 credential contract is implemented.
 
 `POST /store/v1/carts` creates an active Cart for the publishable key's Store and Sales Channel. The optional currency must be enabled for that Store and defaults to its default currency. Cart creation selects one currently active Price List deterministically. `GET /store/v1/carts/{cart_id}` reads the current Cart, while `PUT` and `DELETE` on `/store/v1/carts/{cart_id}/lines/{product_variant_id}` add, replace, or remove a line. Cart operations require `carts:write`; mutations also require `Idempotency-Key`.
 
