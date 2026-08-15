@@ -4,13 +4,13 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     inventory::InventoryReservationId,
     pricing::PriceListId,
-    sales::{CartId, CartStatus, CheckoutId, OrderId, OrderStatus},
+    sales::{CartId, CartStatus, CheckoutId, OrderId, OrderStatus, ShopperId},
 };
 use time::OffsetDateTime;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{IdempotencyRequest, MachineActor};
+use super::{IdempotencyRequest, ShopperActor};
 
 pub struct CartLineItem {
     pub product_id: ProductId,
@@ -28,6 +28,7 @@ pub struct CartLineItem {
 
 pub struct CartDetail {
     pub id: CartId,
+    pub shopper_id: ShopperId,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub status: CartStatus,
@@ -56,6 +57,7 @@ pub struct CheckoutLineItem {
 
 pub struct CheckoutDetail {
     pub id: CheckoutId,
+    pub shopper_id: ShopperId,
     pub cart_id: CartId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -98,6 +100,7 @@ pub struct OrderTransitionItem {
 
 pub struct OrderDetail {
     pub id: OrderId,
+    pub shopper_id: ShopperId,
     pub checkout_id: CheckoutId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -117,20 +120,20 @@ pub struct OrderDetail {
 pub trait StorefrontSalesRepository: Send + Sync {
     async fn create_cart(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         currency: Option<CurrencyCode>,
         idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
     async fn get_cart(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         cart_id: CartId,
     ) -> Result<Option<CartDetail>, ApplicationError>;
 
     async fn set_cart_line(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
@@ -139,7 +142,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
 
     async fn remove_cart_line(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         idempotency: &IdempotencyRequest,
@@ -147,7 +150,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
 
     async fn create_checkout(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         cart_id: CartId,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
@@ -156,13 +159,13 @@ pub trait StorefrontSalesRepository: Send + Sync {
 
     async fn get_checkout(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         checkout_id: CheckoutId,
     ) -> Result<Option<CheckoutDetail>, ApplicationError>;
 
     async fn create_order(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         checkout_id: CheckoutId,
         now: OffsetDateTime,
         idempotency: &IdempotencyRequest,
@@ -170,7 +173,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
 
     async fn get_order(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 }

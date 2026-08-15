@@ -13,7 +13,7 @@ use chaos_domain::{
     inventory::InventoryReservationId,
     merchant::StoreId,
     pricing::PriceListId,
-    sales::{CheckoutId, Order, OrderId, OrderStatus},
+    sales::{CheckoutId, Order, OrderId, OrderStatus, ShopperId},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -29,6 +29,7 @@ const CONFIRM_OPERATION: &str = "orders.confirm.v1";
 const CANCEL_OPERATION: &str = "orders.cancel.v1";
 
 type HeaderRow = (
+    Uuid,
     Uuid,
     Uuid,
     Option<Uuid>,
@@ -234,7 +235,7 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, HeaderRow>(
-        "SELECT id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -284,15 +285,16 @@ async fn load_order(
     .map_err(database_error)?;
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.0),
-        checkout_id: CheckoutId::from_uuid(row.1),
-        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.3),
-        currency: CurrencyCode::parse(&row.4)?,
-        status: OrderStatus::parse(&row.5).ok_or_else(corrupt_state)?,
-        subtotal_amount_minor: row.6,
-        discount_amount_minor: row.7,
-        tax_amount_minor: row.8,
-        total_amount_minor: row.9,
+        shopper_id: ShopperId::from_uuid(row.1),
+        checkout_id: CheckoutId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: CurrencyCode::parse(&row.5)?,
+        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_state)?,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
+        total_amount_minor: row.10,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -332,8 +334,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.10,
-        updated_at: row.11,
+        created_at: row.11,
+        updated_at: row.12,
     }))
 }
 

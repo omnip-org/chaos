@@ -11,7 +11,8 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        CartDetail, CheckoutDetail, IdempotencyRequest, MachineActor, StorefrontSalesRepository,
+        CartDetail, CheckoutDetail, IdempotencyRequest, MachineActor, ShopperActor,
+        StorefrontSalesRepository,
     },
 };
 
@@ -19,13 +20,13 @@ mod order_management;
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 
 pub struct CreateCartInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub currency: Option<String>,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct SetCartLineInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub quantity: u32,
@@ -33,21 +34,21 @@ pub struct SetCartLineInput {
 }
 
 pub struct RemoveCartLineInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateCheckoutInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub cart_id: CartId,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateOrderInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub checkout_id: CheckoutId,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
@@ -66,7 +67,7 @@ impl StorefrontSales {
         &self,
         input: CreateCartInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::CartsWrite)?;
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CartsWrite)?;
         let currency = input
             .currency
             .as_deref()
@@ -79,10 +80,10 @@ impl StorefrontSales {
 
     pub async fn get_cart(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         cart_id: CartId,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(actor, ApiKeyScope::CartsWrite)?;
+        require_storefront_scope(&actor.machine, ApiKeyScope::CartsWrite)?;
         self.repository
             .get_cart(actor, cart_id)
             .await?
@@ -93,7 +94,7 @@ impl StorefrontSales {
         &self,
         input: SetCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::CartsWrite)?;
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CartsWrite)?;
         if !(1..=999).contains(&input.quantity) {
             return Err(validation("quantity", "must be between 1 and 999"));
         }
@@ -112,7 +113,7 @@ impl StorefrontSales {
         &self,
         input: RemoveCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::CartsWrite)?;
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CartsWrite)?;
         self.repository
             .remove_cart_line(
                 &input.actor,
@@ -127,7 +128,7 @@ impl StorefrontSales {
         &self,
         input: CreateCheckoutInput,
     ) -> Result<CheckoutDetail, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::CheckoutWrite)?;
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CheckoutWrite)?;
         self.repository
             .create_checkout(
                 &input.actor,
@@ -141,10 +142,10 @@ impl StorefrontSales {
 
     pub async fn get_checkout(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         checkout_id: CheckoutId,
     ) -> Result<CheckoutDetail, ApplicationError> {
-        require_storefront_scope(actor, ApiKeyScope::CheckoutWrite)?;
+        require_storefront_scope(&actor.machine, ApiKeyScope::CheckoutWrite)?;
         self.repository
             .get_checkout(actor, checkout_id)
             .await?
@@ -158,7 +159,7 @@ impl StorefrontSales {
         &self,
         input: CreateOrderInput,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::CheckoutWrite)?;
+        require_storefront_scope(&input.actor.machine, ApiKeyScope::CheckoutWrite)?;
         self.repository
             .create_order(
                 &input.actor,
@@ -171,10 +172,10 @@ impl StorefrontSales {
 
     pub async fn get_order(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         order_id: OrderId,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_scope(actor, ApiKeyScope::CheckoutWrite)?;
+        require_storefront_scope(&actor.machine, ApiKeyScope::CheckoutWrite)?;
         self.repository
             .get_order(actor, order_id)
             .await?

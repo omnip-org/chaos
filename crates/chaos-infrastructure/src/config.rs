@@ -19,6 +19,9 @@ pub struct Settings {
     pub smtp_url: String,
     pub email_from: String,
     pub payment_webhook_secret: String,
+    pub shopper_token_active_key_id: String,
+    pub shopper_token_active_secret: String,
+    pub shopper_token_previous_key: Option<(String, String)>,
     pub dependency_timeout: Duration,
     pub shutdown_drain_delay: Duration,
     pub log_filter: String,
@@ -49,6 +52,12 @@ impl Settings {
             smtp_url: required("SMTP_URL")?,
             email_from: required("EMAIL_FROM")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
+            shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
+            shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
+            shopper_token_previous_key: optional_pair(
+                "SHOPPER_TOKEN_PREVIOUS_KEY_ID",
+                "SHOPPER_TOKEN_PREVIOUS_SECRET",
+            )?,
             dependency_timeout: Duration::from_millis(parse_or("DEPENDENCY_TIMEOUT_MS", "1000")?),
             shutdown_drain_delay: Duration::from_millis(parse_or(
                 "SHUTDOWN_DRAIN_DELAY_MS",
@@ -58,6 +67,18 @@ impl Settings {
                 .unwrap_or_else(|_| "chaos=debug,chaos_api=debug,tower_http=info".into()),
             log_json: parse_or("LOG_JSON", "false")?,
         })
+    }
+}
+
+fn optional_pair(first: &str, second: &str) -> anyhow::Result<Option<(String, String)>> {
+    match (env::var(first).ok(), env::var(second).ok()) {
+        (None, None) => Ok(None),
+        (Some(first_value), Some(second_value))
+            if !first_value.trim().is_empty() && !second_value.trim().is_empty() =>
+        {
+            Ok(Some((first_value, second_value)))
+        }
+        _ => bail!("environment variables {first} and {second} must be set together"),
     }
 }
 

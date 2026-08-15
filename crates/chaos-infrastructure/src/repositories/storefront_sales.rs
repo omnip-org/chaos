@@ -3,7 +3,8 @@ use chaos_application::{
     ApplicationError,
     ports::{
         CartDetail, CartLineItem, CheckoutDetail, CheckoutLineItem, IdempotencyRequest,
-        MachineActor, OrderDetail, OrderLineItem, OrderTransitionItem, StorefrontSalesRepository,
+        MachineActor, OrderDetail, OrderLineItem, OrderTransitionItem, ShopperActor,
+        StorefrontSalesRepository,
     },
 };
 use chaos_domain::{
@@ -14,7 +15,7 @@ use chaos_domain::{
     pricing::{Money, PriceListId},
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutId, CommercialAdjustments, Order,
-        OrderId, OrderStatus,
+        OrderId, OrderStatus, ShopperId,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ const CREATE_CHECKOUT_OPERATION: &str = "checkouts.create.v1";
 const CREATE_ORDER_OPERATION: &str = "orders.create.v1";
 
 type CartHeaderRow = (
+    Uuid,
     Uuid,
     Uuid,
     String,
@@ -53,6 +55,7 @@ type CartLineRow = (
     bool,
 );
 type CheckoutHeaderRow = (
+    Uuid,
     Uuid,
     Uuid,
     Option<Uuid>,
@@ -82,6 +85,7 @@ type CheckoutLineRow = (
     bool,
 );
 type OrderHeaderRow = (
+    Uuid,
     Uuid,
     Uuid,
     Option<Uuid>,
@@ -134,20 +138,40 @@ impl PostgresStorefrontSalesRepository {
             .map_err(database_error)?;
         Ok(transaction)
     }
+
+    async fn begin_shopper(
+        &self,
+        shopper: &ShopperActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.begin(&shopper.machine).await?;
+        sqlx::query("SELECT set_config('app.shopper_id', $1, true)")
+            .bind(shopper.shopper_id.as_uuid().to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        Ok(transaction)
+    }
 }
 
 #[async_trait]
 impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
     async fn create_cart(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         currency: Option<CurrencyCode>,
         request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
+        let shopper_id = shopper.shopper_id;
+        let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
-        let mut transaction = self.begin(actor).await?;
-        if let Some(snapshot) =
-            reserve(&mut transaction, actor, CREATE_CART_OPERATION, request).await?
+        let mut transaction = self.begin_shopper(shopper).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_CART_OPERATION,
+            request,
+        )
+        .await?
         {
             return replay_cart(snapshot);
         }
@@ -164,12 +188,13 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO sales.carts \
-             (id, merchant_account_id, store_id, sales_channel_id, price_list_id, currency) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, merchant_account_id, store_id, shopper_id, sales_channel_id, price_list_id, currency) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(cart.id().as_uuid())
         .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
+        .bind(shopper_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
         .bind(currency.as_str())
@@ -181,7 +206,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .ok_or_else(|| cart_not_found(cart.id()))?;
         complete(
             &mut transaction,
-            actor,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             CREATE_CART_OPERATION,
             request,
             201,
@@ -194,10 +219,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn get_cart(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         cart_id: CartId,
     ) -> Result<Option<CartDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
         let detail = load_cart(&mut transaction, actor, cart_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
@@ -205,15 +232,22 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn set_cart_line(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
         request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(snapshot) =
-            reserve(&mut transaction, actor, SET_CART_LINE_OPERATION, request).await?
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            SET_CART_LINE_OPERATION,
+            request,
+        )
+        .await?
         {
             return replay_cart(snapshot);
         }
@@ -247,7 +281,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .ok_or_else(|| cart_not_found(cart_id))?;
         complete(
             &mut transaction,
-            actor,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             SET_CART_LINE_OPERATION,
             request,
             200,
@@ -260,14 +294,21 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn remove_cart_line(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(snapshot) =
-            reserve(&mut transaction, actor, REMOVE_CART_LINE_OPERATION, request).await?
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            REMOVE_CART_LINE_OPERATION,
+            request,
+        )
+        .await?
         {
             return replay_cart(snapshot);
         }
@@ -289,7 +330,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .ok_or_else(|| cart_not_found(cart_id))?;
         complete(
             &mut transaction,
-            actor,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             REMOVE_CART_LINE_OPERATION,
             request,
             200,
@@ -302,16 +343,23 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn create_checkout(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         cart_id: CartId,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
         request: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError> {
+        let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
-        let mut transaction = self.begin(actor).await?;
-        if let Some(snapshot) =
-            reserve(&mut transaction, actor, CREATE_CHECKOUT_OPERATION, request).await?
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_CHECKOUT_OPERATION,
+            request,
+        )
+        .await?
         {
             return replay_checkout(snapshot);
         }
@@ -371,7 +419,14 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
                 .map(|_| CommercialAdjustments::zero(currency))
                 .collect(),
         )?;
-        insert_checkout(&mut transaction, actor, channel_id, &checkout).await?;
+        insert_checkout(
+            &mut transaction,
+            actor,
+            shopper.shopper_id,
+            channel_id,
+            &checkout,
+        )
+        .await?;
         let result = sqlx::query(
             "UPDATE sales.carts SET status = 'completed', version = version + 1, \
                     updated_at = CURRENT_TIMESTAMP \
@@ -391,7 +446,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .ok_or_else(|| checkout_not_found(checkout.id()))?;
         complete(
             &mut transaction,
-            actor,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             CREATE_CHECKOUT_OPERATION,
             request,
             201,
@@ -404,10 +459,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn get_checkout(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         checkout_id: CheckoutId,
     ) -> Result<Option<CheckoutDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_checkout_owner(&mut transaction, actor, checkout_id, shopper.shopper_id).await?;
         let detail = load_checkout(&mut transaction, actor, checkout_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
@@ -415,15 +472,22 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn create_order(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         checkout_id: CheckoutId,
         now: OffsetDateTime,
         request: &IdempotencyRequest,
     ) -> Result<OrderDetail, ApplicationError> {
+        let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
-        let mut transaction = self.begin(actor).await?;
-        if let Some(snapshot) =
-            reserve(&mut transaction, actor, CREATE_ORDER_OPERATION, request).await?
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_checkout_owner(&mut transaction, actor, checkout_id, shopper.shopper_id).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_ORDER_OPERATION,
+            request,
+        )
+        .await?
         {
             return replay_order(snapshot);
         }
@@ -450,9 +514,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         sqlx::query(
             "INSERT INTO sales.orders \
              (id, merchant_account_id, store_id, sales_channel_id, checkout_id, \
-              inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
+              shopper_id, inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, total_amount_minor, created_at, updated_at) \
-             SELECT $5, merchant_account_id, store_id, sales_channel_id, id, \
+             SELECT $5, merchant_account_id, store_id, sales_channel_id, id, shopper_id, \
                     inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
                     discount_amount_minor, tax_amount_minor, total_amount_minor, $6, $6 \
              FROM sales.checkouts WHERE merchant_account_id = $1 AND store_id = $2 \
@@ -519,7 +583,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .ok_or_else(|| order_not_found(order.id()))?;
         complete(
             &mut transaction,
-            actor,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             CREATE_ORDER_OPERATION,
             request,
             201,
@@ -532,10 +596,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
 
     async fn get_order(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_order_owner(&mut transaction, actor, order_id, shopper.shopper_id).await?;
         let detail = load_order(&mut transaction, actor, order_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
@@ -710,7 +776,7 @@ async fn load_cart(
     cart_id: CartId,
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
-        "SELECT id, price_list_id, currency::text, status::text, version, created_at, updated_at \
+        "SELECT id, shopper_id, price_list_id, currency::text, status::text, version, created_at, updated_at \
          FROM sales.carts WHERE merchant_account_id = $1 AND store_id = $2 \
            AND sales_channel_id = $3 AND id = $4",
     )
@@ -724,8 +790,8 @@ async fn load_cart(
     let Some(row) = row else {
         return Ok(None);
     };
-    let currency = parse_currency(&row.2)?;
-    let status = CartStatus::parse(&row.3).ok_or_else(corrupt_sales_state)?;
+    let currency = parse_currency(&row.3)?;
+    let status = CartStatus::parse(&row.4).ok_or_else(corrupt_sales_state)?;
     let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
     let items = lines
         .into_iter()
@@ -738,14 +804,15 @@ async fn load_cart(
         })?;
     Ok(Some(CartDetail {
         id: CartId::from_uuid(row.0),
-        price_list_id: PriceListId::from_uuid(row.1),
+        shopper_id: ShopperId::from_uuid(row.1),
+        price_list_id: PriceListId::from_uuid(row.2),
         currency,
         status,
-        version: u64::try_from(row.4).map_err(unexpected_conversion)?,
+        version: u64::try_from(row.5).map_err(unexpected_conversion)?,
         lines: items,
         subtotal_amount_minor: subtotal.amount_minor(),
-        created_at: row.5,
-        updated_at: row.6,
+        created_at: row.6,
+        updated_at: row.7,
     }))
 }
 
@@ -987,20 +1054,22 @@ async fn reserve_inventory(
 async fn insert_checkout(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
+    shopper_id: ShopperId,
     channel_id: SalesChannelId,
     checkout: &Checkout,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.checkouts \
-         (id, merchant_account_id, store_id, cart_id, sales_channel_id, price_list_id, \
+         (id, merchant_account_id, store_id, cart_id, shopper_id, sales_channel_id, price_list_id, \
           inventory_reservation_id, currency, subtotal_amount_minor, discount_amount_minor, \
           tax_amount_minor, total_amount_minor, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(checkout.id().as_uuid())
     .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.cart_id().as_uuid())
+    .bind(shopper_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(checkout.price_list_id().as_uuid())
     .bind(
@@ -1059,7 +1128,7 @@ async fn load_checkout(
     checkout_id: CheckoutId,
 ) -> Result<Option<CheckoutDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CheckoutHeaderRow>(
-        "SELECT id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 total_amount_minor, expires_at, created_at FROM sales.checkouts \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
@@ -1089,21 +1158,22 @@ async fn load_checkout(
     .map_err(database_error)?;
     Ok(Some(CheckoutDetail {
         id: CheckoutId::from_uuid(row.0),
-        cart_id: CartId::from_uuid(row.1),
-        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.3),
-        currency: parse_currency(&row.4)?,
-        status: row.5,
-        subtotal_amount_minor: row.6,
-        discount_amount_minor: row.7,
-        tax_amount_minor: row.8,
-        total_amount_minor: row.9,
-        expires_at: row.10,
+        shopper_id: ShopperId::from_uuid(row.1),
+        cart_id: CartId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: parse_currency(&row.5)?,
+        status: row.6,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
+        total_amount_minor: row.10,
+        expires_at: row.11,
         lines: lines
             .into_iter()
             .map(checkout_line_item)
             .collect::<Result<Vec<_>, _>>()?,
-        created_at: row.11,
+        created_at: row.12,
     }))
 }
 
@@ -1131,7 +1201,7 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
@@ -1182,15 +1252,16 @@ async fn load_order(
     .map_err(database_error)?;
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.0),
-        checkout_id: CheckoutId::from_uuid(row.1),
-        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.3),
-        currency: parse_currency(&row.4)?,
-        status: OrderStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?,
-        subtotal_amount_minor: row.6,
-        discount_amount_minor: row.7,
-        tax_amount_minor: row.8,
-        total_amount_minor: row.9,
+        shopper_id: ShopperId::from_uuid(row.1),
+        checkout_id: CheckoutId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: parse_currency(&row.5)?,
+        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_sales_state)?,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
+        total_amount_minor: row.10,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -1213,8 +1284,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.10,
-        updated_at: row.11,
+        created_at: row.11,
+        updated_at: row.12,
     }))
 }
 
@@ -1240,6 +1311,7 @@ fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError>
 #[derive(Serialize, Deserialize)]
 struct CartSnapshot {
     id: Uuid,
+    shopper_id: Uuid,
     price_list_id: Uuid,
     currency: String,
     status: String,
@@ -1268,6 +1340,7 @@ struct CartLineSnapshot {
 #[derive(Serialize, Deserialize)]
 struct CheckoutSnapshot {
     id: Uuid,
+    shopper_id: Uuid,
     cart_id: Uuid,
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -1302,6 +1375,7 @@ struct CheckoutLineSnapshot {
 #[derive(Serialize, Deserialize)]
 struct OrderSnapshot {
     id: Uuid,
+    shopper_id: Uuid,
     checkout_id: Uuid,
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -1348,6 +1422,7 @@ struct OrderTransitionSnapshot {
 fn cart_snapshot(detail: &CartDetail) -> Result<Value, ApplicationError> {
     serde_json::to_value(CartSnapshot {
         id: detail.id.as_uuid(),
+        shopper_id: detail.shopper_id.as_uuid(),
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
         status: detail.status.as_str().into(),
@@ -1364,6 +1439,7 @@ fn replay_cart(value: Value) -> Result<CartDetail, ApplicationError> {
     let snapshot: CartSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
     Ok(CartDetail {
         id: CartId::from_uuid(snapshot.id),
+        shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
         status: CartStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
@@ -1378,6 +1454,7 @@ fn replay_cart(value: Value) -> Result<CartDetail, ApplicationError> {
 fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError> {
     serde_json::to_value(CheckoutSnapshot {
         id: detail.id.as_uuid(),
+        shopper_id: detail.shopper_id.as_uuid(),
         cart_id: detail.cart_id.as_uuid(),
         inventory_reservation_id: detail
             .inventory_reservation_id
@@ -1404,6 +1481,7 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
     let snapshot: CheckoutSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
     Ok(CheckoutDetail {
         id: CheckoutId::from_uuid(snapshot.id),
+        shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
         cart_id: CartId::from_uuid(snapshot.cart_id),
         inventory_reservation_id: snapshot
             .inventory_reservation_id
@@ -1428,6 +1506,7 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
 fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
     serde_json::to_value(OrderSnapshot {
         id: detail.id.as_uuid(),
+        shopper_id: detail.shopper_id.as_uuid(),
         checkout_id: detail.checkout_id.as_uuid(),
         inventory_reservation_id: detail
             .inventory_reservation_id
@@ -1464,6 +1543,7 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
     let snapshot: OrderSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
     Ok(OrderDetail {
         id: OrderId::from_uuid(snapshot.id),
+        shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
         checkout_id: CheckoutId::from_uuid(snapshot.checkout_id),
         inventory_reservation_id: snapshot
             .inventory_reservation_id
@@ -1623,38 +1703,102 @@ impl From<CheckoutLineSnapshot> for CheckoutLineItem {
     }
 }
 
-async fn reserve(
+async fn ensure_cart_owner(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
+    cart_id: CartId,
+    shopper_id: ShopperId,
+) -> Result<(), ApplicationError> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sales.carts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
+           AND id = $4 AND shopper_id = $5)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(cart_id.as_uuid())
+    .bind(shopper_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if owned {
+        Ok(())
+    } else {
+        Err(cart_not_found(cart_id))
+    }
+}
+
+async fn ensure_checkout_owner(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    shopper_id: ShopperId,
+) -> Result<(), ApplicationError> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sales.checkouts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
+           AND id = $4 AND shopper_id = $5)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(checkout_id.as_uuid())
+    .bind(shopper_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if owned {
+        Ok(())
+    } else {
+        Err(checkout_not_found(checkout_id))
+    }
+}
+
+async fn ensure_order_owner(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+    shopper_id: ShopperId,
+) -> Result<(), ApplicationError> {
+    let owned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sales.orders \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
+           AND id = $4 AND shopper_id = $5)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(order_id.as_uuid())
+    .bind(shopper_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if owned {
+        Ok(())
+    } else {
+        Err(order_not_found(order_id))
+    }
+}
+
+async fn reserve(
+    transaction: &mut Transaction<'static, Postgres>,
+    scope: &IdempotencyScope,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Value>, ApplicationError> {
-    idempotency::reserve(
-        transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
-        operation,
-        request,
-    )
-    .await
+    idempotency::reserve(transaction, scope, operation, request).await
 }
 
 async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
+    scope: &IdempotencyScope,
     operation: &'static str,
     request: &IdempotencyRequest,
     status: i16,
     snapshot: Value,
 ) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
-        operation,
-        request,
-        status,
-        snapshot,
-    )
-    .await
+    idempotency::complete(transaction, scope, operation, request, status, snapshot).await
 }
 
 fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationError> {
@@ -1979,7 +2123,7 @@ mod tests {
         .await
         .unwrap();
 
-        let actor = MachineActor {
+        let machine = MachineActor {
             api_key_id: ApiKeyId::new(),
             merchant_account_id: account_id,
             store_id,
@@ -1987,6 +2131,10 @@ mod tests {
             class: ApiKeyClass::Publishable,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CartsWrite, ApiKeyScope::CheckoutWrite],
+        };
+        let actor = ShopperActor {
+            machine,
+            shopper_id: ShopperId::new(),
         };
         let service = Arc::new(StorefrontSales::new(Arc::new(
             PostgresStorefrontSalesRepository::new(runtime_pool.clone()),
@@ -2000,6 +2148,11 @@ mod tests {
             .await
             .unwrap();
         assert!(cart.lines.is_empty());
+        let unrelated_shopper = ShopperActor {
+            machine: actor.machine.clone(),
+            shopper_id: ShopperId::new(),
+        };
+        assert!(service.get_cart(&unrelated_shopper, cart.id).await.is_err());
         let updated = service
             .set_cart_line(SetCartLineInput {
                 actor: actor.clone(),
@@ -2076,10 +2229,13 @@ mod tests {
         .unwrap();
         assert_eq!(ledger_count, 1);
 
-        let other_actor = MachineActor {
-            store_id: other_store_id,
-            sales_channel_id: Some(other_channel_id),
-            ..actor.clone()
+        let other_actor = ShopperActor {
+            machine: MachineActor {
+                store_id: other_store_id,
+                sales_channel_id: Some(other_channel_id),
+                ..actor.machine.clone()
+            },
+            shopper_id: actor.shopper_id,
         };
         assert!(service.get_cart(&other_actor, cart.id).await.is_err());
         assert!(

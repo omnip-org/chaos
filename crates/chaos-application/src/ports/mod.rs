@@ -12,6 +12,7 @@ mod payments;
 mod pricing;
 mod pricing_management;
 mod sales;
+mod shopper;
 mod store;
 mod store_administration;
 mod storefront_catalog;
@@ -56,6 +57,7 @@ pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutLineItem, OrderDetail, OrderLineItem,
     OrderManagementRepository, OrderTransitionItem, StorefrontSalesRepository,
 };
+pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,

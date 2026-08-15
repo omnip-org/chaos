@@ -11,14 +11,14 @@ Phase 6 requires a possession-bound guest boundary before Storefront sales resou
 
 ## Decision
 
-Chaos issues a signed, opaque-to-clients shopper credential when a Cart is created. The creation response returns the credential alongside the Cart. Existing Cart, Checkout, Payment Attempt, and Order routes require both:
+Chaos issues a signed, opaque-to-clients shopper credential through `POST /store/v1/shopper-sessions`. Cart creation requires that credential and echoes it alongside the Cart so clients can persist the complete Cart access state from either response. Cart, Checkout, Payment Attempt, and Order routes require both:
 
 - the publishable API key in `Authorization`, which resolves merchant account, Store, Sales Channel, mode, and capability scopes;
 - the shopper credential in `x-chaos-shopper-token`, which proves possession of the resource lineage.
 
-The credential contains a version, signing-key identifier, and random shopper identifier authenticated with HMAC. It contains no email, Customer ID, Store configuration, permissions, or reusable provider credential. The verifier accepts the active signing key and explicitly configured overlapping verification keys so signing-key rotation does not invalidate active Checkouts during a rolling deployment.
+The credential contains a version, signing-key identifier, random shopper identifier, Store identifier, and Sales Channel identifier authenticated with HMAC. Store and Channel binding prevents a token from crossing Storefront contexts and keeps shopper-scoped idempotency records isolated. It contains no email, Customer ID, permissions, or reusable provider credential. The verifier accepts the active signing key and explicitly configured overlapping verification keys so signing-key rotation does not invalidate active Checkouts during a rolling deployment.
 
-The random shopper identifier is generated before Cart persistence. The Cart stores it and returns it only through internal application DTOs. The API derives the signed credential from the persisted identifier, so an idempotent Cart-creation replay can reproduce the same credential without storing plaintext token material in PostgreSQL or an idempotency snapshot.
+The shopper-session endpoint generates the random shopper identifier before Cart persistence. The Cart stores it and returns it only through internal application DTOs. The API derives the signed credential from the persisted identifier, so an idempotent Cart-creation replay can reproduce the same credential without storing plaintext token material in PostgreSQL or an idempotency snapshot.
 
 ### Resource inheritance
 
@@ -44,7 +44,7 @@ Admin users do not need a shopper credential. They continue to access authorized
 
 Storefront mutations use a `shopper` idempotency scope whose scope identifier is the shopper identifier. The Store and Sales Channel remain part of request authorization and request fingerprints. Two shoppers may safely choose the same textual `Idempotency-Key`; one shopper cannot replay or conflict with another shopper's response.
 
-Cart creation generates the shopper identifier before reserving its idempotency record. All descendant mutations reuse that identifier. Admin and pre-merchant-account operations retain their existing merchant-account and user scopes.
+Shopper-session creation is intentionally stateless and creates no idempotency record. Once issued, the signed credential supplies the shopper scope for Cart creation and every descendant mutation. A Cart replay restores the persisted shopper identifier from the response snapshot and reproduces the same signed credential. Admin and pre-merchant-account operations retain their existing merchant-account and user scopes.
 
 ### Lifecycle and customer association
 
@@ -76,6 +76,10 @@ Plaintext storage increases disclosure impact and complicates idempotent creatio
 ### Reuse the publishable API key as the shopper identity
 
 The key is shared by every client of a Store or Channel. It identifies the Storefront application, not one shopper.
+
+### Bootstrap Cart idempotency with the publishable key
+
+A caller who learns another browser's idempotency key could replay Cart creation and receive its shopper credential. Idempotency keys are not possession credentials, so Chaos creates the shopper session before the first idempotent resource mutation.
 
 ### Require Customer login for every Cart
 

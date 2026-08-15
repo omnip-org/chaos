@@ -76,7 +76,35 @@ mod tests {
                 ["application/json"]["schema"]["$ref"],
             "#/components/schemas/CheckoutEnvelope"
         );
+        for (path, method) in [
+            ("/carts", "post"),
+            ("/carts/{cart_id}", "get"),
+            ("/carts/{cart_id}/lines/{product_variant_id}", "put"),
+            ("/carts/{cart_id}/lines/{product_variant_id}", "delete"),
+            ("/carts/{cart_id}/checkout", "post"),
+            ("/checkouts/{checkout_id}", "get"),
+            ("/checkouts/{checkout_id}/order", "post"),
+            ("/orders/{order_id}", "get"),
+            ("/orders/{order_id}/payment-attempts", "post"),
+            ("/payment-attempts/{payment_attempt_id}", "get"),
+        ] {
+            let parameters = specification["paths"][path][method]["parameters"]
+                .as_array()
+                .unwrap();
+            assert!(
+                parameters.iter().any(|parameter| {
+                    parameter["$ref"] == "#/components/parameters/ShopperToken"
+                })
+            );
+        }
+        assert!(
+            specification["components"]["schemas"]["Cart"]["properties"]
+                .get("shopper_token")
+                .is_some()
+        );
         for schema in [
+            "ShopperSession",
+            "ShopperSessionEnvelope",
             "CreateCart",
             "SetCartLine",
             "CartLine",

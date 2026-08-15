@@ -39,7 +39,7 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
-CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account');
+CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account', 'shopper');
 CREATE TYPE merchant.merchant_account_status AS ENUM ('active', 'suspended', 'closed');
 CREATE TYPE merchant.merchant_role AS ENUM (
     'owner',
@@ -832,6 +832,7 @@ CREATE TABLE sales.carts (
     merchant_account_id  UUID                NOT NULL,
     store_id             UUID                NOT NULL,
     sales_channel_id     UUID                NOT NULL,
+    shopper_id           UUID                NOT NULL,
     price_list_id        UUID                NOT NULL,
     currency             CHAR(3)             NOT NULL,
     status               sales.cart_status   NOT NULL DEFAULT 'active',
@@ -840,6 +841,7 @@ CREATE TABLE sales.carts (
     updated_at           TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, id, shopper_id),
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
@@ -903,6 +905,7 @@ CREATE TABLE sales.checkouts (
     merchant_account_id    UUID                    NOT NULL,
     store_id               UUID                    NOT NULL,
     cart_id                UUID                    NOT NULL,
+    shopper_id             UUID                    NOT NULL,
     sales_channel_id       UUID                    NOT NULL,
     price_list_id          UUID                    NOT NULL,
     inventory_reservation_id UUID,
@@ -918,10 +921,11 @@ CREATE TABLE sales.checkouts (
     updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, id, shopper_id),
     UNIQUE (merchant_account_id, store_id, cart_id),
     UNIQUE (merchant_account_id, store_id, inventory_reservation_id),
-    FOREIGN KEY (merchant_account_id, store_id, cart_id)
-        REFERENCES sales.carts(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, cart_id, shopper_id)
+        REFERENCES sales.carts(merchant_account_id, store_id, id, shopper_id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
@@ -1004,6 +1008,7 @@ CREATE TABLE sales.orders (
     store_id                 UUID                  NOT NULL,
     sales_channel_id         UUID                  NOT NULL,
     checkout_id              UUID                  NOT NULL,
+    shopper_id               UUID                  NOT NULL,
     inventory_reservation_id UUID,
     price_list_id            UUID                  NOT NULL,
     currency                 CHAR(3)               NOT NULL,
@@ -1016,9 +1021,10 @@ CREATE TABLE sales.orders (
     updated_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, id, shopper_id),
     UNIQUE (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id, shopper_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id, shopper_id),
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
@@ -1154,6 +1160,7 @@ CREATE TABLE payments.payment_attempts (
     merchant_account_id    UUID                            NOT NULL,
     store_id               UUID                            NOT NULL,
     order_id               UUID                            NOT NULL,
+    shopper_id             UUID                            NOT NULL,
     provider_account_id    UUID                            NOT NULL,
     amount_minor           BIGINT                          NOT NULL,
     currency               CHAR(3)                         NOT NULL,
@@ -1164,8 +1171,11 @@ CREATE TABLE payments.payment_attempts (
     updated_at             TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, id, shopper_id),
     UNIQUE (merchant_account_id, store_id, id, currency),
     UNIQUE (provider_account_id, provider_reference),
+    FOREIGN KEY (merchant_account_id, store_id, order_id, shopper_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id, shopper_id),
     FOREIGN KEY (merchant_account_id, store_id, order_id, currency)
         REFERENCES sales.orders(merchant_account_id, store_id, id, currency),
     FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
@@ -1627,6 +1637,9 @@ CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
         OR
         (scope = 'merchant_account' AND scope_id =
             nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        OR
+        (scope = 'shopper' AND scope_id =
+            nullif(current_setting('app.shopper_id', true), '')::uuid)
     )
     WITH CHECK (
         (scope = 'user' AND scope_id =
@@ -1634,6 +1647,9 @@ CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
         OR
         (scope = 'merchant_account' AND scope_id =
             nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        OR
+        (scope = 'shopper' AND scope_id =
+            nullif(current_setting('app.shopper_id', true), '')::uuid)
     );
 
 CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts

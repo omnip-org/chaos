@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{IdempotencyRequest, MachineActor};
+use super::{IdempotencyRequest, ShopperActor};
 
 pub struct PaymentAttemptDetail {
     pub id: PaymentAttemptId,
@@ -94,7 +94,7 @@ pub trait PaymentWebhookVerifier: Send + Sync {
 pub trait PaymentRepository: Send + Sync {
     async fn create_attempt(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         order_id: OrderId,
         provider: &str,
         idempotency: &IdempotencyRequest,
@@ -102,7 +102,7 @@ pub trait PaymentRepository: Send + Sync {
 
     async fn get_attempt(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         attempt_id: PaymentAttemptId,
     ) -> Result<Option<PaymentAttemptDetail>, ApplicationError>;
 

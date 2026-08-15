@@ -17,19 +17,21 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::ProductVariantId,
-    sales::{CartId, CheckoutId, OrderId},
+    sales::{CartId, CheckoutId, OrderId, ShopperId},
 };
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CheckoutMachine,
-    merchant::idempotency_key,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CartShopper,
+    CheckoutShopper, merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
+        .route("/shopper-sessions", post(create_shopper_session))
         .route("/carts", post(create_cart))
         .route("/carts/{cart_id}", get(get_cart))
         .route(
@@ -103,6 +105,13 @@ struct CartData {
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shopper_token: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ShopperSessionData {
+    shopper_token: String,
 }
 
 #[derive(Serialize)]
@@ -189,13 +198,24 @@ pub(super) struct OrderData {
     updated_at: ApiDateTime,
 }
 
+async fn create_shopper_session(
+    State(state): State<ApiState>,
+    CartMachine(actor): CartMachine,
+) -> Result<ApiResponse<ShopperSessionData>, ApiError> {
+    let shopper_token = state.shopper_credentials.issue(&actor, ShopperId::new())?;
+    Ok(ApiResponse::created(ShopperSessionData {
+        shopper_token: shopper_token.expose_secret().to_owned(),
+    }))
+}
+
 async fn create_cart(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CartMachine(actor): CartMachine,
+    CartShopper(actor): CartShopper,
     ApiJson(body): ApiJson<CreateCartBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
     let idempotency = body_request(&headers, "create_cart", &body)?;
+    let machine = actor.machine.clone();
     let cart = state
         .storefront_sales
         .create_cart(CreateCartInput {
@@ -204,25 +224,29 @@ async fn create_cart(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::created(cart_data(cart)?))
+    let shopper_token = state.shopper_credentials.issue(&machine, cart.shopper_id)?;
+    Ok(ApiResponse::created(cart_data(
+        cart,
+        Some(shopper_token.expose_secret().to_owned()),
+    )?))
 }
 
 async fn get_cart(
     State(state): State<ApiState>,
-    CartMachine(actor): CartMachine,
+    CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartPath>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
     let cart = state
         .storefront_sales
         .get_cart(&actor, CartId::from_uuid(path.cart_id))
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
+    Ok(ApiResponse::ok(cart_data(cart, None)?))
 }
 
 async fn set_cart_line(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CartMachine(actor): CartMachine,
+    CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(body): ApiJson<SetCartLineBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
@@ -241,13 +265,13 @@ async fn set_cart_line(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
+    Ok(ApiResponse::ok(cart_data(cart, None)?))
 }
 
 async fn remove_cart_line(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CartMachine(actor): CartMachine,
+    CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
     let idempotency = body_request(
@@ -264,13 +288,13 @@ async fn remove_cart_line(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart)?))
+    Ok(ApiResponse::ok(cart_data(cart, None)?))
 }
 
 async fn create_checkout(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<CartPath>,
 ) -> Result<ApiResponse<CheckoutData>, ApiError> {
     let idempotency = body_request(&headers, "create_checkout", &path.cart_id)?;
@@ -288,7 +312,7 @@ async fn create_checkout(
 
 async fn get_checkout(
     State(state): State<ApiState>,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<CheckoutPath>,
 ) -> Result<ApiResponse<CheckoutData>, ApiError> {
     let checkout = state
@@ -301,7 +325,7 @@ async fn get_checkout(
 async fn create_order(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<CheckoutPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     let idempotency = body_request(&headers, "create_order", &path.checkout_id)?;
@@ -319,7 +343,7 @@ async fn create_order(
 
 async fn get_order(
     State(state): State<ApiState>,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     let order = state
@@ -344,7 +368,10 @@ fn body_request<T: Serialize>(
     })
 }
 
-fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
+fn cart_data(
+    cart: CartDetail,
+    shopper_token: Option<String>,
+) -> Result<CartData, ApplicationError> {
     Ok(CartData {
         id: cart.id.as_uuid(),
         price_list_id: cart.price_list_id.as_uuid(),
@@ -355,6 +382,7 @@ fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
         subtotal_amount_minor: cart.subtotal_amount_minor,
         created_at: cart.created_at.into(),
         updated_at: cart.updated_at.into(),
+        shopper_token,
     })
 }
 
@@ -466,7 +494,7 @@ mod tests {
 
     use axum::{
         body::Body,
-        http::{Method, Request, StatusCode},
+        http::{HeaderValue, Method, Request, StatusCode},
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
     use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
@@ -567,6 +595,14 @@ mod tests {
             .header("x-payment-signature", signature)
             .body(Body::from(body))
             .unwrap()
+    }
+
+    fn with_shopper_token(mut request: Request<Body>, shopper_token: &str) -> Request<Body> {
+        request.headers_mut().insert(
+            "x-chaos-shopper-token",
+            HeaderValue::from_str(shopper_token).unwrap(),
+        );
+        request
     }
 
     #[tokio::test]
@@ -833,14 +869,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
-        let missing_idempotency = app
+        let shopper_session = app
             .clone()
             .oneshot(store_request(
                 Method::POST,
-                "/store/v1/carts",
+                "/store/v1/shopper-sessions",
                 Some(full_secret),
                 None,
-                Some(json!({})),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(shopper_session.status(), StatusCode::CREATED);
+        let shopper_session = response_json(shopper_session).await;
+        let shopper_token = shopper_session["data"]["shopper_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let missing_idempotency = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    "/store/v1/carts",
+                    Some(full_secret),
+                    None,
+                    Some(json!({})),
+                ),
+                &shopper_token,
             ))
             .await
             .unwrap();
@@ -859,41 +915,80 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 
-        let create = store_request(
-            Method::POST,
-            "/store/v1/carts",
-            Some(full_secret),
-            Some("create"),
-            Some(json!({})),
+        let create = with_shopper_token(
+            store_request(
+                Method::POST,
+                "/store/v1/carts",
+                Some(full_secret),
+                Some("create"),
+                Some(json!({})),
+            ),
+            &shopper_token,
         );
         let created = app.clone().oneshot(create).await.unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
         let created = response_json(created).await;
         let cart_id = created["data"]["id"].as_str().unwrap();
+        assert_eq!(created["data"]["shopper_token"], shopper_token);
+        let shopper_token = shopper_token.as_str();
+        let unrelated_session = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/shopper-sessions",
+                Some(full_secret),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        let unrelated_session = response_json(unrelated_session).await;
+        let unrelated_token = unrelated_session["data"]["shopper_token"].as_str().unwrap();
+        let cross_shopper = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/carts/{cart_id}"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                unrelated_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cross_shopper.status(), StatusCode::NOT_FOUND);
 
         let line_uri = format!("/store/v1/carts/{cart_id}/lines/{}", variant_id.as_uuid());
         let invalid_line = app
             .clone()
-            .oneshot(store_request(
-                Method::PUT,
-                &line_uri,
-                Some(full_secret),
-                Some("invalid-line"),
-                Some(json!({"quantity": 0})),
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::PUT,
+                    &line_uri,
+                    Some(full_secret),
+                    Some("invalid-line"),
+                    Some(json!({"quantity": 0})),
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
         assert_eq!(invalid_line.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let updated = app
             .clone()
-            .oneshot(store_request(
-                Method::PUT,
-                &line_uri,
-                Some(full_secret),
-                Some("line"),
-                Some(json!({"quantity": 2})),
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::PUT,
+                    &line_uri,
+                    Some(full_secret),
+                    Some("line"),
+                    Some(json!({"quantity": 2})),
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -904,12 +999,15 @@ mod tests {
         let checkout_uri = format!("/store/v1/carts/{cart_id}/checkout");
         let checkout = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &checkout_uri,
-                Some(full_secret),
-                Some("checkout"),
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout"),
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -925,12 +1023,15 @@ mod tests {
 
         let replay = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &checkout_uri,
-                Some(full_secret),
-                Some("checkout"),
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout"),
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -940,12 +1041,15 @@ mod tests {
         let order_uri = format!("/store/v1/checkouts/{checkout_id}/order");
         let order = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &order_uri,
-                Some(full_secret),
-                Some("order"),
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &order_uri,
+                    Some(full_secret),
+                    Some("order"),
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -957,12 +1061,15 @@ mod tests {
         assert_eq!(order["data"]["transitions"][0]["kind"], "created");
         let order_replay = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &order_uri,
-                Some(full_secret),
-                Some("order"),
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &order_uri,
+                    Some(full_secret),
+                    Some("order"),
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -971,12 +1078,15 @@ mod tests {
 
         let terminal = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &checkout_uri,
-                Some(full_secret),
-                Some("checkout-again"),
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout-again"),
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -984,12 +1094,15 @@ mod tests {
 
         let fetched = app
             .clone()
-            .oneshot(store_request(
-                Method::GET,
-                &format!("/store/v1/checkouts/{checkout_id}"),
-                Some(full_secret),
-                None,
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/checkouts/{checkout_id}"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -998,12 +1111,15 @@ mod tests {
 
         let fetched_order = app
             .clone()
-            .oneshot(store_request(
-                Method::GET,
-                &format!("/store/v1/orders/{order_id}"),
-                Some(full_secret),
-                None,
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/orders/{order_id}"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -1012,12 +1128,15 @@ mod tests {
 
         let payment_attempt = app
             .clone()
-            .oneshot(store_request(
-                Method::POST,
-                &format!("/store/v1/orders/{order_id}/payment-attempts"),
-                Some(full_secret),
-                Some("payment-attempt"),
-                Some(json!({"provider": "testpay"})),
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &format!("/store/v1/orders/{order_id}/payment-attempts"),
+                    Some(full_secret),
+                    Some("payment-attempt"),
+                    Some(json!({"provider": "testpay"})),
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -1027,16 +1146,19 @@ mod tests {
         assert_eq!(payment_attempt["data"]["status"], "pending");
         let cross_store = app
             .clone()
-            .oneshot(store_request(
-                Method::GET,
-                &format!("/store/v1/payment-attempts/{payment_attempt_id}"),
-                Some(other_store_secret),
-                None,
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/payment-attempts/{payment_attempt_id}"),
+                    Some(other_store_secret),
+                    None,
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
-        assert_eq!(cross_store.status(), StatusCode::NOT_FOUND);
+        assert_eq!(cross_store.status(), StatusCode::UNAUTHORIZED);
 
         let invalid_webhook = app
             .clone()
@@ -1083,12 +1205,15 @@ mod tests {
 
         let captured = app
             .clone()
-            .oneshot(store_request(
-                Method::GET,
-                &format!("/store/v1/payment-attempts/{payment_attempt_id}"),
-                Some(full_secret),
-                None,
-                None,
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/payment-attempts/{payment_attempt_id}"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                shopper_token,
             ))
             .await
             .unwrap();
@@ -1195,17 +1320,16 @@ mod tests {
         .await
         .unwrap();
         for attempt in 1..=8 {
-            sqlx::query(
-                "UPDATE integration.outbox_events SET available_at = CURRENT_TIMESTAMP \
-                 WHERE id = $1",
-            )
-            .bind(dead_letter_id)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
+            let claim_time = test_clock.now();
+            sqlx::query("UPDATE integration.outbox_events SET available_at = $2 WHERE id = $1")
+                .bind(dead_letter_id)
+                .bind(claim_time)
+                .execute(&owner_pool)
+                .await
+                .unwrap();
             let worker_id = Uuid::now_v7();
             let jobs = payment_repository
-                .claim_outbox(worker_id, 1, test_clock.now())
+                .claim_outbox(worker_id, 1, claim_time)
                 .await
                 .unwrap();
             assert_eq!(jobs.len(), 1);

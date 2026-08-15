@@ -38,6 +38,7 @@ macro_rules! sales_id {
 
 sales_id!(CartId);
 sales_id!(CheckoutId);
+sales_id!(ShopperId);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CartStatus {

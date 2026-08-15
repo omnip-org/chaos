@@ -65,13 +65,29 @@
         }
       }
     },
+    "/shopper-sessions": {
+      "post": {
+        "operationId": "createShopperSession",
+        "tags": ["Carts"],
+        "summary": "Create an anonymous possession-bound shopper session",
+        "security": [{ "publishableKey": ["carts:write"] }],
+        "responses": {
+          "201": { "description": "Shopper session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShopperSessionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
     "/carts": {
       "post": {
         "operationId": "createCart",
         "tags": ["Carts"],
         "summary": "Create an active Cart using the current Price List",
         "security": [{ "publishableKey": ["carts:write"] }],
-        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ShopperToken" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCart" } } }
@@ -92,7 +108,10 @@
         "tags": ["Carts"],
         "summary": "Get a Cart",
         "security": [{ "publishableKey": ["carts:write"] }],
-        "parameters": [{ "$ref": "#/components/parameters/CartId" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CartId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
         "responses": {
           "200": { "description": "Cart", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -110,6 +129,7 @@
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ProductVariantId" },
+          { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SetCartLine" } } } },
@@ -131,6 +151,7 @@
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ProductVariantId" },
+          { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "responses": {
@@ -152,6 +173,7 @@
         "security": [{ "publishableKey": ["checkout:write"] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
+          { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "responses": {
@@ -171,7 +193,10 @@
         "tags": ["Checkout"],
         "summary": "Get an immutable Checkout snapshot",
         "security": [{ "publishableKey": ["checkout:write"] }],
-        "parameters": [{ "$ref": "#/components/parameters/CheckoutId" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/CheckoutId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
         "responses": {
           "200": { "description": "Checkout", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CheckoutEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -188,6 +213,7 @@
         "security": [{ "publishableKey": ["checkout:write"] }],
         "parameters": [
           { "$ref": "#/components/parameters/CheckoutId" },
+          { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "responses": {
@@ -207,7 +233,10 @@
         "tags": ["Orders"],
         "summary": "Get an Order and its transition audit trail",
         "security": [{ "publishableKey": ["checkout:write"] }],
-        "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/OrderId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
         "responses": {
           "200": { "description": "Order", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -224,6 +253,7 @@
         "security": [{ "publishableKey": ["checkout:write"] }],
         "parameters": [
           { "$ref": "#/components/parameters/OrderId" },
+          { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
         ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePaymentAttempt" } } } },
@@ -244,7 +274,10 @@
         "tags": ["Payments"],
         "summary": "Get a Payment Attempt visible to this Store and Sales Channel",
         "security": [{ "publishableKey": ["checkout:write"] }],
-        "parameters": [{ "$ref": "#/components/parameters/PaymentAttemptId" }],
+        "parameters": [
+          { "$ref": "#/components/parameters/PaymentAttemptId" },
+          { "$ref": "#/components/parameters/ShopperToken" }
+        ],
         "responses": {
           "200": { "description": "Payment Attempt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentAttemptEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -287,6 +320,13 @@
         "in": "header",
         "required": true,
         "schema": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "ShopperToken": {
+        "name": "x-chaos-shopper-token",
+        "in": "header",
+        "required": true,
+        "description": "Signed possession credential returned by shopper-session creation and echoed by Cart creation. Never place this value in URLs or logs.",
+        "schema": { "type": "string", "minLength": 1 }
       },
       "CartId": {
         "name": "cart_id",
@@ -365,6 +405,23 @@
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
         }
       },
+      "ShopperSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["shopper_token"],
+        "properties": {
+          "shopper_token": {
+            "type": "string",
+            "description": "Signed possession credential for one anonymous shopper session."
+          }
+        }
+      },
+      "ShopperSessionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ShopperSession" } }
+      },
       "SetCartLine": {
         "type": "object",
         "additionalProperties": false,
@@ -400,11 +457,15 @@
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
           "status": { "type": "string", "enum": ["active", "completed", "abandoned"] },
-          "version": { "type": "integer", "format": "int64", "minimum": 1 },
+          "version": { "type": "integer", "format": "int64", "minimum": 0 },
           "lines": { "type": "array", "items": { "$ref": "#/components/schemas/CartLine" } },
           "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "updated_at": { "type": "string", "format": "date-time" },
+          "shopper_token": {
+            "type": "string",
+            "description": "Returned only by Cart creation. Persist securely and send as x-chaos-shopper-token for this resource lineage."
+          }
         }
       },
       "CheckoutLine": {

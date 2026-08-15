@@ -14,11 +14,12 @@ use crate::{
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
         PaymentRepository, PaymentWebhookVerifier, ProviderCommand, QueueJob, RefundDetail,
+        ShopperActor,
     },
 };
 
 pub struct CreatePaymentAttemptInput {
-    pub actor: MachineActor,
+    pub actor: ShopperActor,
     pub order_id: OrderId,
     pub provider: String,
     pub idempotency: IdempotencyRequest,
@@ -52,7 +53,7 @@ impl PaymentService {
         &self,
         input: CreatePaymentAttemptInput,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
-        require_checkout_key(&input.actor)?;
+        require_checkout_key(&input.actor.machine)?;
         self.repository
             .create_attempt(
                 &input.actor,
@@ -65,10 +66,10 @@ impl PaymentService {
 
     pub async fn get_attempt(
         &self,
-        actor: &MachineActor,
+        actor: &ShopperActor,
         attempt_id: PaymentAttemptId,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
-        require_checkout_key(actor)?;
+        require_checkout_key(&actor.machine)?;
         self.repository
             .get_attempt(actor, attempt_id)
             .await?

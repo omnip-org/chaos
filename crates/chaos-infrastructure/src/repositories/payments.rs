@@ -6,7 +6,7 @@ use chaos_application::{
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentProvider,
         PaymentRepository, PaymentWebhookVerifier, ProviderCommand, ProviderCommandResult,
-        QueueJob, RefundDetail, VerifiedWebhookEvent,
+        QueueJob, RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
 };
 use chaos_domain::{
@@ -155,6 +155,20 @@ impl PostgresPaymentRepository {
             .await
     }
 
+    async fn begin_shopper(
+        &self,
+        shopper: &ShopperActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.begin_machine(&shopper.machine).await?;
+        set_config(
+            &mut transaction,
+            "app.shopper_id",
+            shopper.shopper_id.as_uuid(),
+        )
+        .await?;
+        Ok(transaction)
+    }
+
     async fn begin_human(
         &self,
         actor: MerchantActor,
@@ -184,38 +198,40 @@ impl PostgresPaymentRepository {
 impl PaymentRepository for PostgresPaymentRepository {
     async fn create_attempt(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         order_id: OrderId,
         provider: &str,
         request: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
+        let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
-        let mut transaction = self.begin_machine(actor).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
-            CREATE_ATTEMPT_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_attempt(snapshot);
-        }
+        let mut transaction = self.begin_shopper(shopper).await?;
         let order = sqlx::query_as::<_, (i64, String, String)>(
             "SELECT total_amount_minor, currency::text, status::text FROM sales.orders \
              WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-               AND id = $4 FOR UPDATE",
+               AND id = $4 AND shopper_id = $5 FOR UPDATE",
         )
         .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(order_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
         if order.2 != "pending" {
             return Err(payment_order_not_pending());
+        }
+        if let Some(snapshot) = idempotency::reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_ATTEMPT_OPERATION,
+            request,
+        )
+        .await?
+        {
+            return replay_attempt(snapshot);
         }
         let provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM payments.provider_accounts \
@@ -247,13 +263,14 @@ impl PaymentRepository for PostgresPaymentRepository {
         let attempt = PaymentAttempt::create(order_id, Money::new(order.0, currency))?;
         sqlx::query(
             "INSERT INTO payments.payment_attempts \
-             (id, merchant_account_id, store_id, order_id, provider_account_id, \
-              amount_minor, currency) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (id, merchant_account_id, store_id, order_id, shopper_id, provider_account_id, \
+              amount_minor, currency) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(attempt.id().as_uuid())
         .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
         .bind(provider_account_id)
         .bind(attempt.amount().amount_minor())
         .bind(currency.as_str())
@@ -277,13 +294,14 @@ impl PaymentRepository for PostgresPaymentRepository {
             actor.merchant_account_id.as_uuid(),
             actor.store_id,
             Some(channel_id),
+            Some(shopper.shopper_id.as_uuid()),
             attempt.id(),
         )
         .await?
         .ok_or_else(|| attempt_not_found(attempt.id()))?;
         idempotency::complete(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
             CREATE_ATTEMPT_OPERATION,
             request,
             201,
@@ -296,15 +314,17 @@ impl PaymentRepository for PostgresPaymentRepository {
 
     async fn get_attempt(
         &self,
-        actor: &MachineActor,
+        shopper: &ShopperActor,
         attempt_id: PaymentAttemptId,
     ) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
-        let mut transaction = self.begin_machine(actor).await?;
+        let actor = &shopper.machine;
+        let mut transaction = self.begin_shopper(shopper).await?;
         let detail = load_attempt(
             &mut transaction,
             actor.merchant_account_id.as_uuid(),
             actor.store_id,
             actor.sales_channel_id,
+            Some(shopper.shopper_id.as_uuid()),
             attempt_id,
         )
         .await?;
@@ -612,6 +632,7 @@ async fn load_attempt(
     account_id: Uuid,
     store_id: StoreId,
     channel_id: Option<SalesChannelId>,
+    shopper_id: Option<Uuid>,
     attempt_id: PaymentAttemptId,
 ) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
     let row = sqlx::query_as::<
@@ -640,12 +661,14 @@ async fn load_attempt(
            ON sales_order.merchant_account_id = attempt.merchant_account_id \
           AND sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
          WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 AND attempt.id = $3 \
-           AND ($4::uuid IS NULL OR sales_order.sales_channel_id = $4)",
+           AND ($4::uuid IS NULL OR sales_order.sales_channel_id = $4) \
+           AND ($5::uuid IS NULL OR attempt.shopper_id = $5)",
     )
     .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(attempt_id.as_uuid())
     .bind(channel_id.map(SalesChannelId::as_uuid))
+    .bind(shopper_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;

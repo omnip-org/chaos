@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutMachine,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutShopper,
     MerchantContext, merchant::idempotency_key,
 };
 
@@ -115,7 +115,7 @@ struct WebhookReceiptData {
 async fn create_attempt(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateAttemptBody>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
@@ -134,7 +134,7 @@ async fn create_attempt(
 
 async fn get_attempt(
     State(state): State<ApiState>,
-    CheckoutMachine(actor): CheckoutMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<AttemptPath>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
     let attempt = state

@@ -5,7 +5,11 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Path, Query, Request},
     http::{HeaderMap, header::AUTHORIZATION, request::Parts},
 };
-use chaos_application::{ApplicationError, merchant::MerchantActor, ports::MachineActor};
+use chaos_application::{
+    ApplicationError,
+    merchant::MerchantActor,
+    ports::{MachineActor, ShopperActor},
+};
 use chaos_domain::{
     FieldViolation,
     identity::UserId,
@@ -77,7 +81,8 @@ pub struct AuthenticatedSession {
 
 pub struct StorefrontMachine(pub MachineActor);
 pub struct CartMachine(pub MachineActor);
-pub struct CheckoutMachine(pub MachineActor);
+pub struct CartShopper(pub ShopperActor);
+pub struct CheckoutShopper(pub ShopperActor);
 
 impl FromRequestParts<ApiState> for StorefrontMachine {
     type Rejection = ApiError;
@@ -116,7 +121,34 @@ macro_rules! storefront_machine_extractor {
 }
 
 storefront_machine_extractor!(CartMachine, ApiKeyScope::CartsWrite);
-storefront_machine_extractor!(CheckoutMachine, ApiKeyScope::CheckoutWrite);
+
+macro_rules! storefront_shopper_extractor {
+    ($name:ident, $scope:expr) => {
+        impl FromRequestParts<ApiState> for $name {
+            type Rejection = ApiError;
+
+            async fn from_request_parts(
+                parts: &mut Parts,
+                state: &ApiState,
+            ) -> Result<Self, Self::Rejection> {
+                let token = bearer_token(&parts.headers)?;
+                let machine = state
+                    .api_key_authentication
+                    .authenticate(&token, &[$scope])
+                    .await?;
+                let credential = shopper_credential(&parts.headers)?;
+                let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
+                Ok(Self(ShopperActor {
+                    machine,
+                    shopper_id,
+                }))
+            }
+        }
+    };
+}
+
+storefront_shopper_extractor!(CartShopper, ApiKeyScope::CartsWrite);
+storefront_shopper_extractor!(CheckoutShopper, ApiKeyScope::CheckoutWrite);
 
 impl FromRequestParts<ApiState> for AuthenticatedSession {
     type Rejection = ApiError;
@@ -136,6 +168,15 @@ fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .ok_or(ApplicationError::Unauthorized)?;
+    Ok(SecretString::from(value.to_owned()))
+}
+
+fn shopper_credential(headers: &HeaderMap) -> Result<SecretString, ApiError> {
+    let value = headers
+        .get("x-chaos-shopper-token")
+        .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .ok_or(ApplicationError::Unauthorized)?;
     Ok(SecretString::from(value.to_owned()))

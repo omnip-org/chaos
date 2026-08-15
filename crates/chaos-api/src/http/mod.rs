@@ -27,7 +27,7 @@ use chaos_application::{
         MerchantQueries, StoreAdministration,
     },
     payments::{PaymentService, PaymentWorkers},
-    ports::{Clock, PasswordlessAuthentication},
+    ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement},
     sales::{OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
@@ -49,6 +49,7 @@ use chaos_infrastructure::{
         PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
         PostgresStorefrontSalesRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
+    shopper::HmacShopperCredentialCodec,
     state::AppState,
 };
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -61,7 +62,7 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CheckoutMachine,
+    ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CartShopper, CheckoutShopper,
     MerchantContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
@@ -92,6 +93,7 @@ pub struct ApiState {
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
+    pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
 }
 
 impl ApiState {
@@ -179,6 +181,14 @@ impl ApiState {
             PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
         ));
         let search_indexer = PostgresSearchIndexer::new(infrastructure.runtime_pool());
+        let shopper_credentials = HmacShopperCredentialCodec::new(
+            settings.shopper_token_active_key_id.clone(),
+            settings.shopper_token_active_secret.as_bytes().to_vec(),
+            settings
+                .shopper_token_previous_key
+                .as_ref()
+                .map(|(key_id, secret)| (key_id.clone(), secret.as_bytes().to_vec())),
+        )?;
         Ok(Self {
             infrastructure,
             lifecycle,
@@ -204,6 +214,7 @@ impl ApiState {
             fulfillment_management: Arc::new(fulfillment_management),
             search_indexer: Arc::new(search_indexer),
             clock: Arc::new(SystemClock),
+            shopper_credentials: Arc::new(shopper_credentials),
         })
     }
 }
@@ -263,6 +274,9 @@ mod tests {
             smtp_url: "smtp://localhost:1025".into(),
             email_from: "Chaos <no-reply@localhost>".into(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
+            shopper_token_active_key_id: "test".into(),
+            shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
+            shopper_token_previous_key: None,
             dependency_timeout: Duration::from_millis(10),
             shutdown_drain_delay: Duration::ZERO,
             log_filter: "off".into(),
