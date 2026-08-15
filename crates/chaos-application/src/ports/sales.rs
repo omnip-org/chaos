@@ -4,7 +4,7 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
-    pricing::PriceListId,
+    pricing::{PriceListId, TaxRuleSnapshot},
     sales::{CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderId, OrderStatus, ShopperId},
 };
 use time::OffsetDateTime;
@@ -69,6 +69,8 @@ pub struct CheckoutDetail {
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
+    pub tax_rule: TaxRuleSnapshot,
+    pub tax_inclusive: bool,
     pub shipping: Option<ShippingSelection>,
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
@@ -115,6 +117,8 @@ pub struct OrderDetail {
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
+    pub tax_rule: TaxRuleSnapshot,
+    pub tax_inclusive: bool,
     pub shipping: Option<ShippingSelection>,
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,

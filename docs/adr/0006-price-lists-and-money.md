@@ -31,6 +31,7 @@ Admin creation writes the Price List, all Prices, and its idempotency response i
 - Tax-inclusive and tax-exclusive amounts cannot be silently mixed in one list.
 - Storefront pricing can choose one active list by Store, currency, time, and later market/channel assignments.
 - Orders will snapshot the selected currency, amount, tax semantics, and Price List identity instead of reading mutable prices after creation.
+- Store Tax Rules use integer basis points and one active rule per destination country. Checkout rounds the aggregate tax once and allocates it deterministically to lines. Tax-inclusive lists extract tax without increasing the total; tax-exclusive lists add tax to the total.
 - Promotions and customer-specific adjustments remain separate future pricing concepts rather than destructive edits to base prices.
 
 ## Rejected alternatives

@@ -100,7 +100,7 @@ A revocable machine credential bound to one Store and an explicit set of capabil
 - Shopper-level Cart, Checkout, and Order ownership.
 - Recoverable workers, deterministic reservation expiry, and complete event consumers.
 - Authenticated Customer profiles and saved addresses; guest Checkout and Order contact/address snapshots are implemented.
-- Shipping options, tax, promotion, and complete checkout totals.
+- Promotions, authenticated Customer pricing, and deterministic discount allocation. Shipping options, destination Tax Rules, and tax-and-shipping Checkout totals are implemented.
 - Stripe payment, Resend notification, and shipping provider adapters with Store-owned configuration.
 - First-party behavior events, active engagement, consent-aware attribution, analytics read models, and conversion exports.
 

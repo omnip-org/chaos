@@ -16,6 +16,7 @@ mod shopper;
 mod store;
 mod store_administration;
 mod storefront_catalog;
+mod tax;
 
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
@@ -67,3 +68,4 @@ pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext,
 };
+pub use tax::{TaxRuleDetail, TaxRuleRepository};

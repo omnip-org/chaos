@@ -18,6 +18,7 @@ use chaos_application::{
 use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{ShippingSelection, ShippingServiceId},
+    pricing::TaxRuleSnapshot,
     sales::{CartId, CheckoutId, OrderId, ShopperId},
 };
 use secrecy::ExposeSecret;
@@ -187,6 +188,8 @@ struct CheckoutData {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    tax_rule: TaxCalculationData,
+    tax_inclusive: bool,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     expires_at: ApiDateTime,
@@ -241,6 +244,8 @@ pub(super) struct OrderData {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    tax_rule: TaxCalculationData,
+    tax_inclusive: bool,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     lines: Vec<OrderLineData>,
@@ -265,6 +270,15 @@ struct ShippingSelectionData {
     currency: String,
     estimated_min_days: u16,
     estimated_max_days: u16,
+}
+
+#[derive(Serialize)]
+struct TaxCalculationData {
+    rule_id: Uuid,
+    code: String,
+    name: String,
+    country_code: String,
+    rate_basis_points: u32,
 }
 
 #[derive(Serialize)]
@@ -512,6 +526,16 @@ fn shipping_data(value: &ShippingSelection) -> ShippingSelectionData {
     }
 }
 
+fn tax_data(value: &TaxRuleSnapshot) -> TaxCalculationData {
+    TaxCalculationData {
+        rule_id: value.rule_id().as_uuid(),
+        code: value.code().into(),
+        name: value.name().into(),
+        country_code: value.country_code().into(),
+        rate_basis_points: value.rate_basis_points(),
+    }
+}
+
 fn body_request<T: Serialize>(
     headers: &HeaderMap,
     operation: &'static str,
@@ -576,6 +600,8 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
         subtotal_amount_minor: checkout.subtotal_amount_minor,
         discount_amount_minor: checkout.discount_amount_minor,
         tax_amount_minor: checkout.tax_amount_minor,
+        tax_rule: tax_data(&checkout.tax_rule),
+        tax_inclusive: checkout.tax_inclusive,
         shipping_amount_minor: checkout.shipping_amount_minor,
         total_amount_minor: checkout.total_amount_minor,
         expires_at: checkout.expires_at.into(),
@@ -617,6 +643,8 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         subtotal_amount_minor: order.subtotal_amount_minor,
         discount_amount_minor: order.discount_amount_minor,
         tax_amount_minor: order.tax_amount_minor,
+        tax_rule: tax_data(&order.tax_rule),
+        tax_inclusive: order.tax_inclusive,
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
         lines: order.lines.into_iter().map(order_line_data).collect(),
@@ -798,6 +826,7 @@ mod tests {
         let price_list_id = PriceListId::new();
         let location_id = InventoryLocationId::new();
         let shipping_service_id = ShippingServiceId::new();
+        let tax_rule_id = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
@@ -894,6 +923,17 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            "INSERT INTO pricing.tax_rules \
+             (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
+             VALUES ($1, $2, $3, 'us-sales-tax', 'US sales tax', 'US', 900)",
+        )
+        .bind(tax_rule_id)
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO merchant.sales_channels \
              (id, merchant_account_id, store_id, code, name, kind, is_default) \
              VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
@@ -953,8 +993,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency, status) \
-             VALUES ($1, $2, $3, 'usd', 'USD', 'USD', 'active')",
+             (id, merchant_account_id, store_id, code, name, currency, tax_inclusive, status) \
+             VALUES ($1, $2, $3, 'usd', 'USD', 'USD', true, 'active')",
         )
         .bind(price_list_id.as_uuid())
         .bind(account_id.as_uuid())
@@ -1254,6 +1294,31 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
+        sqlx::query("UPDATE pricing.tax_rules SET status = 'archived' WHERE id = $1")
+            .bind(tax_rule_id)
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        let missing_tax_rule = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout-missing-tax-rule"),
+                    Some(checkout_body.clone()),
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_tax_rule.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        sqlx::query("UPDATE pricing.tax_rules SET status = 'active' WHERE id = $1")
+            .bind(tax_rule_id)
+            .execute(&owner_pool)
+            .await
+            .unwrap();
         let invalid_contact = app
             .clone()
             .oneshot(with_shopper_token(
@@ -1309,6 +1374,9 @@ mod tests {
         let checkout = response_json(checkout).await;
         let checkout_id = checkout["data"]["id"].as_str().unwrap();
         assert_eq!(checkout["data"]["shipping_amount_minor"], 500);
+        assert_eq!(checkout["data"]["tax_amount_minor"], 206);
+        assert_eq!(checkout["data"]["tax_inclusive"], true);
+        assert_eq!(checkout["data"]["tax_rule"]["rate_basis_points"], 900);
         assert_eq!(checkout["data"]["total_amount_minor"], 3000);
         assert_eq!(
             checkout["data"]["lines"][0]["product_title"],
@@ -1355,6 +1423,7 @@ mod tests {
         let order_id = order["data"]["id"].as_str().unwrap();
         assert_eq!(order["data"]["status"], "pending");
         assert_eq!(order["data"]["shipping_amount_minor"], 500);
+        assert_eq!(order["data"]["tax_amount_minor"], 206);
         assert_eq!(order["data"]["total_amount_minor"], 3000);
         assert_eq!(order["data"]["contact"]["email"], "guest@example.com");
         assert_eq!(
@@ -1433,6 +1502,26 @@ mod tests {
         assert!(
             sqlx::query(
                 "UPDATE sales.order_shipping_selections SET amount_minor = 1 \
+                 WHERE order_id = $1",
+            )
+            .bind(Uuid::parse_str(order_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.checkout_tax_calculations SET rate_basis_points = 1 \
+                 WHERE checkout_id = $1",
+            )
+            .bind(Uuid::parse_str(checkout_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.order_tax_calculations SET rate_basis_points = 1 \
                  WHERE order_id = $1",
             )
             .bind(Uuid::parse_str(order_id).unwrap())

@@ -13,7 +13,7 @@ use chaos_domain::{
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
     merchant::StoreId,
-    pricing::{Money, PriceListId},
+    pricing::{Money, PriceListId, TaxRuleId, TaxRuleSnapshot},
     sales::{
         CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderId, OrderStatus, PostalAddress,
         ShopperId,
@@ -43,6 +43,7 @@ type HeaderRow = (
     i64,
     i64,
     i64,
+    bool,
     i64,
     i64,
     OffsetDateTime,
@@ -253,7 +254,7 @@ async fn load_order(
     let row = sqlx::query_as::<_, HeaderRow>(
         "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
+                tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
     )
     .bind(account_id)
@@ -267,6 +268,7 @@ async fn load_order(
     };
     let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
     let shipping = load_order_shipping(transaction, account_id, store_id, order_id).await?;
+    let tax_rule = load_order_tax(transaction, account_id, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -313,9 +315,11 @@ async fn load_order(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
+        tax_rule,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.10,
-        total_amount_minor: row.11,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -355,8 +359,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.12,
-        updated_at: row.13,
+        created_at: row.13,
+        updated_at: row.14,
     }))
 }
 
@@ -390,6 +394,34 @@ async fn load_order_shipping(
         .map_err(ApplicationError::from)
     })
     .transpose()
+}
+
+async fn load_order_tax(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    order_id: OrderId,
+) -> Result<TaxRuleSnapshot, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
+        "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
+         FROM sales.order_tax_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_state)?;
+    TaxRuleSnapshot::rehydrate(
+        TaxRuleId::from_uuid(row.0),
+        row.1,
+        row.2,
+        row.3,
+        u32::try_from(row.4).map_err(|error| ApplicationError::Unexpected(error.into()))?,
+    )
+    .map_err(ApplicationError::from)
 }
 
 async fn load_order_identity(

@@ -13,7 +13,7 @@ use chaos_domain::{
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::{InventoryReservationId, StockBalance},
     merchant::{SalesChannelId, StoreId},
-    pricing::{Money, PriceListId},
+    pricing::{Money, PriceListId, TaxRule, TaxRuleId, TaxRuleSnapshot, TaxRuleStatus},
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
         CheckoutIdentity, CommercialAdjustments, Order, OrderId, OrderStatus, PostalAddress,
@@ -68,6 +68,7 @@ type CheckoutHeaderRow = (
     i64,
     i64,
     i64,
+    bool,
     i64,
     i64,
     OffsetDateTime,
@@ -99,6 +100,7 @@ type OrderHeaderRow = (
     i64,
     i64,
     i64,
+    bool,
     i64,
     i64,
     OffsetDateTime,
@@ -454,6 +456,23 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             (false, None) => None,
             _ => return Err(invalid_shipping_selection()),
         };
+        let tax_country = if cart.lines().iter().any(CartLine::requires_shipping) {
+            identity
+                .shipping_address()
+                .ok_or_else(invalid_shipping_selection)?
+                .country_code()
+        } else {
+            identity.billing_address().country_code()
+        };
+        let tax_rule = load_active_tax_rule(&mut transaction, actor, tax_country).await?;
+        let taxable_amounts = cart
+            .lines()
+            .iter()
+            .map(CartLine::subtotal)
+            .collect::<Result<Vec<_>, _>>()?;
+        let tax_inclusive = cart.lines()[0].tax_inclusive();
+        let taxes = tax_rule.calculate_and_allocate(&taxable_amounts, tax_inclusive)?;
+        let tax_snapshot = TaxRuleSnapshot::from_rule(&tax_rule)?;
         let reservation_id =
             reserve_inventory(&mut transaction, actor, channel_id, &cart, expires_at).await?;
         let checkout = Checkout::freeze(
@@ -462,10 +481,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             expires_at,
             identity,
             shipping,
-            cart.lines()
-                .iter()
-                .map(|_| CommercialAdjustments::zero(currency))
-                .collect(),
+            tax_snapshot,
+            taxes
+                .into_iter()
+                .map(|tax| CommercialAdjustments::new(Money::zero(currency), tax))
+                .collect::<Result<Vec<_>, _>>()?,
         )?;
         insert_checkout(
             &mut transaction,
@@ -611,10 +631,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             "INSERT INTO sales.orders \
              (id, merchant_account_id, store_id, sales_channel_id, checkout_id, \
               shopper_id, inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
-              discount_amount_minor, tax_amount_minor, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
+              discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
              SELECT $5, merchant_account_id, store_id, sales_channel_id, id, shopper_id, \
                     inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
-                    discount_amount_minor, tax_amount_minor, shipping_amount_minor, total_amount_minor, $6, $6 \
+                    discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $6, $6 \
              FROM sales.checkouts WHERE merchant_account_id = $1 AND store_id = $2 \
                AND sales_channel_id = $3 AND id = $4",
         )
@@ -650,6 +670,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .map_err(database_error)?;
         copy_checkout_identity_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         copy_checkout_shipping_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
+        copy_checkout_tax_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
              (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
@@ -1276,8 +1297,8 @@ async fn insert_checkout(
         "INSERT INTO sales.checkouts \
          (id, merchant_account_id, store_id, cart_id, shopper_id, sales_channel_id, price_list_id, \
           inventory_reservation_id, currency, subtotal_amount_minor, discount_amount_minor, \
-          tax_amount_minor, shipping_amount_minor, total_amount_minor, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+          tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(checkout.id().as_uuid())
     .bind(actor.merchant_account_id.as_uuid())
@@ -1295,6 +1316,7 @@ async fn insert_checkout(
     .bind(checkout.subtotal().amount_minor())
     .bind(checkout.discount().amount_minor())
     .bind(checkout.tax().amount_minor())
+    .bind(checkout.tax_inclusive())
     .bind(
         checkout
             .shipping()
@@ -1306,6 +1328,7 @@ async fn insert_checkout(
     .await
     .map_err(database_error)?;
     insert_checkout_identity(transaction, actor, checkout).await?;
+    insert_checkout_tax(transaction, actor, checkout).await?;
     if let Some(selection) = checkout.shipping() {
         insert_checkout_shipping(transaction, actor, checkout.id(), selection).await?;
     }
@@ -1406,6 +1429,31 @@ async fn insert_checkout_shipping(
     Ok(())
 }
 
+async fn insert_checkout_tax(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout: &Checkout,
+) -> Result<(), ApplicationError> {
+    let rule = checkout.tax_rule();
+    sqlx::query(
+        "INSERT INTO sales.checkout_tax_calculations \
+         (merchant_account_id, store_id, checkout_id, tax_rule_id, rule_code, rule_name, \
+          country_code, rate_basis_points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout.id().as_uuid())
+    .bind(rule.rule_id().as_uuid())
+    .bind(rule.code())
+    .bind(rule.name())
+    .bind(rule.country_code())
+    .bind(i32::try_from(rule.rate_basis_points()).map_err(unexpected_conversion)?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
 async fn insert_checkout_address(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1500,6 +1548,33 @@ async fn copy_checkout_shipping_to_order(
     Ok(())
 }
 
+async fn copy_checkout_tax_to_order(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    order_id: OrderId,
+) -> Result<(), ApplicationError> {
+    let result = sqlx::query(
+        "INSERT INTO sales.order_tax_calculations \
+         (merchant_account_id, store_id, order_id, tax_rule_id, rule_code, rule_name, \
+          country_code, rate_basis_points) \
+         SELECT merchant_account_id, store_id, $4, tax_rule_id, rule_code, rule_name, \
+                country_code, rate_basis_points FROM sales.checkout_tax_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if result.rows_affected() != 1 {
+        return Err(corrupt_sales_state());
+    }
+    Ok(())
+}
+
 async fn load_checkout_identity(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1590,6 +1665,35 @@ fn postal_address_from_row(row: AddressRow) -> Result<PostalAddress, Application
         .map_err(ApplicationError::from)
 }
 
+async fn load_active_tax_rule(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    country_code: &str,
+) -> Result<TaxRule, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
+        "SELECT id, code, name, country_code::text, rate_basis_points \
+         FROM pricing.tax_rules \
+         WHERE merchant_account_id = $1 AND store_id = $2 \
+           AND country_code = $3 AND status = 'active' FOR SHARE",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(country_code)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| tax_rule_unavailable(country_code))?;
+    TaxRule::rehydrate(
+        TaxRuleId::from_uuid(row.0),
+        row.1,
+        row.2,
+        row.3,
+        u32::try_from(row.4).map_err(unexpected_conversion)?,
+        TaxRuleStatus::Active,
+    )
+    .map_err(ApplicationError::from)
+}
+
 async fn load_active_shipping_service(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1675,6 +1779,59 @@ async fn load_order_shipping(
     row.map(shipping_selection_from_row).transpose()
 }
 
+fn tax_snapshot_from_row(
+    row: (Uuid, String, String, String, i32),
+) -> Result<TaxRuleSnapshot, ApplicationError> {
+    TaxRuleSnapshot::rehydrate(
+        TaxRuleId::from_uuid(row.0),
+        row.1,
+        row.2,
+        row.3,
+        u32::try_from(row.4).map_err(unexpected_conversion)?,
+    )
+    .map_err(ApplicationError::from)
+}
+
+async fn load_checkout_tax(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+) -> Result<TaxRuleSnapshot, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
+        "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
+         FROM sales.checkout_tax_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_sales_state)?;
+    tax_snapshot_from_row(row)
+}
+
+async fn load_order_tax(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+) -> Result<TaxRuleSnapshot, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
+        "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
+         FROM sales.order_tax_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_sales_state)?;
+    tax_snapshot_from_row(row)
+}
+
 async fn load_checkout(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1683,7 +1840,7 @@ async fn load_checkout(
     let row = sqlx::query_as::<_, CheckoutHeaderRow>(
         "SELECT id, shopper_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, expires_at, created_at FROM sales.checkouts \
+                tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at, created_at FROM sales.checkouts \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
     )
     .bind(actor.merchant_account_id.as_uuid())
@@ -1698,6 +1855,7 @@ async fn load_checkout(
     };
     let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
     let shipping = load_checkout_shipping(transaction, actor, checkout_id).await?;
+    let tax_rule = load_checkout_tax(transaction, actor, checkout_id).await?;
     let lines = sqlx::query_as::<_, CheckoutLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, quantity, unit_price_amount_minor, subtotal_amount_minor, \
@@ -1723,15 +1881,17 @@ async fn load_checkout(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
+        tax_rule,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.10,
-        total_amount_minor: row.11,
-        expires_at: row.12,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
+        expires_at: row.13,
         lines: lines
             .into_iter()
             .map(checkout_line_item)
             .collect::<Result<Vec<_>, _>>()?,
-        created_at: row.13,
+        created_at: row.14,
     }))
 }
 
@@ -1761,7 +1921,7 @@ async fn load_order(
     let row = sqlx::query_as::<_, OrderHeaderRow>(
         "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
+                tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
     )
     .bind(actor.merchant_account_id.as_uuid())
@@ -1776,6 +1936,7 @@ async fn load_order(
     };
     let identity = load_order_identity(transaction, actor, order_id).await?;
     let shipping = load_order_shipping(transaction, actor, order_id).await?;
+    let tax_rule = load_order_tax(transaction, actor, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -1822,9 +1983,11 @@ async fn load_order(
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
+        tax_rule,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.10,
-        total_amount_minor: row.11,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -1847,8 +2010,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.12,
-        updated_at: row.13,
+        created_at: row.13,
+        updated_at: row.14,
     }))
 }
 
@@ -1913,6 +2076,8 @@ struct CheckoutSnapshot {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    tax_rule: TaxRuleSnapshotData,
+    tax_inclusive: bool,
     shipping: Option<ShippingSelectionSnapshot>,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
@@ -1951,6 +2116,8 @@ struct OrderSnapshot {
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
+    tax_rule: TaxRuleSnapshotData,
+    tax_inclusive: bool,
     shipping: Option<ShippingSelectionSnapshot>,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
@@ -1997,6 +2164,15 @@ struct ShippingSelectionSnapshot {
     currency: String,
     estimated_min_days: u16,
     estimated_max_days: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TaxRuleSnapshotData {
+    rule_id: Uuid,
+    code: String,
+    name: String,
+    country_code: String,
+    rate_basis_points: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2071,6 +2247,8 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
+        tax_rule: TaxRuleSnapshotData::from(&detail.tax_rule),
+        tax_inclusive: detail.tax_inclusive,
         shipping: detail
             .shipping
             .as_ref()
@@ -2104,6 +2282,8 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
+        tax_rule: snapshot.tax_rule.try_into()?,
+        tax_inclusive: snapshot.tax_inclusive,
         shipping: snapshot
             .shipping
             .map(ShippingSelection::try_from)
@@ -2135,6 +2315,8 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
+        tax_rule: TaxRuleSnapshotData::from(&detail.tax_rule),
+        tax_inclusive: detail.tax_inclusive,
         shipping: detail
             .shipping
             .as_ref()
@@ -2178,6 +2360,8 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
+        tax_rule: snapshot.tax_rule.try_into()?,
+        tax_inclusive: snapshot.tax_inclusive,
         shipping: snapshot
             .shipping
             .map(ShippingSelection::try_from)
@@ -2252,6 +2436,33 @@ impl TryFrom<ShippingSelectionSnapshot> for ShippingSelection {
             Money::new(value.amount_minor, parse_currency(&value.currency)?),
             value.estimated_min_days,
             value.estimated_max_days,
+        )
+        .map_err(ApplicationError::from)
+    }
+}
+
+impl From<&TaxRuleSnapshot> for TaxRuleSnapshotData {
+    fn from(value: &TaxRuleSnapshot) -> Self {
+        Self {
+            rule_id: value.rule_id().as_uuid(),
+            code: value.code().into(),
+            name: value.name().into(),
+            country_code: value.country_code().into(),
+            rate_basis_points: value.rate_basis_points(),
+        }
+    }
+}
+
+impl TryFrom<TaxRuleSnapshotData> for TaxRuleSnapshot {
+    type Error = ApplicationError;
+
+    fn try_from(value: TaxRuleSnapshotData) -> Result<Self, Self::Error> {
+        TaxRuleSnapshot::rehydrate(
+            TaxRuleId::from_uuid(value.rule_id),
+            value.code,
+            value.name,
+            value.country_code,
+            value.rate_basis_points,
         )
         .map_err(ApplicationError::from)
     }
@@ -2572,6 +2783,15 @@ fn invalid_shipping_selection() -> ApplicationError {
     }
 }
 
+fn tax_rule_unavailable(country_code: &str) -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "tax_rule",
+            reason: format!("no active Tax Rule is configured for destination {country_code}"),
+        }],
+    }
+}
+
 fn order_not_found(order_id: OrderId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "order",
@@ -2804,6 +3024,17 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO pricing.tax_rules \
+             (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
+             VALUES ($1, $2, $3, 'us-sales-tax', 'US sales tax', 'US', 900)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         for (id, store, code) in [
             (channel_id, store_id, "web"),
             (other_channel_id, other_store_id, "other-web"),
@@ -2995,7 +3226,8 @@ mod tests {
         let first = first.await.unwrap().unwrap();
         let second = second.await.unwrap().unwrap();
         assert_eq!(first.id, second.id);
-        assert_eq!(first.total_amount_minor, 3_750);
+        assert_eq!(first.tax_amount_minor, 338);
+        assert_eq!(first.total_amount_minor, 4_088);
         assert_eq!(first.lines[0].product_title, "Checkout Product");
         assert!(first.inventory_reservation_id.is_some());
         assert_eq!(first.identity.contact().email(), "guest@example.com");

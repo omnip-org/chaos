@@ -114,6 +114,7 @@ mod tests {
             "CheckoutLine",
             "ShippingOption",
             "ShippingOptionCollectionEnvelope",
+            "TaxCalculation",
             "Checkout",
             "CheckoutEnvelope",
             "OrderLine",

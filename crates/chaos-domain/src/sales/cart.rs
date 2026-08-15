@@ -7,7 +7,7 @@ use crate::{
     fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
     merchant::{MerchantAccountId, SalesChannelId, StoreId},
-    pricing::{Money, PriceListId},
+    pricing::{Money, PriceListId, TaxRuleSnapshot},
 };
 
 use super::CheckoutIdentity;
@@ -241,6 +241,16 @@ impl Cart {
                     "must contain each Variant at most once",
                 ));
             }
+            if cart
+                .lines
+                .first()
+                .is_some_and(|existing| existing.tax_inclusive != line.tax_inclusive)
+            {
+                return Err(validation(
+                    "tax_inclusive",
+                    "Cart lines must use one Price List tax semantic",
+                ));
+            }
             cart.lines.push(line);
         }
         cart.lines
@@ -286,6 +296,15 @@ impl Cart {
             return Err(validation(
                 "currency",
                 "Cart lines must use the Cart currency",
+            ));
+        }
+        if self.lines.iter().any(|existing| {
+            existing.product_variant_id != line.product_variant_id
+                && existing.tax_inclusive != line.tax_inclusive
+        }) {
+            return Err(validation(
+                "tax_inclusive",
+                "Cart lines must use one Price List tax semantic",
             ));
         }
         if let Some(existing) = self
@@ -364,6 +383,13 @@ impl CommercialAdjustments {
             tax: Money::zero(currency),
         }
     }
+
+    pub const fn discount(&self) -> &Money {
+        &self.discount
+    }
+    pub const fn tax(&self) -> &Money {
+        &self.tax
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -392,9 +418,18 @@ impl CheckoutLine {
         if adjustments.discount.amount_minor() > subtotal.amount_minor() {
             return Err(validation("discount", "must not exceed line subtotal"));
         }
-        let total = subtotal
-            .checked_sub(&adjustments.discount)?
-            .checked_add(&adjustments.tax)?;
+        let discounted = subtotal.checked_sub(&adjustments.discount)?;
+        let total = if cart_line.tax_inclusive() {
+            if adjustments.tax.amount_minor() > discounted.amount_minor() {
+                return Err(validation(
+                    "tax",
+                    "included tax must not exceed the discounted subtotal",
+                ));
+            }
+            discounted
+        } else {
+            discounted.checked_add(&adjustments.tax)?
+        };
         Ok(Self {
             cart_line: cart_line.clone(),
             subtotal,
@@ -435,6 +470,8 @@ pub struct Checkout {
     expires_at: OffsetDateTime,
     identity: CheckoutIdentity,
     shipping: Option<ShippingSelection>,
+    tax_rule: TaxRuleSnapshot,
+    tax_inclusive: bool,
     lines: Vec<CheckoutLine>,
     subtotal: Money,
     discount: Money,
@@ -449,6 +486,7 @@ impl Checkout {
         expires_at: OffsetDateTime,
         identity: CheckoutIdentity,
         shipping: Option<ShippingSelection>,
+        tax_rule: TaxRuleSnapshot,
         adjustments: Vec<CommercialAdjustments>,
     ) -> Result<Self, DomainError> {
         if cart.status != CartStatus::Active {
@@ -493,6 +531,7 @@ impl Checkout {
             .zip(adjustments)
             .map(|(line, adjustments)| CheckoutLine::freeze(line, adjustments))
             .collect::<Result<Vec<_>, _>>()?;
+        let tax_inclusive = cart.lines[0].tax_inclusive();
         let subtotal = sum(lines.iter().map(CheckoutLine::subtotal), cart.currency)?;
         let discount = sum(lines.iter().map(CheckoutLine::discount), cart.currency)?;
         let tax = sum(lines.iter().map(CheckoutLine::tax), cart.currency)?;
@@ -511,6 +550,8 @@ impl Checkout {
             expires_at,
             identity,
             shipping,
+            tax_rule,
+            tax_inclusive,
             lines,
             subtotal,
             discount,
@@ -549,6 +590,13 @@ impl Checkout {
 
     pub const fn shipping(&self) -> Option<&ShippingSelection> {
         self.shipping.as_ref()
+    }
+
+    pub const fn tax_rule(&self) -> &TaxRuleSnapshot {
+        &self.tax_rule
+    }
+    pub const fn tax_inclusive(&self) -> bool {
+        self.tax_inclusive
     }
 
     pub fn lines(&self) -> &[CheckoutLine] {
@@ -666,6 +714,11 @@ mod tests {
         ShippingSelection::from_service(&service).unwrap()
     }
 
+    fn tax_rule() -> TaxRuleSnapshot {
+        let rule = crate::pricing::TaxRule::create("sales-tax", "Sales tax", "US", 900).unwrap();
+        TaxRuleSnapshot::from_rule(&rule).unwrap()
+    }
+
     #[test]
     fn cart_upserts_variant_lines_and_totals_checked_money() {
         let variant_id = ProductVariantId::new();
@@ -703,6 +756,7 @@ mod tests {
             OffsetDateTime::UNIX_EPOCH,
             checkout_identity(),
             Some(shipping_selection()),
+            tax_rule(),
             vec![adjustments],
         )
         .unwrap();
@@ -730,6 +784,7 @@ mod tests {
                 OffsetDateTime::UNIX_EPOCH,
                 checkout_identity(),
                 Some(shipping_selection()),
+                tax_rule(),
                 vec![adjustment],
             )
             .is_err()
@@ -765,6 +820,7 @@ mod tests {
                 OffsetDateTime::UNIX_EPOCH,
                 identity,
                 None,
+                tax_rule(),
                 vec![CommercialAdjustments::zero(CurrencyCode::USD)],
             )
             .is_err()

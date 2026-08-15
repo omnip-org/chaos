@@ -93,6 +93,8 @@ mod tests {
         let user_id = Uuid::now_v7();
         let key_a = Uuid::now_v7();
         let key_b = Uuid::now_v7();
+        let tax_rule_a = Uuid::now_v7();
+        let tax_rule_b = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id)
@@ -143,6 +145,23 @@ mod tests {
                  VALUES ($1, $2, $3, $4, $4, 'web', true)",
             )
             .bind(channel_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(code)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (tax_rule_id, store_id, account_id, code) in [
+            (tax_rule_a, store_a, account_a, "tax-a"),
+            (tax_rule_b, store_b, account_b, "tax-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO pricing.tax_rules \
+                 (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
+                 VALUES ($1, $2, $3, $4, $4, 'US', 0)",
+            )
+            .bind(tax_rule_id)
             .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(code)
@@ -226,6 +245,11 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
+        let visible_tax_rule_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM pricing.tax_rules ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
         let visible_scope_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'mcp:tools'",
         )
@@ -238,6 +262,7 @@ mod tests {
         assert_eq!(visible_key_ids, vec![key_a]);
         assert_eq!(visible_channel_ids, vec![channel_a]);
         assert_eq!(visible_product_ids, vec![product_a]);
+        assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
         assert_eq!(visible_scope_count, 1);
 
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")

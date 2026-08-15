@@ -59,7 +59,7 @@ Every merchant-owned table contains `merchant_account_id`; store-owned commerce 
 - Store money as `bigint amount_minor` plus `char(3) currency`. Never use floating-point types.
 - Use uppercase ISO 4217 currency codes. Application-owned minor-unit metadata is versioned.
 - Price lists store explicit amounts for each supported currency. Display conversion never overwrites a settlement price.
-- Order creation snapshots product names, current zero-valued tax and discount allocations, unit prices, and currency. Historical orders do not change with the catalog.
+- Order creation snapshots product names, deterministic tax and discount allocations, Tax Rule evidence, unit prices, Price List tax semantics, shipping selection, and currency. Historical orders do not change with catalog or configuration updates.
 - One order uses exactly one settlement currency. Payments and refunds must match the order currency.
 - Exchange-rate display and settlement conversion are reserved capabilities. Authoritative Price Lists currently provide explicit prices in each enabled settlement currency.
 
@@ -72,7 +72,7 @@ Suggested implementation order:
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
 2. merchant: merchant accounts, memberships, roles, API keys, Stores, and Channels; domain resolution is reserved;
 3. catalog: products, variants, options, and publication; collections and media are reserved;
-4. pricing: Money, price lists, and prices; promotions and tax are planned;
+4. pricing: Money, price lists, prices, and Store Tax Rules; promotions are planned;
 5. inventory: locations, stock items, reservations, and adjustments;
 6. sales: carts, line items, Checkout, Orders, and immutable guest contact/address snapshots;
 7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;

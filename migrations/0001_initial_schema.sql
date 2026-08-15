@@ -70,6 +70,7 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
 CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
 CREATE TYPE inventory.inventory_location_status AS ENUM ('active', 'archived');
 CREATE TYPE inventory.inventory_reservation_status AS ENUM (
     'active',
@@ -641,6 +642,35 @@ CREATE INDEX prices_variant_lookup_idx
         price_list_id
     );
 
+CREATE TABLE pricing.tax_rules (
+    id                    UUID                    NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID                    NOT NULL,
+    store_id              UUID                    NOT NULL,
+    code                  TEXT                    NOT NULL,
+    name                  TEXT                    NOT NULL,
+    country_code          CHAR(2)                 NOT NULL,
+    rate_basis_points     INTEGER                 NOT NULL,
+    status                pricing.tax_rule_status NOT NULL DEFAULT 'active',
+    created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, code),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT tax_rules_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT tax_rules_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT tax_rules_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT tax_rules_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
+);
+
+CREATE UNIQUE INDEX tax_rules_active_country_key
+    ON pricing.tax_rules (merchant_account_id, store_id, country_code)
+    WHERE status = 'active';
+
+CREATE INDEX tax_rules_store_status_idx
+    ON pricing.tax_rules (merchant_account_id, store_id, status, created_at, id);
+
 CREATE TABLE inventory.inventory_locations (
     id                   UUID                                    NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                                    NOT NULL,
@@ -916,6 +946,7 @@ CREATE TABLE sales.checkouts (
     subtotal_amount_minor  BIGINT                  NOT NULL,
     discount_amount_minor  BIGINT                  NOT NULL,
     tax_amount_minor       BIGINT                  NOT NULL,
+    tax_inclusive          BOOLEAN                 NOT NULL,
     shipping_amount_minor  BIGINT                  NOT NULL,
     total_amount_minor     BIGINT                  NOT NULL,
     expires_at             TIMESTAMPTZ             NOT NULL,
@@ -945,7 +976,8 @@ CREATE TABLE sales.checkouts (
         AND tax_amount_minor >= 0
         AND shipping_amount_minor >= 0
         AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + tax_amount_minor + shipping_amount_minor
+            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
+            + shipping_amount_minor
     ),
     CONSTRAINT checkouts_expiration_check CHECK (expires_at > created_at),
     CONSTRAINT checkouts_closure_check CHECK (
@@ -1034,6 +1066,27 @@ CREATE TABLE sales.checkout_addresses (
     CONSTRAINT checkout_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
+CREATE TABLE sales.checkout_tax_calculations (
+    merchant_account_id UUID    NOT NULL,
+    store_id            UUID    NOT NULL,
+    checkout_id         UUID    NOT NULL,
+    tax_rule_id         UUID    NOT NULL,
+    rule_code           TEXT    NOT NULL,
+    rule_name           TEXT    NOT NULL,
+    country_code        CHAR(2) NOT NULL,
+    rate_basis_points   INTEGER NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, tax_rule_id)
+        REFERENCES pricing.tax_rules(merchant_account_id, store_id, id),
+    CONSTRAINT checkout_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
+    CONSTRAINT checkout_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
+    CONSTRAINT checkout_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT checkout_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
+);
+
 CREATE TABLE sales.checkout_lines (
     merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
@@ -1076,7 +1129,9 @@ CREATE TABLE sales.checkout_lines (
         AND discount_amount_minor >= 0
         AND discount_amount_minor <= subtotal_amount_minor
         AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor + tax_amount_minor
+        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
+            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
+        AND (NOT tax_inclusive OR tax_amount_minor <= subtotal_amount_minor - discount_amount_minor)
     )
 );
 
@@ -1094,6 +1149,7 @@ CREATE TABLE sales.orders (
     subtotal_amount_minor    BIGINT                NOT NULL,
     discount_amount_minor    BIGINT                NOT NULL,
     tax_amount_minor         BIGINT                NOT NULL,
+    tax_inclusive            BOOLEAN               NOT NULL,
     shipping_amount_minor    BIGINT                NOT NULL,
     total_amount_minor       BIGINT                NOT NULL,
     created_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1118,7 +1174,8 @@ CREATE TABLE sales.orders (
         AND tax_amount_minor >= 0
         AND shipping_amount_minor >= 0
         AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + tax_amount_minor + shipping_amount_minor
+            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
+            + shipping_amount_minor
     )
 );
 
@@ -1191,6 +1248,27 @@ CREATE TABLE sales.order_addresses (
     CONSTRAINT order_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
+CREATE TABLE sales.order_tax_calculations (
+    merchant_account_id UUID    NOT NULL,
+    store_id            UUID    NOT NULL,
+    order_id            UUID    NOT NULL,
+    tax_rule_id         UUID    NOT NULL,
+    rule_code           TEXT    NOT NULL,
+    rule_name           TEXT    NOT NULL,
+    country_code        CHAR(2) NOT NULL,
+    rate_basis_points   INTEGER NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, order_id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, tax_rule_id)
+        REFERENCES pricing.tax_rules(merchant_account_id, store_id, id),
+    CONSTRAINT order_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
+    CONSTRAINT order_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
+    CONSTRAINT order_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT order_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
+);
+
 CREATE TABLE sales.order_lines (
     merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
@@ -1233,7 +1311,9 @@ CREATE TABLE sales.order_lines (
         AND discount_amount_minor >= 0
         AND discount_amount_minor <= subtotal_amount_minor
         AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor + tax_amount_minor
+        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
+            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
+        AND (NOT tax_inclusive OR tax_amount_minor <= subtotal_amount_minor - discount_amount_minor)
     )
 );
 
@@ -1931,6 +2011,7 @@ ALTER TABLE catalog.variant_selected_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_reservations ENABLE ROW LEVEL SECURITY;
@@ -1941,11 +2022,13 @@ ALTER TABLE sales.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_addresses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.checkout_tax_calculations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_addresses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_tax_calculations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_transitions ENABLE ROW LEVEL SECURITY;
@@ -2156,6 +2239,16 @@ CREATE POLICY merchant_account_isolation ON pricing.prices
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON pricing.tax_rules
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON inventory.inventory_locations
     USING (
         merchant_account_id =
@@ -2256,6 +2349,16 @@ CREATE POLICY merchant_account_isolation ON sales.checkout_addresses
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON sales.checkout_tax_calculations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON sales.checkout_lines
     USING (
         merchant_account_id =
@@ -2297,6 +2400,16 @@ CREATE POLICY merchant_account_isolation ON sales.order_contacts
     );
 
 CREATE POLICY merchant_account_isolation ON sales.order_addresses
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.order_tax_calculations
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -2859,10 +2972,10 @@ REVOKE UPDATE, DELETE
     ON inventory.stock_ledger_entries FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines,
-       sales.checkout_shipping_selections FROM chaos_runtime;
+       sales.checkout_shipping_selections, sales.checkout_tax_calculations FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON sales.order_contacts, sales.order_addresses, sales.order_lines,
-       sales.order_shipping_selections, sales.order_transitions
+       sales.order_shipping_selections, sales.order_tax_calculations, sales.order_transitions
     FROM chaos_runtime;
 REVOKE DELETE ON sales.checkouts, sales.orders FROM chaos_runtime;
 REVOKE UPDATE, DELETE

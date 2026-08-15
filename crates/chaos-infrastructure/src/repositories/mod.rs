@@ -17,6 +17,7 @@ mod store_administration;
 mod store_provisioning;
 mod storefront_catalog;
 mod storefront_sales;
+mod tax;
 
 pub use api_key::{PostgresApiKeyRepository, SecureApiKeyMaterialGenerator};
 pub use catalog_management::PostgresCatalogManagementUnitOfWork;
@@ -36,3 +37,4 @@ pub use store_administration::PostgresStoreAdministrationRepository;
 pub use store_provisioning::PostgresStoreProvisioningUnitOfWork;
 pub use storefront_catalog::PostgresStorefrontCatalogRepository;
 pub use storefront_sales::PostgresStorefrontSalesRepository;
+pub use tax::PostgresTaxRuleRepository;

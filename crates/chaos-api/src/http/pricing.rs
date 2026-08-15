@@ -8,11 +8,15 @@ use chaos_application::{
     ApplicationError,
     ports::IdempotencyRequest,
     pricing::{
-        ChangePriceListStatusInput, CreatePriceInput, CreatePriceListInput, UpdatePriceListInput,
+        ChangePriceListStatusInput, ChangeTaxRuleStatusInput, CreatePriceInput,
+        CreatePriceListInput, CreateTaxRuleInput, UpdatePriceListInput,
     },
 };
 use chaos_domain::{
-    FieldViolation, catalog::ProductVariantId, merchant::StoreId, pricing::PriceListId,
+    FieldViolation,
+    catalog::ProductVariantId,
+    merchant::StoreId,
+    pricing::{PriceListId, TaxRuleId, TaxRuleStatus},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,6 +47,14 @@ pub fn routes() -> Router<ApiState> {
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists/{price_list_id}/archive",
             post(archive_price_list),
         )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules",
+            post(create_tax_rule).get(list_tax_rules),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules/{tax_rule_id}/{operation}",
+            post(change_tax_rule_status),
+        )
         .layer(DefaultBodyLimit::max(128 * 1024))
 }
 
@@ -57,6 +69,14 @@ struct PriceListPath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     price_list_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct TaxRulePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    tax_rule_id: Uuid,
+    operation: String,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +122,15 @@ struct UpdatePriceListBody {
     prices: Vec<CreatePriceBody>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTaxRuleBody {
+    code: String,
+    name: String,
+    country_code: String,
+    rate_basis_points: u32,
+}
+
 #[derive(Serialize)]
 struct PriceListCreatedData {
     id: Uuid,
@@ -140,6 +169,112 @@ struct PriceListDetailData {
     #[serde(flatten)]
     price_list: PriceListData,
     prices: Vec<PriceData>,
+}
+
+#[derive(Serialize)]
+struct TaxRuleData {
+    id: Uuid,
+    code: String,
+    name: String,
+    country_code: String,
+    rate_basis_points: u32,
+    status: &'static str,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+async fn create_tax_rule(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<CreateTaxRuleBody>,
+) -> Result<ApiResponse<TaxRuleData>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let idempotency = collection_mutation_request(&headers, path.store_id, &body)?;
+    let detail = state
+        .tax_management
+        .create(CreateTaxRuleInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            code: body.code,
+            name: body.name,
+            country_code: body.country_code,
+            rate_basis_points: body.rate_basis_points,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(tax_rule_data(detail)))
+}
+
+async fn list_tax_rules(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<Vec<TaxRuleData>>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let rules = state
+        .tax_management
+        .list(actor, StoreId::from_uuid(path.store_id))
+        .await?;
+    Ok(ApiResponse::ok(
+        rules.into_iter().map(tax_rule_data).collect(),
+    ))
+}
+
+async fn change_tax_rule_status(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<TaxRulePath>,
+) -> Result<ApiResponse<TaxRuleData>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let status = match path.operation.as_str() {
+        "activate" => TaxRuleStatus::Active,
+        "archive" => TaxRuleStatus::Archived,
+        _ => {
+            return Err(ApplicationError::NotFound {
+                resource: "operation",
+                id: path.operation,
+            }
+            .into());
+        }
+    };
+    let idempotency =
+        mutation_request(&headers, path.store_id, path.tax_rule_id, &status.as_str())?;
+    let detail = state
+        .tax_management
+        .change_status(ChangeTaxRuleStatusInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            rule_id: TaxRuleId::from_uuid(path.tax_rule_id),
+            status,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(tax_rule_data(detail)))
+}
+
+fn tax_rule_data(detail: chaos_application::ports::TaxRuleDetail) -> TaxRuleData {
+    TaxRuleData {
+        id: detail.rule.id().as_uuid(),
+        code: detail.rule.code().into(),
+        name: detail.rule.name().into(),
+        country_code: detail.rule.country_code().into(),
+        rate_basis_points: detail.rule.rate_basis_points(),
+        status: detail.rule.status().as_str(),
+        created_at: detail.created_at.into(),
+        updated_at: detail.updated_at.into(),
+    }
 }
 
 async fn create_price_list(
@@ -353,6 +488,21 @@ fn mutation_request<T: Serialize>(
         key: idempotency_key(headers)?,
         request_fingerprint: Sha256::digest(
             serde_json::to_vec(&(store_id, price_list_id, body))
+                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+        )
+        .into(),
+    })
+}
+
+fn collection_mutation_request<T: Serialize>(
+    headers: &HeaderMap,
+    store_id: Uuid,
+    body: &T,
+) -> Result<IdempotencyRequest, ApiError> {
+    Ok(IdempotencyRequest {
+        key: idempotency_key(headers)?,
+        request_fingerprint: Sha256::digest(
+            serde_json::to_vec(&(store_id, body))
                 .map_err(|error| ApplicationError::Unexpected(error.into()))?,
         )
         .into(),
@@ -682,6 +832,54 @@ pub(crate) mod tests {
         );
         let detail_uri = format!("{collection_uri}/{}", price_list_id.as_uuid());
         let owner_state = test_state(&database_url, owner_id);
+        let tax_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/tax-rules",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &tax_uri,
+                Some(&format!("create-tax-{suffix}")),
+                Some(json!({
+                    "code": "us-sales-tax",
+                    "name": "US sales tax",
+                    "country_code": "us",
+                    "rate_basis_points": 825
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let tax_rule = response_json(response).await;
+        let tax_rule_id = tax_rule["data"]["id"].as_str().unwrap();
+        assert_eq!(tax_rule["data"]["country_code"], "US");
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &tax_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{tax_uri}/{tax_rule_id}/archive"),
+                Some(&format!("archive-tax-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["data"]["status"], "archived");
 
         let response = router(owner_state.clone())
             .oneshot(request(Method::GET, &collection_uri, None, None))
