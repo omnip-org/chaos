@@ -4,7 +4,8 @@ use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
-        ShippingSecretReference, ShippingService, ShippingServiceId, ShippingServiceStatus,
+        ShippingProviderAccount, ShippingProviderAccountId, ShippingSecretReference,
+        ShippingService, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
     merchant::StoreId,
@@ -73,6 +74,55 @@ pub struct ShippingServiceDetail {
     pub service: ShippingService,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+pub struct ShippingProviderAccountConfiguration {
+    pub credential_secret_reference: ShippingSecretReference,
+    pub origin: ShippingAddress,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingProviderAccountDetail {
+    pub account: ShippingProviderAccount,
+    pub credentials_configured: bool,
+    pub origin: ShippingAddress,
+    pub credential_rotation_expires_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+#[async_trait]
+pub trait ShippingProviderAccountRepository: Send + Sync {
+    async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError>;
+
+    async fn get(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        id: ShippingProviderAccountId,
+    ) -> Result<Option<ShippingProviderAccountDetail>, ApplicationError>;
+
+    async fn create(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &ShippingProviderAccount,
+        configuration: &ShippingProviderAccountConfiguration,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<ShippingProviderAccountDetail, ApplicationError>;
+
+    async fn update(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        account: &ShippingProviderAccount,
+        configuration: &ShippingProviderAccountConfiguration,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<ShippingProviderAccountDetail, ApplicationError>;
 }
 
 #[async_trait]

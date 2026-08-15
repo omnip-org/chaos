@@ -25,6 +25,7 @@ pub struct Settings {
     pub resend_api_base_url: Url,
     pub payment_webhook_secret: String,
     pub stripe_api_base_url: Url,
+    pub easypost_api_base_url: Url,
     pub shopper_token_active_key_id: String,
     pub shopper_token_active_secret: String,
     pub shopper_token_previous_key: Option<(String, String)>,
@@ -63,6 +64,7 @@ impl Settings {
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
+            easypost_api_base_url: parse_or("EASYPOST_API_BASE_URL", "https://api.easypost.com/")?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
             shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
             shopper_token_previous_key: optional_pair(

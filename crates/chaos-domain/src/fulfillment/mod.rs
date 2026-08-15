@@ -35,6 +35,95 @@ macro_rules! operation_id {
 operation_id!(FulfillmentId);
 operation_id!(ReturnId);
 operation_id!(ShippingServiceId);
+operation_id!(ShippingProviderAccountId);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingProviderAccount {
+    id: ShippingProviderAccountId,
+    provider: String,
+    display_name: String,
+    enabled: bool,
+}
+
+impl ShippingProviderAccount {
+    pub fn create(
+        provider: impl Into<String>,
+        display_name: impl Into<String>,
+        enabled: bool,
+    ) -> Result<Self, DomainError> {
+        Self::build(
+            ShippingProviderAccountId::new(),
+            provider,
+            display_name,
+            enabled,
+        )
+    }
+
+    pub fn rehydrate(
+        id: ShippingProviderAccountId,
+        provider: impl Into<String>,
+        display_name: impl Into<String>,
+        enabled: bool,
+    ) -> Result<Self, DomainError> {
+        Self::build(id, provider, display_name, enabled)
+    }
+
+    fn build(
+        id: ShippingProviderAccountId,
+        provider: impl Into<String>,
+        display_name: impl Into<String>,
+        enabled: bool,
+    ) -> Result<Self, DomainError> {
+        let provider = provider.into();
+        if provider.is_empty()
+            || provider.len() > 64
+            || !provider
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(validation(
+                "provider",
+                "must contain 1-64 lowercase letters, digits, or underscores",
+            ));
+        }
+        let display_name = display_name.into();
+        validate_text("display_name", &display_name, 120)?;
+        Ok(Self {
+            id,
+            provider,
+            display_name,
+            enabled,
+        })
+    }
+
+    pub const fn id(&self) -> ShippingProviderAccountId {
+        self.id
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn update_administration(
+        &mut self,
+        display_name: impl Into<String>,
+        enabled: bool,
+    ) -> Result<(), DomainError> {
+        let display_name = display_name.into();
+        validate_text("display_name", &display_name, 120)?;
+        self.display_name = display_name;
+        self.enabled = enabled;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShippingSecretReference(String);
@@ -710,5 +799,19 @@ mod tests {
         );
         assert!(ShippingSecretReference::new("plaintext").is_err());
         assert!(ShippingSecretReference::new("env://contains whitespace").is_err());
+    }
+
+    #[test]
+    fn shipping_provider_account_validates_identity_and_administration() {
+        let mut account =
+            ShippingProviderAccount::create("easypost", "EasyPost Production", true).unwrap();
+
+        account
+            .update_administration("EasyPost Disabled", false)
+            .unwrap();
+        assert_eq!(account.provider(), "easypost");
+        assert_eq!(account.display_name(), "EasyPost Disabled");
+        assert!(!account.enabled());
+        assert!(ShippingProviderAccount::create("EasyPost", "Invalid", false).is_err());
     }
 }

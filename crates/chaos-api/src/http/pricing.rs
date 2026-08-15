@@ -877,6 +877,7 @@ pub(crate) mod tests {
             resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
+            easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,
@@ -937,6 +938,7 @@ pub(crate) mod tests {
         let support_id = UserId::new();
         let account_id = chaos_domain::merchant::MerchantAccountId::new();
         let store_id = StoreId::new();
+        let other_store_id = StoreId::new();
         let product_id = chaos_domain::catalog::ProductId::new();
         let variant_id = ProductVariantId::new();
         let price_list_id = PriceListId::new();
@@ -978,6 +980,15 @@ pub(crate) mod tests {
              VALUES ($1, $2, 'pricing-http', 'Pricing HTTP')",
         )
         .bind(store_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
+             VALUES ($1, $2, 'pricing-http-other', 'Pricing HTTP Other')",
+        )
+        .bind(other_store_id.as_uuid())
         .bind(account_id.as_uuid())
         .execute(&owner_pool)
         .await
@@ -1052,6 +1063,142 @@ pub(crate) mod tests {
         );
         let detail_uri = format!("{collection_uri}/{}", price_list_id.as_uuid());
         let owner_state = test_state(&database_url, owner_id);
+        let shipping_provider_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let shipping_origin = json!({
+            "name": "Chaos Warehouse",
+            "company": "Chaos Commerce",
+            "address_line_1": "1 Test Street",
+            "city": "Singapore",
+            "postal_code": "018956",
+            "country_code": "sg",
+            "phone": "+6591234567",
+            "email": "warehouse@example.com"
+        });
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &shipping_provider_uri,
+                Some(&format!("create-shipping-provider-{suffix}")),
+                Some(json!({
+                    "provider": "easypost",
+                    "display_name": "EasyPost Production",
+                    "credential_secret_reference": "env://CHAOS_SHIPPING_SECRET_EASYPOST",
+                    "origin": shipping_origin,
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let shipping_provider = response_json(response).await;
+        assert_eq!(shipping_provider["data"]["provider"], "easypost");
+        assert_eq!(shipping_provider["data"]["origin"]["country_code"], "SG");
+        assert_eq!(shipping_provider["data"]["credentials_configured"], true);
+        assert!(
+            shipping_provider["data"]
+                .get("credential_secret_reference")
+                .is_none()
+        );
+        let shipping_provider_id = shipping_provider["data"]["id"].as_str().unwrap();
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts/{shipping_provider_id}",
+                    account_id.as_uuid(),
+                    other_store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::PUT,
+                &format!("{shipping_provider_uri}/{shipping_provider_id}"),
+                Some(&format!("rotate-shipping-provider-{suffix}")),
+                Some(json!({
+                    "display_name": "EasyPost Production",
+                    "credential_secret_reference": "env://CHAOS_SHIPPING_SECRET_EASYPOST_NEXT",
+                    "origin": shipping_origin,
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let rotated = response_json(response).await;
+        assert!(rotated["data"]["credential_rotation_expires_at"].is_string());
+        assert!(rotated["data"].get("credential_secret_reference").is_none());
+        let retained_secret: Option<String> = sqlx::query_scalar(
+            "SELECT previous_credential_secret_reference \
+             FROM fulfillment.shipping_provider_accounts \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(shipping_provider_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retained_secret.as_deref(),
+            Some("env://CHAOS_SHIPPING_SECRET_EASYPOST")
+        );
+        let rotation_deadline: Option<time::OffsetDateTime> = sqlx::query_scalar(
+            "SELECT credential_rotation_expires_at \
+             FROM fulfillment.shipping_provider_accounts \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(shipping_provider_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::PUT,
+                &format!("{shipping_provider_uri}/{shipping_provider_id}"),
+                Some(&format!("repeat-shipping-provider-{suffix}")),
+                Some(json!({
+                    "display_name": "EasyPost Production",
+                    "credential_secret_reference": "env://CHAOS_SHIPPING_SECRET_EASYPOST_NEXT",
+                    "origin": shipping_origin,
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let unchanged_deadline: Option<time::OffsetDateTime> = sqlx::query_scalar(
+            "SELECT credential_rotation_expires_at \
+             FROM fulfillment.shipping_provider_accounts \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(shipping_provider_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(unchanged_deadline, rotation_deadline);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &shipping_provider_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let list = response_json(response).await;
+        assert_eq!(list["data"].as_array().unwrap().len(), 1);
+        assert!(list["data"][0].get("credential_secret_reference").is_none());
         let tax_uri = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/tax-rules",
             account_id.as_uuid(),
@@ -1315,6 +1462,23 @@ pub(crate) mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         let support_state = test_state(&database_url, support_id);
+        let response = router(support_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &shipping_provider_uri,
+                Some(&format!("forbidden-shipping-provider-{suffix}")),
+                Some(json!({
+                    "provider": "other",
+                    "display_name": "Forbidden",
+                    "credential_secret_reference": "env://CHAOS_SHIPPING_SECRET_FORBIDDEN",
+                    "origin": shipping_origin,
+                    "enabled": false
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
         let response = router(support_state)
             .oneshot(request(
                 Method::PUT,

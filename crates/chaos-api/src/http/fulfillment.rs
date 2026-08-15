@@ -8,18 +8,20 @@ use chaos_application::{
     ApplicationError,
     fulfillment::{
         ChangeShippingServiceStatusInput, CreateFulfillmentInput, CreateReturnInput,
-        CreateShippingServiceInput, TransitionFulfillmentInput, TransitionReturnInput,
+        CreateShippingProviderAccountInput, CreateShippingServiceInput, TransitionFulfillmentInput,
+        TransitionReturnInput, UpdateShippingProviderAccountInput,
     },
     ports::{
         FulfillmentAllocationInput, FulfillmentDetail, IdempotencyRequest, ReturnDetail,
-        ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail,
+        ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingProviderAccountDetail,
+        ShippingServiceDetail,
     },
 };
 use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
-        ShippingServiceId, ShippingServiceStatus,
+        ShippingProviderAccountId, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
     merchant::{MerchantAccountId, StoreId},
@@ -63,6 +65,14 @@ pub(super) fn routes() -> Router<ApiState> {
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-services/{shipping_service_id}/{operation}",
             post(change_shipping_service_status),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts",
+            post(create_shipping_provider_account).get(list_shipping_provider_accounts),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts/{provider_account_id}",
+            axum::routing::get(get_shipping_provider_account).put(update_shipping_provider_account),
         )
         .layer(DefaultBodyLimit::max(32 * 1024))
 }
@@ -109,6 +119,61 @@ struct ShippingServicePath {
     store_id: Uuid,
     shipping_service_id: Uuid,
     operation: String,
+}
+
+#[derive(Deserialize)]
+struct ShippingProviderPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    provider_account_id: Uuid,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ShippingOriginBody {
+    name: String,
+    company: Option<String>,
+    address_line_1: String,
+    address_line_2: Option<String>,
+    city: String,
+    region: Option<String>,
+    postal_code: String,
+    country_code: String,
+    phone: Option<String>,
+    email: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateShippingProviderAccountBody {
+    provider: String,
+    display_name: String,
+    credential_secret_reference: String,
+    origin: ShippingOriginBody,
+    enabled: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateShippingProviderAccountBody {
+    display_name: String,
+    credential_secret_reference: String,
+    origin: ShippingOriginBody,
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct ShippingProviderAccountData {
+    id: Uuid,
+    provider: String,
+    display_name: String,
+    credentials_configured: bool,
+    origin: ShippingOriginBody,
+    enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_rotation_expires_at: Option<ApiDateTime>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -289,6 +354,137 @@ fn shipping_service_data(detail: ShippingServiceDetail) -> ShippingServiceData {
         status: detail.service.status().as_str(),
         created_at: detail.created_at.into(),
         updated_at: detail.updated_at.into(),
+    }
+}
+
+async fn list_shipping_provider_accounts(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<Vec<ShippingProviderAccountData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let values = state
+        .shipping_provider_administration
+        .list(actor, StoreId::from_uuid(path.store_id))
+        .await?;
+    Ok(ApiResponse::ok(
+        values
+            .into_iter()
+            .map(shipping_provider_account_data)
+            .collect(),
+    ))
+}
+
+async fn get_shipping_provider_account(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ShippingProviderPath>,
+) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let value = state
+        .shipping_provider_administration
+        .get(
+            actor,
+            StoreId::from_uuid(path.store_id),
+            ShippingProviderAccountId::from_uuid(path.provider_account_id),
+        )
+        .await?;
+    Ok(ApiResponse::ok(shipping_provider_account_data(value)))
+}
+
+async fn create_shipping_provider_account(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<CreateShippingProviderAccountBody>,
+) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(&headers, "create_shipping_provider_account", &body)?;
+    let value = state
+        .shipping_provider_administration
+        .create(CreateShippingProviderAccountInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            provider: body.provider,
+            display_name: body.display_name,
+            credential_secret_reference: body.credential_secret_reference,
+            origin: shipping_origin(body.origin),
+            enabled: body.enabled,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(shipping_provider_account_data(value)))
+}
+
+async fn update_shipping_provider_account(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ShippingProviderPath>,
+    ApiJson(body): ApiJson<UpdateShippingProviderAccountBody>,
+) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let idempotency = request(
+        &headers,
+        "update_shipping_provider_account",
+        &(path.provider_account_id, &body),
+    )?;
+    let value = state
+        .shipping_provider_administration
+        .update(UpdateShippingProviderAccountInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            id: ShippingProviderAccountId::from_uuid(path.provider_account_id),
+            display_name: body.display_name,
+            credential_secret_reference: body.credential_secret_reference,
+            origin: shipping_origin(body.origin),
+            enabled: body.enabled,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(shipping_provider_account_data(value)))
+}
+
+fn shipping_origin(value: ShippingOriginBody) -> ShippingAddress {
+    ShippingAddress {
+        name: value.name,
+        company: value.company,
+        address_line_1: value.address_line_1,
+        address_line_2: value.address_line_2,
+        city: value.city,
+        region: value.region,
+        postal_code: value.postal_code,
+        country_code: value.country_code,
+        phone: value.phone,
+        email: value.email,
+    }
+}
+
+fn shipping_provider_account_data(
+    value: ShippingProviderAccountDetail,
+) -> ShippingProviderAccountData {
+    ShippingProviderAccountData {
+        id: value.account.id().as_uuid(),
+        provider: value.account.provider().into(),
+        display_name: value.account.display_name().into(),
+        credentials_configured: value.credentials_configured,
+        origin: ShippingOriginBody {
+            name: value.origin.name,
+            company: value.origin.company,
+            address_line_1: value.origin.address_line_1,
+            address_line_2: value.origin.address_line_2,
+            city: value.origin.city,
+            region: value.origin.region,
+            postal_code: value.origin.postal_code,
+            country_code: value.origin.country_code,
+            phone: value.origin.phone,
+            email: value.origin.email,
+        },
+        enabled: value.account.enabled(),
+        credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
     }
 }
 

@@ -22,7 +22,10 @@ mod storefront_sales;
 use axum::Router;
 use chaos_application::{
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
-    fulfillment::{FulfillmentManagement, FulfillmentWorkers, ShippingManagement},
+    fulfillment::{
+        FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
+        ShippingProviderAdministration,
+    },
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
@@ -40,6 +43,7 @@ use std::sync::Arc;
 use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
+    easypost::{EasyPostShippingProvider, EnvironmentShippingSecretResolver},
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     passwordless::PasswordlessAuth,
     repositories::{
@@ -107,6 +111,7 @@ pub struct ApiState {
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub shipping_management: Arc<ShippingManagement>,
+    pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
@@ -276,6 +281,18 @@ impl ApiState {
         let shipping_management = ShippingManagement::new(Arc::new(
             PostgresShippingServiceRepository::new(infrastructure.runtime_pool()),
         ));
+        let shipping_provider: Arc<dyn chaos_application::ports::ShippingProvider> =
+            Arc::new(EasyPostShippingProvider::new(
+                settings.easypost_api_base_url.clone(),
+                settings.dependency_timeout,
+                Arc::new(EnvironmentShippingSecretResolver),
+            )?);
+        let shipping_provider_administration = ShippingProviderAdministration::new(
+            Arc::new(PostgresShippingServiceRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            [shipping_provider],
+        );
         let search_indexer = PostgresSearchIndexer::new(infrastructure.runtime_pool());
         let shopper_credentials = HmacShopperCredentialCodec::new(
             settings.shopper_token_active_key_id.clone(),
@@ -317,6 +334,7 @@ impl ApiState {
             fulfillment_management: Arc::new(fulfillment_management),
             fulfillment_workers: Arc::new(fulfillment_workers),
             shipping_management: Arc::new(shipping_management),
+            shipping_provider_administration: Arc::new(shipping_provider_administration),
             search_indexer: Arc::new(search_indexer),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),
@@ -385,6 +403,7 @@ mod tests {
             resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
+            easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,
@@ -498,7 +517,7 @@ mod tests {
             "application/vnd.oai.openapi+json"
         );
 
-        let body = to_bytes(response.into_body(), 128 * 1024).await.unwrap();
+        let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
         let contract = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(contract["info"]["title"], "Chaos Admin API");
         assert_eq!(contract["openapi"], "3.1.0");

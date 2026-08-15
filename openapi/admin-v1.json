@@ -1285,6 +1285,36 @@
         "responses": { "200": { "description": "Shipping Service updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingServiceEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts": {
+      "get": {
+        "operationId": "listShippingProviderAccounts", "tags": ["Fulfillment"], "summary": "List Store Shipping Provider Accounts",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }],
+        "responses": { "200": { "description": "Shipping Provider Accounts", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingProviderAccountCollectionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "operationId": "createShippingProviderAccount", "tags": ["Fulfillment"], "summary": "Configure a Store Shipping Provider",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateShippingProviderAccount" } } } },
+        "responses": { "201": { "description": "Shipping Provider Account created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingProviderAccountEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts/{provider_account_id}": {
+      "get": {
+        "operationId": "getShippingProviderAccount", "tags": ["Fulfillment"], "summary": "Get a Store Shipping Provider Account",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "provider_account_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": { "200": { "description": "Shipping Provider Account", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingProviderAccountEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "put": {
+        "operationId": "updateShippingProviderAccount", "tags": ["Fulfillment"], "summary": "Update or rotate a Store Shipping Provider Account",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "provider_account_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateShippingProviderAccount" } } } },
+        "responses": { "200": { "description": "Shipping Provider Account updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingProviderAccountEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules": {
       "get": {
         "operationId": "listTaxRules", "tags": ["Pricing"], "summary": "List Store Tax Rules",
@@ -2447,6 +2477,60 @@
       },
       "ShippingServiceEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/ShippingService" } } },
       "ShippingServiceCollectionEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ShippingService" } } } },
+      "ShippingOrigin": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "address_line_1", "city", "postal_code", "country_code"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "company": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "address_line_1": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "address_line_2": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "city": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "region": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "country_code": { "type": "string", "pattern": "^[A-Za-z]{2}$" },
+          "phone": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "email": { "type": "string", "format": "email", "maxLength": 254 }
+        }
+      },
+      "CreateShippingProviderAccount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["provider", "display_name", "credential_secret_reference", "origin", "enabled"],
+        "properties": {
+          "provider": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "credential_secret_reference": { "type": "string", "minLength": 8, "maxLength": 255, "writeOnly": true },
+          "origin": { "$ref": "#/components/schemas/ShippingOrigin" },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "UpdateShippingProviderAccount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["display_name", "credential_secret_reference", "origin", "enabled"],
+        "properties": {
+          "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "credential_secret_reference": { "type": "string", "minLength": 8, "maxLength": 255, "writeOnly": true },
+          "origin": { "$ref": "#/components/schemas/ShippingOrigin" },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "ShippingProviderAccount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "provider", "display_name", "credentials_configured", "origin", "enabled", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "provider": { "type": "string" },
+          "display_name": { "type": "string" },
+          "credentials_configured": { "type": "boolean" },
+          "origin": { "$ref": "#/components/schemas/ShippingOrigin" },
+          "enabled": { "type": "boolean" },
+          "credential_rotation_expires_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ShippingProviderAccountEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/ShippingProviderAccount" } } },
+      "ShippingProviderAccountCollectionEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ShippingProviderAccount" } } } },
       "ShippingSelection": {
         "type": "object", "additionalProperties": false,
         "required": ["service_id", "code", "name", "amount_minor", "currency", "estimated_min_days", "estimated_max_days"],

@@ -14,7 +14,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 5 — Operations | Partial | Fulfillment and Return consumers plus the security and operational release path are verified; the capacity harness still has no retained production-like 10-minute execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
-| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch, signed webhooks, bounded overlap rotation, automated onboarding readiness, periodic fail-closed reconciliation, and durable Resend notification delivery are delivered. The first shipping adapter remains open. |
+| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch, signed webhooks, bounded overlap rotation, automated onboarding readiness, periodic fail-closed reconciliation, durable Resend notification delivery, the EasyPost HTTP adapter, and Store-owned shipping Provider administration are delivered. Durable rate and label evidence plus Fulfillment operation and tracking reconciliation wiring remain open. |
 | 9–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 4 evidence
@@ -76,6 +76,15 @@ This audit records current evidence and open gates. A passing test for an implem
 | Signed reconciliation | The Resend verifier authenticates `svix-id`, `svix-timestamp`, and the exact raw body with a five-minute tolerance before JSON parsing. The 64 KiB HTTP route, OpenAPI contract, verifier tests, and PostgreSQL test cover valid signatures, missing or invalid signatures, duplicate event identity, unknown delivery handling, delivery status, and complaint suppression. |
 | Suppression and isolation | Permanent bounces, complaints, and provider suppression create Store-scoped records. Deterministic terminal precedence tolerates unordered callbacks; later delivery events cannot overwrite bounced, complained, or suppressed state. No notification path updates a commerce aggregate. |
 | Operations | Prometheus exports bounded pending, processing, dead-letter, suppressed, and oldest-pending gauges. The operations runbook covers lease recovery, provider rate limits, audited replacement requests, and Store-scoped suppression remediation. A clean PostgreSQL 18 bootstrap, all 8 API and 17 infrastructure database tests, normal workspace tests, Clippy, formatting, language, and OpenAPI reference checks pass. |
+
+## Current Phase 8 shipping evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Provider boundary | `ShippingProvider` and `ShippingSecretResolver` are capability-specific application ports. EasyPost HTTP, authentication, units, decimal rate conversion, and wire types remain in infrastructure. ADR 0015 records the provider decision and recovery semantics. |
+| Provider administration | Store-owned Shipping Provider Accounts bind one Provider, a default origin, enablement, and an opaque credential reference. Owner/administrator authorization, RLS, composite Store ownership, idempotent writes, unique Store/Provider configuration, and non-disclosing list/detail responses are enforced. |
+| Credential rotation | Updating a changed outbound credential reference atomically activates it and retains the prior reference with a 24-hour expiry. Repeating the same reference does not extend the overlap window; neither reference is selected by API read queries or serialized responses. |
+| Open gate | Rate quotation, label purchase, refund-request status, tracking observations, and crash-safe reconciliation still need durable Fulfillment-owned evidence and API/worker wiring before Phase 8 is complete. |
 
 ## Required release commands
 

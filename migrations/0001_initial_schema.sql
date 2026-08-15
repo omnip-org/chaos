@@ -1880,6 +1880,91 @@ CREATE INDEX shipping_services_quote_idx
         id
     );
 
+CREATE TABLE fulfillment.shipping_provider_accounts (
+    id                                   UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id                  UUID        NOT NULL,
+    store_id                             UUID        NOT NULL,
+    provider                             TEXT        NOT NULL,
+    display_name                         TEXT        NOT NULL,
+    credential_secret_reference          TEXT        NOT NULL,
+    previous_credential_secret_reference TEXT,
+    credential_rotation_expires_at       TIMESTAMPTZ,
+    origin_name                          TEXT        NOT NULL,
+    origin_company                       TEXT,
+    origin_address_line_1                TEXT        NOT NULL,
+    origin_address_line_2                TEXT,
+    origin_city                          TEXT        NOT NULL,
+    origin_region                        TEXT,
+    origin_postal_code                   TEXT        NOT NULL,
+    origin_country_code                  CHAR(2)     NOT NULL,
+    origin_phone                         TEXT,
+    origin_email                         TEXT,
+    enabled                              BOOLEAN     NOT NULL DEFAULT false,
+    created_by_user_id                   UUID,
+    created_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    CONSTRAINT shipping_provider_accounts_store_provider_key
+        UNIQUE (merchant_account_id, store_id, provider),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
+    CONSTRAINT shipping_provider_accounts_provider_format_check CHECK (
+        provider ~ '^[a-z0-9_]{1,64}$'
+    ),
+    CONSTRAINT shipping_provider_accounts_display_name_length_check CHECK (
+        length(trim(display_name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_provider_accounts_credential_reference_check CHECK (
+        credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
+    ),
+    CONSTRAINT shipping_provider_accounts_previous_credential_reference_check CHECK (
+        previous_credential_secret_reference IS NULL
+        OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
+    ),
+    CONSTRAINT shipping_provider_accounts_credential_rotation_shape_check CHECK (
+        (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
+        OR (previous_credential_secret_reference IS NOT NULL AND credential_rotation_expires_at IS NOT NULL)
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_name_length_check CHECK (
+        length(trim(origin_name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_company_length_check CHECK (
+        origin_company IS NULL OR length(trim(origin_company)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_address_length_check CHECK (
+        length(trim(origin_address_line_1)) BETWEEN 1 AND 200
+        AND (origin_address_line_2 IS NULL OR length(trim(origin_address_line_2)) BETWEEN 1 AND 200)
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_city_length_check CHECK (
+        length(trim(origin_city)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_region_length_check CHECK (
+        origin_region IS NULL OR length(trim(origin_region)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_postal_length_check CHECK (
+        length(trim(origin_postal_code)) BETWEEN 1 AND 32
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_country_check CHECK (
+        origin_country_code ~ '^[A-Z]{2}$'
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_phone_length_check CHECK (
+        origin_phone IS NULL OR length(trim(origin_phone)) BETWEEN 1 AND 32
+    ),
+    CONSTRAINT shipping_provider_accounts_origin_email_length_check CHECK (
+        origin_email IS NULL OR length(trim(origin_email)) BETWEEN 3 AND 254
+    )
+);
+
+CREATE INDEX shipping_provider_accounts_store_created_idx
+    ON fulfillment.shipping_provider_accounts (
+        merchant_account_id,
+        store_id,
+        created_at DESC,
+        id DESC
+    );
+
 CREATE TABLE fulfillment.shipping_service_regions (
     merchant_account_id UUID    NOT NULL,
     store_id            UUID    NOT NULL,
@@ -2655,6 +2740,7 @@ ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE search.product_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.fulfillments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.shipping_services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fulfillment.shipping_provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.shipping_service_regions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.fulfillment_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.returns ENABLE ROW LEVEL SECURITY;
@@ -3208,6 +3294,16 @@ CREATE POLICY merchant_account_isolation ON fulfillment.fulfillments
     );
 
 CREATE POLICY merchant_account_isolation ON fulfillment.shipping_services
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON fulfillment.shipping_provider_accounts
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid

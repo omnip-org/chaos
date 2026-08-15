@@ -40,8 +40,9 @@ pub use fulfillment::{
     FulfillmentEventQueue, FulfillmentRepository, ProviderTrackingStatus,
     PurchaseShippingLabelCommand, PurchasedShippingLabel, RefreshTrackingCommand, ReturnDetail,
     ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingCancellationStatus,
-    ShippingParcel, ShippingProvider, ShippingQuoteCommand, ShippingRateQuote,
-    ShippingSecretResolver, ShippingServiceDetail, ShippingServiceRepository,
+    ShippingParcel, ShippingProvider, ShippingProviderAccountConfiguration,
+    ShippingProviderAccountDetail, ShippingProviderAccountRepository, ShippingQuoteCommand,
+    ShippingRateQuote, ShippingSecretResolver, ShippingServiceDetail, ShippingServiceRepository,
     ShippingTrackingSnapshot,
 };
 pub use inventory::{
