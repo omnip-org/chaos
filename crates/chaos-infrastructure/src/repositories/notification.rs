@@ -261,7 +261,8 @@ mod tests {
 
         let repository = PostgresEmailDeliveryRepository::new(runtime_pool.clone());
         let worker_a = Uuid::now_v7();
-        let now = OffsetDateTime::now_utc();
+        // Keep the claim boundary strictly after database-generated availability timestamps.
+        let now = OffsetDateTime::now_utc() + Duration::seconds(1);
         let jobs = repository
             .claim(worker_a, 10, now, now - Duration::minutes(1))
             .await
