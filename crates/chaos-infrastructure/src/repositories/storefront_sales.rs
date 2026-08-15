@@ -19,8 +19,8 @@ use chaos_domain::{
     },
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
-        CheckoutIdentity, CommercialAdjustments, CustomerId, Order, OrderId, OrderStatus,
-        PostalAddress, ShopperId,
+        CheckoutIdentity, CommercialAdjustments, CustomerId, Order, OrderDeliveryStatus,
+        OrderFulfillmentStatus, OrderId, OrderStatus, PostalAddress, ShopperId,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -2243,6 +2243,16 @@ pub(super) async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let derived_statuses = sqlx::query_as::<_, (String, String)>(
+        "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     let identity = load_order_identity(transaction, actor, order_id).await?;
     let shipping = load_order_shipping(transaction, actor, order_id).await?;
     let tax_rule = load_order_tax(transaction, actor, order_id).await?;
@@ -2290,6 +2300,10 @@ pub(super) async fn load_order(
         price_list_id: PriceListId::from_uuid(row.5),
         currency: parse_currency(&row.6)?,
         status: OrderStatus::parse(&row.7).ok_or_else(corrupt_sales_state)?,
+        fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
+            .ok_or_else(corrupt_sales_state)?,
+        delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
+            .ok_or_else(corrupt_sales_state)?,
         identity,
         subtotal_amount_minor: row.8,
         discount_amount_minor: row.9,
@@ -2429,6 +2443,8 @@ struct OrderSnapshot {
     price_list_id: Uuid,
     currency: String,
     status: String,
+    fulfillment_status: String,
+    delivery_status: String,
     identity: CheckoutIdentitySnapshot,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
@@ -2656,6 +2672,8 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
         status: detail.status.as_str().into(),
+        fulfillment_status: detail.fulfillment_status.as_str().into(),
+        delivery_status: detail.delivery_status.as_str().into(),
         identity: CheckoutIdentitySnapshot::from(&detail.identity),
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
@@ -2707,6 +2725,10 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
         status: OrderStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
+        fulfillment_status: OrderFulfillmentStatus::parse(&snapshot.fulfillment_status)
+            .ok_or_else(corrupt_sales_state)?,
+        delivery_status: OrderDeliveryStatus::parse(&snapshot.delivery_status)
+            .ok_or_else(corrupt_sales_state)?,
         identity: snapshot.identity.try_into()?,
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,

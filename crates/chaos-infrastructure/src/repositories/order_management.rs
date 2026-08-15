@@ -18,8 +18,8 @@ use chaos_domain::{
         TaxRuleId, TaxRuleSnapshot,
     },
     sales::{
-        CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderId, OrderStatus,
-        PostalAddress, ShopperId,
+        CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderDeliveryStatus,
+        OrderFulfillmentStatus, OrderId, OrderStatus, PostalAddress, ShopperId,
     },
 };
 use serde_json::json;
@@ -321,6 +321,16 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let derived_statuses = sqlx::query_as::<_, (String, String)>(
+        "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
     let shipping = load_order_shipping(transaction, account_id, store_id, order_id).await?;
     let tax_rule = load_order_tax(transaction, account_id, store_id, order_id).await?;
@@ -368,6 +378,10 @@ async fn load_order(
         price_list_id: PriceListId::from_uuid(row.5),
         currency: CurrencyCode::parse(&row.6)?,
         status: OrderStatus::parse(&row.7).ok_or_else(corrupt_state)?,
+        fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
+            .ok_or_else(corrupt_state)?,
+        delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
+            .ok_or_else(corrupt_state)?,
         identity,
         subtotal_amount_minor: row.8,
         discount_amount_minor: row.9,

@@ -35,8 +35,9 @@ pub use catalog_read::{
 pub use clock::Clock;
 pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
-    FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, ReturnDetail,
-    ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail, ShippingServiceRepository,
+    FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob, FulfillmentEventQueue,
+    FulfillmentRepository, ReturnDetail, ReturnLineInput, ReturnReceiptInput,
+    ShippingServiceDetail, ShippingServiceRepository,
 };
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,

@@ -21,7 +21,7 @@ mod storefront_sales;
 use axum::Router;
 use chaos_application::{
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
-    fulfillment::{FulfillmentManagement, ShippingManagement},
+    fulfillment::{FulfillmentManagement, FulfillmentWorkers, ShippingManagement},
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
@@ -99,6 +99,7 @@ pub struct ApiState {
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
+    pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub shipping_management: Arc<ShippingManagement>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
@@ -213,9 +214,11 @@ impl ApiState {
             PaymentProviderAdministration::new(payment_repository.clone());
         let payment_workers =
             PaymentWorkers::new(payment_repository.clone(), payment_repository, providers);
-        let fulfillment_management = FulfillmentManagement::new(Arc::new(
-            PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
+        let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
+            infrastructure.runtime_pool(),
         ));
+        let fulfillment_management = FulfillmentManagement::new(fulfillment_repository.clone());
+        let fulfillment_workers = FulfillmentWorkers::new(fulfillment_repository);
         let shipping_management = ShippingManagement::new(Arc::new(
             PostgresShippingServiceRepository::new(infrastructure.runtime_pool()),
         ));
@@ -256,6 +259,7 @@ impl ApiState {
             payment_provider_administration: Arc::new(payment_provider_administration),
             payment_workers: Arc::new(payment_workers),
             fulfillment_management: Arc::new(fulfillment_management),
+            fulfillment_workers: Arc::new(fulfillment_workers),
             shipping_management: Arc::new(shipping_management),
             search_indexer: Arc::new(search_indexer),
             clock: Arc::new(SystemClock),

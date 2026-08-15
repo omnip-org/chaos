@@ -1242,6 +1242,14 @@
         "responses": { "201": { "description": "Return requested", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReturnEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}": {
+      "get": {
+        "operationId": "getReturn", "tags": ["Fulfillment"], "summary": "Get a Return and its refund coordination state",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "return_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": { "200": { "description": "Return", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReturnEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}/{operation}": {
       "post": {
         "operationId": "transitionReturn", "tags": ["Fulfillment"], "summary": "Authorize, reject, receive, or complete a Return",
@@ -2162,7 +2170,7 @@
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
@@ -2171,6 +2179,8 @@
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
           "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
+          "fulfillment_status": { "type": "string", "enum": ["unfulfilled", "partially_fulfilled", "fulfilled"] },
+          "delivery_status": { "type": "string", "enum": ["not_delivered", "partially_delivered", "delivered"] },
           "contact": { "$ref": "#/components/schemas/CheckoutContact" },
           "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
           "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
@@ -2485,7 +2495,7 @@
       "CreateReturn": { "type": "object", "additionalProperties": false, "required": ["lines"], "properties": { "lines": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/QuantityLine" } } } },
       "ReturnReceiptLine": { "type": "object", "additionalProperties": false, "required": ["product_variant_id", "disposition"], "properties": { "product_variant_id": { "type": "string", "format": "uuid" }, "disposition": { "type": "string", "enum": ["restock", "discard"] }, "inventory_location_id": { "type": ["string", "null"], "format": "uuid" } } },
       "ReturnTransition": { "type": "object", "additionalProperties": false, "properties": { "receipt": { "type": "array", "items": { "$ref": "#/components/schemas/ReturnReceiptLine" } } } },
-      "Return": { "type": "object", "additionalProperties": false, "required": ["id", "order_id", "status", "lines", "created_at", "updated_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "order_id": { "type": "string", "format": "uuid" }, "status": { "type": "string", "enum": ["requested", "authorized", "received", "completed", "rejected"] }, "lines": { "type": "array", "items": { "$ref": "#/components/schemas/QuantityLine" } }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" } } },
+      "Return": { "type": "object", "additionalProperties": false, "required": ["id", "order_id", "status", "lines", "refund_id", "refund_amount_minor", "currency", "created_at", "updated_at"], "properties": { "id": { "type": "string", "format": "uuid" }, "order_id": { "type": "string", "format": "uuid" }, "status": { "type": "string", "enum": ["requested", "authorized", "received", "completed", "rejected"] }, "lines": { "type": "array", "items": { "$ref": "#/components/schemas/QuantityLine" } }, "refund_id": { "type": ["string", "null"], "format": "uuid" }, "refund_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 }, "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" } } },
       "ReturnEnvelope": { "type": "object", "required": ["data", "meta"], "properties": { "data": { "$ref": "#/components/schemas/Return" }, "meta": { "$ref": "#/components/schemas/ResponseMeta" } } },
       "ErrorDetail": {
         "type": "object",

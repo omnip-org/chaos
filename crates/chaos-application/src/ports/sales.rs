@@ -6,8 +6,8 @@ use chaos_domain::{
     inventory::InventoryReservationId,
     pricing::{PriceListId, PromotionSnapshot, TaxRuleSnapshot},
     sales::{
-        CartId, CartStatus, CheckoutId, CheckoutIdentity, CustomerId, OrderId, OrderStatus,
-        ShopperId,
+        CartId, CartStatus, CheckoutId, CheckoutIdentity, CustomerId, OrderDeliveryStatus,
+        OrderFulfillmentStatus, OrderId, OrderStatus, ShopperId,
     },
 };
 use time::OffsetDateTime;
@@ -119,6 +119,8 @@ pub struct OrderDetail {
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub status: OrderStatus,
+    pub fulfillment_status: OrderFulfillmentStatus,
+    pub delivery_status: OrderDeliveryStatus,
     pub identity: CheckoutIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,

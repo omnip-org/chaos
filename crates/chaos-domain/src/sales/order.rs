@@ -53,6 +53,86 @@ impl OrderStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrderFulfillmentStatus {
+    Unfulfilled,
+    PartiallyFulfilled,
+    Fulfilled,
+}
+
+impl OrderFulfillmentStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unfulfilled => "unfulfilled",
+            Self::PartiallyFulfilled => "partially_fulfilled",
+            Self::Fulfilled => "fulfilled",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "unfulfilled" => Some(Self::Unfulfilled),
+            "partially_fulfilled" => Some(Self::PartiallyFulfilled),
+            "fulfilled" => Some(Self::Fulfilled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrderDeliveryStatus {
+    NotDelivered,
+    PartiallyDelivered,
+    Delivered,
+}
+
+impl OrderDeliveryStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotDelivered => "not_delivered",
+            Self::PartiallyDelivered => "partially_delivered",
+            Self::Delivered => "delivered",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "not_delivered" => Some(Self::NotDelivered),
+            "partially_delivered" => Some(Self::PartiallyDelivered),
+            "delivered" => Some(Self::Delivered),
+            _ => None,
+        }
+    }
+}
+
+pub fn reconcile_fulfillment_statuses(
+    total_shippable_quantity: u64,
+    shipped_quantity: u64,
+    delivered_quantity: u64,
+) -> Result<(OrderFulfillmentStatus, OrderDeliveryStatus), DomainError> {
+    if shipped_quantity > total_shippable_quantity || delivered_quantity > shipped_quantity {
+        return Err(DomainError::Validation(vec![FieldViolation {
+            field: "fulfillment_quantity",
+            reason: "derived quantities must satisfy delivered <= shipped <= shippable".into(),
+        }]));
+    }
+    let fulfillment = if shipped_quantity == 0 {
+        OrderFulfillmentStatus::Unfulfilled
+    } else if shipped_quantity == total_shippable_quantity {
+        OrderFulfillmentStatus::Fulfilled
+    } else {
+        OrderFulfillmentStatus::PartiallyFulfilled
+    };
+    let delivery = if delivered_quantity == 0 {
+        OrderDeliveryStatus::NotDelivered
+    } else if delivered_quantity == total_shippable_quantity {
+        OrderDeliveryStatus::Delivered
+    } else {
+        OrderDeliveryStatus::PartiallyDelivered
+    };
+    Ok((fulfillment, delivery))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrderTransitionKind {
     Created,
     Confirmed,
@@ -183,5 +263,29 @@ mod tests {
 
         assert_eq!(order.status(), OrderStatus::Cancelled);
         assert!(order.confirm(now).is_err());
+    }
+
+    #[test]
+    fn fulfillment_reconciliation_tracks_partial_and_complete_progress() {
+        assert_eq!(
+            reconcile_fulfillment_statuses(3, 2, 1).unwrap(),
+            (
+                OrderFulfillmentStatus::PartiallyFulfilled,
+                OrderDeliveryStatus::PartiallyDelivered
+            )
+        );
+        assert_eq!(
+            reconcile_fulfillment_statuses(3, 3, 3).unwrap(),
+            (
+                OrderFulfillmentStatus::Fulfilled,
+                OrderDeliveryStatus::Delivered
+            )
+        );
+    }
+
+    #[test]
+    fn fulfillment_reconciliation_rejects_impossible_quantities() {
+        assert!(reconcile_fulfillment_statuses(1, 2, 0).is_err());
+        assert!(reconcile_fulfillment_statuses(2, 1, 2).is_err());
     }
 }

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chaos_domain::{
+    CurrencyCode,
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
@@ -7,9 +8,12 @@ use chaos_domain::{
     },
     inventory::InventoryLocationId,
     merchant::StoreId,
+    payments::RefundId,
     sales::OrderId,
 };
+use serde_json::Value;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
@@ -47,8 +51,20 @@ pub struct ReturnDetail {
     pub order_id: OrderId,
     pub status: ReturnStatus,
     pub lines: Vec<ReturnLineInput>,
+    pub refund_id: Option<RefundId>,
+    pub refund_amount_minor: i64,
+    pub currency: CurrencyCode,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
+}
+
+pub struct FulfillmentEventJob {
+    pub id: Uuid,
+    pub merchant_account_id: Uuid,
+    pub store_id: Uuid,
+    pub event_type: String,
+    pub payload: Value,
+    pub attempts: u32,
 }
 
 #[derive(Clone)]
@@ -86,6 +102,13 @@ pub trait ShippingServiceRepository: Send + Sync {
 
 #[async_trait]
 pub trait FulfillmentRepository: Send + Sync {
+    async fn get_return(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        return_id: ReturnId,
+    ) -> Result<Option<ReturnDetail>, ApplicationError>;
+
     async fn create_fulfillment(
         &self,
         actor: MerchantActor,
@@ -129,4 +152,29 @@ pub trait FulfillmentRepository: Send + Sync {
         now: OffsetDateTime,
         idempotency: &IdempotencyRequest,
     ) -> Result<ReturnDetail, ApplicationError>;
+}
+
+#[async_trait]
+pub trait FulfillmentEventQueue: Send + Sync {
+    async fn claim_events(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<FulfillmentEventJob>, ApplicationError>;
+
+    async fn process_event(
+        &self,
+        job: &FulfillmentEventJob,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn finish_event(
+        &self,
+        worker_id: Uuid,
+        job_id: Uuid,
+        result: Result<(), String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 }

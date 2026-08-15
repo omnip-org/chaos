@@ -94,6 +94,16 @@ CREATE TYPE sales.checkout_status AS ENUM ('pending', 'completed', 'expired');
 CREATE TYPE sales.address_kind AS ENUM ('billing', 'shipping');
 CREATE TYPE sales.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE sales.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
+CREATE TYPE sales.order_fulfillment_status AS ENUM (
+    'unfulfilled',
+    'partially_fulfilled',
+    'fulfilled'
+);
+CREATE TYPE sales.order_delivery_status AS ENUM (
+    'not_delivered',
+    'partially_delivered',
+    'delivered'
+);
 CREATE TYPE payments.payment_attempt_status AS ENUM (
     'pending',
     'authorized',
@@ -1342,6 +1352,8 @@ CREATE TABLE sales.orders (
     price_list_id            UUID                  NOT NULL,
     currency                 CHAR(3)               NOT NULL,
     status                   sales.order_status    NOT NULL DEFAULT 'pending',
+    fulfillment_status       sales.order_fulfillment_status NOT NULL DEFAULT 'unfulfilled',
+    delivery_status          sales.order_delivery_status NOT NULL DEFAULT 'not_delivered',
     subtotal_amount_minor    BIGINT                NOT NULL,
     discount_amount_minor    BIGINT                NOT NULL,
     tax_amount_minor         BIGINT                NOT NULL,
@@ -1914,6 +1926,8 @@ CREATE TABLE fulfillment.returns (
     order_id             UUID                      NOT NULL,
     status               fulfillment.return_status NOT NULL DEFAULT 'requested',
     refund_id            UUID,
+    refund_amount_minor  BIGINT                    NOT NULL,
+    currency             CHAR(3)                   NOT NULL,
     requested_at         TIMESTAMPTZ               NOT NULL,
     authorized_at        TIMESTAMPTZ,
     received_at          TIMESTAMPTZ,
@@ -1925,6 +1939,8 @@ CREATE TABLE fulfillment.returns (
     UNIQUE (merchant_account_id, store_id, id),
     FOREIGN KEY (merchant_account_id, store_id, order_id)
         REFERENCES sales.orders(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id, currency)
+        REFERENCES sales.orders(merchant_account_id, store_id, id, currency),
     FOREIGN KEY (merchant_account_id, store_id, refund_id)
         REFERENCES payments.refunds(merchant_account_id, store_id, id),
     CONSTRAINT returns_status_timestamps_check CHECK (
@@ -1938,7 +1954,9 @@ CREATE TABLE fulfillment.returns (
             AND completed_at IS NOT NULL AND rejected_at IS NULL)
         OR (status = 'rejected' AND received_at IS NULL AND completed_at IS NULL
             AND rejected_at IS NOT NULL)
-    )
+    ),
+    CONSTRAINT returns_refund_amount_nonnegative_check CHECK (refund_amount_minor >= 0),
+    CONSTRAINT returns_currency_format_check CHECK (currency ~ '^[A-Z]{3}$')
 );
 
 CREATE INDEX returns_order_created_idx
@@ -1957,6 +1975,7 @@ CREATE TABLE fulfillment.return_lines (
     product_variant_id   UUID                           NOT NULL,
     inventory_location_id UUID,
     quantity             INTEGER                        NOT NULL,
+    refund_amount_minor  BIGINT                         NOT NULL,
     disposition          fulfillment.return_disposition,
 
     PRIMARY KEY (merchant_account_id, store_id, return_id, product_variant_id),
@@ -1965,6 +1984,7 @@ CREATE TABLE fulfillment.return_lines (
     FOREIGN KEY (merchant_account_id, store_id, inventory_location_id)
         REFERENCES inventory.inventory_locations(merchant_account_id, store_id, id),
     CONSTRAINT return_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999),
+    CONSTRAINT return_lines_refund_amount_nonnegative_check CHECK (refund_amount_minor >= 0),
     CONSTRAINT return_lines_restock_location_check CHECK (
         disposition <> 'restock' OR inventory_location_id IS NOT NULL
     )
@@ -2041,14 +2061,14 @@ VALUES
      'Dispatches a Refund command to its configured provider'),
     ('search.product.changed', 'search.product_indexer',
      'Refreshes the Store-isolated Product search document'),
-    ('fulfillment.shipped', NULL,
-     'Awaits an Order reconciliation consumer'),
-    ('fulfillment.delivered', NULL,
-     'Awaits an Order reconciliation consumer'),
-    ('fulfillment.cancelled', NULL,
-     'Awaits an Order reconciliation consumer'),
-    ('return.completed', NULL,
-     'Awaits a refund-coordination consumer');
+    ('fulfillment.shipped', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('fulfillment.delivered', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('fulfillment.cancelled', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('return.completed', 'fulfillment.operations',
+     'Coordinates the immutable Return refund');
 
 CREATE TABLE integration.outbox_events (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -2086,6 +2106,33 @@ CREATE TABLE integration.outbox_events (
 CREATE INDEX outbox_events_claim_idx
     ON integration.outbox_events (status, available_at, created_at, id)
     WHERE status IN ('pending', 'processing');
+
+CREATE TABLE sales.order_fulfillment_transitions (
+    id                       UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id      UUID                           NOT NULL,
+    store_id                 UUID                           NOT NULL,
+    order_id                 UUID                           NOT NULL,
+    source_event_id          UUID                           NOT NULL UNIQUE,
+    from_fulfillment_status  sales.order_fulfillment_status NOT NULL,
+    to_fulfillment_status    sales.order_fulfillment_status NOT NULL,
+    from_delivery_status     sales.order_delivery_status    NOT NULL,
+    to_delivery_status       sales.order_delivery_status    NOT NULL,
+    occurred_at              TIMESTAMPTZ                    NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, order_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id),
+    FOREIGN KEY (source_event_id) REFERENCES integration.outbox_events(id)
+);
+
+CREATE INDEX order_fulfillment_transitions_order_idx
+    ON sales.order_fulfillment_transitions (
+        merchant_account_id,
+        store_id,
+        order_id,
+        occurred_at,
+        id
+    );
 
 CREATE TABLE search.product_documents (
     merchant_account_id UUID        NOT NULL,
@@ -2306,6 +2353,7 @@ ALTER TABLE sales.order_promotion_calculations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_transitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_fulfillment_transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.payment_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.refunds ENABLE ROW LEVEL SECURITY;
@@ -2783,6 +2831,16 @@ CREATE POLICY merchant_account_isolation ON sales.order_transitions
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON sales.order_fulfillment_transitions
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON payments.provider_accounts
     USING (
         merchant_account_id =
@@ -2977,6 +3035,63 @@ AS $$
         INNER JOIN integration.event_consumer_registry AS registry
           ON registry.event_type = event.event_type
          AND registry.consumer_owner = 'payments.provider_dispatch'
+        WHERE (
+                (event.status = 'pending' AND event.available_at <= claimed_at)
+                OR (event.status = 'processing' AND event.locked_at <= stale_before)
+              )
+          AND event.attempts < 8
+        ORDER BY event.available_at, event.created_at, event.id
+        FOR UPDATE OF event SKIP LOCKED
+        LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE integration.outbox_events AS event
+       SET status = 'processing',
+           attempts = event.attempts + 1,
+           locked_by = worker_id,
+           locked_at = claimed_at
+      FROM claimable
+     WHERE event.id = claimable.id
+    RETURNING event.id, event.merchant_account_id, event.store_id,
+              event.event_type, event.payload, event.attempts;
+$$;
+
+CREATE FUNCTION integration.claim_fulfillment_events(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    event_type TEXT,
+    payload JSONB,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired AS (
+        UPDATE integration.outbox_events AS event
+           SET status = 'dead_letter',
+               locked_by = NULL,
+               locked_at = NULL,
+               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
+          FROM integration.event_consumer_registry AS registry
+         WHERE registry.event_type = event.event_type
+           AND registry.consumer_owner = 'fulfillment.operations'
+           AND event.status = 'processing' AND event.locked_at <= stale_before
+           AND event.attempts >= 8
+        RETURNING event.id
+    ), claimable AS (
+        SELECT event.id
+        FROM integration.outbox_events AS event
+        INNER JOIN integration.event_consumer_registry AS registry
+          ON registry.event_type = event.event_type
+         AND registry.consumer_owner = 'fulfillment.operations'
         WHERE (
                 (event.status = 'pending' AND event.available_at <= claimed_at)
                 OR (event.status = 'processing' AND event.locked_at <= stale_before)
@@ -3223,6 +3338,9 @@ REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_reference(TEXT, 
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.claim_fulfillment_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -3277,6 +3395,10 @@ GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
     TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.claim_fulfillment_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
@@ -3325,7 +3447,8 @@ REVOKE UPDATE, DELETE
 REVOKE UPDATE, DELETE
     ON sales.order_contacts, sales.order_addresses, sales.order_lines,
        sales.order_shipping_selections, sales.order_tax_calculations,
-       sales.order_promotion_calculations, sales.order_transitions
+       sales.order_promotion_calculations, sales.order_transitions,
+       sales.order_fulfillment_transitions
     FROM chaos_runtime;
 REVOKE DELETE ON sales.checkouts, sales.orders FROM chaos_runtime;
 REVOKE UPDATE, DELETE

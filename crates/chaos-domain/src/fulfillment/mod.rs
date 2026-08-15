@@ -551,6 +551,37 @@ impl Return {
     }
 }
 
+pub fn calculate_return_refund_amount(
+    line_total_amount_minor: i64,
+    order_quantity: u32,
+    return_quantity: u32,
+    reserved_quantity: u32,
+    reserved_amount_minor: i64,
+) -> Result<i64, DomainError> {
+    if line_total_amount_minor < 0
+        || order_quantity == 0
+        || return_quantity == 0
+        || reserved_quantity.saturating_add(return_quantity) > order_quantity
+        || reserved_amount_minor < 0
+        || reserved_amount_minor > line_total_amount_minor
+    {
+        return Err(validation(
+            "refund_amount",
+            "cannot be allocated from the Order line",
+        ));
+    }
+    let remaining = line_total_amount_minor - reserved_amount_minor;
+    if reserved_quantity + return_quantity == order_quantity {
+        return Ok(remaining);
+    }
+    let proportional = i128::from(line_total_amount_minor)
+        .checked_mul(i128::from(return_quantity))
+        .ok_or_else(|| validation("refund_amount", "exceeds the supported range"))?
+        / i128::from(order_quantity);
+    i64::try_from(proportional.min(i128::from(remaining)))
+        .map_err(|_| validation("refund_amount", "exceeds the supported range"))
+}
+
 fn validation(field: &'static str, reason: &'static str) -> DomainError {
     DomainError::Validation(vec![FieldViolation {
         field,
@@ -588,6 +619,17 @@ mod tests {
         returned.receive().unwrap();
         returned.complete().unwrap();
         assert_eq!(returned.status(), ReturnStatus::Completed);
+    }
+
+    #[test]
+    fn return_refund_allocation_preserves_the_line_total_on_the_final_unit() {
+        let first = calculate_return_refund_amount(100, 3, 1, 0, 0).unwrap();
+        let second = calculate_return_refund_amount(100, 3, 1, 1, first).unwrap();
+        let final_amount = calculate_return_refund_amount(100, 3, 1, 2, first + second).unwrap();
+
+        assert_eq!((first, second, final_amount), (33, 33, 34));
+        assert_eq!(first + second + final_amount, 100);
+        assert!(calculate_return_refund_amount(100, 3, 2, 2, 66).is_err());
     }
 
     #[test]

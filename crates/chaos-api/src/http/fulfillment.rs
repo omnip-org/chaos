@@ -49,6 +49,10 @@ pub(super) fn routes() -> Router<ApiState> {
             post(create_return),
         )
         .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}",
+            axum::routing::get(get_return),
+        )
+        .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}/{operation}",
             post(transition_return),
         )
@@ -84,6 +88,13 @@ struct ReturnPath {
     store_id: Uuid,
     return_id: Uuid,
     operation: String,
+}
+
+#[derive(Deserialize)]
+struct ReturnResourcePath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    return_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -186,6 +197,9 @@ struct ReturnData {
     order_id: Uuid,
     status: &'static str,
     lines: Vec<QuantityLine>,
+    refund_id: Option<Uuid>,
+    refund_amount_minor: i64,
+    currency: String,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -372,6 +386,23 @@ async fn create_return(
     Ok(ApiResponse::created(return_data(detail)?))
 }
 
+async fn get_return(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<ReturnResourcePath>,
+) -> Result<ApiResponse<ReturnData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let detail = state
+        .fulfillment_management
+        .get_return(
+            actor,
+            StoreId::from_uuid(path.store_id),
+            ReturnId::from_uuid(path.return_id),
+        )
+        .await?;
+    Ok(ApiResponse::ok(return_data(detail)?))
+}
+
 async fn transition_return(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -473,6 +504,9 @@ fn return_data(value: ReturnDetail) -> Result<ReturnData, ApplicationError> {
                 quantity: line.quantity,
             })
             .collect(),
+        refund_id: value.refund_id.map(|id| id.as_uuid()),
+        refund_amount_minor: value.refund_amount_minor,
+        currency: value.currency.as_str().into(),
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
     })

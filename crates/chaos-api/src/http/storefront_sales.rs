@@ -242,6 +242,8 @@ pub(super) struct OrderData {
     price_list_id: Uuid,
     currency: String,
     status: &'static str,
+    fulfillment_status: &'static str,
+    delivery_status: &'static str,
     contact: CheckoutContactData,
     billing_address: PostalAddressData,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -692,6 +694,8 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
         status: order.status.as_str(),
+        fulfillment_status: order.fulfillment_status.as_str(),
+        delivery_status: order.delivery_status.as_str(),
         contact: contact_data(order.identity.contact()),
         billing_address: address_data(order.identity.billing_address()),
         shipping_address: order.identity.shipping_address().map(address_data),
@@ -1193,6 +1197,7 @@ mod tests {
             payment_repository.clone(),
             Vec::new(),
         );
+        let fulfillment_workers = state.fulfillment_workers.clone();
         let app = router(state);
 
         let provider_accounts_uri = format!(
@@ -2523,6 +2528,66 @@ mod tests {
             response_json(delivered).await["data"]["status"],
             "delivered"
         );
+        assert!(
+            fulfillment_workers
+                .run_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::seconds(1),
+                    10,
+                )
+                .await
+                .unwrap()
+                >= 2
+        );
+        let reconciled_order = app
+            .clone()
+            .oneshot(request(Method::GET, &admin_order_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(reconciled_order.status(), StatusCode::OK);
+        let reconciled_order = response_json(reconciled_order).await;
+        assert_eq!(
+            reconciled_order["data"]["fulfillment_status"],
+            "partially_fulfilled"
+        );
+        assert_eq!(
+            reconciled_order["data"]["delivery_status"],
+            "partially_delivered"
+        );
+        let shipped_event_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM integration.outbox_events WHERE aggregate_id = $1 \
+             AND event_type = 'fulfillment.shipped'",
+        )
+        .bind(Uuid::parse_str(fulfillment_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE integration.outbox_events SET status = 'processing', processed_at = NULL, \
+                    locked_by = $2, locked_at = $3 WHERE id = $1",
+        )
+        .bind(shipped_event_id)
+        .bind(Uuid::now_v7())
+        .bind(test_clock.now() - time::Duration::minutes(2))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            fulfillment_workers
+                .run_batch(Uuid::now_v7(), test_clock.now(), 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let transition_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sales.order_fulfillment_transitions \
+             WHERE source_event_id = $1",
+        )
+        .bind(shipped_event_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(transition_count, 1);
 
         let return_base = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}/returns",
@@ -2582,13 +2647,29 @@ mod tests {
             assert_eq!(response_json(response).await["data"]["status"], expected);
         }
 
-        let _ = payment_workers
-            .run_outbox_batch(
-                Uuid::now_v7(),
-                test_clock.now() + time::Duration::seconds(1),
-                100,
-            )
-            .await;
+        assert_eq!(
+            fulfillment_workers
+                .run_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::seconds(1),
+                    10,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        let return_detail = app
+            .clone()
+            .oneshot(request(Method::GET, &return_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(return_detail.status(), StatusCode::OK);
+        let return_detail = response_json(return_detail).await;
+        assert_eq!(return_detail["data"]["refund_amount_minor"], 1100);
+        assert_eq!(return_detail["data"]["currency"], "USD");
+        let coordinated_refund_id = return_detail["data"]["refund_id"]
+            .as_str()
+            .expect("completed Return must expose its coordinated Refund");
         let return_event_status: String = sqlx::query_scalar(
             "SELECT status::text FROM integration.outbox_events WHERE aggregate_type = 'return' \
              AND aggregate_id = $1 AND event_type = 'return.completed'",
@@ -2597,7 +2678,7 @@ mod tests {
         .fetch_one(&owner_pool)
         .await
         .unwrap();
-        assert_eq!(return_event_status, "pending");
+        assert_eq!(return_event_status, "processed");
         let return_backlog: (Option<String>, i64, i64) = sqlx::query_as(
             "SELECT consumer_owner, pending, processed \
              FROM integration.event_consumer_backlog() WHERE event_type = 'return.completed'",
@@ -2605,9 +2686,54 @@ mod tests {
         .fetch_one(&runtime_pool)
         .await
         .unwrap();
-        assert_eq!(return_backlog.0, None);
-        assert!(return_backlog.1 >= 1);
-        assert_eq!(return_backlog.2, 0);
+        assert_eq!(return_backlog.0.as_deref(), Some("fulfillment.operations"));
+        assert_eq!(return_backlog.1, 0);
+        assert!(return_backlog.2 >= 1);
+        let coordinated_refund_outbox: (String, i64) = sqlx::query_as(
+            "SELECT status::text, (payload->>'amount_minor')::bigint \
+             FROM integration.outbox_events WHERE aggregate_id = $1 \
+               AND event_type = 'refund.create_requested'",
+        )
+        .bind(Uuid::parse_str(coordinated_refund_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(coordinated_refund_outbox, ("pending".into(), 1100));
+        let return_event_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM integration.outbox_events WHERE aggregate_type = 'return' \
+             AND aggregate_id = $1 AND event_type = 'return.completed'",
+        )
+        .bind(Uuid::parse_str(return_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE integration.outbox_events SET status = 'processing', processed_at = NULL, \
+                    locked_by = $2, locked_at = $3 WHERE id = $1",
+        )
+        .bind(return_event_id)
+        .bind(Uuid::now_v7())
+        .bind(test_clock.now() - time::Duration::minutes(2))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            fulfillment_workers
+                .run_batch(Uuid::now_v7(), test_clock.now(), 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let linked_refund_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payments.refunds AS refund \
+             INNER JOIN fulfillment.returns AS return_record ON return_record.refund_id = refund.id \
+             WHERE return_record.id = $1",
+        )
+        .bind(Uuid::parse_str(return_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(linked_refund_count, 1);
         let registered_owners: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT event_type, consumer_owner FROM integration.event_consumer_registry \
              ORDER BY event_type",
@@ -2624,7 +2750,17 @@ mod tests {
             "search.product.changed".into(),
             Some("search.product_indexer".into())
         )));
-        assert!(registered_owners.contains(&("fulfillment.shipped".into(), None)));
+        for event_type in [
+            "fulfillment.shipped",
+            "fulfillment.delivered",
+            "fulfillment.cancelled",
+            "return.completed",
+        ] {
+            assert!(
+                registered_owners
+                    .contains(&(event_type.into(), Some("fulfillment.operations".into())))
+            );
+        }
         assert!(
             sqlx::query(
                 "UPDATE integration.event_consumer_registry \

@@ -7,15 +7,16 @@ use chaos_domain::{
     pricing::Money,
     sales::OrderId,
 };
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, IdempotencyRequest,
-        ReturnDetail, ReturnLineInput, ReturnReceiptInput, ShippingServiceDetail,
-        ShippingServiceRepository,
+        FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventQueue,
+        FulfillmentRepository, IdempotencyRequest, ReturnDetail, ReturnLineInput,
+        ReturnReceiptInput, ShippingServiceDetail, ShippingServiceRepository,
     },
 };
 use chaos_domain::fulfillment::{ShippingService, ShippingServiceId, ShippingServiceStatus};
@@ -60,6 +61,39 @@ pub struct TransitionReturnInput {
 
 pub struct FulfillmentManagement {
     repository: Arc<dyn FulfillmentRepository>,
+}
+
+pub struct FulfillmentWorkers {
+    queue: Arc<dyn FulfillmentEventQueue>,
+}
+
+impl FulfillmentWorkers {
+    pub fn new(queue: Arc<dyn FulfillmentEventQueue>) -> Self {
+        Self { queue }
+    }
+
+    pub async fn run_batch(
+        &self,
+        worker_id: Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .queue
+            .claim_events(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let result = self
+                .queue
+                .process_event(job, now)
+                .await
+                .map_err(|error| error.to_string());
+            self.queue
+                .finish_event(worker_id, job.id, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
 }
 
 pub struct CreateShippingServiceInput {
@@ -142,6 +176,22 @@ impl ShippingManagement {
 impl FulfillmentManagement {
     pub fn new(repository: Arc<dyn FulfillmentRepository>) -> Self {
         Self { repository }
+    }
+
+    pub async fn get_return(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        return_id: ReturnId,
+    ) -> Result<ReturnDetail, ApplicationError> {
+        require_operator(actor)?;
+        self.repository
+            .get_return(actor, store_id, return_id)
+            .await?
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "return",
+                id: return_id.as_uuid().to_string(),
+            })
     }
 
     pub async fn create_fulfillment(
