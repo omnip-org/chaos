@@ -23,7 +23,7 @@ curl http://localhost:8080/health/ready
 
 Development sign-in emails are captured by Mailpit at `http://localhost:58025`. The backend supports one-time email links and WebAuthn passkeys; it never stores account passwords.
 
-Production authentication email uses Resend when `RESEND_API_KEY` is set. SMTP remains the local-development fallback. Authentication tokens are sent directly from process memory and are never written to the general notification outbox.
+Production email uses Resend when `RESEND_API_KEY` is set; configure `RESEND_WEBHOOK_SECRET` to authenticate delivery callbacks. SMTP remains the local-development fallback. Authentication tokens are sent directly from process memory and are never written to the general notification outbox. Ordinary commerce messages use durable, versioned notification requests.
 
 Stop the dependencies:
 

@@ -164,6 +164,10 @@ mod tests {
                 { "stripeSignature": [] }
             ])
         );
+        assert_eq!(
+            specification["paths"]["/notifications/{provider}"]["post"]["security"],
+            serde_json::json!([{ "svixSignature": [] }])
+        );
 
         fn visit(value: &Value, root: &Value) {
             match value {

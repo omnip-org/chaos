@@ -252,6 +252,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             )
             .await?;
         }
+        let transition_id = Uuid::now_v7();
         sqlx::query(
             "UPDATE sales.orders SET status = $4::sales.order_status, updated_at = $5 \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -271,7 +272,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
              VALUES ($1, $2, $3, $4, $5::sales.order_status, $6::sales.order_status, \
                      $7::sales.order_transition_kind, $8, $9)",
         )
-        .bind(Uuid::now_v7())
+        .bind(transition_id)
         .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -283,6 +284,36 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        if target_status == OrderStatus::Confirmed {
+            sqlx::query(
+                "INSERT INTO notification.email_deliveries \
+                 (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+                  recipient_email, template_key, template_version, template_payload, provider) \
+                 SELECT $1, order_row.merchant_account_id, order_row.store_id, $2, \
+                        'order.confirmed', contact.email, 'order_confirmation', 1, \
+                        jsonb_build_object( \
+                            'order_id', order_row.id, \
+                            'total_amount_minor', order_row.total_amount_minor, \
+                            'currency', order_row.currency::text \
+                        ), 'resend' \
+                   FROM sales.orders AS order_row \
+                   INNER JOIN sales.order_contacts AS contact \
+                     ON contact.merchant_account_id = order_row.merchant_account_id \
+                    AND contact.store_id = order_row.store_id \
+                    AND contact.order_id = order_row.id \
+                  WHERE order_row.merchant_account_id = $3 \
+                    AND order_row.store_id = $4 AND order_row.id = $5 \
+                 ON CONFLICT (merchant_account_id, store_id, semantic_event_id) DO NOTHING",
+            )
+            .bind(Uuid::now_v7())
+            .bind(transition_id)
+            .bind(account_id)
+            .bind(store_id.as_uuid())
+            .bind(order_id.as_uuid())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         idempotency::complete(
             &mut transaction,
             &IdempotencyScope::MerchantAccount(account_id),

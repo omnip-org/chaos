@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Chaos Payment Webhooks API",
+    "title": "Chaos Provider Webhooks API",
     "version": "1.0.0",
     "description": "Provider callbacks authenticated before merchant resolution and durably deduplicated."
   },
@@ -38,6 +38,38 @@
           "422": { "$ref": "#/components/responses/ValidationFailed" }
         }
       }
+    },
+    "/notifications/{provider}": {
+      "post": {
+        "operationId": "receiveNotificationWebhook",
+        "tags": ["Notification webhooks"],
+        "summary": "Verify and reconcile a notification provider event",
+        "security": [{ "svixSignature": [] }],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "enum": ["resend"] }
+          },
+          { "$ref": "#/components/parameters/SvixId" },
+          { "$ref": "#/components/parameters/SvixTimestamp" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResendWebhookEvent" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Verified event reconciled or recognized as a duplicate or unknown delivery",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookReceiptEnvelope" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "413": { "description": "Payload exceeds 64 KiB" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
     }
   },
   "components": {
@@ -53,6 +85,26 @@
         "in": "header",
         "name": "Stripe-Signature",
         "description": "Stripe timestamped v1 signature over the exact request body."
+      },
+      "svixSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "svix-signature",
+        "description": "Svix v1 signature over svix-id, svix-timestamp, and the exact request body."
+      }
+    },
+    "parameters": {
+      "SvixId": {
+        "name": "svix-id",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1, "maxLength": 255 }
+      },
+      "SvixTimestamp": {
+        "name": "svix-timestamp",
+        "in": "header",
+        "required": true,
+        "schema": { "type": "string", "pattern": "^[0-9]{1,20}$" }
       }
     },
     "schemas": {
@@ -81,6 +133,22 @@
           "type": { "type": "string", "minLength": 1 },
           "account": { "type": "string", "pattern": "^acct_[A-Za-z0-9_]+$" },
           "data": { "type": "object" }
+        }
+      },
+      "ResendWebhookEvent": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "data"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["email.sent", "email.delivered", "email.delivery_delayed", "email.bounced", "email.complained", "email.suppressed"]
+          },
+          "data": {
+            "type": "object",
+            "required": ["email_id"],
+            "properties": { "email_id": { "type": "string", "minLength": 1, "maxLength": 255 } }
+          }
         }
       },
       "WebhookReceipt": {

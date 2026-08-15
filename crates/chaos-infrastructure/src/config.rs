@@ -21,6 +21,7 @@ pub struct Settings {
     pub smtp_url: String,
     pub email_from: String,
     pub resend_api_key: Option<SecretString>,
+    pub resend_webhook_secret: Option<SecretString>,
     pub resend_api_base_url: Url,
     pub payment_webhook_secret: String,
     pub stripe_api_base_url: Url,
@@ -36,7 +37,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn from_env() -> anyhow::Result<Self> {
-        Ok(Self {
+        let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
             database_url: required("DATABASE_URL")?,
             database_control_plane_url: required("DATABASE_CONTROL_PLANE_URL")?,
@@ -58,6 +59,7 @@ impl Settings {
             smtp_url: required("SMTP_URL")?,
             email_from: required("EMAIL_FROM")?,
             resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
+            resend_webhook_secret: optional("RESEND_WEBHOOK_SECRET").map(SecretString::from),
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
@@ -79,7 +81,11 @@ impl Settings {
             log_filter: env::var("RUST_LOG")
                 .unwrap_or_else(|_| "chaos=debug,chaos_api=debug,tower_http=info".into()),
             log_json: parse_or("LOG_JSON", "false")?,
-        })
+        };
+        if settings.resend_api_key.is_some() != settings.resend_webhook_secret.is_some() {
+            bail!("RESEND_API_KEY and RESEND_WEBHOOK_SECRET must be set together");
+        }
+        Ok(settings)
     }
 }
 

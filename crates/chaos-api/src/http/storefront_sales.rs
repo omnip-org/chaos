@@ -2496,6 +2496,23 @@ mod tests {
             .unwrap();
         assert_eq!(captured.status(), StatusCode::OK);
         assert_eq!(response_json(captured).await["data"]["status"], "captured");
+        let order_notification = sqlx::query_as::<_, (String, String, i32, Value)>(
+            "SELECT recipient_email::text, template_key, template_version, template_payload \
+             FROM notification.email_deliveries \
+             WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND semantic_event_type = 'order.confirmed' \
+               AND template_payload ->> 'order_id' = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(order_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(order_notification.0, "guest@example.com");
+        assert_eq!(order_notification.1, "order_confirmation");
+        assert_eq!(order_notification.2, 1);
+        assert_eq!(order_notification.3["total_amount_minor"], 2700);
 
         let admin_order_uri = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}",

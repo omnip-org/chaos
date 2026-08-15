@@ -9,6 +9,7 @@ mod health;
 mod inventory;
 mod merchant;
 mod metrics;
+mod notification;
 mod openapi;
 mod order;
 mod payment;
@@ -27,6 +28,7 @@ use chaos_application::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
         MerchantQueries, StoreAdministration,
     },
+    notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
     ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
@@ -38,19 +40,20 @@ use std::sync::Arc;
 use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
-    email::{ResendEmailProvider, SmtpEmailProvider},
+    email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     passwordless::PasswordlessAuth,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresApiKeyRepository, PostgresCatalogManagementUnitOfWork,
         PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresCustomerRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
-        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
-        PostgresOrderManagementRepository, PostgresPaymentRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
+        PostgresCustomerRepository, PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
+        PostgresInventoryRepository, PostgresMerchantProvisioningUnitOfWork,
+        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
+        PostgresPaymentRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository, PostgresSearchIndexer,
+        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
@@ -99,6 +102,8 @@ pub struct ApiState {
     pub payment_service: Arc<PaymentService>,
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
     pub payment_workers: Arc<PaymentWorkers>,
+    pub notification_workers: Arc<NotificationWorkers>,
+    pub notification_webhooks: Arc<NotificationWebhooks>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub shipping_management: Arc<ShippingManagement>,
@@ -129,7 +134,7 @@ impl ApiState {
             infrastructure.redis_client(),
             &settings.webauthn_rp_id,
             &settings.webauthn_rp_origin,
-            email_provider,
+            email_provider.clone(),
             &settings.email_from,
             &settings.auth_public_base_url,
         )?;
@@ -239,6 +244,30 @@ impl ApiState {
             providers,
             payment_onboarding,
         );
+        let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
+            infrastructure.runtime_pool(),
+        ));
+        let notification_providers = if email_provider.name() == "resend" {
+            vec![email_provider]
+        } else {
+            Vec::new()
+        };
+        let notification_workers = NotificationWorkers::new(
+            notification_repository.clone(),
+            notification_providers,
+            settings.email_from.clone(),
+        );
+        let notification_verifiers = settings
+            .resend_webhook_secret
+            .as_ref()
+            .map(ResendWebhookVerifier::new)
+            .transpose()?
+            .into_iter()
+            .map(|verifier| {
+                Arc::new(verifier) as Arc<dyn chaos_application::ports::EmailWebhookVerifier>
+            });
+        let notification_webhooks =
+            NotificationWebhooks::new(notification_repository, notification_verifiers);
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
             infrastructure.runtime_pool(),
         ));
@@ -283,6 +312,8 @@ impl ApiState {
             payment_service: Arc::new(payment_service),
             payment_provider_administration: Arc::new(payment_provider_administration),
             payment_workers: Arc::new(payment_workers),
+            notification_workers: Arc::new(notification_workers),
+            notification_webhooks: Arc::new(notification_webhooks),
             fulfillment_management: Arc::new(fulfillment_management),
             fulfillment_workers: Arc::new(fulfillment_workers),
             shipping_management: Arc::new(shipping_management),
@@ -304,6 +335,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", order::routes())
         .nest("/admin/v1", fulfillment::routes())
         .merge(payment::routes())
+        .merge(notification::routes())
         .nest("/admin/v1", catalog::routes())
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
@@ -332,7 +364,7 @@ mod tests {
 
     use super::*;
 
-    fn test_state() -> ApiState {
+    pub(crate) fn test_state() -> ApiState {
         let settings = Settings {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             database_url: "postgres://localhost/chaos".into(),
@@ -349,6 +381,7 @@ mod tests {
             smtp_url: "smtp://localhost:1025".into(),
             email_from: "Chaos <no-reply@localhost>".into(),
             resend_api_key: None,
+            resend_webhook_secret: None,
             resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),

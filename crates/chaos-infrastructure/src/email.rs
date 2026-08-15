@@ -1,8 +1,12 @@
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chaos_application::{
     ApplicationError,
-    ports::{EmailDelivery, EmailMessage, EmailProvider},
+    ports::{
+        EmailDelivery, EmailMessage, EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
+    },
 };
+use hmac::{Hmac, Mac};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
@@ -10,6 +14,8 @@ use lettre::{
 use reqwest::{Client, StatusCode, Url, header};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use time::{Duration, OffsetDateTime};
 
 #[derive(Clone)]
 pub struct SmtpEmailProvider {
@@ -101,6 +107,126 @@ struct ResendSendRequest<'a> {
 #[derive(Deserialize)]
 struct ResendSendResponse {
     id: String,
+}
+
+#[derive(Clone)]
+pub struct ResendWebhookVerifier {
+    signing_key: Vec<u8>,
+}
+
+impl ResendWebhookVerifier {
+    pub fn new(secret: &SecretString) -> anyhow::Result<Self> {
+        let encoded = secret
+            .expose_secret()
+            .strip_prefix("whsec_")
+            .unwrap_or_else(|| secret.expose_secret());
+        let signing_key = STANDARD
+            .decode(encoded)
+            .map_err(|error| anyhow::anyhow!("invalid RESEND_WEBHOOK_SECRET: {error}"))?;
+        anyhow::ensure!(
+            signing_key.len() >= 16,
+            "RESEND_WEBHOOK_SECRET must contain at least 128 bits"
+        );
+        Ok(Self { signing_key })
+    }
+}
+
+#[derive(Deserialize)]
+struct ResendWebhookPayload {
+    #[serde(rename = "type")]
+    event_type: String,
+    data: ResendWebhookData,
+}
+
+#[derive(Deserialize)]
+struct ResendWebhookData {
+    email_id: String,
+}
+
+#[async_trait]
+impl EmailWebhookVerifier for ResendWebhookVerifier {
+    fn name(&self) -> &'static str {
+        "resend"
+    }
+
+    async fn verify(
+        &self,
+        message_id: &str,
+        timestamp: &str,
+        signature: &str,
+        payload: &[u8],
+        received_at: OffsetDateTime,
+    ) -> Result<VerifiedEmailWebhook, ApplicationError> {
+        if payload.len() > 64 * 1024 || message_id.is_empty() || message_id.len() > 255 {
+            return Err(ApplicationError::Unauthorized);
+        }
+        let timestamp_seconds = timestamp
+            .parse::<i64>()
+            .map_err(|_| ApplicationError::Unauthorized)?;
+        let signed_at = OffsetDateTime::from_unix_timestamp(timestamp_seconds)
+            .map_err(|_| ApplicationError::Unauthorized)?;
+        if (received_at - signed_at).abs() > Duration::minutes(5) {
+            return Err(ApplicationError::Unauthorized);
+        }
+        let signed = [
+            message_id.as_bytes(),
+            b".",
+            timestamp.as_bytes(),
+            b".",
+            payload,
+        ]
+        .concat();
+        let verified = signature.split_whitespace().any(|candidate| {
+            let Some(encoded) = candidate.strip_prefix("v1,") else {
+                return false;
+            };
+            let Ok(expected) = STANDARD.decode(encoded) else {
+                return false;
+            };
+            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&self.signing_key) else {
+                return false;
+            };
+            mac.update(&signed);
+            mac.verify_slice(&expected).is_ok()
+        });
+        if !verified {
+            return Err(ApplicationError::Unauthorized);
+        }
+        let parsed: ResendWebhookPayload =
+            serde_json::from_slice(payload).map_err(|error| ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "body",
+                    reason: format!("must be a valid Resend webhook: {error}"),
+                }],
+            })?;
+        if !matches!(
+            parsed.event_type.as_str(),
+            "email.sent"
+                | "email.delivered"
+                | "email.delivery_delayed"
+                | "email.bounced"
+                | "email.complained"
+                | "email.suppressed"
+        ) || parsed.data.email_id.is_empty()
+            || parsed.data.email_id.len() > 255
+        {
+            return Err(ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "body",
+                    reason: "must contain a supported email event and email identifier".into(),
+                }],
+            });
+        }
+        let payload = serde_json::from_slice(payload)
+            .map_err(|error| ApplicationError::Unexpected(error.into()))?;
+        Ok(VerifiedEmailWebhook {
+            provider_event_id: message_id.to_owned(),
+            provider_message_id: parsed.data.email_id,
+            provider_event_type: parsed.event_type,
+            payload,
+            received_at,
+        })
+    }
 }
 
 #[async_trait]
@@ -315,5 +441,50 @@ mod tests {
             }
         ));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn resend_webhook_verifies_raw_body_signature_and_timestamp() {
+        let key = b"0123456789abcdef0123456789abcdef";
+        let secret = SecretString::from(format!("whsec_{}", STANDARD.encode(key)));
+        let verifier = ResendWebhookVerifier::new(&secret).expect("verifier");
+        let received_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time");
+        let timestamp = received_at.unix_timestamp().to_string();
+        let message_id = "msg_019123";
+        let payload = br#"{"type":"email.delivered","data":{"email_id":"email_123"}}"#;
+        let signed = format!(
+            "{message_id}.{timestamp}.{}",
+            std::str::from_utf8(payload).expect("payload")
+        );
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC");
+        mac.update(signed.as_bytes());
+        let signature = format!("v1,{}", STANDARD.encode(mac.finalize().into_bytes()));
+
+        let event = verifier
+            .verify(message_id, &timestamp, &signature, payload, received_at)
+            .await
+            .expect("verified webhook");
+
+        assert_eq!(event.provider_event_id, message_id);
+        assert_eq!(event.provider_message_id, "email_123");
+        assert_eq!(event.provider_event_type, "email.delivered");
+        assert!(
+            verifier
+                .verify(message_id, &timestamp, "v1,AAAAAAAA", payload, received_at,)
+                .await
+                .is_err()
+        );
+        assert!(
+            verifier
+                .verify(
+                    message_id,
+                    &timestamp,
+                    &signature,
+                    payload,
+                    received_at + Duration::minutes(6),
+                )
+                .await
+                .is_err()
+        );
     }
 }

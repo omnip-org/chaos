@@ -48,7 +48,10 @@ pub use merchant::{
     IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
 };
 pub use merchant_query::{MerchantAccountListItem, MerchantReadRepository, StoreListItem};
-pub use notification::{EmailDelivery, EmailMessage, EmailProvider};
+pub use notification::{
+    EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
+    EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
+};
 pub use passwordless::{CeremonyOptions, PasswordlessAuthentication, SessionGrant};
 pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,

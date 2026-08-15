@@ -16,6 +16,7 @@ Reserved schema map:
 | `sales` | Carts, checkouts, orders, returns, and exchanges |
 | `payments` | Provider accounts, payment intents, captures, and refunds |
 | `fulfillment` | Shipments, packages, and fulfillment state |
+| `notification` | Semantic delivery requests, templates, recipient policy, suppression, and delivery status |
 | `integration` | Webhook inboxes, outbox delivery, and external mappings |
 | `audit` | Immutable security and administrative audit records |
 | `extensions` | Relocatable utility extension objects, currently `citext` |

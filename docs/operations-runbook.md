@@ -18,6 +18,12 @@ Query `integration.event_consumer_backlog()` to separate owned delivery failures
 
 Verify the provider signature and event identifier against provider records. Durable inbox uniqueness makes exact replay safe. Reset only a confirmed failed inbox row to pending in a reviewed transaction, retain its attempt history, and monitor the associated aggregate to completion.
 
+## Notification delivery
+
+Alert on `chaos_notification_email_oldest_pending_seconds`, `chaos_notification_email_dead_letter`, and sustained growth in `chaos_notification_email_pending`. Check Resend availability and rate limits before scaling workers. A processing delivery is reclaimed after one minute and retains the same `notification-<delivery_id>` provider idempotency key. Do not edit a template payload or provider message identifier in place; create an audited replacement request when a permanent failure is corrected.
+
+For complaints, permanent bounces, or `email.suppressed`, confirm the signed webhook exists in `notification.webhook_events` and the Store-scoped recipient appears in `notification.email_suppressions`. A suppression prevents future claims for that Store but never changes commerce state. Manual removal requires verified recipient remediation and an audited administrative procedure. Never remove another Store's suppression based on a shared email address.
+
 ## Checkout expiry backlog
 
 Due Checkouts are claimed in bounded batches with one-minute recoverable leases. Each completion expires the Checkout and, when an active tracked-inventory reservation exists, releases its quantity and records `reservation_expired` in the inventory ledger in the same transaction. If a worker exits after claiming, another instance reclaims the Checkout after the lease timeout. Investigate database pool saturation and worker logs by `worker_id` when expired pending Checkouts are older than two minutes. Do not close Checkouts or edit reserved balances independently; replay the normal expiry worker after correcting the underlying fault.

@@ -14,7 +14,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 5 — Operations | Partial | Fulfillment and Return consumers plus the security and operational release path are verified; the capacity harness still has no retained production-like 10-minute execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
-| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch, signed webhooks, bounded overlap rotation, automated onboarding readiness, and periodic fail-closed reconciliation are delivered. Resend and the first shipping adapter remain open. |
+| 8 — Provider Integrations | Partial | Stripe direct-charge dispatch, signed webhooks, bounded overlap rotation, automated onboarding readiness, periodic fail-closed reconciliation, and durable Resend notification delivery are delivered. The first shipping adapter remains open. |
 | 9–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 4 evidence
@@ -65,6 +65,17 @@ This audit records current evidence and open gates. A passing test for an implem
 | Recalculation | ADR 0010 defines Checkout creation as the sole recalculation boundary, the resolution order for mutable inputs, idempotent replay behavior, and the rule that configuration changes never mutate an existing Checkout or Order. |
 | Authenticated Customer | ADR 0011 defines Store ownership, dual credentials, additive immutable shopper association, and snapshot boundaries. Domain tests cover profile validation; the real-router PostgreSQL matrix associates a Customer, creates a saved address, propagates Customer identity through Checkout and Order, and recovers Order history without the shopper credential. |
 | Admin Order discovery | The Admin API provides opaque cursor pagination and optional status, Customer, and canonical email filters. The real-router matrix verifies the combined filter against the Customer-owned Order, while application queries remain account- and Store-scoped under RLS. |
+
+## Current Phase 8 notification evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Provider boundary | `EmailProvider`, `EmailWebhookVerifier`, and `EmailDeliveryRepository` are application ports. Resend HTTP and Svix-compatible signing details remain in infrastructure. Authentication and commerce use cases depend only on provider-neutral messages and results. |
+| Transactional requests | Both administrative confirmation and payment-capture reconciliation insert one `order.confirmed` delivery in the same transaction as the immutable Order transition. The real-router PostgreSQL matrix asserts the canonical recipient, template key and version, Order identity, and commercial snapshot. Authentication links bypass the general queue so reusable sign-in tokens never enter notification persistence. |
+| Reliable delivery | Cross-Store security-definer claims use `SKIP LOCKED`, one-minute stale recovery, stable `notification-<delivery_id>` idempotency, capped exponential retry, permanent-failure classification, and dead letters after eight attempts. The runtime-role test proves stale-owner rejection, recovery, dead-letter exhaustion, suppression before claim, and cross-account RLS. |
+| Signed reconciliation | The Resend verifier authenticates `svix-id`, `svix-timestamp`, and the exact raw body with a five-minute tolerance before JSON parsing. The 64 KiB HTTP route, OpenAPI contract, verifier tests, and PostgreSQL test cover valid signatures, missing or invalid signatures, duplicate event identity, unknown delivery handling, delivery status, and complaint suppression. |
+| Suppression and isolation | Permanent bounces, complaints, and provider suppression create Store-scoped records. Deterministic terminal precedence tolerates unordered callbacks; later delivery events cannot overwrite bounced, complained, or suppressed state. No notification path updates a commerce aggregate. |
+| Operations | Prometheus exports bounded pending, processing, dead-letter, suppressed, and oldest-pending gauges. The operations runbook covers lease recovery, provider rate limits, audited replacement requests, and Store-scoped suppression remediation. A clean PostgreSQL 18 bootstrap, all 8 API and 17 infrastructure database tests, normal workspace tests, Clippy, formatting, language, and OpenAPI reference checks pass. |
 
 ## Required release commands
 

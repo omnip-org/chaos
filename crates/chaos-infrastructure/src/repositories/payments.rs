@@ -1487,17 +1487,46 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let transition_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO sales.order_transitions \
          (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
          VALUES ($1, $2, $3, $4, $5::sales.order_status, 'confirmed', 'confirmed', $6)",
     )
-    .bind(Uuid::now_v7())
+    .bind(transition_id)
     .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .bind(transition.from_status.map(OrderStatus::as_str))
     .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO notification.email_deliveries \
+         (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+          recipient_email, template_key, template_version, template_payload, provider) \
+         SELECT $1, order_row.merchant_account_id, order_row.store_id, $2, \
+                'order.confirmed', contact.email, 'order_confirmation', 1, \
+                jsonb_build_object( \
+                    'order_id', order_row.id, \
+                    'total_amount_minor', order_row.total_amount_minor, \
+                    'currency', order_row.currency::text \
+                ), 'resend' \
+           FROM sales.orders AS order_row \
+           INNER JOIN sales.order_contacts AS contact \
+             ON contact.merchant_account_id = order_row.merchant_account_id \
+            AND contact.store_id = order_row.store_id \
+            AND contact.order_id = order_row.id \
+          WHERE order_row.merchant_account_id = $3 \
+            AND order_row.store_id = $4 AND order_row.id = $5 \
+         ON CONFLICT (merchant_account_id, store_id, semantic_event_id) DO NOTHING",
+    )
+    .bind(Uuid::now_v7())
+    .bind(transition_id)
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;

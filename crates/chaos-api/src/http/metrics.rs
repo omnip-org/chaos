@@ -47,6 +47,19 @@ async fn scrape(State(state): State<ApiState>) -> impl IntoResponse {
         ::metrics::gauge!("chaos_payment_provider_readiness_expiring").set(expiring as f64);
         ::metrics::gauge!("chaos_payment_provider_action_required").set(action_required as f64);
     }
+    if let Ok((pending, processing, dead_letter, suppressed, oldest)) =
+        sqlx::query_as::<_, (i64, i64, i64, i64, f64)>(
+            "SELECT * FROM notification.email_delivery_metrics()",
+        )
+        .fetch_one(&pool)
+        .await
+    {
+        ::metrics::gauge!("chaos_notification_email_pending").set(pending as f64);
+        ::metrics::gauge!("chaos_notification_email_processing").set(processing as f64);
+        ::metrics::gauge!("chaos_notification_email_dead_letter").set(dead_letter as f64);
+        ::metrics::gauge!("chaos_notification_email_suppressed").set(suppressed as f64);
+        ::metrics::gauge!("chaos_notification_email_oldest_pending_seconds").set(oldest);
+    }
     (
         [(
             header::CONTENT_TYPE,

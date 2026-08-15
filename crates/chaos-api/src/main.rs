@@ -26,6 +26,11 @@ async fn main() -> anyhow::Result<()> {
         state.clock.clone(),
         lifecycle.clone(),
     ));
+    let notification_worker = tokio::spawn(notification_worker_loop(
+        state.notification_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
     let search_worker = tokio::spawn(search_worker_loop(
         state.search_indexer.clone(),
         state.clock.clone(),
@@ -49,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
+        drain_worker("notification", notification_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker(
             "checkout-expiry",
@@ -63,6 +69,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn notification_worker_loop(
+    workers: std::sync::Arc<chaos_application::notifications::NotificationWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        if let Err(error) = workers.run_batch(worker_id, clock.now(), 50).await {
+            tracing::warn!(%worker_id, %error, "notification delivery batch failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 async fn drain_worker(
