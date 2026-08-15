@@ -65,6 +65,26 @@
         }
       }
     },
+    "/analytics/events": {
+      "post": {
+        "operationId": "collectStorefrontAnalyticsEvents",
+        "tags": ["Analytics"],
+        "summary": "Collect a bounded batch of consent-aware first-party behavior events",
+        "description": "Browser events are untrusted observations and cannot declare commercial amounts, Order state, Payment state, or other authoritative outcomes.",
+        "security": [{ "publishableKey": ["analytics:write"] }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectAnalyticsEvents" } } }
+        },
+        "responses": {
+          "200": { "description": "Batch accepted, deduplicated, or discarded according to storage consent", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsCollectionEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/shopper-sessions": {
       "post": {
         "operationId": "createShopperSession",
@@ -524,6 +544,130 @@
       }
     },
     "schemas": {
+      "AnalyticsConsent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["analytics_storage", "advertising_storage", "policy_version"],
+        "properties": {
+          "analytics_storage": { "type": "boolean" },
+          "advertising_storage": { "type": "boolean" },
+          "policy_version": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$" }
+        }
+      },
+      "PageViewedProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/[^?#]*$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 }
+        }
+      },
+      "ProductViewedProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product_id"],
+        "properties": {
+          "product_id": { "type": "string", "format": "uuid" },
+          "product_variant_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "SearchPerformedProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "result_count": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+        }
+      },
+      "CartLineAddedProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cart_id", "product_variant_id", "quantity"],
+        "properties": {
+          "cart_id": { "type": "string", "format": "uuid" },
+          "product_variant_id": { "type": "string", "format": "uuid" },
+          "quantity": { "type": "integer", "minimum": 1, "maximum": 10000 }
+        }
+      },
+      "CheckoutStartedProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cart_id"],
+        "properties": {
+          "cart_id": { "type": "string", "format": "uuid" },
+          "checkout_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "EngagementHeartbeatProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["page_view_event_id", "active_milliseconds"],
+        "properties": {
+          "page_view_event_id": { "type": "string", "format": "uuid" },
+          "active_milliseconds": { "type": "integer", "minimum": 1, "maximum": 60000 }
+        }
+      },
+      "BrowserAnalyticsEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "event_name", "schema_version", "occurred_at", "anonymous_id", "session_id", "consent", "properties"],
+        "properties": {
+          "event_id": { "type": "string", "format": "uuid" },
+          "event_name": { "type": "string", "enum": ["page_viewed", "product_viewed", "search_performed", "cart_line_added", "checkout_started", "engagement_heartbeat"] },
+          "schema_version": { "type": "integer", "const": 1 },
+          "occurred_at": { "type": "string", "format": "date-time" },
+          "anonymous_id": { "type": "string", "format": "uuid" },
+          "session_id": { "type": "string", "format": "uuid" },
+          "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
+          "properties": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PageViewedProperties" },
+              { "$ref": "#/components/schemas/ProductViewedProperties" },
+              { "$ref": "#/components/schemas/SearchPerformedProperties" },
+              { "$ref": "#/components/schemas/CartLineAddedProperties" },
+              { "$ref": "#/components/schemas/CheckoutStartedProperties" },
+              { "$ref": "#/components/schemas/EngagementHeartbeatProperties" }
+            ]
+          }
+        },
+        "allOf": [
+          { "if": { "properties": { "event_name": { "const": "page_viewed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/PageViewedProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "product_viewed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ProductViewedProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "search_performed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/SearchPerformedProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "cart_line_added" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/CartLineAddedProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "checkout_started" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/CheckoutStartedProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "engagement_heartbeat" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/EngagementHeartbeatProperties" } } } }
+        ]
+      },
+      "CollectAnalyticsEvents": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["events"],
+        "properties": {
+          "events": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/BrowserAnalyticsEvent" } }
+        }
+      },
+      "AnalyticsCollectionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["received", "stored", "duplicates", "discarded_for_consent", "collection_policy_version"],
+        "properties": {
+          "received": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "stored": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "duplicates": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "discarded_for_consent": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "collection_policy_version": { "type": "string" }
+        }
+      },
+      "AnalyticsCollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsCollectionResult" } }
+      },
       "Price": {
         "type": "object",
         "additionalProperties": false,

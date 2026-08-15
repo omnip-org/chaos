@@ -80,6 +80,7 @@ pub struct AuthenticatedSession {
 }
 
 pub struct StorefrontMachine(pub MachineActor);
+pub struct AnalyticsMachine(pub MachineActor);
 pub struct CartMachine(pub MachineActor);
 pub struct CartShopper(pub ShopperActor);
 pub struct CheckoutShopper(pub ShopperActor);
@@ -124,6 +125,7 @@ macro_rules! storefront_machine_extractor {
 }
 
 storefront_machine_extractor!(CartMachine, ApiKeyScope::CartsWrite);
+storefront_machine_extractor!(AnalyticsMachine, ApiKeyScope::AnalyticsWrite);
 
 macro_rules! storefront_shopper_extractor {
     ($name:ident, $scope:expr) => {

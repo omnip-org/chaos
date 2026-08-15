@@ -1,3 +1,4 @@
+mod analytics;
 mod api_key;
 mod auth;
 mod catalog;
@@ -21,6 +22,7 @@ mod storefront_sales;
 
 use axum::Router;
 use chaos_application::{
+    analytics::AnalyticsCollection,
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -47,17 +49,17 @@ use chaos_infrastructure::{
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     passwordless::PasswordlessAuth,
     repositories::{
-        HmacPaymentWebhookVerifier, PostgresApiKeyRepository, PostgresCatalogManagementUnitOfWork,
-        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresCustomerRepository, PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMerchantProvisioningUnitOfWork,
-        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
-        PostgresPaymentRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository, PostgresSearchIndexer,
-        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
-        SecureApiKeyMaterialGenerator,
+        HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository, PostgresApiKeyRepository,
+        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
+        PostgresCatalogReadRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
+        PostgresFulfillmentRepository, PostgresInventoryRepository,
+        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
+        PostgresOrderManagementRepository, PostgresPaymentRepository,
+        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
+        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
@@ -73,8 +75,9 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CartShopper, CheckoutShopper,
-    CustomerCheckout, CustomerMachine, CustomerSession, MerchantContext, StorefrontMachine,
+    AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CartShopper,
+    CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession, MerchantContext,
+    StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -98,6 +101,7 @@ pub struct ApiState {
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
+    pub analytics_collection: Arc<AnalyticsCollection>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
     pub customer_service: Arc<CustomerService>,
@@ -190,6 +194,9 @@ impl ApiState {
             Arc::new(SecureApiKeyMaterialGenerator),
         );
         let api_key_authentication = ApiKeyAuthentication::new(api_key_repository);
+        let analytics_collection = AnalyticsCollection::new(Arc::new(
+            PostgresAnalyticsEventRepository::new(infrastructure.runtime_pool()),
+        ));
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
@@ -325,6 +332,7 @@ impl ApiState {
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
+            analytics_collection: Arc::new(analytics_collection),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
             customer_service: Arc::new(customer_service),
@@ -362,6 +370,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
+        .nest("/store/v1", analytics::routes())
         .nest("/store/v1", storefront_sales::routes())
         .nest("/store/v1", customer::routes())
         .nest("/openapi", openapi::routes())

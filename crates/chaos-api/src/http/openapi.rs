@@ -72,6 +72,15 @@ mod tests {
             serde_json::json!([{ "publishableKey": ["checkout:write"] }])
         );
         assert_eq!(
+            specification["paths"]["/analytics/events"]["post"]["security"],
+            serde_json::json!([{ "publishableKey": ["analytics:write"] }])
+        );
+        assert_eq!(
+            specification["components"]["schemas"]["CollectAnalyticsEvents"]["properties"]["events"]
+                ["maxItems"],
+            20
+        );
+        assert_eq!(
             specification["paths"]["/checkouts/{checkout_id}"]["get"]["responses"]["200"]["content"]
                 ["application/json"]["schema"]["$ref"],
             "#/components/schemas/CheckoutEnvelope"

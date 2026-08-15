@@ -1301,7 +1301,7 @@ mod tests {
             account_id,
             store_id,
             user_id,
-            &["carts:write", "checkout:write"],
+            &["analytics:write", "carts:write", "checkout:write"],
         )
         .await;
         let catalog_key = insert_key(
@@ -1317,7 +1317,7 @@ mod tests {
             account_id,
             other_store_id,
             user_id,
-            &["carts:write", "checkout:write"],
+            &["analytics:write", "carts:write", "checkout:write"],
         )
         .await;
         let full_secret = full_key.plaintext.expose_secret();
@@ -1383,6 +1383,209 @@ mod tests {
             [shipping_provider],
         ));
         let app = router(state);
+
+        let analytics_event_id = Uuid::now_v7();
+        let analytics_anonymous_id = Uuid::now_v7();
+        let analytics_session_id = Uuid::now_v7();
+        let analytics_occurred_at = test_clock
+            .now()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        let analytics_body = json!({
+            "events": [
+                {
+                    "event_id": analytics_event_id,
+                    "event_name": "page_viewed",
+                    "schema_version": 1,
+                    "occurred_at": analytics_occurred_at,
+                    "anonymous_id": analytics_anonymous_id,
+                    "session_id": analytics_session_id,
+                    "consent": {
+                        "analytics_storage": true,
+                        "advertising_storage": false,
+                        "policy_version": "cmp-v1"
+                    },
+                    "properties": {"path": "/products", "title": "Products"}
+                },
+                {
+                    "event_id": Uuid::now_v7(),
+                    "event_name": "engagement_heartbeat",
+                    "schema_version": 1,
+                    "occurred_at": analytics_occurred_at,
+                    "anonymous_id": analytics_anonymous_id,
+                    "session_id": analytics_session_id,
+                    "consent": {
+                        "analytics_storage": false,
+                        "advertising_storage": false,
+                        "policy_version": "cmp-v1"
+                    },
+                    "properties": {
+                        "page_view_event_id": analytics_event_id,
+                        "active_milliseconds": 60000
+                    }
+                }
+            ]
+        });
+        let analytics = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(analytics_body.clone()),
+            ))
+            .await
+            .unwrap();
+        let analytics_status = analytics.status();
+        let analytics = response_json(analytics).await;
+        assert_eq!(analytics_status, StatusCode::OK, "{analytics:?}");
+        assert_eq!(analytics["data"]["received"], 2);
+        assert_eq!(analytics["data"]["stored"], 1);
+        assert_eq!(analytics["data"]["discarded_for_consent"], 1);
+        let analytics_replay = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(analytics_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(analytics_replay.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(analytics_replay).await["data"]["duplicates"],
+            1
+        );
+        let analytics_wrong_scope = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(catalog_secret),
+                None,
+                Some(analytics_body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(analytics_wrong_scope.status(), StatusCode::FORBIDDEN);
+        let invalid_analytics = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(json!({
+                    "events": [{
+                        "event_id": Uuid::now_v7(),
+                        "event_name": "engagement_heartbeat",
+                        "schema_version": 1,
+                        "occurred_at": analytics_occurred_at,
+                        "anonymous_id": analytics_anonymous_id,
+                        "session_id": analytics_session_id,
+                        "consent": {
+                            "analytics_storage": true,
+                            "advertising_storage": false,
+                            "policy_version": "cmp-v1"
+                        },
+                        "properties": {
+                            "page_view_event_id": analytics_event_id,
+                            "active_milliseconds": 60001
+                        }
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_analytics.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let other_store_analytics = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(other_store_secret),
+                None,
+                Some(analytics_body),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(other_store_analytics.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(other_store_analytics).await["data"]["stored"],
+            1
+        );
+        let analytics_rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.behavior_events WHERE event_id = $1",
+        )
+        .bind(analytics_event_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(analytics_rows, 2);
+        let isolated_account_id = MerchantAccountId::new();
+        let isolated_store_id = StoreId::new();
+        let isolated_channel_id = SalesChannelId::new();
+        sqlx::query(
+            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
+             VALUES ($1, $2, 'Isolated Analytics')",
+        )
+        .bind(isolated_account_id.as_uuid())
+        .bind(format!("isolated-analytics-{suffix}"))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name, status) \
+             VALUES ($1, $2, 'isolated', 'Isolated', 'active')",
+        )
+        .bind(isolated_store_id.as_uuid())
+        .bind(isolated_account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.sales_channels \
+             (id, merchant_account_id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+        )
+        .bind(isolated_channel_id.as_uuid())
+        .bind(isolated_account_id.as_uuid())
+        .bind(isolated_store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO analytics.behavior_events \
+             (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
+              schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
+              advertising_storage_consent, consent_policy_version, collection_policy_version, \
+              properties, occurred_at, received_at, retention_expires_at) \
+             VALUES (uuidv7(),uuidv7(),$1,$2,$3,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
+                     true,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
+                     CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days')",
+        )
+        .bind(isolated_account_id.as_uuid())
+        .bind(isolated_store_id.as_uuid())
+        .bind(isolated_channel_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        let mut analytics_rls = runtime_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *analytics_rls)
+            .await
+            .unwrap();
+        let visible_analytics_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.behavior_events")
+                .fetch_one(&mut *analytics_rls)
+                .await
+                .unwrap();
+        assert_eq!(visible_analytics_rows, 2);
+        analytics_rls.rollback().await.unwrap();
 
         let provider_accounts_uri = format!(
             "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts",

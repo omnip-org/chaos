@@ -9,6 +9,7 @@ CREATE SCHEMA sales;
 CREATE SCHEMA payments;
 CREATE SCHEMA fulfillment;
 CREATE SCHEMA notification;
+CREATE SCHEMA analytics;
 CREATE SCHEMA search;
 CREATE SCHEMA partman;
 
@@ -32,6 +33,8 @@ COMMENT ON SCHEMA fulfillment IS
     'Partial fulfillments, shipments, tracking, and return logistics';
 COMMENT ON SCHEMA notification IS
     'Semantic delivery requests, recipient policy, suppression, and delivery status';
+COMMENT ON SCHEMA analytics IS
+    'Canonical behavior events, consent evidence, attribution, and analytical delivery state';
 COMMENT ON SCHEMA search IS
     'Rebuildable Store-isolated read models for storefront discovery';
 COMMENT ON SCHEMA partman IS 'Objects owned by the pg_partman extension';
@@ -63,6 +66,7 @@ CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
 CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
 CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
 CREATE TYPE merchant.api_key_scope AS ENUM (
+    'analytics:write',
     'catalog:read',
     'carts:write',
     'checkout:write',
@@ -132,6 +136,15 @@ CREATE TYPE notification.email_suppression_reason AS ENUM (
     'complaint',
     'provider_suppression',
     'manual'
+);
+CREATE TYPE analytics.event_source AS ENUM ('browser', 'server');
+CREATE TYPE analytics.browser_event_name AS ENUM (
+    'page_viewed',
+    'product_viewed',
+    'search_performed',
+    'cart_line_added',
+    'checkout_started',
+    'engagement_heartbeat'
 );
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
@@ -2555,6 +2568,76 @@ CREATE INDEX notification_webhook_events_delivery_idx
         id
     );
 
+CREATE TABLE analytics.behavior_events (
+    id                            UUID                         NOT NULL PRIMARY KEY,
+    event_id                      UUID                         NOT NULL,
+    merchant_account_id           UUID                         NOT NULL,
+    store_id                      UUID                         NOT NULL,
+    sales_channel_id              UUID                         NOT NULL,
+    event_name                    analytics.browser_event_name NOT NULL,
+    schema_version                SMALLINT                     NOT NULL,
+    source                        analytics.event_source       NOT NULL,
+    anonymous_id                  UUID                         NOT NULL,
+    session_id                    UUID                         NOT NULL,
+    analytics_storage_consent     BOOLEAN                      NOT NULL,
+    advertising_storage_consent   BOOLEAN                      NOT NULL,
+    consent_policy_version        TEXT                         NOT NULL,
+    collection_policy_version     TEXT                         NOT NULL,
+    properties                    JSONB                        NOT NULL,
+    occurred_at                   TIMESTAMPTZ                  NOT NULL,
+    received_at                   TIMESTAMPTZ                  NOT NULL,
+    retention_expires_at          TIMESTAMPTZ                  NOT NULL,
+    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, event_id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    CONSTRAINT behavior_events_schema_version_check CHECK (schema_version = 1),
+    CONSTRAINT behavior_events_source_check CHECK (source = 'browser'),
+    CONSTRAINT behavior_events_identity_check CHECK (
+        event_id <> '00000000-0000-0000-0000-000000000000'::UUID
+        AND anonymous_id <> '00000000-0000-0000-0000-000000000000'::UUID
+        AND session_id <> '00000000-0000-0000-0000-000000000000'::UUID
+    ),
+    CONSTRAINT behavior_events_storage_consent_check CHECK (analytics_storage_consent),
+    CONSTRAINT behavior_events_consent_policy_version_check CHECK (
+        consent_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
+    ),
+    CONSTRAINT behavior_events_collection_policy_version_check CHECK (
+        collection_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
+    ),
+    CONSTRAINT behavior_events_properties_check CHECK (
+        jsonb_typeof(properties) = 'object' AND octet_length(properties::TEXT) <= 4096
+    ),
+    CONSTRAINT behavior_events_timestamp_skew_check CHECK (
+        occurred_at >= received_at - INTERVAL '24 hours'
+        AND occurred_at <= received_at + INTERVAL '5 minutes'
+    ),
+    CONSTRAINT behavior_events_retention_check CHECK (
+        retention_expires_at > received_at
+        AND retention_expires_at <= received_at + INTERVAL '400 days'
+    )
+);
+
+CREATE INDEX behavior_events_session_time_idx
+    ON analytics.behavior_events (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        session_id,
+        occurred_at,
+        event_id
+    );
+
+CREATE INDEX behavior_events_retention_idx
+    ON analytics.behavior_events (
+        merchant_account_id,
+        retention_expires_at,
+        id
+    );
+
 CREATE TABLE integration.webhook_inbox (
     id                         UUID                     NOT NULL PRIMARY KEY,
     merchant_account_id        UUID                     NOT NULL,
@@ -3053,6 +3136,7 @@ ALTER TABLE fulfillment.return_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.email_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.email_suppressions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.webhook_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.behavior_events ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -3709,6 +3793,16 @@ CREATE POLICY merchant_account_isolation ON notification.email_suppressions
     );
 
 CREATE POLICY merchant_account_isolation ON notification.webhook_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.behavior_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -4626,7 +4720,7 @@ $$;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog, pricing, inventory, sales,
-    payments, fulfillment, notification, search
+    payments, fulfillment, notification, analytics, search
     TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
@@ -4704,6 +4798,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA fulfillment TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA notification TO chaos_runtime;
+GRANT SELECT, INSERT
+    ON ALL TABLES IN SCHEMA analytics TO chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
@@ -4778,6 +4874,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
+    GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA search
     GRANT SELECT ON TABLES TO chaos_runtime;
 

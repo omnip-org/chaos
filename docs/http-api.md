@@ -168,11 +168,13 @@ Store API keys are managed beneath `/admin/v1/merchant-accounts/{merchant_accoun
 
 `POST` requires an `Idempotency-Key` and returns the plaintext `secret` exactly once. The stored record contains only a searchable random identifier, SHA-256 digest, and four-character display suffix. Replaying the same creation request returns HTTP 409 with `api_key_secret_already_issued`; it never returns the secret again. Losing the response requires creating a replacement key and revoking the inaccessible key.
 
-Keys have an explicit `test` or `live` mode and are either `publishable` or `secret`. Publishable keys may contain only Storefront scopes: `catalog:read`, `carts:write`, and `checkout:write`. Secret keys can receive server-side scopes such as `orders:read` and `mcp:tools`. The exact scope allowlist is part of the versioned API contract.
+Keys have an explicit `test` or `live` mode and are either `publishable` or `secret`. Publishable keys may contain only Storefront scopes: `analytics:write`, `catalog:read`, `carts:write`, and `checkout:write`. Secret keys can receive server-side scopes such as `orders:read` and `mcp:tools`. The exact scope allowlist is part of the versioned API contract.
 
 `GET` returns metadata for active and revoked keys but never secret material or digests. `DELETE` requires an `Idempotency-Key`, records the revoking user, and is safely replayable. Revocation is authoritative in PostgreSQL and immediately causes machine authentication to fail.
 
 ## Storefront Catalog
+
+`POST /store/v1/analytics/events` requires a publishable key with `analytics:write` and accepts 1-20 version-1 allowlisted browser observations in a body of at most 32 KiB. Each event carries stable anonymous, session, and event UUIDs, an RFC 3339 occurrence time, and an explicit consent snapshot. The server rejects timestamps outside the bounded skew window and properties outside the event-specific schema. It discards events without analytics-storage consent, deduplicates eligible events within the Store, applies the server-owned `builtin-v1` collection policy, and retains initial raw behavior evidence for 30 days. Browser events never establish prices, amounts, Order state, Payment state, or other commerce truth. Engagement heartbeats contain only visible-and-focused intervals of at most 60 seconds and remain estimates.
 
 `GET /store/v1/products` and `GET /store/v1/products/{handle}` authenticate a publishable API key with `catalog:read`. The credential resolves the merchant account, Store, Sales Channel, mode, and scopes; these identifiers are never accepted from path or query input.
 

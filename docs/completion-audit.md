@@ -15,7 +15,8 @@ This audit records current evidence and open gates. A passing test for an implem
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
 | 8 — Provider Integrations | Complete for the declared phase scope | Stripe, Resend, and EasyPost capabilities are wired through Provider-neutral ports with durable Store-owned evidence, bounded credential handling, idempotent recovery, signed inbound reconciliation where applicable, and recoverable workers. |
-| 9–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
+| 9 — Analytics and Attribution | Partial | The first-party browser event contract and consent-gated Storefront collection path are delivered. SDK behavior, configurable policy, deletion, sessionization, attribution, trusted commerce facts, isolated read models, and conversion destinations remain open. |
+| 10 — Extensibility and Ecosystem | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 4 evidence
 
@@ -88,6 +89,16 @@ This audit records current evidence and open gates. A passing test for an implem
 | Cancellation | Cancellation has a separate idempotency fingerprint and records `submitted`, `cancelled`, `rejected`, or `not_available`. Reconciliation reads current EasyPost Shipment state before another refund request, and no cancellation result changes Fulfillment state. |
 | Tracking reconciliation | A cross-Store security-definer claim uses `SKIP LOCKED`, one-minute stale recovery, stable Label identity, capped backoff, eight-attempt dead letters, and stale-owner rejection. Provider calls occur outside transactions. A delivered observation atomically records tracking evidence, advances only a shipped Fulfillment, and emits its transactional event; unknown states fail closed. |
 | Contract and runtime evidence | The Admin OpenAPI contract exposes Provider administration, quotation, label purchase, and cancellation without Provider references or credentials. Real-router PostgreSQL coverage proves quote and label replay, persisted evidence, recovery without a second buy, cancellation status, stale tracking-lease recovery, stale-owner rejection, and delivery transition. EasyPost mock HTTP coverage exercises create, buy, Shipment reconciliation, refund, and Tracker retrieval. |
+
+## Current Phase 9 evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Event contract | The Analytics domain allowlists six version-1 browser observations with typed properties. Browser payloads contain no amount, currency, Order status, Payment status, contact, address, token, or free-form object fields. Domain tests enforce consent-policy syntax, path constraints, quantity limits, and a 60-second engagement interval cap. |
+| Collection boundary | `POST /store/v1/analytics/events` requires the independent `analytics:write` publishable-key scope, accepts 1-20 events in at most 32 KiB, rejects more than 24 hours of past skew or 5 minutes of future skew, and applies server-owned collection policy `builtin-v1`. Events without analytics-storage consent are acknowledged but not persisted. |
+| Persistence and isolation | `analytics.behavior_events` stores canonical client event identity, Store and Sales Channel context, consent evidence, typed JSON properties, occurrence and receipt times, and a 30-day expiry. Store-scoped uniqueness makes replay idempotent without cross-Store collisions. RLS, composite foreign keys, and immutable runtime privileges protect the append-only evidence. |
+| Contract and runtime evidence | The Store OpenAPI 3.1 contract documents every allowlisted event and response count. The real-router PostgreSQL matrix proves storage, consent discard, replay deduplication, scope denial, event-property rejection, same-ID Store isolation, and cross-account RLS on a clean PostgreSQL 18 bootstrap. |
+| Open gates | The browser SDK, collection rate limiting, visible/focused heartbeat producer, configurable Store policy and erasure jobs, sessionization, attribution, trusted commerce-fact ingestion, isolated reporting storage, and Meta CAPI/GA4 adapters are not yet delivered. |
 
 ## Required release commands
 

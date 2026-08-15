@@ -1,3 +1,4 @@
+mod analytics;
 mod api_key;
 mod catalog;
 mod catalog_management;
@@ -21,6 +22,7 @@ mod store_administration;
 mod storefront_catalog;
 mod tax;
 
+pub use analytics::AnalyticsEventRepository;
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
     GeneratedApiKeyMaterial, MachineActor,

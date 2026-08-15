@@ -1923,6 +1923,7 @@
       "ApiKeyScope": {
         "type": "string",
         "enum": [
+          "analytics:write",
           "catalog:read",
           "carts:write",
           "checkout:write",

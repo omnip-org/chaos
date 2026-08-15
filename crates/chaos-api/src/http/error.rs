@@ -42,6 +42,12 @@ impl From<ApplicationError> for ApiError {
     }
 }
 
+impl From<chaos_domain::DomainError> for ApiError {
+    fn from(value: chaos_domain::DomainError) -> Self {
+        Self::Application(value.into())
+    }
+}
+
 impl ApiError {
     pub fn from_json_rejection(rejection: JsonRejection) -> Self {
         let status = rejection.status();

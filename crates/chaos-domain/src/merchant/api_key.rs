@@ -77,6 +77,7 @@ impl ApiKeyMode {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ApiKeyScope {
+    AnalyticsWrite,
     CatalogRead,
     CartsWrite,
     CheckoutWrite,
@@ -88,6 +89,7 @@ pub enum ApiKeyScope {
 impl ApiKeyScope {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::AnalyticsWrite => "analytics:write",
             Self::CatalogRead => "catalog:read",
             Self::CartsWrite => "carts:write",
             Self::CheckoutWrite => "checkout:write",
@@ -99,6 +101,7 @@ impl ApiKeyScope {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "analytics:write" => Some(Self::AnalyticsWrite),
             "catalog:read" => Some(Self::CatalogRead),
             "carts:write" => Some(Self::CartsWrite),
             "checkout:write" => Some(Self::CheckoutWrite),
@@ -112,7 +115,7 @@ impl ApiKeyScope {
     const fn allowed_for_publishable_key(self) -> bool {
         matches!(
             self,
-            Self::CatalogRead | Self::CartsWrite | Self::CheckoutWrite
+            Self::AnalyticsWrite | Self::CatalogRead | Self::CartsWrite | Self::CheckoutWrite
         )
     }
 }
@@ -239,6 +242,7 @@ mod tests {
                 ApiKeyScope::CatalogRead,
                 ApiKeyScope::CartsWrite,
                 ApiKeyScope::CheckoutWrite,
+                ApiKeyScope::AnalyticsWrite,
             ],
         )
         .unwrap();
