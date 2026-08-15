@@ -13,7 +13,8 @@ This audit records current evidence and open gates. A passing test for an implem
 | 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
-| 7–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
+| 7 — Real Checkout | Partial | Guest contact and billing/shipping snapshots are implemented; authenticated Customer association, shipping selection, tax, promotions, recalculation, and Customer Order history remain open. |
+| 8–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
 
@@ -35,6 +36,14 @@ This audit records current evidence and open gates. A passing test for an implem
 | Lease recovery | Payment inbox, payment outbox, and Checkout expiry claims recover one-minute-old leases. Integration tests abandon claims, advance the Clock, prove another worker can complete them, and reject the former owner. |
 | Shutdown | Every in-process worker stops claiming when draining begins and receives the configured bounded interval to finish before forced cancellation. |
 | Event ownership | Every Outbox event type references the immutable `integration.event_consumer_registry`. Payment and Search claims require their declared owner. The real-router PostgreSQL test proves an unowned `return.completed` event remains pending after a Payment Worker batch, appears in `integration.event_consumer_backlog()`, reports no owner and no processed count, and cannot have its registry row changed by the runtime role. |
+
+## Current Phase 7 evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Guest identity | Domain tests canonicalize valid email, require optional phones to use E.164, and reject malformed contact data. The Store API requires contact input when creating a Checkout. |
+| Address snapshots | Billing addresses are required and shipping addresses are conditionally required for shippable lines. Typed Checkout and Order snapshot tables use Store-scoped composite foreign keys, RLS, bounded text, ISO country constraints, and revoked update/delete privileges. |
+| Access and immutability | The real-router PostgreSQL matrix proves invalid contact and missing shipping validation, canonical response data, idempotent replay, Checkout-to-Order copying, cross-shopper not-found behavior, and runtime-role denial of contact/address mutation. |
 
 ## Required release commands
 

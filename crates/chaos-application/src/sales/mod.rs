@@ -4,7 +4,7 @@ use chaos_domain::{
     CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
     merchant::{ApiKeyClass, ApiKeyScope},
-    sales::{CartId, CheckoutId, OrderId},
+    sales::{CartId, CheckoutContact, CheckoutId, CheckoutIdentity, OrderId, PostalAddress},
 };
 use time::{Duration, OffsetDateTime};
 
@@ -45,8 +45,27 @@ pub struct RemoveCartLineInput {
 pub struct CreateCheckoutInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
+    pub contact: CheckoutContactInput,
+    pub billing_address: PostalAddressInput,
+    pub shipping_address: Option<PostalAddressInput>,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
+}
+
+pub struct CheckoutContactInput {
+    pub email: String,
+    pub phone: Option<String>,
+}
+
+pub struct PostalAddressInput {
+    pub full_name: String,
+    pub company: Option<String>,
+    pub address_line1: String,
+    pub address_line2: Option<String>,
+    pub locality: String,
+    pub administrative_area: Option<String>,
+    pub postal_code: Option<String>,
+    pub country_code: String,
 }
 
 pub struct CreateOrderInput {
@@ -165,12 +184,18 @@ impl StorefrontSales {
         input: CreateCheckoutInput,
     ) -> Result<CheckoutDetail, ApplicationError> {
         require_storefront_scope(&input.actor.machine, ApiKeyScope::CheckoutWrite)?;
+        let identity = CheckoutIdentity::new(
+            CheckoutContact::new(input.contact.email, input.contact.phone)?,
+            postal_address(input.billing_address)?,
+            input.shipping_address.map(postal_address).transpose()?,
+        );
         self.repository
             .create_checkout(
                 &input.actor,
                 input.cart_id,
                 input.now,
                 input.now + Duration::minutes(15),
+                identity,
                 &input.idempotency,
             )
             .await
@@ -220,6 +245,20 @@ impl StorefrontSales {
                 id: order_id.as_uuid().to_string(),
             })
     }
+}
+
+fn postal_address(input: PostalAddressInput) -> Result<PostalAddress, ApplicationError> {
+    PostalAddress::new(
+        input.full_name,
+        input.company,
+        input.address_line1,
+        input.address_line2,
+        input.locality,
+        input.administrative_area,
+        input.postal_code,
+        input.country_code,
+    )
+    .map_err(ApplicationError::from)
 }
 
 fn require_storefront_scope(

@@ -13,7 +13,10 @@ use chaos_domain::{
     inventory::InventoryReservationId,
     merchant::StoreId,
     pricing::PriceListId,
-    sales::{CheckoutId, Order, OrderId, OrderStatus, ShopperId},
+    sales::{
+        CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderId, OrderStatus, PostalAddress,
+        ShopperId,
+    },
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -58,6 +61,17 @@ type LineRow = (
     i64,
     i64,
     bool,
+);
+type AddressRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
 );
 
 #[derive(Clone)]
@@ -249,6 +263,7 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -291,6 +306,7 @@ async fn load_order(
         price_list_id: PriceListId::from_uuid(row.4),
         currency: CurrencyCode::parse(&row.5)?,
         status: OrderStatus::parse(&row.6).ok_or_else(corrupt_state)?,
+        identity,
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
@@ -337,6 +353,54 @@ async fn load_order(
         created_at: row.11,
         updated_at: row.12,
     }))
+}
+
+async fn load_order_identity(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    order_id: OrderId,
+) -> Result<CheckoutIdentity, ApplicationError> {
+    let contact = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT email::text, phone FROM sales.order_contacts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_state)?;
+    let addresses = sqlx::query_as::<_, AddressRow>(
+        "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
+                administrative_area, postal_code, country_code::text \
+         FROM sales.order_addresses \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY kind",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let contact = CheckoutContact::new(contact.0, contact.1)?;
+    let mut billing = None;
+    let mut shipping = None;
+    for row in addresses {
+        let kind = row.0.clone();
+        let address = PostalAddress::new(row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8)?;
+        match kind.as_str() {
+            "billing" if billing.is_none() => billing = Some(address),
+            "shipping" if shipping.is_none() => shipping = Some(address),
+            _ => return Err(corrupt_state()),
+        }
+    }
+    Ok(CheckoutIdentity::new(
+        contact,
+        billing.ok_or_else(corrupt_state)?,
+        shipping,
+    ))
 }
 
 fn order_not_found(order_id: OrderId) -> ApplicationError {

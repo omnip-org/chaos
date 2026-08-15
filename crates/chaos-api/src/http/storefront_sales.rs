@@ -11,8 +11,8 @@ use chaos_application::{
         OrderDetail, OrderLineItem,
     },
     sales::{
-        CreateCartInput, CreateCheckoutInput, CreateOrderInput, RemoveCartLineInput,
-        SetCartLineInput,
+        CheckoutContactInput, CreateCartInput, CreateCheckoutInput, CreateOrderInput,
+        PostalAddressInput, RemoveCartLineInput, SetCartLineInput,
     },
 };
 use chaos_domain::{
@@ -55,6 +55,34 @@ struct CreateCartBody {
 #[serde(deny_unknown_fields)]
 struct SetCartLineBody {
     quantity: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CheckoutContactBody {
+    email: String,
+    phone: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PostalAddressBody {
+    full_name: String,
+    company: Option<String>,
+    address_line1: String,
+    address_line2: Option<String>,
+    locality: String,
+    administrative_area: Option<String>,
+    postal_code: Option<String>,
+    country_code: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateCheckoutBody {
+    contact: CheckoutContactBody,
+    billing_address: PostalAddressBody,
+    shipping_address: Option<PostalAddressBody>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +169,10 @@ struct CheckoutData {
     price_list_id: Uuid,
     currency: String,
     status: String,
+    contact: CheckoutContactData,
+    billing_address: PostalAddressData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_address: Option<PostalAddressData>,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -188,6 +220,10 @@ pub(super) struct OrderData {
     price_list_id: Uuid,
     currency: String,
     status: &'static str,
+    contact: CheckoutContactData,
+    billing_address: PostalAddressData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_address: Option<PostalAddressData>,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -196,6 +232,29 @@ pub(super) struct OrderData {
     transitions: Vec<OrderTransitionData>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct CheckoutContactData {
+    email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phone: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PostalAddressData {
+    full_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    company: Option<String>,
+    address_line1: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address_line2: Option<String>,
+    locality: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    administrative_area: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postal_code: Option<String>,
+    country_code: String,
 }
 
 async fn create_shopper_session(
@@ -296,13 +355,17 @@ async fn create_checkout(
     headers: HeaderMap,
     CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<CartPath>,
+    ApiJson(body): ApiJson<CreateCheckoutBody>,
 ) -> Result<ApiResponse<CheckoutData>, ApiError> {
-    let idempotency = body_request(&headers, "create_checkout", &path.cart_id)?;
+    let idempotency = body_request(&headers, "create_checkout", &(path.cart_id, &body))?;
     let checkout = state
         .storefront_sales
         .create_checkout(CreateCheckoutInput {
             actor,
             cart_id: CartId::from_uuid(path.cart_id),
+            contact: contact_input(body.contact),
+            billing_address: address_input(body.billing_address),
+            shipping_address: body.shipping_address.map(address_input),
             now: state.clock.now(),
             idempotency,
         })
@@ -351,6 +414,46 @@ async fn get_order(
         .get_order(&actor, OrderId::from_uuid(path.order_id))
         .await?;
     Ok(ApiResponse::ok(order_data(order)?))
+}
+
+fn contact_input(value: CheckoutContactBody) -> CheckoutContactInput {
+    CheckoutContactInput {
+        email: value.email,
+        phone: value.phone,
+    }
+}
+
+fn address_input(value: PostalAddressBody) -> PostalAddressInput {
+    PostalAddressInput {
+        full_name: value.full_name,
+        company: value.company,
+        address_line1: value.address_line1,
+        address_line2: value.address_line2,
+        locality: value.locality,
+        administrative_area: value.administrative_area,
+        postal_code: value.postal_code,
+        country_code: value.country_code,
+    }
+}
+
+fn contact_data(value: &chaos_domain::sales::CheckoutContact) -> CheckoutContactData {
+    CheckoutContactData {
+        email: value.email().into(),
+        phone: value.phone().map(str::to_owned),
+    }
+}
+
+fn address_data(value: &chaos_domain::sales::PostalAddress) -> PostalAddressData {
+    PostalAddressData {
+        full_name: value.full_name().into(),
+        company: value.company().map(str::to_owned),
+        address_line1: value.address_line1().into(),
+        address_line2: value.address_line2().map(str::to_owned),
+        locality: value.locality().into(),
+        administrative_area: value.administrative_area().map(str::to_owned),
+        postal_code: value.postal_code().map(str::to_owned),
+        country_code: value.country_code().into(),
+    }
 }
 
 fn body_request<T: Serialize>(
@@ -410,6 +513,9 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
         price_list_id: checkout.price_list_id.as_uuid(),
         currency: checkout.currency.as_str().to_owned(),
         status: checkout.status,
+        contact: contact_data(checkout.identity.contact()),
+        billing_address: address_data(checkout.identity.billing_address()),
+        shipping_address: checkout.identity.shipping_address().map(address_data),
         subtotal_amount_minor: checkout.subtotal_amount_minor,
         discount_amount_minor: checkout.discount_amount_minor,
         tax_amount_minor: checkout.tax_amount_minor,
@@ -446,6 +552,9 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
         status: order.status.as_str(),
+        contact: contact_data(order.identity.contact()),
+        billing_address: address_data(order.identity.billing_address()),
+        shipping_address: order.identity.shipping_address().map(address_data),
         subtotal_amount_minor: order.subtotal_amount_minor,
         discount_amount_minor: order.discount_amount_minor,
         tax_amount_minor: order.tax_amount_minor,
@@ -996,6 +1105,59 @@ mod tests {
         assert_eq!(updated["data"]["subtotal_amount_minor"], 2500);
 
         let checkout_uri = format!("/store/v1/carts/{cart_id}/checkout");
+        let address = json!({
+            "full_name": "Guest Buyer",
+            "address_line1": "1 Market Street",
+            "locality": "San Francisco",
+            "administrative_area": "CA",
+            "postal_code": "94105",
+            "country_code": "US"
+        });
+        let checkout_body = json!({
+            "contact": {
+                "email": " Guest@Example.COM ",
+                "phone": "+14155552671"
+            },
+            "billing_address": address.clone(),
+            "shipping_address": address.clone()
+        });
+        let invalid_contact = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout-invalid-contact"),
+                    Some(json!({
+                        "contact": {"email": "invalid"},
+                        "billing_address": address.clone(),
+                        "shipping_address": address.clone()
+                    })),
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_contact.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let missing_shipping = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout-missing-shipping"),
+                    Some(json!({
+                        "contact": {"email": "guest@example.com"},
+                        "billing_address": address.clone()
+                    })),
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_shipping.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let checkout = app
             .clone()
             .oneshot(with_shopper_token(
@@ -1004,7 +1166,7 @@ mod tests {
                     &checkout_uri,
                     Some(full_secret),
                     Some("checkout"),
-                    None,
+                    Some(checkout_body.clone()),
                 ),
                 shopper_token,
             ))
@@ -1019,6 +1181,8 @@ mod tests {
             "Sales Product"
         );
         assert!(checkout["data"]["inventory_reservation_id"].is_string());
+        assert_eq!(checkout["data"]["contact"]["email"], "guest@example.com");
+        assert_eq!(checkout["data"]["shipping_address"]["country_code"], "US");
 
         let replay = app
             .clone()
@@ -1028,7 +1192,7 @@ mod tests {
                     &checkout_uri,
                     Some(full_secret),
                     Some("checkout"),
-                    None,
+                    Some(checkout_body.clone()),
                 ),
                 shopper_token,
             ))
@@ -1057,6 +1221,11 @@ mod tests {
         let order_id = order["data"]["id"].as_str().unwrap();
         assert_eq!(order["data"]["status"], "pending");
         assert_eq!(order["data"]["total_amount_minor"], 2500);
+        assert_eq!(order["data"]["contact"]["email"], "guest@example.com");
+        assert_eq!(
+            order["data"]["billing_address"]["address_line1"],
+            "1 Market Street"
+        );
         assert_eq!(order["data"]["transitions"][0]["kind"], "created");
         let order_replay = app
             .clone()
@@ -1074,6 +1243,55 @@ mod tests {
             .unwrap();
         assert_eq!(order_replay.status(), StatusCode::CREATED);
         assert_eq!(response_json(order_replay).await["data"]["id"], order_id);
+        let unrelated_order = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::GET,
+                    &format!("/store/v1/orders/{order_id}"),
+                    Some(full_secret),
+                    None,
+                    None,
+                ),
+                unrelated_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unrelated_order.status(), StatusCode::NOT_FOUND);
+
+        let mut snapshot_connection = runtime_pool.acquire().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, false)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *snapshot_connection)
+            .await
+            .unwrap();
+        assert!(
+            sqlx::query(
+                "UPDATE sales.order_contacts SET email = 'tampered@example.com' \
+                 WHERE order_id = $1",
+            )
+            .bind(Uuid::parse_str(order_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.order_addresses SET address_line1 = 'Tampered' \
+                 WHERE order_id = $1",
+            )
+            .bind(Uuid::parse_str(order_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM sales.orders WHERE id = $1")
+                .bind(Uuid::parse_str(order_id).unwrap())
+                .execute(&mut *snapshot_connection)
+                .await
+                .is_err()
+        );
 
         let terminal = app
             .clone()
@@ -1083,7 +1301,7 @@ mod tests {
                     &checkout_uri,
                     Some(full_secret),
                     Some("checkout-again"),
-                    None,
+                    Some(checkout_body),
                 ),
                 shopper_token,
             ))

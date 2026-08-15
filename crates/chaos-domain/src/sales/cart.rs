@@ -9,6 +9,8 @@ use crate::{
     pricing::{Money, PriceListId},
 };
 
+use super::CheckoutIdentity;
+
 macro_rules! sales_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -430,6 +432,7 @@ pub struct Checkout {
     price_list_id: PriceListId,
     currency: CurrencyCode,
     expires_at: OffsetDateTime,
+    identity: CheckoutIdentity,
     lines: Vec<CheckoutLine>,
     subtotal: Money,
     discount: Money,
@@ -442,6 +445,7 @@ impl Checkout {
         cart: &Cart,
         reservation_id: Option<InventoryReservationId>,
         expires_at: OffsetDateTime,
+        identity: CheckoutIdentity,
         adjustments: Vec<CommercialAdjustments>,
     ) -> Result<Self, DomainError> {
         if cart.status != CartStatus::Active {
@@ -454,6 +458,14 @@ impl Checkout {
             return Err(validation(
                 "adjustments",
                 "must contain one entry for every Cart line",
+            ));
+        }
+        if cart.lines.iter().any(CartLine::requires_shipping)
+            && identity.shipping_address().is_none()
+        {
+            return Err(validation(
+                "shipping_address",
+                "is required when the Cart contains shippable lines",
             ));
         }
         let lines = cart
@@ -473,6 +485,7 @@ impl Checkout {
             price_list_id: cart.price_list_id,
             currency: cart.currency,
             expires_at,
+            identity,
             lines,
             subtotal,
             discount,
@@ -503,6 +516,10 @@ impl Checkout {
 
     pub const fn expires_at(&self) -> OffsetDateTime {
         self.expires_at
+    }
+
+    pub const fn identity(&self) -> &CheckoutIdentity {
+        &self.identity
     }
 
     pub fn lines(&self) -> &[CheckoutLine] {
@@ -588,6 +605,25 @@ mod tests {
         )
     }
 
+    fn checkout_identity() -> CheckoutIdentity {
+        let address = super::super::PostalAddress::new(
+            "Guest Buyer",
+            None,
+            "1 Market Street",
+            None,
+            "San Francisco",
+            Some("CA".into()),
+            Some("94105".into()),
+            "US",
+        )
+        .unwrap();
+        CheckoutIdentity::new(
+            super::super::CheckoutContact::new("guest@example.com", None).unwrap(),
+            address.clone(),
+            Some(address),
+        )
+    }
+
     #[test]
     fn cart_upserts_variant_lines_and_totals_checked_money() {
         let variant_id = ProductVariantId::new();
@@ -623,6 +659,7 @@ mod tests {
             &cart,
             Some(InventoryReservationId::new()),
             OffsetDateTime::UNIX_EPOCH,
+            checkout_identity(),
             vec![adjustments],
         )
         .unwrap();
@@ -648,7 +685,42 @@ mod tests {
                 &cart,
                 Some(InventoryReservationId::new()),
                 OffsetDateTime::UNIX_EPOCH,
+                checkout_identity(),
                 vec![adjustment],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn checkout_requires_shipping_address_for_shippable_lines() {
+        let mut cart = cart();
+        cart.upsert_line(line(ProductVariantId::new(), 1, 100))
+            .unwrap();
+        let address = super::super::PostalAddress::new(
+            "Guest Buyer",
+            None,
+            "1 Market Street",
+            None,
+            "San Francisco",
+            Some("CA".into()),
+            Some("94105".into()),
+            "US",
+        )
+        .unwrap();
+        let identity = CheckoutIdentity::new(
+            super::super::CheckoutContact::new("guest@example.com", None).unwrap(),
+            address,
+            None,
+        );
+
+        assert!(
+            Checkout::freeze(
+                &cart,
+                Some(InventoryReservationId::new()),
+                OffsetDateTime::UNIX_EPOCH,
+                identity,
+                vec![CommercialAdjustments::zero(CurrencyCode::USD)],
             )
             .is_err()
         );

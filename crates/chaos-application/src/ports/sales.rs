@@ -4,7 +4,7 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     inventory::InventoryReservationId,
     pricing::PriceListId,
-    sales::{CartId, CartStatus, CheckoutId, OrderId, OrderStatus, ShopperId},
+    sales::{CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderId, OrderStatus, ShopperId},
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -64,6 +64,7 @@ pub struct CheckoutDetail {
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub status: String,
+    pub identity: CheckoutIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
@@ -107,6 +108,7 @@ pub struct OrderDetail {
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub status: OrderStatus,
+    pub identity: CheckoutIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
@@ -163,6 +165,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
         cart_id: CartId,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
+        identity: CheckoutIdentity,
         idempotency: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError>;
 

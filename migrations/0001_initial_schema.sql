@@ -87,6 +87,7 @@ CREATE TYPE inventory.stock_ledger_kind AS ENUM (
 );
 CREATE TYPE sales.cart_status AS ENUM ('active', 'completed', 'abandoned');
 CREATE TYPE sales.checkout_status AS ENUM ('pending', 'completed', 'expired');
+CREATE TYPE sales.address_kind AS ENUM ('billing', 'shipping');
 CREATE TYPE sales.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE sales.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
 CREATE TYPE payments.payment_attempt_status AS ENUM (
@@ -969,6 +970,66 @@ CREATE INDEX checkouts_expiry_claim_idx
 COMMENT ON INDEX sales.checkouts_expiry_claim_idx IS
     'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
 
+CREATE TABLE sales.checkout_contacts (
+    merchant_account_id UUID              NOT NULL,
+    store_id            UUID              NOT NULL,
+    checkout_id         UUID              NOT NULL,
+    email               extensions.citext NOT NULL,
+    phone               TEXT,
+
+    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT checkout_contacts_email_length_check CHECK (
+        length(trim(email::text)) BETWEEN 3 AND 320
+    ),
+    CONSTRAINT checkout_contacts_phone_format_check CHECK (
+        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
+    )
+);
+
+CREATE TABLE sales.checkout_addresses (
+    merchant_account_id  UUID               NOT NULL,
+    store_id             UUID               NOT NULL,
+    checkout_id          UUID               NOT NULL,
+    kind                 sales.address_kind NOT NULL,
+    full_name            TEXT               NOT NULL,
+    company              TEXT,
+    address_line1        TEXT               NOT NULL,
+    address_line2        TEXT,
+    locality             TEXT               NOT NULL,
+    administrative_area TEXT,
+    postal_code          TEXT,
+    country_code         CHAR(2)            NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, checkout_id, kind),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT checkout_addresses_full_name_length_check CHECK (
+        length(trim(full_name)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT checkout_addresses_company_length_check CHECK (
+        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT checkout_addresses_line1_length_check CHECK (
+        length(trim(address_line1)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT checkout_addresses_line2_length_check CHECK (
+        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT checkout_addresses_locality_length_check CHECK (
+        length(trim(locality)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT checkout_addresses_area_length_check CHECK (
+        administrative_area IS NULL
+        OR length(trim(administrative_area)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT checkout_addresses_postal_code_length_check CHECK (
+        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
+    ),
+    CONSTRAINT checkout_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
+);
+
 CREATE TABLE sales.checkout_lines (
     merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
@@ -1062,6 +1123,66 @@ CREATE INDEX orders_channel_created_idx
         created_at DESC,
         id DESC
     );
+
+CREATE TABLE sales.order_contacts (
+    merchant_account_id UUID              NOT NULL,
+    store_id            UUID              NOT NULL,
+    order_id            UUID              NOT NULL,
+    email               extensions.citext NOT NULL,
+    phone               TEXT,
+
+    PRIMARY KEY (merchant_account_id, store_id, order_id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT order_contacts_email_length_check CHECK (
+        length(trim(email::text)) BETWEEN 3 AND 320
+    ),
+    CONSTRAINT order_contacts_phone_format_check CHECK (
+        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
+    )
+);
+
+CREATE TABLE sales.order_addresses (
+    merchant_account_id  UUID               NOT NULL,
+    store_id             UUID               NOT NULL,
+    order_id             UUID               NOT NULL,
+    kind                 sales.address_kind NOT NULL,
+    full_name            TEXT               NOT NULL,
+    company              TEXT,
+    address_line1        TEXT               NOT NULL,
+    address_line2        TEXT,
+    locality             TEXT               NOT NULL,
+    administrative_area TEXT,
+    postal_code          TEXT,
+    country_code         CHAR(2)            NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, order_id, kind),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT order_addresses_full_name_length_check CHECK (
+        length(trim(full_name)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT order_addresses_company_length_check CHECK (
+        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT order_addresses_line1_length_check CHECK (
+        length(trim(address_line1)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT order_addresses_line2_length_check CHECK (
+        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT order_addresses_locality_length_check CHECK (
+        length(trim(locality)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT order_addresses_area_length_check CHECK (
+        administrative_area IS NULL
+        OR length(trim(administrative_area)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT order_addresses_postal_code_length_check CHECK (
+        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
+    ),
+    CONSTRAINT order_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
+);
 
 CREATE TABLE sales.order_lines (
     merchant_account_id      UUID        NOT NULL,
@@ -1698,8 +1819,12 @@ ALTER TABLE inventory.stock_ledger_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.checkout_contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.checkout_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.provider_accounts ENABLE ROW LEVEL SECURITY;
@@ -1987,6 +2112,26 @@ CREATE POLICY merchant_account_isolation ON sales.checkouts
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON sales.checkout_contacts
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.checkout_addresses
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON sales.checkout_lines
     USING (
         merchant_account_id =
@@ -1998,6 +2143,26 @@ CREATE POLICY merchant_account_isolation ON sales.checkout_lines
     );
 
 CREATE POLICY merchant_account_isolation ON sales.orders
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.order_contacts
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.order_addresses
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -2529,9 +2694,11 @@ GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO c
 REVOKE UPDATE, DELETE
     ON inventory.stock_ledger_entries FROM chaos_runtime;
 REVOKE UPDATE, DELETE
-    ON sales.checkout_lines FROM chaos_runtime;
+    ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines FROM chaos_runtime;
 REVOKE UPDATE, DELETE
-    ON sales.order_lines, sales.order_transitions FROM chaos_runtime;
+    ON sales.order_contacts, sales.order_addresses, sales.order_lines, sales.order_transitions
+    FROM chaos_runtime;
+REVOKE DELETE ON sales.checkouts, sales.orders FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON integration.webhook_inbox, integration.outbox_events FROM chaos_runtime;
 GRANT USAGE, SELECT

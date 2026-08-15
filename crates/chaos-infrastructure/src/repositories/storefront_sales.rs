@@ -14,8 +14,9 @@ use chaos_domain::{
     merchant::{SalesChannelId, StoreId},
     pricing::{Money, PriceListId},
     sales::{
-        Cart, CartId, CartLine, CartStatus, Checkout, CheckoutId, CommercialAdjustments, Order,
-        OrderId, OrderStatus, ShopperId,
+        Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
+        CheckoutIdentity, CommercialAdjustments, Order, OrderId, OrderStatus, PostalAddress,
+        ShopperId,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,17 @@ type OrderLineRow = (
     i64,
     i64,
     bool,
+);
+type AddressRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
 );
 
 #[derive(Clone)]
@@ -348,6 +360,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         cart_id: CartId,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
+        identity: CheckoutIdentity,
         request: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -415,6 +428,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             &cart,
             reservation_id,
             expires_at,
+            identity,
             cart.lines()
                 .iter()
                 .map(|_| CommercialAdjustments::zero(currency))
@@ -553,6 +567,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        copy_checkout_identity_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
              (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
@@ -1203,6 +1218,7 @@ async fn insert_checkout(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    insert_checkout_identity(transaction, actor, checkout).await?;
     for (position, line) in checkout.lines().iter().enumerate() {
         let cart_line = line.cart_line();
         sqlx::query(
@@ -1239,6 +1255,202 @@ async fn insert_checkout(
     Ok(())
 }
 
+async fn insert_checkout_identity(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout: &Checkout,
+) -> Result<(), ApplicationError> {
+    let identity = checkout.identity();
+    sqlx::query(
+        "INSERT INTO sales.checkout_contacts \
+         (merchant_account_id, store_id, checkout_id, email, phone) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout.id().as_uuid())
+    .bind(identity.contact().email())
+    .bind(identity.contact().phone())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    insert_checkout_address(
+        transaction,
+        actor,
+        checkout.id(),
+        "billing",
+        identity.billing_address(),
+    )
+    .await?;
+    if let Some(address) = identity.shipping_address() {
+        insert_checkout_address(transaction, actor, checkout.id(), "shipping", address).await?;
+    }
+    Ok(())
+}
+
+async fn insert_checkout_address(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    kind: &'static str,
+    address: &PostalAddress,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO sales.checkout_addresses \
+         (merchant_account_id, store_id, checkout_id, kind, full_name, company, address_line1, \
+          address_line2, locality, administrative_area, postal_code, country_code) \
+         VALUES ($1, $2, $3, $4::sales.address_kind, $5, $6, $7, $8, $9, $10, $11, $12)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(kind)
+    .bind(address.full_name())
+    .bind(address.company())
+    .bind(address.address_line1())
+    .bind(address.address_line2())
+    .bind(address.locality())
+    .bind(address.administrative_area())
+    .bind(address.postal_code())
+    .bind(address.country_code())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn copy_checkout_identity_to_order(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    order_id: OrderId,
+) -> Result<(), ApplicationError> {
+    let contact = sqlx::query(
+        "INSERT INTO sales.order_contacts \
+         (merchant_account_id, store_id, order_id, email, phone) \
+         SELECT merchant_account_id, store_id, $4, email, phone \
+         FROM sales.checkout_contacts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let addresses = sqlx::query(
+        "INSERT INTO sales.order_addresses \
+         (merchant_account_id, store_id, order_id, kind, full_name, company, address_line1, \
+          address_line2, locality, administrative_area, postal_code, country_code) \
+         SELECT merchant_account_id, store_id, $4, kind, full_name, company, address_line1, \
+                address_line2, locality, administrative_area, postal_code, country_code \
+         FROM sales.checkout_addresses \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if contact.rows_affected() != 1 || addresses.rows_affected() == 0 {
+        return Err(corrupt_sales_state());
+    }
+    Ok(())
+}
+
+async fn load_checkout_identity(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+) -> Result<CheckoutIdentity, ApplicationError> {
+    let contact = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT email::text, phone FROM sales.checkout_contacts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_sales_state)?;
+    let addresses = sqlx::query_as::<_, AddressRow>(
+        "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
+                administrative_area, postal_code, country_code::text \
+         FROM sales.checkout_addresses \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3 ORDER BY kind",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    build_identity(contact, addresses)
+}
+
+async fn load_order_identity(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+) -> Result<CheckoutIdentity, ApplicationError> {
+    let contact = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT email::text, phone FROM sales.order_contacts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(corrupt_sales_state)?;
+    let addresses = sqlx::query_as::<_, AddressRow>(
+        "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
+                administrative_area, postal_code, country_code::text \
+         FROM sales.order_addresses \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY kind",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    build_identity(contact, addresses)
+}
+
+fn build_identity(
+    contact: (String, Option<String>),
+    addresses: Vec<AddressRow>,
+) -> Result<CheckoutIdentity, ApplicationError> {
+    let contact = CheckoutContact::new(contact.0, contact.1)?;
+    let mut billing = None;
+    let mut shipping = None;
+    for address in addresses {
+        let kind = address.0.clone();
+        let address = postal_address_from_row(address)?;
+        match kind.as_str() {
+            "billing" if billing.is_none() => billing = Some(address),
+            "shipping" if shipping.is_none() => shipping = Some(address),
+            _ => return Err(corrupt_sales_state()),
+        }
+    }
+    Ok(CheckoutIdentity::new(
+        contact,
+        billing.ok_or_else(corrupt_sales_state)?,
+        shipping,
+    ))
+}
+
+fn postal_address_from_row(row: AddressRow) -> Result<PostalAddress, ApplicationError> {
+    PostalAddress::new(row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8)
+        .map_err(ApplicationError::from)
+}
+
 async fn load_checkout(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1260,6 +1472,7 @@ async fn load_checkout(
     let Some(row) = row else {
         return Ok(None);
     };
+    let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
     let lines = sqlx::query_as::<_, CheckoutLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, quantity, unit_price_amount_minor, subtotal_amount_minor, \
@@ -1281,6 +1494,7 @@ async fn load_checkout(
         price_list_id: PriceListId::from_uuid(row.4),
         currency: parse_currency(&row.5)?,
         status: row.6,
+        identity,
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
@@ -1333,6 +1547,7 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let identity = load_order_identity(transaction, actor, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -1375,6 +1590,7 @@ async fn load_order(
         price_list_id: PriceListId::from_uuid(row.4),
         currency: parse_currency(&row.5)?,
         status: OrderStatus::parse(&row.6).ok_or_else(corrupt_sales_state)?,
+        identity,
         subtotal_amount_minor: row.7,
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
@@ -1463,6 +1679,7 @@ struct CheckoutSnapshot {
     price_list_id: Uuid,
     currency: String,
     status: String,
+    identity: CheckoutIdentitySnapshot,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -1498,6 +1715,7 @@ struct OrderSnapshot {
     price_list_id: Uuid,
     currency: String,
     status: String,
+    identity: CheckoutIdentitySnapshot,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
@@ -1534,6 +1752,31 @@ struct OrderTransitionSnapshot {
     kind: String,
     actor_user_id: Option<Uuid>,
     occurred_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CheckoutIdentitySnapshot {
+    contact: CheckoutContactSnapshot,
+    billing_address: PostalAddressSnapshot,
+    shipping_address: Option<PostalAddressSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CheckoutContactSnapshot {
+    email: String,
+    phone: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PostalAddressSnapshot {
+    full_name: String,
+    company: Option<String>,
+    address_line1: String,
+    address_line2: Option<String>,
+    locality: String,
+    administrative_area: Option<String>,
+    postal_code: Option<String>,
+    country_code: String,
 }
 
 fn cart_snapshot(detail: &CartDetail) -> Result<Value, ApplicationError> {
@@ -1579,6 +1822,7 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
         status: detail.status.clone(),
+        identity: CheckoutIdentitySnapshot::from(&detail.identity),
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
@@ -1606,6 +1850,7 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
         status: snapshot.status,
+        identity: snapshot.identity.try_into()?,
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
@@ -1631,6 +1876,7 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
         status: detail.status.as_str().into(),
+        identity: CheckoutIdentitySnapshot::from(&detail.identity),
         subtotal_amount_minor: detail.subtotal_amount_minor,
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
@@ -1668,6 +1914,7 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
         status: OrderStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
+        identity: snapshot.identity.try_into()?,
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
@@ -1700,6 +1947,64 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         created_at: parse_time(&snapshot.created_at)?,
         updated_at: parse_time(&snapshot.updated_at)?,
     })
+}
+
+impl From<&CheckoutIdentity> for CheckoutIdentitySnapshot {
+    fn from(value: &CheckoutIdentity) -> Self {
+        Self {
+            contact: CheckoutContactSnapshot {
+                email: value.contact().email().into(),
+                phone: value.contact().phone().map(str::to_owned),
+            },
+            billing_address: PostalAddressSnapshot::from(value.billing_address()),
+            shipping_address: value.shipping_address().map(PostalAddressSnapshot::from),
+        }
+    }
+}
+
+impl TryFrom<CheckoutIdentitySnapshot> for CheckoutIdentity {
+    type Error = ApplicationError;
+
+    fn try_from(value: CheckoutIdentitySnapshot) -> Result<Self, Self::Error> {
+        Ok(Self::new(
+            CheckoutContact::new(value.contact.email, value.contact.phone)?,
+            value.billing_address.try_into()?,
+            value.shipping_address.map(TryInto::try_into).transpose()?,
+        ))
+    }
+}
+
+impl From<&PostalAddress> for PostalAddressSnapshot {
+    fn from(value: &PostalAddress) -> Self {
+        Self {
+            full_name: value.full_name().into(),
+            company: value.company().map(str::to_owned),
+            address_line1: value.address_line1().into(),
+            address_line2: value.address_line2().map(str::to_owned),
+            locality: value.locality().into(),
+            administrative_area: value.administrative_area().map(str::to_owned),
+            postal_code: value.postal_code().map(str::to_owned),
+            country_code: value.country_code().into(),
+        }
+    }
+}
+
+impl TryFrom<PostalAddressSnapshot> for PostalAddress {
+    type Error = ApplicationError;
+
+    fn try_from(value: PostalAddressSnapshot) -> Result<Self, Self::Error> {
+        PostalAddress::new(
+            value.full_name,
+            value.company,
+            value.address_line1,
+            value.address_line2,
+            value.locality,
+            value.administrative_area,
+            value.postal_code,
+            value.country_code,
+        )
+        .map_err(ApplicationError::from)
+    }
 }
 
 impl From<&OrderLineItem> for OrderLineSnapshot {
@@ -2048,7 +2353,10 @@ mod tests {
 
     use chaos_application::{
         ports::{CheckoutExpiryQueue, IdempotencyRequest},
-        sales::{CreateCartInput, CreateCheckoutInput, SetCartLineInput, StorefrontSales},
+        sales::{
+            CheckoutContactInput, CreateCartInput, CreateCheckoutInput, PostalAddressInput,
+            SetCartLineInput, StorefrontSales,
+        },
     };
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
@@ -2068,6 +2376,26 @@ mod tests {
         IdempotencyRequest {
             key: key.into(),
             request_fingerprint: [fingerprint; 32],
+        }
+    }
+
+    fn contact_input() -> CheckoutContactInput {
+        CheckoutContactInput {
+            email: "guest@example.com".into(),
+            phone: Some("+14155552671".into()),
+        }
+    }
+
+    fn address_input() -> PostalAddressInput {
+        PostalAddressInput {
+            full_name: "Guest Buyer".into(),
+            company: None,
+            address_line1: "1 Market Street".into(),
+            address_line2: None,
+            locality: "San Francisco".into(),
+            administrative_area: Some("CA".into()),
+            postal_code: Some("94105".into()),
+            country_code: "US".into(),
         }
     }
 
@@ -2309,6 +2637,9 @@ mod tests {
                 .create_checkout(CreateCheckoutInput {
                     actor: first_actor,
                     cart_id: cart.id,
+                    contact: contact_input(),
+                    billing_address: address_input(),
+                    shipping_address: Some(address_input()),
                     now,
                     idempotency: request(first_key, 3),
                 })
@@ -2322,6 +2653,9 @@ mod tests {
                 .create_checkout(CreateCheckoutInput {
                     actor: second_actor,
                     cart_id: cart.id,
+                    contact: contact_input(),
+                    billing_address: address_input(),
+                    shipping_address: Some(address_input()),
                     now,
                     idempotency: request(second_key, 3),
                 })
@@ -2333,6 +2667,11 @@ mod tests {
         assert_eq!(first.total_amount_minor, 3_750);
         assert_eq!(first.lines[0].product_title, "Checkout Product");
         assert!(first.inventory_reservation_id.is_some());
+        assert_eq!(first.identity.contact().email(), "guest@example.com");
+        assert_eq!(
+            first.identity.shipping_address().unwrap().country_code(),
+            "US"
+        );
 
         let stock: (i64, i64) = sqlx::query_as(
             "SELECT on_hand_quantity, reserved_quantity \
@@ -2367,6 +2706,9 @@ mod tests {
                 .create_checkout(CreateCheckoutInput {
                     actor,
                     cart_id: cart.id,
+                    contact: contact_input(),
+                    billing_address: address_input(),
+                    shipping_address: Some(address_input()),
                     now,
                     idempotency: request(format!("second-checkout-{suffix}"), 4),
                 })
@@ -2389,6 +2731,33 @@ mod tests {
             .execute(&mut *runtime_connection)
             .await
             .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.checkout_contacts SET email = 'tampered@example.com' \
+                 WHERE checkout_id = $1",
+            )
+            .bind(first.id.as_uuid())
+            .execute(&mut *runtime_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.checkout_addresses SET address_line1 = 'Tampered' \
+                 WHERE checkout_id = $1",
+            )
+            .bind(first.id.as_uuid())
+            .execute(&mut *runtime_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query("DELETE FROM sales.checkouts WHERE id = $1")
+                .bind(first.id.as_uuid())
+                .execute(&mut *runtime_connection)
+                .await
+                .is_err()
         );
 
         let reservation_id = first.inventory_reservation_id.unwrap();

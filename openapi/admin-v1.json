@@ -1964,10 +1964,34 @@
           "occurred_at": { "type": "string", "format": "date-time" }
         }
       },
+      "CheckoutContact": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["email"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "phone": { "type": "string", "pattern": "^\\+[1-9][0-9]{7,14}$" }
+        }
+      },
+      "PostalAddress": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["full_name", "address_line1", "locality", "country_code"],
+        "properties": {
+          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
+          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" }
+        }
+      },
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
@@ -1975,6 +1999,9 @@
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
           "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
+          "contact": { "$ref": "#/components/schemas/CheckoutContact" },
+          "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
+          "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
           "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
