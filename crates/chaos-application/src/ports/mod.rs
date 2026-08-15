@@ -23,11 +23,12 @@ mod storefront_catalog;
 mod tax;
 
 pub use analytics::{
-    AnalyticsCollectionRateLimiter, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
-    AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventRepository,
-    AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
-    AnalyticsRateLimitDecision, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
-    AnalyticsSessionizationQueue, ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
+    AnalyticsCollectionRateLimiter, AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue,
+    AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
+    AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
+    AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRateLimitDecision,
+    AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
+    ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
 };
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,

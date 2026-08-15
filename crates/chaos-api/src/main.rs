@@ -90,6 +90,15 @@ async fn analytics_worker_loop(
         if let Err(error) = workers.run_sessionization_batch(worker_id, now, 100).await {
             tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
         }
+        match workers.run_commerce_fact_batch(worker_id, now, 100).await {
+            Ok(processed) => {
+                ::metrics::counter!("chaos_analytics_commerce_fact_jobs_claimed_total")
+                    .increment(processed as u64);
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics commerce fact batch failed");
+            }
+        }
         if now >= next_retention_at {
             match workers.run_retention_batch(now, 1000).await {
                 Ok(result) => {

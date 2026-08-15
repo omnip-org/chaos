@@ -4427,6 +4427,117 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(linked_refund_count, 1);
+        let pending_commerce_facts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM integration.outbox_events AS event \
+             INNER JOIN integration.event_consumer_registry AS registry \
+               ON registry.event_type = event.event_type \
+             WHERE registry.consumer_owner = 'analytics.commerce_fact_ingestor' \
+               AND event.status = 'pending'",
+        )
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_commerce_facts, 6);
+        assert_eq!(
+            analytics_workers
+                .run_commerce_fact_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::seconds(2),
+                    10,
+                )
+                .await
+                .unwrap(),
+            6
+        );
+        let commerce_facts: Vec<(String, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT fact_name::text, amount_minor, currency::text \
+             FROM analytics.commerce_facts WHERE merchant_account_id = $1 AND store_id = $2 \
+             ORDER BY fact_name",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_all(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(commerce_facts.len(), 6);
+        for fact_name in [
+            "order_created",
+            "payment_captured",
+            "refund_succeeded",
+            "fulfillment_shipped",
+            "return_completed",
+        ] {
+            assert!(commerce_facts.iter().any(|fact| fact.0 == fact_name));
+        }
+        assert!(
+            commerce_facts
+                .iter()
+                .filter(|fact| fact.1.is_some())
+                .all(|fact| fact.1.unwrap() >= 0 && fact.2.as_deref() == Some("USD"))
+        );
+        let replay_fact_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM analytics.commerce_facts WHERE merchant_account_id = $1 \
+             AND store_id = $2 AND fact_name = 'payment_captured'",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE integration.outbox_events SET status = 'processing', processed_at = NULL, \
+                    locked_by = $2, locked_at = $3 WHERE id = $1",
+        )
+        .bind(replay_fact_id)
+        .bind(Uuid::now_v7())
+        .bind(test_clock.now() - time::Duration::minutes(2))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            analytics_workers
+                .run_commerce_fact_batch(Uuid::now_v7(), test_clock.now(), 10)
+                .await
+                .unwrap(),
+            1
+        );
+        let commerce_fact_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.commerce_facts")
+                .fetch_one(&owner_pool)
+                .await
+                .unwrap();
+        assert_eq!(commerce_fact_count, 6);
+        let mut commerce_fact_rls = runtime_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *commerce_fact_rls)
+            .await
+            .unwrap();
+        let visible_commerce_facts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.commerce_facts")
+                .fetch_one(&mut *commerce_fact_rls)
+                .await
+                .unwrap();
+        assert_eq!(visible_commerce_facts, 6);
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(isolated_account_id.as_uuid().to_string())
+            .execute(&mut *commerce_fact_rls)
+            .await
+            .unwrap();
+        let cross_account_commerce_facts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.commerce_facts")
+                .fetch_one(&mut *commerce_fact_rls)
+                .await
+                .unwrap();
+        assert_eq!(cross_account_commerce_facts, 0);
+        commerce_fact_rls.rollback().await.unwrap();
+        assert!(
+            sqlx::query("UPDATE analytics.commerce_facts SET amount_minor = 1 WHERE id = $1")
+                .bind(replay_fact_id)
+                .execute(&runtime_pool)
+                .await
+                .is_err()
+        );
         let registered_owners: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT event_type, consumer_owner FROM integration.event_consumer_registry \
              ORDER BY event_type",
@@ -4434,7 +4545,7 @@ mod tests {
         .fetch_all(&runtime_pool)
         .await
         .unwrap();
-        assert_eq!(registered_owners.len(), 7);
+        assert_eq!(registered_owners.len(), 12);
         assert!(registered_owners.contains(&(
             "payment.create_requested".into(),
             Some("payments.provider_dispatch".into())
@@ -4453,6 +4564,18 @@ mod tests {
                 registered_owners
                     .contains(&(event_type.into(), Some("fulfillment.operations".into())))
             );
+        }
+        for event_type in [
+            "analytics.order.created",
+            "analytics.payment.captured",
+            "analytics.refund.succeeded",
+            "analytics.fulfillment.shipped",
+            "analytics.return.completed",
+        ] {
+            assert!(registered_owners.contains(&(
+                event_type.into(),
+                Some("analytics.commerce_fact_ingestor".into())
+            )));
         }
         assert!(
             sqlx::query(

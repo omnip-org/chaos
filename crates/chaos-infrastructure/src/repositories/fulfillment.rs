@@ -258,6 +258,21 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        if target_status == FulfillmentStatus::Shipped {
+            sqlx::query(
+                "INSERT INTO integration.outbox_events \
+                 (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+                 VALUES ($1, $2, $3, 'fulfillment', $4, 'analytics.fulfillment.shipped', $5)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(account_id)
+            .bind(store_id.as_uuid())
+            .bind(fulfillment_id.as_uuid())
+            .bind(serde_json::json!({ "fulfillment_id": fulfillment_id.as_uuid() }))
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         let detail = load_fulfillment(&mut transaction, account_id, store_id, fulfillment_id)
             .await?
             .ok_or_else(|| fulfillment_not_found(fulfillment_id))?;
@@ -1335,6 +1350,19 @@ async fn insert_return_outbox(
         "return_id": return_id.as_uuid(),
         "order_id": order_id.as_uuid(),
     }))
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO integration.outbox_events \
+         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         VALUES ($1, $2, $3, 'return', $4, 'analytics.return.completed', $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(return_id.as_uuid())
+    .bind(serde_json::json!({ "return_id": return_id.as_uuid() }))
     .execute(&mut **tx)
     .await
     .map_err(database_error)?;

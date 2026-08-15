@@ -12,10 +12,10 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsCollectionRateLimiter, AnalyticsErasureRequest, AnalyticsErasureSelector,
-        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
-        AnalyticsPrivacyRepository, AnalyticsSessionizationQueue, CustomerActor,
-        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
+        AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue, AnalyticsErasureRequest,
+        AnalyticsErasureSelector, AnalyticsEventRepository, AnalyticsIdentityLink,
+        AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsSessionizationQueue,
+        CustomerActor, IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
     },
 };
 
@@ -47,6 +47,7 @@ pub struct AnalyticsCollection {
 pub struct AnalyticsWorkers {
     sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
     privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
+    commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
 }
 
 pub struct LinkAnalyticsIdentityInput {
@@ -211,10 +212,12 @@ impl AnalyticsWorkers {
     pub fn new(
         sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
         privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
+        commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
     ) -> Self {
         Self {
             sessionization_queue,
             privacy_repository,
+            commerce_fact_queue,
         }
     }
 
@@ -259,6 +262,29 @@ impl AnalyticsWorkers {
         self.privacy_repository
             .process_erasure_requests(limit, now)
             .await
+    }
+
+    pub async fn run_commerce_fact_batch(
+        &self,
+        worker_id: uuid::Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .commerce_fact_queue
+            .claim_commerce_facts(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let result = self
+                .commerce_fact_queue
+                .ingest_commerce_fact(job, now)
+                .await
+                .map_err(|error| error.to_string());
+            self.commerce_fact_queue
+                .finish_commerce_fact(worker_id, job.id, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
     }
 }
 

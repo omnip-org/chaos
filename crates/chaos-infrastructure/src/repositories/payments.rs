@@ -1444,6 +1444,19 @@ async fn apply_payment_event(
             now,
         )
         .await?;
+        sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, $3, 'payment_attempt', $4, 'analytics.payment.captured', $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(account_id)
+        .bind(store_id.as_uuid())
+        .bind(attempt_id.as_uuid())
+        .bind(json!({ "payment_attempt_id": attempt_id.as_uuid() }))
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
     }
     Ok(())
 }
@@ -1592,6 +1605,21 @@ async fn apply_refund_event(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    if refund.status() == RefundStatus::Succeeded {
+        sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, $3, 'refund', $4, 'analytics.refund.succeeded', $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(account_id)
+        .bind(store_id.as_uuid())
+        .bind(refund_id.as_uuid())
+        .bind(json!({ "refund_id": refund_id.as_uuid() }))
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
     Ok(())
 }
 

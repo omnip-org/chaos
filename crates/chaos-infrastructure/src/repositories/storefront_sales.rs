@@ -752,6 +752,19 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, $3, 'order', $4, 'analytics.order.created', $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(order.id().as_uuid())
+        .bind(serde_json::json!({ "order_id": order.id().as_uuid() }))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
             "UPDATE sales.checkouts SET status = 'completed', closed_at = $5, updated_at = $5, \
                     expiry_locked_by = NULL, expiry_locked_at = NULL \
              WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \

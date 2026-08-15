@@ -102,13 +102,13 @@ A Store-owned connection to one external payment provider account. Its provider 
 - Product, Variant, publication, Price List, Inventory, Customer, saved address, Cart, Checkout, and Order capabilities.
 - Provider-neutral Payment Attempt and Refund state machines, Store-owned Provider administration, and a sandbox adapter.
 - Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
-- First-party behavior collection, active-engagement sessions, Store Analytics Policy, consent-aware identity links, retention, and data-subject erasure.
+- First-party behavior collection, active-engagement sessions, Store Analytics Policy, consent-aware identity links, retention, data-subject erasure, and typed trusted commerce facts.
 
 ### Next
 
 - Customer-specific pricing and segmentation; Store Promotions, deterministic discount allocation, shipping options, destination Tax Rules, and complete Checkout totals are implemented.
 - Stripe payment, Resend notification, and shipping provider adapters with Store-owned configuration.
-- Consent-aware attribution, trusted commerce analytics, isolated reporting read models, and conversion exports.
+- Consent-aware attribution, isolated reporting read models, and conversion exports.
 
 ### Reserved
 

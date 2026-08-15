@@ -102,6 +102,41 @@ pub struct AnalyticsSessionizationJob {
     pub attempts: u32,
 }
 
+pub struct AnalyticsCommerceFactJob {
+    pub id: Uuid,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub attempts: u32,
+    pub occurred_at: OffsetDateTime,
+}
+
+#[async_trait]
+pub trait AnalyticsCommerceFactQueue: Send + Sync {
+    async fn claim_commerce_facts(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsCommerceFactJob>, ApplicationError>;
+
+    async fn ingest_commerce_fact(
+        &self,
+        job: &AnalyticsCommerceFactJob,
+        ingested_at: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn finish_commerce_fact(
+        &self,
+        worker_id: Uuid,
+        job_id: Uuid,
+        result: Result<(), String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnalyticsRetentionPurgeResult {
     pub behavior_events_deleted: u64,

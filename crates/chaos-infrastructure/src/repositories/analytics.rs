@@ -3,11 +3,12 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
-        AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
-        AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRetentionPurgeResult,
-        AnalyticsSessionizationJob, AnalyticsSessionizationQueue, CustomerActor,
-        IdempotencyRequest, MachineActor, ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
+        AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsErasureBatchResult,
+        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
+        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
+        AnalyticsPrivacyRepository, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
+        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
+        ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
@@ -772,6 +773,242 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
     }
 }
 
+#[async_trait]
+impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
+    async fn claim_commerce_facts(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsCommerceFactJob>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32, OffsetDateTime)>(
+            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts, occurred_at \
+             FROM analytics.claim_commerce_fact_events($1,$2,$3,$4)",
+        )
+        .bind(worker_id)
+        .bind(i32::from(limit.clamp(1, 100)))
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AnalyticsCommerceFactJob {
+                    id: row.0,
+                    merchant_account_id: row.1,
+                    store_id: StoreId::from_uuid(row.2),
+                    event_type: row.3,
+                    payload: row.4,
+                    attempts: u32::try_from(row.5).map_err(conversion_error)?,
+                    occurred_at: row.6,
+                })
+            })
+            .collect()
+    }
+
+    async fn ingest_commerce_fact(
+        &self,
+        job: &AnalyticsCommerceFactJob,
+        ingested_at: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        let inserted = match job.event_type.as_str() {
+            "analytics.order.created" => {
+                let order_id = fact_payload_uuid(&job.payload, "order_id")?;
+                sqlx::query(
+                    "INSERT INTO analytics.commerce_facts \
+                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                      schema_version, order_id, customer_id, amount_minor, currency, \
+                      occurred_at, ingested_at) \
+                     SELECT $1, orders.merchant_account_id, orders.store_id, \
+                            orders.sales_channel_id, 'order_created', 1, orders.id, \
+                            orders.customer_id, orders.total_amount_minor, orders.currency, $5, $6 \
+                       FROM sales.orders AS orders \
+                      WHERE orders.merchant_account_id = $2 AND orders.store_id = $3 \
+                        AND orders.id = $4 ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(job.id)
+                .bind(job.merchant_account_id)
+                .bind(job.store_id.as_uuid())
+                .bind(order_id)
+                .bind(job.occurred_at)
+                .bind(ingested_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?
+            }
+            "analytics.payment.captured" => {
+                let attempt_id = fact_payload_uuid(&job.payload, "payment_attempt_id")?;
+                sqlx::query(
+                    "INSERT INTO analytics.commerce_facts \
+                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                      schema_version, order_id, customer_id, payment_attempt_id, amount_minor, \
+                      currency, occurred_at, ingested_at) \
+                     SELECT $1, attempt.merchant_account_id, attempt.store_id, \
+                            orders.sales_channel_id, 'payment_captured', 1, orders.id, \
+                            orders.customer_id, attempt.id, attempt.amount_minor, attempt.currency, $5, $6 \
+                       FROM payments.payment_attempts AS attempt \
+                       INNER JOIN sales.orders AS orders \
+                         ON orders.merchant_account_id = attempt.merchant_account_id \
+                        AND orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
+                      WHERE attempt.merchant_account_id = $2 AND attempt.store_id = $3 \
+                        AND attempt.id = $4 AND attempt.status = 'captured' \
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(job.id)
+                .bind(job.merchant_account_id)
+                .bind(job.store_id.as_uuid())
+                .bind(attempt_id)
+                .bind(job.occurred_at)
+                .bind(ingested_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?
+            }
+            "analytics.refund.succeeded" => {
+                let refund_id = fact_payload_uuid(&job.payload, "refund_id")?;
+                sqlx::query(
+                    "INSERT INTO analytics.commerce_facts \
+                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                      schema_version, order_id, customer_id, payment_attempt_id, refund_id, \
+                      amount_minor, currency, occurred_at, ingested_at) \
+                     SELECT $1, refund.merchant_account_id, refund.store_id, \
+                            orders.sales_channel_id, 'refund_succeeded', 1, orders.id, \
+                            orders.customer_id, attempt.id, refund.id, refund.amount_minor, \
+                            refund.currency, $5, $6 \
+                       FROM payments.refunds AS refund \
+                       INNER JOIN payments.payment_attempts AS attempt \
+                         ON attempt.merchant_account_id = refund.merchant_account_id \
+                        AND attempt.store_id = refund.store_id \
+                        AND attempt.id = refund.payment_attempt_id \
+                       INNER JOIN sales.orders AS orders \
+                         ON orders.merchant_account_id = attempt.merchant_account_id \
+                        AND orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
+                      WHERE refund.merchant_account_id = $2 AND refund.store_id = $3 \
+                        AND refund.id = $4 AND refund.status = 'succeeded' \
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(job.id)
+                .bind(job.merchant_account_id)
+                .bind(job.store_id.as_uuid())
+                .bind(refund_id)
+                .bind(job.occurred_at)
+                .bind(ingested_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?
+            }
+            "analytics.fulfillment.shipped" => {
+                let fulfillment_id = fact_payload_uuid(&job.payload, "fulfillment_id")?;
+                sqlx::query(
+                    "INSERT INTO analytics.commerce_facts \
+                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                      schema_version, order_id, customer_id, fulfillment_id, occurred_at, ingested_at) \
+                     SELECT $1, fulfillment.merchant_account_id, fulfillment.store_id, \
+                            orders.sales_channel_id, 'fulfillment_shipped', 1, orders.id, \
+                            orders.customer_id, fulfillment.id, $5, $6 \
+                       FROM fulfillment.fulfillments AS fulfillment \
+                       INNER JOIN sales.orders AS orders \
+                         ON orders.merchant_account_id = fulfillment.merchant_account_id \
+                        AND orders.store_id = fulfillment.store_id \
+                        AND orders.id = fulfillment.order_id \
+                      WHERE fulfillment.merchant_account_id = $2 AND fulfillment.store_id = $3 \
+                        AND fulfillment.id = $4 AND fulfillment.shipped_at IS NOT NULL \
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(job.id)
+                .bind(job.merchant_account_id)
+                .bind(job.store_id.as_uuid())
+                .bind(fulfillment_id)
+                .bind(job.occurred_at)
+                .bind(ingested_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?
+            }
+            "analytics.return.completed" => {
+                let return_id = fact_payload_uuid(&job.payload, "return_id")?;
+                sqlx::query(
+                    "INSERT INTO analytics.commerce_facts \
+                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                      schema_version, order_id, customer_id, return_id, occurred_at, ingested_at) \
+                     SELECT $1, returned.merchant_account_id, returned.store_id, \
+                            orders.sales_channel_id, 'return_completed', 1, orders.id, \
+                            orders.customer_id, returned.id, $5, $6 \
+                       FROM fulfillment.returns AS returned \
+                       INNER JOIN sales.orders AS orders \
+                         ON orders.merchant_account_id = returned.merchant_account_id \
+                        AND orders.store_id = returned.store_id AND orders.id = returned.order_id \
+                      WHERE returned.merchant_account_id = $2 AND returned.store_id = $3 \
+                        AND returned.id = $4 AND returned.status = 'completed' \
+                     ON CONFLICT (id) DO NOTHING",
+                )
+                .bind(job.id)
+                .bind(job.merchant_account_id)
+                .bind(job.store_id.as_uuid())
+                .bind(return_id)
+                .bind(job.occurred_at)
+                .bind(ingested_at)
+                .execute(&mut *transaction)
+                .await
+                .map_err(database_error)?
+            }
+            _ => return Err(corrupt_commerce_fact_event()),
+        };
+        if inserted.rows_affected() == 0 {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM analytics.commerce_facts \
+                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3)",
+            )
+            .bind(job.merchant_account_id)
+            .bind(job.store_id.as_uuid())
+            .bind(job.id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if !exists {
+                return Err(corrupt_commerce_fact_event());
+            }
+        }
+        transaction.commit().await.map_err(database_error)
+    }
+
+    async fn finish_commerce_fact(
+        &self,
+        worker_id: Uuid,
+        job_id: Uuid,
+        result: Result<(), String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let (succeeded, failure) = match result {
+            Ok(()) => (true, String::new()),
+            Err(error) => (false, bounded_error(error)),
+        };
+        let finished: Option<bool> =
+            sqlx::query_scalar("SELECT integration.finish_outbox_event($1,$2,$3,$4,$5,$6)")
+                .bind(job_id)
+                .bind(worker_id)
+                .bind(succeeded)
+                .bind(failure)
+                .bind(8_i32)
+                .bind(now)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(database_error)?;
+        if finished == Some(true) {
+            Ok(())
+        } else {
+            Err(ApplicationError::Conflict {
+                code: "analytics_commerce_fact_lease_lost",
+                message: "the Analytics commerce fact lease is no longer owned by this worker",
+            })
+        }
+    }
+}
+
 async fn apply_session_contribution(
     transaction: &mut Transaction<'_, Postgres>,
     job: &AnalyticsSessionizationJob,
@@ -1367,6 +1604,21 @@ fn invalid_identity_link_snapshot() -> ApplicationError {
 fn invalid_erasure_snapshot() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "completed Analytics Erasure Request record is invalid"
+    ))
+}
+
+fn fact_payload_uuid(payload: &Value, field: &'static str) -> Result<Uuid, ApplicationError> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|value| !value.is_nil())
+        .ok_or_else(corrupt_commerce_fact_event)
+}
+
+fn corrupt_commerce_fact_event() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "Analytics commerce fact event does not match authoritative commerce state"
     ))
 }
 

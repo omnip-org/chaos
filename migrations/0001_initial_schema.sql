@@ -147,6 +147,13 @@ CREATE TYPE analytics.browser_event_name AS ENUM (
     'engagement_heartbeat'
 );
 CREATE TYPE analytics.erasure_status AS ENUM ('pending', 'completed');
+CREATE TYPE analytics.commerce_fact_name AS ENUM (
+    'order_created',
+    'payment_captured',
+    'refund_succeeded',
+    'fulfillment_shipped',
+    'return_completed'
+);
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
     'shipped',
@@ -2920,7 +2927,17 @@ VALUES
     ('fulfillment.cancelled', 'fulfillment.operations',
      'Reconciles Order fulfillment and delivery state'),
     ('return.completed', 'fulfillment.operations',
-     'Coordinates the immutable Return refund');
+     'Coordinates the immutable Return refund'),
+    ('analytics.order.created', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Order creation fact'),
+    ('analytics.payment.captured', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Payment capture fact'),
+    ('analytics.refund.succeeded', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Refund success fact'),
+    ('analytics.fulfillment.shipped', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Fulfillment shipment fact'),
+    ('analytics.return.completed', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Return completion fact');
 
 CREATE TABLE integration.outbox_events (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -2958,6 +2975,72 @@ CREATE TABLE integration.outbox_events (
 CREATE INDEX outbox_events_claim_idx
     ON integration.outbox_events (status, available_at, created_at, id)
     WHERE status IN ('pending', 'processing');
+
+CREATE TABLE analytics.commerce_facts (
+    id                    UUID                          NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID                          NOT NULL,
+    store_id              UUID                          NOT NULL,
+    sales_channel_id      UUID                          NOT NULL,
+    fact_name             analytics.commerce_fact_name NOT NULL,
+    schema_version        SMALLINT                      NOT NULL,
+    order_id              UUID                          NOT NULL,
+    customer_id           UUID,
+    payment_attempt_id    UUID,
+    refund_id             UUID,
+    fulfillment_id        UUID,
+    return_id             UUID,
+    amount_minor          BIGINT,
+    currency              CHAR(3),
+    occurred_at           TIMESTAMPTZ                   NOT NULL,
+    ingested_at           TIMESTAMPTZ                   NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    FOREIGN KEY (id) REFERENCES integration.outbox_events(id),
+    CONSTRAINT commerce_facts_schema_version_check CHECK (schema_version = 1),
+    CONSTRAINT commerce_facts_currency_format_check CHECK (
+        currency IS NULL OR currency ~ '^[A-Z]{3}$'
+    ),
+    CONSTRAINT commerce_facts_amount_shape_check CHECK (
+        (amount_minor IS NULL AND currency IS NULL)
+        OR (amount_minor >= 0 AND currency IS NOT NULL)
+    ),
+    CONSTRAINT commerce_facts_reference_shape_check CHECK (
+        (fact_name = 'order_created'
+            AND payment_attempt_id IS NULL AND refund_id IS NULL
+            AND fulfillment_id IS NULL AND return_id IS NULL
+            AND amount_minor IS NOT NULL)
+        OR (fact_name = 'payment_captured'
+            AND payment_attempt_id IS NOT NULL AND refund_id IS NULL
+            AND fulfillment_id IS NULL AND return_id IS NULL
+            AND amount_minor IS NOT NULL)
+        OR (fact_name = 'refund_succeeded'
+            AND payment_attempt_id IS NOT NULL AND refund_id IS NOT NULL
+            AND fulfillment_id IS NULL AND return_id IS NULL
+            AND amount_minor IS NOT NULL)
+        OR (fact_name = 'fulfillment_shipped'
+            AND payment_attempt_id IS NULL AND refund_id IS NULL
+            AND fulfillment_id IS NOT NULL AND return_id IS NULL
+            AND amount_minor IS NULL)
+        OR (fact_name = 'return_completed'
+            AND payment_attempt_id IS NULL AND refund_id IS NULL
+            AND fulfillment_id IS NULL AND return_id IS NOT NULL
+            AND amount_minor IS NULL)
+    )
+);
+
+CREATE INDEX commerce_facts_store_time_idx
+    ON analytics.commerce_facts (
+        merchant_account_id, store_id, occurred_at DESC, id DESC
+    );
+
+CREATE INDEX commerce_facts_store_name_time_idx
+    ON analytics.commerce_facts (
+        merchant_account_id, store_id, fact_name, occurred_at DESC, id DESC
+    );
 
 CREATE TABLE sales.order_fulfillment_transitions (
     id                       UUID                           NOT NULL PRIMARY KEY,
@@ -3644,6 +3727,7 @@ ALTER TABLE analytics.identity_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_event_processing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.erasure_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.commerce_facts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -4369,6 +4453,16 @@ CREATE POLICY merchant_account_isolation ON analytics.erasure_requests
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON analytics.commerce_facts
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE FUNCTION payments.resolve_provider_account(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
@@ -4652,6 +4746,64 @@ AS $$
      WHERE event.id = claimable.id
     RETURNING event.id, event.merchant_account_id, event.store_id,
               event.event_type, event.payload, event.attempts;
+$$;
+
+CREATE FUNCTION analytics.claim_commerce_fact_events(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    event_type TEXT,
+    payload JSONB,
+    attempts INTEGER,
+    occurred_at TIMESTAMPTZ
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired AS (
+        UPDATE integration.outbox_events AS event
+           SET status = 'dead_letter',
+               locked_by = NULL,
+               locked_at = NULL,
+               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
+          FROM integration.event_consumer_registry AS registry
+         WHERE registry.event_type = event.event_type
+           AND registry.consumer_owner = 'analytics.commerce_fact_ingestor'
+           AND event.status = 'processing' AND event.locked_at <= stale_before
+           AND event.attempts >= 8
+        RETURNING event.id
+    ), claimable AS (
+        SELECT event.id
+          FROM integration.outbox_events AS event
+          INNER JOIN integration.event_consumer_registry AS registry
+            ON registry.event_type = event.event_type
+           AND registry.consumer_owner = 'analytics.commerce_fact_ingestor'
+         WHERE (
+                 (event.status = 'pending' AND event.available_at <= claimed_at)
+                 OR (event.status = 'processing' AND event.locked_at <= stale_before)
+               )
+           AND event.attempts < 8
+         ORDER BY event.available_at, event.created_at, event.id
+         FOR UPDATE OF event SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE integration.outbox_events AS event
+       SET status = 'processing',
+           attempts = event.attempts + 1,
+           locked_by = worker_id,
+           locked_at = claimed_at
+      FROM claimable
+     WHERE event.id = claimable.id
+    RETURNING event.id, event.merchant_account_id, event.store_id,
+              event.event_type, event.payload, event.attempts, event.created_at;
 $$;
 
 CREATE FUNCTION sales.claim_expired_checkouts(
@@ -5286,6 +5438,9 @@ REVOKE ALL ON FUNCTION integration.claim_outbox_events(
 REVOKE ALL ON FUNCTION integration.claim_fulfillment_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.claim_commerce_fact_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -5380,6 +5535,10 @@ GRANT EXECUTE ON FUNCTION integration.claim_fulfillment_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
     TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.claim_commerce_fact_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
@@ -5453,6 +5612,7 @@ REVOKE UPDATE, DELETE ON analytics.store_policy_versions FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.identity_links FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.behavior_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.erasure_requests FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
