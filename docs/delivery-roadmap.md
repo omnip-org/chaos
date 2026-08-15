@@ -28,9 +28,13 @@ Every phase requires:
 | 0 — Platform | Delivered | Rust workspace, Axum API, PostgreSQL 18, Redis 8, configuration, health endpoints, structured tracing, bounded Prometheus HTTP metrics, DDD crates, graceful shutdown, dual-instance Compose rollout, and a real-router PostgreSQL HTTP test harness | — |
 | 1 — Identity and Merchant | Delivered | Passwordless email and passkey authentication, opaque sessions, merchant accounts, memberships, Store provisioning/configuration/lifecycle, Sales Channel administration, RLS context, directory queries, API key lifecycle, Admin OpenAPI, and full HTTP behavior matrices | — |
 | 2 — Catalog and Pricing | Delivered | Product aggregate, Options, Variants, Sales Channels, transactional Product creation, Admin Product and Price List list/detail/update/lifecycle/publication with HTTP integration coverage, checked Money, multi-currency Variant prices, publishable Storefront Catalog list/detail queries, separate Admin and Store OpenAPI contracts, RLS, and all phase gates | — |
-| 3 — Selling | Delivered | Shared idempotency records; location-aware stock balances; append-only inventory ledger; concurrency-safe, expiring reservation lifecycle; mutable Storefront Carts bound to one Store, Channel, currency, and Price List; atomic Checkout with immutable commercial snapshots and tracked-inventory reservations; immutable Order snapshots; explicit pending-to-confirmed/cancelled state machine; append-only transition audit trail; atomic reservation consumption/release; Admin and Store API contracts; clean PostgreSQL 18 bootstrap; runtime-role isolation, oversell, concurrency, immutability, and complete HTTP behavior gates | — |
-| 4 — Payments | Delivered | Provider-neutral application port and sandbox adapter; currency-safe Payment Attempt and Refund state machines; immutable provider references; HMAC verification before tenant resolution; deduplicated durable webhook inbox; transactional outbox; multi-instance `SKIP LOCKED` workers; capped exponential retry and dead-letter handling; atomic capture-to-Order/inventory reconciliation; Store, Admin, and Webhook contracts; clean PostgreSQL 18 bootstrap; runtime-role isolation, cross-Store, concurrency, duplicate, out-of-order, and HTTP behavior gates | — |
-| 5 — Operations | Delivered | Partial Fulfillment and shipment tracking; cancellation boundaries and reconciliation events; authorized Returns with receipt disposition, inventory restocking, refund coordination events, and immutable ledger evidence; transactional search events, multi-instance indexing workers, rebuildable duplicate-tolerant Store-isolated search; optional OTLP trace export and correlated structured worker logs; HTTP, business, dependency, database-pool, and queue metrics; an SLO dashboard; reproducible capacity thresholds; failure, replay, rotation, and rollback runbooks; Admin and Store contracts; clean PostgreSQL 18 bootstrap and end-to-end HTTP/database evidence | — |
+| 3 — Selling | In progress | Shared idempotency records; location-aware stock balances; append-only inventory ledger; concurrency-safe reservation transitions; mutable Storefront Carts bound to one Store, Channel, currency, and Price List; atomic Checkout with immutable commercial snapshots and tracked-inventory reservations; immutable Order snapshots; explicit pending-to-confirmed/cancelled state machine; append-only transition audit trail; atomic reservation consumption/release; Admin and Store API contracts; runtime-role isolation, oversell, concurrency, and immutability tests | Add shopper-level resource ownership and run reservation and Checkout expiry from a recoverable production scheduler. |
+| 4 — Payments | In progress | Provider-neutral application port and sandbox adapter; currency-safe Payment Attempt and Refund state machines; immutable provider references; HMAC verification before tenant resolution; deduplicated durable webhook inbox; transactional payment outbox; `SKIP LOCKED` workers; capped exponential retry and dead-letter handling; atomic capture-to-Order/inventory reconciliation; Store, Admin, and Webhook contracts | Recover stale leases, drain workers safely, add Store-owned provider administration, and verify one production payment adapter end to end. |
+| 5 — Operations | In progress | Partial Fulfillment and shipment tracking; authorized Returns with receipt disposition and inventory restocking; fulfillment and refund-coordination events; transactional search events; rebuildable Store-isolated search; optional OTLP trace export; bounded business and queue metrics; capacity harness; operations runbooks; Admin and Store contracts | Implement fulfillment and return event consumers, retain an executed capacity report, and close the security and operational release gates. |
+| 6 — Transaction Hardening | Planned | Existing idempotency, inbox, outbox, RLS, and state-machine foundations | Shopper access boundaries; lease recovery; deterministic expiry scheduling; event consumer ownership; graceful worker drain; process-crash and replay evidence. |
+| 7 — Real Checkout | Planned | Cart, immutable Checkout, Order, Money, Price List, and inventory snapshot foundations | Customer or guest contact; billing and shipping addresses; shipping options and rates; tax; promotions; complete total allocation; customer Order access. |
+| 8 — Provider Integrations | Planned | Payment and webhook ports, Fulfillment state, transactional events, and SMTP-based authentication delivery | Stripe adapter and onboarding decision; Resend notification delivery; shipping provider port and first adapter; provider administration, secrets, rotation, signed webhooks, and reconciliation. |
+| 9 — Extensibility and Ecosystem | Planned | Versioned Admin, Store, and Webhook contracts; scoped API keys; search read model | Store domains; collections and media; localization; outbound webhooks; MCP; generated SDKs; compatibility automation; third-party application workflows. |
 
 ## Phase 2 acceptance criteria
 
@@ -71,8 +75,40 @@ Every phase requires:
 - Capacity tests publish reproducible thresholds for API latency, checkout throughput, database pools, queues, and graceful rolling updates.
 - Runbooks cover migration failure, dependency degradation, queue backlog, webhook replay, credential rotation, and rollback.
 
+## Phase 6 acceptance criteria
+
+- A publishable Store key cannot read or mutate another shopper's Cart, Checkout, Payment Attempt, or Order without the resource's shopper credential.
+- Reservation and Checkout expiry run automatically and remain correct across concurrent schedulers.
+- Every event type has one declared consumer owner; unowned events remain visible and are never reported as reconciled.
+- Processing leases are recovered after worker termination without duplicate business effects.
+- Shutdown stops new claims and completes or safely releases in-flight work before process exit.
+- Integration tests terminate workers between claim and completion, advance the Clock, replay events, and verify convergence.
+
+## Phase 7 acceptance criteria
+
+- Guest and authenticated-customer checkout capture validated contact, billing, and shipping snapshots without exposing customer data across Stores.
+- Shipping options are quoted for shippable lines and the selected service, amount, and delivery estimate are frozen in the Order.
+- Tax and promotion calculations allocate deterministic line and Order totals in one settlement currency.
+- Checkout recalculation has explicit rules for address, shipping, inventory, pricing, tax, and promotion changes.
+- Admin users can list and filter Orders while shoppers can access only their own Order history or possession-bound guest Orders.
+
+## Phase 8 acceptance criteria
+
+- Payment, shipping, and notification providers implement capability-specific application ports; provider SDK types remain in infrastructure.
+- Stripe onboarding records the selected merchant-of-record, funds-flow, fee, liability, dispute, and payout model before live payments are enabled.
+- Provider credentials are referenced through a secret manager, support overlap rotation, and never appear in logs, API responses, or business event payloads.
+- Outbound calls use stable idempotency keys; signed inbound webhooks are durably received, deduplicated, unordered, and replayable.
+- Resend delivery status and suppression handling do not change the underlying commerce transaction.
+- The first shipping adapter supports rate quotation, label purchase, cancellation where available, and tracking reconciliation.
+
+## Phase 9 acceptance criteria
+
+- Extensibility capabilities have independent authorization scopes, versioned contracts, audit trails, and compatibility tests.
+- Store domain resolution cannot broaden Store context and external callbacks defend against SSRF and credential leakage.
+- Generated SDKs and MCP tools reuse application use cases instead of duplicating business logic.
+
 ## Completion audit
 
-The roadmap is complete only after a final clean-environment audit maps every criterion above to a test, command output, contract assertion, runtime probe, or operational artifact. Missing or indirect evidence keeps the corresponding phase open.
+The roadmap is complete only after a final clean-environment audit maps every criterion in its declared release scope to a test, command output, contract assertion, runtime probe, or operational artifact. Missing or indirect evidence keeps the corresponding phase open.
 
 The final audit is recorded in `docs/completion-audit.md`.

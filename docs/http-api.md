@@ -182,6 +182,8 @@ Storefront responses deliberately omit lifecycle status, drafts, archived record
 
 ## Storefront Carts and Checkout
 
+The current Store API authenticates Cart, Checkout, Payment Attempt, and Order access with a Store-and-Channel-scoped publishable key. This is a commerce-kernel boundary, not a production shopper-ownership boundary. Phase 6 adds possession-bound guest credentials and authenticated-customer ownership before these resource APIs are exposed to untrusted browser clients.
+
 `POST /store/v1/carts` creates an active Cart for the publishable key's Store and Sales Channel. The optional currency must be enabled for that Store and defaults to its default currency. Cart creation selects one currently active Price List deterministically. `GET /store/v1/carts/{cart_id}` reads the current Cart, while `PUT` and `DELETE` on `/store/v1/carts/{cart_id}/lines/{product_variant_id}` add, replace, or remove a line. Cart operations require `carts:write`; mutations also require `Idempotency-Key`.
 
 A Cart line can reference only an active Variant of an active Product published to the credential's active Sales Channel with a price in the Cart's Price List. Each line records customer-facing Product and Variant text, shipping and inventory behavior, quantity, unit price, tax inclusion, and subtotal. Mutations serialize through a Cart row lock, increment its version, and reject terminal Carts.
@@ -210,6 +212,6 @@ The webhook contract is versioned separately in `openapi/webhooks-v1.json` and s
 
 ## Fulfillment, Returns, and Search
 
-Admin operators create partial Fulfillments under a confirmed Order, then use the `ship`, `deliver`, or `cancel` operation. Shipping requires a carrier and tracking number. Delivered quantities bound Return requests; Returns proceed through authorization, receipt with a per-line `restock` or `discard` disposition, and completion. Every mutation requires an idempotency key. Fulfillment transitions and completed Returns publish transactional outbox events for downstream Order and refund coordination.
+Admin operators create partial Fulfillments under a confirmed Order, then use the `ship`, `deliver`, or `cancel` operation. Shipping requires a carrier and tracking number. Delivered quantities bound Return requests; Returns proceed through authorization, receipt with a per-line `restock` or `discard` disposition, and completion. Every mutation requires an idempotency key. Fulfillment transitions and completed Returns publish transactional outbox events; their downstream Order and refund-coordination consumers are Phase 6 work.
 
 Storefront product listing accepts `q` for Store-isolated full-text search. Catalog writes refresh the rebuildable search read model and publish duplicate-tolerant change events in the same transaction.

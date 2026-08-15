@@ -2,7 +2,7 @@
 
 ## Goal
 
-Chaos Commerce is the backend operating system for independent online stores. A person creates one user identity, can own or join multiple merchant accounts, and can create multiple independent stores inside each merchant account. The platform provides all commerce backend capabilities through headless Admin and Storefront APIs.
+Chaos Commerce is a headless commerce foundation for independent online stores. A person creates one user identity, can own or join multiple merchant accounts, and can create multiple independent stores inside each merchant account. The current platform provides a verified commerce kernel through Admin and Store APIs; customer, checkout, provider, and ecosystem capabilities continue through the delivery roadmap.
 
 The product is multi-account in the same way that one Stripe user can access multiple isolated business accounts. `Tenant` is an architectural property, not a term exposed in the product model or public API.
 
@@ -79,8 +79,29 @@ A revocable machine credential bound to one Store and an explicit set of capabil
 - `merchant_account_id` is the primary RLS and authorization boundary.
 - Store-owned commerce data also carries `store_id`.
 - The authenticated user selects a merchant account only through a verified membership.
-- Storefront requests derive merchant account and store from a publishable key or verified domain.
-- Integration and MCP requests derive merchant account and store from a scoped secret key.
+- Storefront requests currently derive merchant account, Store, and Channel from a publishable key. Verified-domain resolution is reserved.
+- Integration requests derive merchant account and Store from a scoped secret key. Future MCP tools will reuse that boundary with an additional tool scope.
 - Webhooks derive merchant account and store from a verified local provider mapping.
 - Internal events carry both identifiers whenever the event belongs to a store.
 - No request is authorized by trusting a client-supplied identifier alone.
+
+## Capability status
+
+### Current
+
+- Passwordless identity, merchant accounts, memberships, Stores, and Sales Channels.
+- Product, Variant, publication, Price List, Inventory, Cart, Checkout, and Order foundations.
+- Provider-neutral Payment Attempt and Refund state machines with a sandbox adapter.
+- Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
+
+### Next
+
+- Shopper-level Cart, Checkout, and Order ownership.
+- Recoverable workers, deterministic reservation expiry, and complete event consumers.
+- Customer contact, addresses, shipping, tax, promotion, and complete checkout totals.
+- Stripe payment, Resend notification, and shipping provider adapters with Store-owned configuration.
+
+### Reserved
+
+- Collections, media, localization, domains, customer segments, exchanges, and advanced logistics.
+- MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.

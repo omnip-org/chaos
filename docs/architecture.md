@@ -1,10 +1,11 @@
 # System Architecture
 
 Cross-cutting time handling follows [Time conventions](time-conventions.md).
+External payment, shipping, and notification integrations follow [ADR 0007](adr/0007-external-provider-boundaries.md).
 
 ## 1. Architecture style
 
-The first production version uses a modular monolith. The initial deployment units are a stateless API process and asynchronous worker processes that share the same domain code. Code is organized by business domain rather than by one global technical layer. Modules interact only through public application services or domain events.
+The first production version uses a modular monolith. The current binary hosts the stateless HTTP server plus payment and search worker loops; database claims preserve multi-instance correctness. Phase 6 hardens worker recovery and shutdown before worker categories may become independent deployment units. Code is organized by business domain rather than by one global technical layer. Modules interact only through public application services or domain events.
 
 This design keeps reliable transaction boundaries around checkout, inventory reservation, payment state, and refunds. Services should be extracted only when throughput, team ownership, or fault-isolation requirements justify the operational cost. Transactional outbox events provide future extraction seams.
 
@@ -18,7 +19,7 @@ Storefront / Admin / MCP / Integrations
   +-----------+-----------+
   | catalog pricing cart  |
   | checkout order stock  |  <- domain modules
-  | payment customer auth |
+  | payment fulfillment   |
   +-----------+-----------+
               |
      PostgreSQL 18 (source of truth)
@@ -27,7 +28,7 @@ Storefront / Admin / MCP / Integrations
               |
          Worker processes
               |
-   Redis 8 (cache, rate limit, short locks)
+   Redis 8 (rate limits and short-lived auth state)
 ```
 
 Redis is never the source of truth for orders, inventory, or payments. Losing Redis data must not compromise business correctness.
@@ -39,13 +40,13 @@ The hierarchy is `user -> merchant_account -> store -> sales_channel`:
 - A user is a global login identity and can own or join multiple merchant accounts.
 - A merchant account is an isolated business workspace and the boundary for billing, membership, authorization, and RLS.
 - A store is an independent online storefront within a merchant account and owns its domains and commerce configuration.
-- A sales channel will define publication scope, API keys, and inventory-location selection for Web, mobile, POS, or marketplace clients.
+- A sales channel defines publication scope and API keys for Web, mobile, POS, or marketplace clients. Inventory-location selection remains planned.
 
 Account and store resolution must never trust client-supplied identifiers by themselves:
 
 - Admin API requests derive the merchant account from the authenticated user and membership.
-- Storefront API requests derive merchant account, store, and channel from a publishable key or verified domain.
-- MCP requests derive merchant account and store from a scoped secret key; each tool also enforces its capability scope.
+- Storefront API requests currently derive merchant account, Store, and Channel from a publishable key. Verified-domain resolution is reserved.
+- Future MCP requests will derive merchant account and Store from a scoped secret key; each tool will also enforce its capability scope.
 - Webhooks derive merchant account and store from a locally stored provider mapping after signature verification.
 - Internal jobs carry `merchant_account_id` and `store_id` when applicable and establish a fresh account context in every consumer.
 
@@ -56,26 +57,26 @@ Every merchant-owned table contains `merchant_account_id`; store-owned commerce 
 - Store money as `bigint amount_minor` plus `char(3) currency`. Never use floating-point types.
 - Use uppercase ISO 4217 currency codes. Application-owned minor-unit metadata is versioned.
 - Price lists store explicit amounts for each supported currency. Display conversion never overwrites a settlement price.
-- Order creation snapshots product names, taxes, discounts, unit prices, currencies, and exchange rates. Historical orders do not change with the catalog.
+- Order creation snapshots product names, current zero-valued tax and discount allocations, unit prices, and currency. Historical orders do not change with the catalog.
 - One order uses exactly one settlement currency. Payments and refunds must match the order currency.
-- Exchange rates use fixed-point decimal values and record provider, timestamp, and the exact rate snapshot used.
+- Exchange-rate display and settlement conversion are reserved capabilities. Authoritative Price Lists currently provide explicit prices in each enabled settlement currency.
 
-The pricing domain will provide a Money value object with checked arithmetic, same-currency validation, explicit rounding, and deterministic remainder allocation.
+The pricing domain provides a Money value object with checked arithmetic, same-currency validation, explicit rounding, and deterministic remainder allocation.
 
 ## 4. Bounded contexts and dependency rules
 
 Suggested implementation order:
 
-1. identity: users, email links, passkeys, service accounts, and sessions;
-2. merchant: merchant accounts, memberships, roles, API keys, stores, channels, and domains;
-3. catalog: products, variants, options, collections, and media;
-4. pricing: money, price lists, prices, promotions, and tax classes;
+1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
+2. merchant: merchant accounts, memberships, roles, API keys, Stores, and Channels; domain resolution is reserved;
+3. catalog: products, variants, options, and publication; collections and media are reserved;
+4. pricing: Money, price lists, and prices; promotions and tax are planned;
 5. inventory: locations, stock items, reservations, and adjustments;
-6. cart: carts, line items, and addresses;
-7. checkout/order: idempotent order creation, state machines, and fulfillment state;
-8. payment: provider accounts, payment intents, captures, refunds, and webhook inboxes;
-9. customer: customers, addresses, and segments;
-10. fulfillment: shipments, returns, and exchanges.
+6. sales: carts, line items, Checkout, and Orders; addresses are planned;
+7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;
+8. payment: provider accounts, Payment Attempts, captures, Refunds, and webhook inboxes;
+9. customer: a planned context for customers, addresses, and segments;
+10. notifications: a planned integration capability for semantic delivery requests and provider status.
 
 The Cargo workspace enforces dependency direction with separate packages:
 
@@ -100,6 +101,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Workers claim outbox records with `FOR UPDATE SKIP LOCKED`. Delivery is at least once, so consumers must be idempotent.
 - Provider webhooks are signature-verified and written to an inbox before asynchronous processing. Provider event IDs enforce deduplication.
 - Payment providers are adapters. Payment state advances only from verified provider responses or webhooks.
+- Shipping providers are Fulfillment adapters. Notification providers deliver semantic requests without owning commerce state.
 
 ## 6. API conventions
 
@@ -109,7 +111,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Successful responses use `{ "data": ..., "meta?": ... }`.
 - Errors use `{ "error": { "code", "message", "details?" } }`.
 - Every request generates or propagates `x-request-id`. Logs are structured tracing events.
-- OpenAPI is the HTTP contract and will drive SDK generation or compatibility checks.
+- OpenAPI is the HTTP contract. SDK generation and automated compatibility checks are planned.
 
 ## 7. Security baseline
 
@@ -119,29 +121,29 @@ Each bounded context keeps corresponding modules in the domain and application p
 - WebAuthn registration and authentication state is stored only in Redis with a short TTL and atomic one-time consumption so ceremonies work across API instances without becoming replayable.
 - Authentication abuse limits use privacy-preserving subject digests in Redis, so limits are shared by all instances without placing email addresses in cache keys.
 - API keys use a searchable prefix plus a secret hash. Plaintext is shown exactly once.
-- Human sessions, Store API keys, and MCP credentials are not interchangeable authentication mechanisms.
-- Admin authorization uses fine-grained RBAC. Sensitive writes enter an immutable audit log.
+- Human sessions and Store API keys are not interchangeable authentication mechanisms. Future MCP credentials will remain a separate scope boundary.
+- Admin authorization uses merchant roles. Fine-grained permissions and a general immutable audit log remain production-readiness requirements; existing domain ledgers and transition records cover only their owned workflows.
 - Secrets come only from the runtime environment or a secret manager and never enter the repository or logs.
-- Login, checkout, webhook, and public-key traffic use separate rate limits.
-- CORS uses an allowlist. Request bodies have default size limits. External URL fetching must defend against SSRF.
+- Login abuse limits are implemented. Separate checkout, webhook, and public-key limits remain required before production exposure.
+- CORS allowlists and explicit route-class request body limits remain required before browser production exposure. Future external URL fetching must defend against SSRF.
 
 ## 8. PostgreSQL and Redis responsibilities
 
-PostgreSQL stores all business entities, transactions, idempotency records, outbox and inbox records, and audit logs. Merchant-owned table indexes generally start with `merchant_account_id`. Large tables are partitioned only after query and scale evidence justifies it.
+PostgreSQL stores current business entities, transactions, idempotency records, outbox and inbox records, and domain-specific ledgers. A general audit log is planned. Merchant-owned table indexes generally start with `merchant_account_id`. Large tables are partitioned only after query and scale evidence justifies it.
 
 PostgreSQL schemas follow bounded-context ownership. Current and reserved schemas include `identity`, `merchant`, `catalog`, `pricing`, `inventory`, `sales`, `payments`, `fulfillment`, `integration`, `audit`, and `extensions`. Business SQL uses qualified identifiers. Detailed rules are defined in `docs/database-conventions.md`.
 
-Redis provides short-lived cache entries, distributed rate limiting, session assistance, and short task coordination. Keys include environment and merchant account, for example `chaos:prod:ma:{merchant_account_id}:store:{store_id}:cart:{id}`, and cached values have TTLs. Lua or atomic commands protect compound cache invariants.
+Redis currently provides distributed authentication rate limiting and short-lived WebAuthn ceremony state. Future caches and short coordination keys must include environment and ownership context, use TTLs, and preserve PostgreSQL as the source of truth.
 
 ## 9. Deployment topology
 
-The API is stateless and horizontally replicated. Workers scale by task category. Production should use managed PostgreSQL with point-in-time recovery, connection pooling, and appropriate replicas, plus highly available Redis. Migrations run as a separate release step and follow expand/migrate/contract. Application startup never runs migrations automatically.
+The API is stateless and horizontally replicated. Payment and search workers currently run inside each API process and use database claims. Phase 6 will add recoverable leases and graceful drain; later deployment units may scale worker categories independently. Production should use managed PostgreSQL with point-in-time recovery, connection pooling, and appropriate replicas, plus highly available Redis. Migrations run as a separate release step and follow expand/migrate/contract. Application startup never runs migrations automatically.
 
 Docker Compose runs blue and green API instances behind Caddy. A deployment replaces one instance at a time and waits for readiness before replacing the other. On SIGTERM, an instance starts draining and returns 503 from readiness, waits for Caddy to remove it, closes its listener, and lets Axum finish in-flight connections. Compose `stop_grace_period` provides the hard deadline. Configuration lives in `compose.ha.yaml` and `deploy/compose/Caddyfile`.
 
 Application instances never own sessions, WebAuthn ceremonies, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
 
-The platform foundation emits structured logs and Prometheus request totals and latency histograms using bounded route labels. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network. Phase 5 extends this foundation with OpenTelemetry traces and metrics for database pool pressure, Redis health, checkout conversion, payment failures, inventory reservation conflicts, and outbox lag.
+The platform emits structured logs, optional OpenTelemetry traces, and Prometheus metrics for bounded HTTP routes, database pool pressure, dependency health, checkout conversion, payment failures, inventory reservation conflicts, and queue lag. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network.
 
 ## 10. Delivery roadmap
 
@@ -151,5 +153,9 @@ The platform foundation emits structured logs and Prometheus request totals and 
 - Phase 3: inventory, carts, checkout, order state machines, and the idempotency framework.
 - Phase 4: payment adapters, webhook inbox and outbox processing, and refunds.
 - Phase 5: fulfillment, returns, search, production observability, and capacity testing.
+- Phase 6: shopper ownership, scheduler and worker recovery, event consumers, and transaction hardening.
+- Phase 7: customers, addresses, shipping, tax, promotions, and real checkout totals.
+- Phase 8: Stripe, Resend, shipping adapters, provider administration, and reconciliation.
+- Phase 9: domains, richer Catalog, outbound integrations, MCP, SDKs, and ecosystem compatibility.
 
 Every phase requires migration tests, domain unit tests, cross-account isolation tests, HTTP integration tests, and an OpenAPI update.
