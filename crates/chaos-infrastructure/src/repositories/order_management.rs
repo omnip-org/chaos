@@ -13,7 +13,10 @@ use chaos_domain::{
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
     merchant::StoreId,
-    pricing::{Money, PriceListId, TaxRuleId, TaxRuleSnapshot},
+    pricing::{
+        Money, PriceListId, PromotionId, PromotionSnapshot, PromotionTrigger, PromotionValue,
+        TaxRuleId, TaxRuleSnapshot,
+    },
     sales::{
         CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderId, OrderStatus, PostalAddress,
         ShopperId,
@@ -269,6 +272,7 @@ async fn load_order(
     let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
     let shipping = load_order_shipping(transaction, account_id, store_id, order_id).await?;
     let tax_rule = load_order_tax(transaction, account_id, store_id, order_id).await?;
+    let promotion = load_order_promotion(transaction, account_id, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -316,6 +320,7 @@ async fn load_order(
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
         tax_rule,
+        promotion,
         tax_inclusive: row.10,
         shipping,
         shipping_amount_minor: row.11,
@@ -422,6 +427,73 @@ async fn load_order_tax(
         u32::try_from(row.4).map_err(|error| ApplicationError::Unexpected(error.into()))?,
     )
     .map_err(ApplicationError::from)
+}
+
+async fn load_order_promotion(
+    transaction: &mut Transaction<'static, Postgres>,
+    account_id: Uuid,
+    store_id: StoreId,
+    order_id: OrderId,
+) -> Result<Option<PromotionSnapshot>, ApplicationError> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<i32>,
+            Option<i64>,
+            Option<i64>,
+            String,
+            i64,
+            i16,
+            Option<OffsetDateTime>,
+            Option<OffsetDateTime>,
+        ),
+    >(
+        "SELECT promotion_id, handle, name, trigger::text, redemption_code, value_kind::text, \
+                rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
+                minimum_subtotal_amount_minor, priority, starts_at, ends_at \
+         FROM sales.order_promotion_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(|row| {
+        let value = match row.5.as_str() {
+            "percentage" => PromotionValue::Percentage {
+                rate_basis_points: u32::try_from(row.6.ok_or_else(corrupt_state)?)
+                    .map_err(|error| ApplicationError::Unexpected(error.into()))?,
+                maximum_amount_minor: row.8,
+            },
+            "fixed_amount" => PromotionValue::FixedAmount {
+                amount_minor: row.7.ok_or_else(corrupt_state)?,
+            },
+            _ => return Err(corrupt_state()),
+        };
+        PromotionSnapshot::rehydrate(
+            PromotionId::from_uuid(row.0),
+            row.1,
+            row.2,
+            PromotionTrigger::parse(&row.3).ok_or_else(corrupt_state)?,
+            row.4,
+            value,
+            CurrencyCode::parse(&row.9)?,
+            row.10,
+            u16::try_from(row.11).map_err(|error| ApplicationError::Unexpected(error.into()))?,
+            row.12,
+            row.13,
+        )
+        .map_err(ApplicationError::from)
+    })
+    .transpose()
 }
 
 async fn load_order_identity(

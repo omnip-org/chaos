@@ -95,6 +95,8 @@ mod tests {
         let key_b = Uuid::now_v7();
         let tax_rule_a = Uuid::now_v7();
         let tax_rule_b = Uuid::now_v7();
+        let promotion_a = Uuid::now_v7();
+        let promotion_b = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id)
@@ -134,6 +136,15 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+            sqlx::query(
+                "INSERT INTO merchant.store_currencies \
+                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+            )
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
         for (channel_id, store_id, account_id, code) in [
             (channel_a, store_a, account_a, "web-a"),
@@ -165,6 +176,24 @@ mod tests {
             .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(code)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        for (promotion_id, store_id, account_id, handle) in [
+            (promotion_a, store_a, account_a, "promotion-a"),
+            (promotion_b, store_b, account_b, "promotion-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO pricing.promotions \
+                 (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+                  rate_basis_points, currency) \
+                 VALUES ($1, $2, $3, $4, $4, 'automatic', 'percentage', 1000, 'USD')",
+            )
+            .bind(promotion_id)
+            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(handle)
             .execute(&pool)
             .await
             .unwrap();
@@ -250,6 +279,11 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
+        let visible_promotion_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM pricing.promotions ORDER BY id")
+                .fetch_all(transaction.connection())
+                .await
+                .unwrap();
         let visible_scope_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'mcp:tools'",
         )
@@ -263,6 +297,7 @@ mod tests {
         assert_eq!(visible_channel_ids, vec![channel_a]);
         assert_eq!(visible_product_ids, vec![product_a]);
         assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
+        assert_eq!(visible_promotion_ids, vec![promotion_a]);
         assert_eq!(visible_scope_count, 1);
 
         sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")

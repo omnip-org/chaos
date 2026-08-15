@@ -18,7 +18,7 @@ use chaos_application::{
 use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{ShippingSelection, ShippingServiceId},
-    pricing::TaxRuleSnapshot,
+    pricing::{PromotionSnapshot, TaxRuleSnapshot},
     sales::{CartId, CheckoutId, OrderId, ShopperId},
 };
 use secrecy::ExposeSecret;
@@ -87,6 +87,7 @@ struct CreateCheckoutBody {
     billing_address: PostalAddressBody,
     shipping_address: Option<PostalAddressBody>,
     shipping_service_id: Option<Uuid>,
+    promotion_code: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -189,6 +190,8 @@ struct CheckoutData {
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     tax_rule: TaxCalculationData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    promotion: Option<PromotionCalculationData>,
     tax_inclusive: bool,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
@@ -245,6 +248,8 @@ pub(super) struct OrderData {
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     tax_rule: TaxCalculationData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    promotion: Option<PromotionCalculationData>,
     tax_inclusive: bool,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
@@ -279,6 +284,30 @@ struct TaxCalculationData {
     name: String,
     country_code: String,
     rate_basis_points: u32,
+}
+
+#[derive(Serialize)]
+struct PromotionCalculationData {
+    promotion_id: Uuid,
+    handle: String,
+    name: String,
+    trigger: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redemption_code: Option<String>,
+    value_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_basis_points: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amount_minor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum_amount_minor: Option<i64>,
+    currency: String,
+    minimum_subtotal_amount_minor: i64,
+    priority: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    starts_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ends_at: Option<ApiDateTime>,
 }
 
 #[derive(Serialize)]
@@ -407,6 +436,7 @@ async fn create_checkout(
             billing_address: address_input(body.billing_address),
             shipping_address: body.shipping_address.map(address_input),
             shipping_service_id: body.shipping_service_id.map(ShippingServiceId::from_uuid),
+            promotion_code: body.promotion_code,
             now: state.clock.now(),
             idempotency,
         })
@@ -536,6 +566,25 @@ fn tax_data(value: &TaxRuleSnapshot) -> TaxCalculationData {
     }
 }
 
+fn promotion_data(value: &PromotionSnapshot) -> PromotionCalculationData {
+    PromotionCalculationData {
+        promotion_id: value.promotion_id().as_uuid(),
+        handle: value.handle().into(),
+        name: value.name().into(),
+        trigger: value.trigger().as_str(),
+        redemption_code: value.redemption_code().map(Into::into),
+        value_kind: value.value().kind(),
+        rate_basis_points: value.value().rate_basis_points(),
+        amount_minor: value.value().amount_minor(),
+        maximum_amount_minor: value.value().maximum_amount_minor(),
+        currency: value.currency().as_str().into(),
+        minimum_subtotal_amount_minor: value.minimum_subtotal_amount_minor(),
+        priority: value.priority(),
+        starts_at: value.starts_at().map(Into::into),
+        ends_at: value.ends_at().map(Into::into),
+    }
+}
+
 fn body_request<T: Serialize>(
     headers: &HeaderMap,
     operation: &'static str,
@@ -601,6 +650,7 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
         discount_amount_minor: checkout.discount_amount_minor,
         tax_amount_minor: checkout.tax_amount_minor,
         tax_rule: tax_data(&checkout.tax_rule),
+        promotion: checkout.promotion.as_ref().map(promotion_data),
         tax_inclusive: checkout.tax_inclusive,
         shipping_amount_minor: checkout.shipping_amount_minor,
         total_amount_minor: checkout.total_amount_minor,
@@ -644,6 +694,7 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         discount_amount_minor: order.discount_amount_minor,
         tax_amount_minor: order.tax_amount_minor,
         tax_rule: tax_data(&order.tax_rule),
+        promotion: order.promotion.as_ref().map(promotion_data),
         tax_inclusive: order.tax_inclusive,
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
@@ -894,6 +945,32 @@ mod tests {
             "INSERT INTO merchant.store_currencies (merchant_account_id, store_id, currency) \
              VALUES ($1, $2, 'USD')",
         )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pricing.promotions \
+             (id, merchant_account_id, store_id, handle, name, trigger, redemption_code, \
+              value_kind, amount_minor, currency, minimum_subtotal_amount_minor, priority) \
+             VALUES ($1, $2, $3, 'save-three', 'Save three dollars', 'code', 'SAVE300', \
+                     'fixed_amount', 300, 'USD', 1000, 10)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pricing.promotions \
+             (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+              rate_basis_points, currency, priority) \
+             VALUES ($1, $2, $3, 'automatic-ten', 'Automatic ten percent', 'automatic', \
+                     'percentage', 1000, 'USD', 5)",
+        )
+        .bind(Uuid::now_v7())
         .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
@@ -1267,7 +1344,8 @@ mod tests {
             },
             "billing_address": address.clone(),
             "shipping_address": address.clone(),
-            "shipping_service_id": shipping_service_id.as_uuid()
+            "shipping_service_id": shipping_service_id.as_uuid(),
+            "promotion_code": "save300"
         });
         sqlx::query("UPDATE fulfillment.shipping_services SET status = 'archived' WHERE id = $1")
             .bind(shipping_service_id.as_uuid())
@@ -1356,6 +1434,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing_shipping.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let mut invalid_promotion_body = checkout_body.clone();
+        invalid_promotion_body["promotion_code"] = json!("NOT-A-CODE");
+        let invalid_promotion = app
+            .clone()
+            .oneshot(with_shopper_token(
+                store_request(
+                    Method::POST,
+                    &checkout_uri,
+                    Some(full_secret),
+                    Some("checkout-invalid-promotion"),
+                    Some(invalid_promotion_body),
+                ),
+                shopper_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(invalid_promotion.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let checkout = app
             .clone()
             .oneshot(with_shopper_token(
@@ -1374,10 +1469,13 @@ mod tests {
         let checkout = response_json(checkout).await;
         let checkout_id = checkout["data"]["id"].as_str().unwrap();
         assert_eq!(checkout["data"]["shipping_amount_minor"], 500);
-        assert_eq!(checkout["data"]["tax_amount_minor"], 206);
+        assert_eq!(checkout["data"]["discount_amount_minor"], 300);
+        assert_eq!(checkout["data"]["tax_amount_minor"], 182);
         assert_eq!(checkout["data"]["tax_inclusive"], true);
         assert_eq!(checkout["data"]["tax_rule"]["rate_basis_points"], 900);
-        assert_eq!(checkout["data"]["total_amount_minor"], 3000);
+        assert_eq!(checkout["data"]["promotion"]["handle"], "save-three");
+        assert_eq!(checkout["data"]["promotion"]["redemption_code"], "SAVE300");
+        assert_eq!(checkout["data"]["total_amount_minor"], 2700);
         assert_eq!(
             checkout["data"]["lines"][0]["product_title"],
             "Sales Product"
@@ -1423,8 +1521,10 @@ mod tests {
         let order_id = order["data"]["id"].as_str().unwrap();
         assert_eq!(order["data"]["status"], "pending");
         assert_eq!(order["data"]["shipping_amount_minor"], 500);
-        assert_eq!(order["data"]["tax_amount_minor"], 206);
-        assert_eq!(order["data"]["total_amount_minor"], 3000);
+        assert_eq!(order["data"]["discount_amount_minor"], 300);
+        assert_eq!(order["data"]["tax_amount_minor"], 182);
+        assert_eq!(order["data"]["promotion"]["handle"], "save-three");
+        assert_eq!(order["data"]["total_amount_minor"], 2700);
         assert_eq!(order["data"]["contact"]["email"], "guest@example.com");
         assert_eq!(
             order["data"]["billing_address"]["address_line1"],
@@ -1522,6 +1622,26 @@ mod tests {
         assert!(
             sqlx::query(
                 "UPDATE sales.order_tax_calculations SET rate_basis_points = 1 \
+                 WHERE order_id = $1",
+            )
+            .bind(Uuid::parse_str(order_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.checkout_promotion_calculations SET discount_amount_minor = 1 \
+                 WHERE checkout_id = $1",
+            )
+            .bind(Uuid::parse_str(checkout_id).unwrap())
+            .execute(&mut *snapshot_connection)
+            .await
+            .is_err()
+        );
+        assert!(
+            sqlx::query(
+                "UPDATE sales.order_promotion_calculations SET discount_amount_minor = 1 \
                  WHERE order_id = $1",
             )
             .bind(Uuid::parse_str(order_id).unwrap())

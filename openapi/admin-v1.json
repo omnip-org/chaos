@@ -1200,6 +1200,29 @@
         "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "tax_rule_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "operation", "in": "path", "required": true, "schema": { "type": "string", "enum": ["activate", "archive"] } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "responses": { "200": { "description": "Tax Rule updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TaxRuleEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
       }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions": {
+      "get": {
+        "operationId": "listPromotions", "tags": ["Pricing"], "summary": "List Store Promotions",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }],
+        "responses": { "200": { "description": "Promotions", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PromotionCollectionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "operationId": "createPromotion", "tags": ["Pricing"], "summary": "Create an active Store Promotion",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePromotion" } } } },
+        "responses": { "201": { "description": "Promotion created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PromotionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions/{promotion_id}/{operation}": {
+      "post": {
+        "operationId": "changePromotionStatus", "tags": ["Pricing"], "summary": "Activate or archive a Promotion",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "name": "promotion_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }, { "name": "operation", "in": "path", "required": true, "schema": { "type": "string", "enum": ["activate", "archive"] } }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "responses": { "200": { "description": "Promotion updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PromotionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
+      }
     }
   },
   "components": {
@@ -2056,6 +2079,7 @@
           "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "tax_rule": { "$ref": "#/components/schemas/TaxCalculation" },
+          "promotion": { "$ref": "#/components/schemas/PromotionCalculation" },
           "tax_inclusive": { "type": "boolean" },
           "shipping_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
@@ -2172,6 +2196,50 @@
       },
       "TaxRuleEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/TaxRule" } } },
       "TaxRuleCollectionEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/TaxRule" } } } },
+      "CreatePromotion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["handle", "name", "trigger", "value_kind", "currency"],
+        "properties": {
+          "handle": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "trigger": { "type": "string", "enum": ["automatic", "code"] },
+          "redemption_code": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,64}$" },
+          "value_kind": { "type": "string", "enum": ["percentage", "fixed_amount"] },
+          "rate_basis_points": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "maximum_amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "minimum_subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0, "default": 0 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 32767, "default": 100 },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Promotion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "handle", "name", "trigger", "value_kind", "currency", "minimum_subtotal_amount_minor", "priority", "status", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "trigger": { "type": "string", "enum": ["automatic", "code"] },
+          "redemption_code": { "type": "string", "pattern": "^[A-Z0-9-]{1,64}$" },
+          "value_kind": { "type": "string", "enum": ["percentage", "fixed_amount"] },
+          "rate_basis_points": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "maximum_amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "minimum_subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 32767 },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" },
+          "status": { "type": "string", "enum": ["active", "archived"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PromotionEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Promotion" } } },
+      "PromotionCollectionEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Promotion" } } } },
       "CreateShippingService": {
         "type": "object", "additionalProperties": false,
         "required": ["code", "name", "amount_minor", "currency", "estimated_min_days", "estimated_max_days", "destination_countries"],
@@ -2226,6 +2294,25 @@
           "name": { "type": "string" },
           "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
           "rate_basis_points": { "type": "integer", "minimum": 0, "maximum": 10000 }
+        }
+      },
+      "PromotionCalculation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["promotion_id", "handle", "name", "trigger", "value_kind", "currency", "minimum_subtotal_amount_minor", "priority"],
+        "properties": {
+          "promotion_id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string" }, "name": { "type": "string" },
+          "trigger": { "type": "string", "enum": ["automatic", "code"] },
+          "redemption_code": { "type": "string" },
+          "value_kind": { "type": "string", "enum": ["percentage", "fixed_amount"] },
+          "rate_basis_points": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "maximum_amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "minimum_subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 32767 },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" }
         }
       },
       "QuantityLine": {

@@ -8,15 +8,19 @@ use chaos_application::{
     ApplicationError,
     ports::IdempotencyRequest,
     pricing::{
-        ChangePriceListStatusInput, ChangeTaxRuleStatusInput, CreatePriceInput,
-        CreatePriceListInput, CreateTaxRuleInput, UpdatePriceListInput,
+        ChangePriceListStatusInput, ChangePromotionStatusInput, ChangeTaxRuleStatusInput,
+        CreatePriceInput, CreatePriceListInput, CreatePromotionInput, CreateTaxRuleInput,
+        UpdatePriceListInput,
     },
 };
 use chaos_domain::{
-    FieldViolation,
+    CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
     merchant::StoreId,
-    pricing::{PriceListId, TaxRuleId, TaxRuleStatus},
+    pricing::{
+        PriceListId, PromotionId, PromotionStatus, PromotionTrigger, PromotionValue, TaxRuleId,
+        TaxRuleStatus,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -55,6 +59,14 @@ pub fn routes() -> Router<ApiState> {
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules/{tax_rule_id}/{operation}",
             post(change_tax_rule_status),
         )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions",
+            post(create_promotion).get(list_promotions),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions/{promotion_id}/{operation}",
+            post(change_promotion_status),
+        )
         .layer(DefaultBodyLimit::max(128 * 1024))
 }
 
@@ -76,6 +88,14 @@ struct TaxRulePath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     tax_rule_id: Uuid,
+    operation: String,
+}
+
+#[derive(Deserialize)]
+struct PromotionPath {
+    merchant_account_id: Uuid,
+    store_id: Uuid,
+    promotion_id: Uuid,
     operation: String,
 }
 
@@ -131,6 +151,30 @@ struct CreateTaxRuleBody {
     rate_basis_points: u32,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreatePromotionBody {
+    handle: String,
+    name: String,
+    trigger: String,
+    redemption_code: Option<String>,
+    value_kind: String,
+    rate_basis_points: Option<u32>,
+    amount_minor: Option<i64>,
+    maximum_amount_minor: Option<i64>,
+    currency: String,
+    #[serde(default)]
+    minimum_subtotal_amount_minor: i64,
+    #[serde(default = "default_promotion_priority")]
+    priority: u16,
+    starts_at: Option<String>,
+    ends_at: Option<String>,
+}
+
+const fn default_promotion_priority() -> u16 {
+    100
+}
+
 #[derive(Serialize)]
 struct PriceListCreatedData {
     id: Uuid,
@@ -181,6 +225,178 @@ struct TaxRuleData {
     status: &'static str,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct PromotionData {
+    id: Uuid,
+    handle: String,
+    name: String,
+    trigger: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redemption_code: Option<String>,
+    value_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_basis_points: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amount_minor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum_amount_minor: Option<i64>,
+    currency: String,
+    minimum_subtotal_amount_minor: i64,
+    priority: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    starts_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ends_at: Option<ApiDateTime>,
+    status: &'static str,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+async fn create_promotion(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<CreatePromotionBody>,
+) -> Result<ApiResponse<PromotionData>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let trigger = PromotionTrigger::parse(&body.trigger).ok_or_else(|| invalid_enum("trigger"))?;
+    let value = promotion_value(&body)?;
+    let currency = CurrencyCode::parse(&body.currency).map_err(ApplicationError::from)?;
+    let starts_at = parse_optional_time("starts_at", body.starts_at.as_deref())?;
+    let ends_at = parse_optional_time("ends_at", body.ends_at.as_deref())?;
+    let idempotency = collection_mutation_request(&headers, path.store_id, &body)?;
+    let detail = state
+        .promotion_management
+        .create(CreatePromotionInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            handle: body.handle,
+            name: body.name,
+            trigger,
+            redemption_code: body.redemption_code,
+            value,
+            currency,
+            minimum_subtotal_amount_minor: body.minimum_subtotal_amount_minor,
+            priority: body.priority,
+            starts_at,
+            ends_at,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::created(promotion_data(detail)))
+}
+
+async fn list_promotions(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<Vec<PromotionData>>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let values = state
+        .promotion_management
+        .list(actor, StoreId::from_uuid(path.store_id))
+        .await?;
+    Ok(ApiResponse::ok(
+        values.into_iter().map(promotion_data).collect(),
+    ))
+}
+
+async fn change_promotion_status(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<PromotionPath>,
+) -> Result<ApiResponse<PromotionData>, ApiError> {
+    ensure_account(
+        actor.merchant_account_id().as_uuid(),
+        path.merchant_account_id,
+    )?;
+    let status = match path.operation.as_str() {
+        "activate" => PromotionStatus::Active,
+        "archive" => PromotionStatus::Archived,
+        _ => {
+            return Err(ApplicationError::NotFound {
+                resource: "operation",
+                id: path.operation,
+            }
+            .into());
+        }
+    };
+    let idempotency =
+        mutation_request(&headers, path.store_id, path.promotion_id, &status.as_str())?;
+    let detail = state
+        .promotion_management
+        .change_status(ChangePromotionStatusInput {
+            actor,
+            store_id: StoreId::from_uuid(path.store_id),
+            promotion_id: PromotionId::from_uuid(path.promotion_id),
+            status,
+            idempotency,
+        })
+        .await?;
+    Ok(ApiResponse::ok(promotion_data(detail)))
+}
+
+fn promotion_value(body: &CreatePromotionBody) -> Result<PromotionValue, ApiError> {
+    match body.value_kind.as_str() {
+        "percentage" if body.amount_minor.is_none() => Ok(PromotionValue::Percentage {
+            rate_basis_points: body
+                .rate_basis_points
+                .ok_or_else(|| invalid_enum("rate_basis_points"))?,
+            maximum_amount_minor: body.maximum_amount_minor,
+        }),
+        "fixed_amount"
+            if body.rate_basis_points.is_none() && body.maximum_amount_minor.is_none() =>
+        {
+            Ok(PromotionValue::FixedAmount {
+                amount_minor: body
+                    .amount_minor
+                    .ok_or_else(|| invalid_enum("amount_minor"))?,
+            })
+        }
+        _ => Err(invalid_enum("value_kind").into()),
+    }
+}
+
+fn promotion_data(detail: chaos_application::ports::PromotionDetail) -> PromotionData {
+    let promotion = detail.promotion;
+    PromotionData {
+        id: promotion.id().as_uuid(),
+        handle: promotion.handle().into(),
+        name: promotion.name().into(),
+        trigger: promotion.trigger().as_str(),
+        redemption_code: promotion.redemption_code().map(Into::into),
+        value_kind: promotion.value().kind(),
+        rate_basis_points: promotion.value().rate_basis_points(),
+        amount_minor: promotion.value().amount_minor(),
+        maximum_amount_minor: promotion.value().maximum_amount_minor(),
+        currency: promotion.currency().as_str().into(),
+        minimum_subtotal_amount_minor: promotion.minimum_subtotal_amount_minor(),
+        priority: promotion.priority(),
+        starts_at: promotion.starts_at().map(Into::into),
+        ends_at: promotion.ends_at().map(Into::into),
+        status: promotion.status().as_str(),
+        created_at: detail.created_at.into(),
+        updated_at: detail.updated_at.into(),
+    }
+}
+
+fn invalid_enum(field: &'static str) -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![FieldViolation {
+            field,
+            reason: "has an invalid or incompatible value".into(),
+        }],
+    }
 }
 
 async fn create_tax_rule(
@@ -880,6 +1096,124 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["data"]["status"], "archived");
+
+        let promotion_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/promotions",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &promotion_uri,
+                Some(&format!("create-promotion-{suffix}")),
+                Some(json!({
+                    "handle": "summer-ten", "name": "Summer ten percent",
+                    "trigger": "code", "redemption_code": "save-10",
+                    "value_kind": "percentage", "rate_basis_points": 1000,
+                    "maximum_amount_minor": 500, "currency": "USD",
+                    "minimum_subtotal_amount_minor": 1000, "priority": 10
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let promotion = response_json(response).await;
+        let promotion_id = promotion["data"]["id"].as_str().unwrap();
+        assert_eq!(promotion["data"]["redemption_code"], "SAVE-10");
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &promotion_uri,
+                Some(&format!("duplicate-promotion-{suffix}")),
+                Some(json!({
+                    "handle": "other-summer", "name": "Other summer",
+                    "trigger": "code", "redemption_code": "SAVE-10",
+                    "value_kind": "fixed_amount", "amount_minor": 100, "currency": "USD"
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(Method::GET, &promotion_uri, None, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{promotion_uri}/{promotion_id}/archive"),
+                Some(&format!("archive-promotion-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["data"]["status"], "archived");
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &promotion_uri,
+                Some(&format!("replace-promotion-{suffix}")),
+                Some(json!({
+                    "handle": "summer-ten-v2", "name": "Summer ten percent v2",
+                    "trigger": "code", "redemption_code": "SAVE-10",
+                    "value_kind": "percentage", "rate_basis_points": 1200, "currency": "USD"
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let replacement_id = response_json(response).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{promotion_uri}/{promotion_id}/activate"),
+                Some(&format!("conflicting-activation-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{promotion_uri}/{replacement_id}/archive"),
+                Some(&format!("archive-replacement-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::POST,
+                &format!("{promotion_uri}/{promotion_id}/activate"),
+                Some(&format!("activate-promotion-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["data"]["status"], "active");
 
         let response = router(owner_state.clone())
             .oneshot(request(Method::GET, &collection_uri, None, None))

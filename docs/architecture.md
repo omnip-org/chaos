@@ -72,7 +72,7 @@ Suggested implementation order:
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
 2. merchant: merchant accounts, memberships, roles, API keys, Stores, and Channels; domain resolution is reserved;
 3. catalog: products, variants, options, and publication; collections and media are reserved;
-4. pricing: Money, price lists, prices, and Store Tax Rules; promotions are planned;
+4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;
 6. sales: carts, line items, Checkout, Orders, and immutable guest contact/address snapshots;
 7. fulfillment: allocations, shipments, Returns, and future shipping-provider coordination;
@@ -105,6 +105,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Provider webhooks are signature-verified and written to an inbox before asynchronous processing. Provider event IDs enforce deduplication.
 - Payment providers are adapters. Payment state advances only from verified provider responses or webhooks.
 - Store-owned Shipping Services and destination regions are Fulfillment data. Sales requests a server-authoritative quote and freezes the selected service, amount, currency, and delivery estimate in Checkout and Order snapshots. External shipping providers remain Fulfillment infrastructure adapters. Notification providers deliver semantic requests without owning commerce state.
+- Store-owned Promotions remain in Pricing. Checkout evaluates active automatic rules plus an optional redemption code, chooses one deterministic best discount, allocates it across merchandise lines before tax, and freezes the selected rule evidence into Checkout and Order snapshots.
 - Analytics consumes immutable commerce facts and untrusted browser behavior without becoming the source of truth for either commerce state or authorization.
 
 ## 6. API conventions

@@ -7,7 +7,7 @@ use crate::{
     fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
     merchant::{MerchantAccountId, SalesChannelId, StoreId},
-    pricing::{Money, PriceListId, TaxRuleSnapshot},
+    pricing::{Money, PriceListId, PromotionSnapshot, TaxRuleSnapshot},
 };
 
 use super::CheckoutIdentity;
@@ -471,6 +471,7 @@ pub struct Checkout {
     identity: CheckoutIdentity,
     shipping: Option<ShippingSelection>,
     tax_rule: TaxRuleSnapshot,
+    promotion: Option<PromotionSnapshot>,
     tax_inclusive: bool,
     lines: Vec<CheckoutLine>,
     subtotal: Money,
@@ -480,6 +481,7 @@ pub struct Checkout {
 }
 
 impl Checkout {
+    #[allow(clippy::too_many_arguments)]
     pub fn freeze(
         cart: &Cart,
         reservation_id: Option<InventoryReservationId>,
@@ -487,6 +489,7 @@ impl Checkout {
         identity: CheckoutIdentity,
         shipping: Option<ShippingSelection>,
         tax_rule: TaxRuleSnapshot,
+        promotion: Option<PromotionSnapshot>,
         adjustments: Vec<CommercialAdjustments>,
     ) -> Result<Self, DomainError> {
         if cart.status != CartStatus::Active {
@@ -551,6 +554,7 @@ impl Checkout {
             identity,
             shipping,
             tax_rule,
+            promotion,
             tax_inclusive,
             lines,
             subtotal,
@@ -594,6 +598,9 @@ impl Checkout {
 
     pub const fn tax_rule(&self) -> &TaxRuleSnapshot {
         &self.tax_rule
+    }
+    pub const fn promotion(&self) -> Option<&PromotionSnapshot> {
+        self.promotion.as_ref()
     }
     pub const fn tax_inclusive(&self) -> bool {
         self.tax_inclusive
@@ -757,6 +764,7 @@ mod tests {
             checkout_identity(),
             Some(shipping_selection()),
             tax_rule(),
+            None,
             vec![adjustments],
         )
         .unwrap();
@@ -785,6 +793,7 @@ mod tests {
                 checkout_identity(),
                 Some(shipping_selection()),
                 tax_rule(),
+                None,
                 vec![adjustment],
             )
             .is_err()
@@ -821,6 +830,7 @@ mod tests {
                 identity,
                 None,
                 tax_rule(),
+                None,
                 vec![CommercialAdjustments::zero(CurrencyCode::USD)],
             )
             .is_err()

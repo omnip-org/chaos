@@ -28,7 +28,7 @@ use chaos_application::{
     },
     payments::{PaymentService, PaymentWorkers},
     ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
-    pricing::{CreatePriceList, PricingManagement, TaxManagement},
+    pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{CheckoutExpiryWorkers, OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
 };
@@ -45,7 +45,7 @@ use chaos_infrastructure::{
         PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
         PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
         PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
         PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
@@ -84,6 +84,7 @@ pub struct ApiState {
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
     pub tax_management: Arc<TaxManagement>,
+    pub promotion_management: Arc<PromotionManagement>,
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
@@ -150,6 +151,9 @@ impl ApiState {
         let tax_management = TaxManagement::new(Arc::new(PostgresTaxRuleRepository::new(
             infrastructure.runtime_pool(),
         )));
+        let promotion_management = PromotionManagement::new(Arc::new(
+            PostgresPromotionRepository::new(infrastructure.runtime_pool()),
+        ));
         let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -216,6 +220,7 @@ impl ApiState {
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
             tax_management: Arc::new(tax_management),
+            promotion_management: Arc::new(promotion_management),
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),

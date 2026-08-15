@@ -13,7 +13,10 @@ use chaos_domain::{
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::{InventoryReservationId, StockBalance},
     merchant::{SalesChannelId, StoreId},
-    pricing::{Money, PriceListId, TaxRule, TaxRuleId, TaxRuleSnapshot, TaxRuleStatus},
+    pricing::{
+        Money, PriceListId, Promotion, PromotionId, PromotionSnapshot, PromotionStatus,
+        PromotionTrigger, PromotionValue, TaxRule, TaxRuleId, TaxRuleSnapshot, TaxRuleStatus,
+    },
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
         CheckoutIdentity, CommercialAdjustments, Order, OrderId, OrderStatus, PostalAddress,
@@ -45,6 +48,41 @@ type CartHeaderRow = (
     OffsetDateTime,
     OffsetDateTime,
 );
+
+#[derive(sqlx::FromRow)]
+struct PromotionCheckoutRow {
+    id: Uuid,
+    handle: String,
+    name: String,
+    trigger: String,
+    redemption_code: Option<String>,
+    value_kind: String,
+    rate_basis_points: Option<i32>,
+    amount_minor: Option<i64>,
+    maximum_amount_minor: Option<i64>,
+    minimum_subtotal_amount_minor: i64,
+    priority: i16,
+    starts_at: Option<OffsetDateTime>,
+    ends_at: Option<OffsetDateTime>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PromotionSnapshotRow {
+    promotion_id: Uuid,
+    handle: String,
+    name: String,
+    trigger: String,
+    redemption_code: Option<String>,
+    value_kind: String,
+    rate_basis_points: Option<i32>,
+    amount_minor: Option<i64>,
+    maximum_amount_minor: Option<i64>,
+    currency: String,
+    minimum_subtotal_amount_minor: i64,
+    priority: i16,
+    starts_at: Option<OffsetDateTime>,
+    ends_at: Option<OffsetDateTime>,
+}
 type CartLineRow = (
     Uuid,
     Uuid,
@@ -367,6 +405,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         expires_at: OffsetDateTime,
         identity: CheckoutIdentity,
         shipping_service_id: Option<ShippingServiceId>,
+        promotion_code: Option<&str>,
         request: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -465,14 +504,35 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             identity.billing_address().country_code()
         };
         let tax_rule = load_active_tax_rule(&mut transaction, actor, tax_country).await?;
-        let taxable_amounts = cart
+        let subtotals = cart
             .lines()
             .iter()
             .map(CartLine::subtotal)
             .collect::<Result<Vec<_>, _>>()?;
+        let selected_promotion = select_promotion(
+            &mut transaction,
+            actor,
+            currency,
+            &subtotals,
+            promotion_code,
+            now,
+        )
+        .await?;
+        let discounts = selected_promotion.as_ref().map_or_else(
+            || Ok(subtotals.iter().map(|_| Money::zero(currency)).collect()),
+            |(_, allocations)| Ok::<_, ApplicationError>(allocations.clone()),
+        )?;
+        let taxable_amounts = subtotals
+            .iter()
+            .zip(&discounts)
+            .map(|(subtotal, discount)| subtotal.checked_sub(discount))
+            .collect::<Result<Vec<_>, _>>()?;
         let tax_inclusive = cart.lines()[0].tax_inclusive();
         let taxes = tax_rule.calculate_and_allocate(&taxable_amounts, tax_inclusive)?;
         let tax_snapshot = TaxRuleSnapshot::from_rule(&tax_rule)?;
+        let promotion_snapshot = selected_promotion
+            .as_ref()
+            .map(|(promotion, _)| PromotionSnapshot::from_promotion(promotion));
         let reservation_id =
             reserve_inventory(&mut transaction, actor, channel_id, &cart, expires_at).await?;
         let checkout = Checkout::freeze(
@@ -482,9 +542,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             identity,
             shipping,
             tax_snapshot,
-            taxes
+            promotion_snapshot,
+            discounts
                 .into_iter()
-                .map(|tax| CommercialAdjustments::new(Money::zero(currency), tax))
+                .zip(taxes)
+                .map(|(discount, tax)| CommercialAdjustments::new(discount, tax))
                 .collect::<Result<Vec<_>, _>>()?,
         )?;
         insert_checkout(
@@ -671,6 +733,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         copy_checkout_identity_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         copy_checkout_shipping_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         copy_checkout_tax_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
+        copy_checkout_promotion_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
              (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
@@ -1329,6 +1392,9 @@ async fn insert_checkout(
     .map_err(database_error)?;
     insert_checkout_identity(transaction, actor, checkout).await?;
     insert_checkout_tax(transaction, actor, checkout).await?;
+    if checkout.promotion().is_some() {
+        insert_checkout_promotion(transaction, actor, checkout).await?;
+    }
     if let Some(selection) = checkout.shipping() {
         insert_checkout_shipping(transaction, actor, checkout.id(), selection).await?;
     }
@@ -1448,6 +1514,52 @@ async fn insert_checkout_tax(
     .bind(rule.name())
     .bind(rule.country_code())
     .bind(i32::try_from(rule.rate_basis_points()).map_err(unexpected_conversion)?)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn insert_checkout_promotion(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout: &Checkout,
+) -> Result<(), ApplicationError> {
+    let promotion = checkout.promotion().ok_or_else(corrupt_sales_state)?;
+    sqlx::query(
+        "INSERT INTO sales.checkout_promotion_calculations \
+         (merchant_account_id, store_id, checkout_id, promotion_id, handle, name, trigger, \
+          redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
+          currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
+          discount_amount_minor) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7::pricing.promotion_trigger,$8, \
+                 $9::pricing.promotion_value_kind,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout.id().as_uuid())
+    .bind(promotion.promotion_id().as_uuid())
+    .bind(promotion.handle())
+    .bind(promotion.name())
+    .bind(promotion.trigger().as_str())
+    .bind(promotion.redemption_code())
+    .bind(promotion.value().kind())
+    .bind(
+        promotion
+            .value()
+            .rate_basis_points()
+            .map(i32::try_from)
+            .transpose()
+            .map_err(unexpected_conversion)?,
+    )
+    .bind(promotion.value().amount_minor())
+    .bind(promotion.value().maximum_amount_minor())
+    .bind(promotion.currency().as_str())
+    .bind(promotion.minimum_subtotal_amount_minor())
+    .bind(i16::try_from(promotion.priority()).map_err(unexpected_conversion)?)
+    .bind(promotion.starts_at())
+    .bind(promotion.ends_at())
+    .bind(checkout.discount().amount_minor())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1575,6 +1687,31 @@ async fn copy_checkout_tax_to_order(
     Ok(())
 }
 
+async fn copy_checkout_promotion_to_order(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    order_id: OrderId,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO sales.order_promotion_calculations \
+         (merchant_account_id, store_id, order_id, promotion_id, handle, name, trigger, \
+          redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
+          currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
+          discount_amount_minor) \
+         SELECT merchant_account_id, store_id, $4, promotion_id, handle, name, trigger, \
+                redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
+                currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
+                discount_amount_minor \
+         FROM sales.checkout_promotion_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid()).bind(order_id.as_uuid())
+    .execute(&mut **transaction).await.map_err(database_error)?;
+    Ok(())
+}
+
 async fn load_checkout_identity(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1692,6 +1829,92 @@ async fn load_active_tax_rule(
         TaxRuleStatus::Active,
     )
     .map_err(ApplicationError::from)
+}
+
+async fn select_promotion(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    currency: CurrencyCode,
+    subtotals: &[Money],
+    requested_code: Option<&str>,
+    now: OffsetDateTime,
+) -> Result<Option<(Promotion, Vec<Money>)>, ApplicationError> {
+    let requested_code = requested_code.map(|code| code.trim().to_ascii_uppercase());
+    if requested_code.as_deref().is_some_and(str::is_empty) {
+        return Err(invalid_promotion_code());
+    }
+    let rows = sqlx::query_as::<_, PromotionCheckoutRow>(
+        "SELECT id, handle, name, trigger::text, redemption_code::text, value_kind::text, \
+                rate_basis_points, amount_minor, maximum_amount_minor, \
+                minimum_subtotal_amount_minor, priority, starts_at, ends_at \
+         FROM pricing.promotions \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND currency = $3 \
+           AND status = 'active' \
+           AND (trigger = 'automatic' OR (trigger = 'code' AND redemption_code = $4)) \
+         ORDER BY priority, id FOR SHARE",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(currency.as_str())
+    .bind(requested_code.as_deref())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+
+    let mut requested_code_eligible = requested_code.is_none();
+    let mut best: Option<(Promotion, Vec<Money>, i64)> = None;
+    for row in rows {
+        let value = match row.value_kind.as_str() {
+            "percentage" => PromotionValue::Percentage {
+                rate_basis_points: u32::try_from(
+                    row.rate_basis_points.ok_or_else(corrupt_sales_state)?,
+                )
+                .map_err(unexpected_conversion)?,
+                maximum_amount_minor: row.maximum_amount_minor,
+            },
+            "fixed_amount" => PromotionValue::FixedAmount {
+                amount_minor: row.amount_minor.ok_or_else(corrupt_sales_state)?,
+            },
+            _ => return Err(corrupt_sales_state()),
+        };
+        let promotion = Promotion::rehydrate(
+            PromotionId::from_uuid(row.id),
+            row.handle,
+            row.name,
+            PromotionTrigger::parse(&row.trigger).ok_or_else(corrupt_sales_state)?,
+            row.redemption_code,
+            value,
+            currency,
+            row.minimum_subtotal_amount_minor,
+            u16::try_from(row.priority).map_err(unexpected_conversion)?,
+            row.starts_at,
+            row.ends_at,
+            PromotionStatus::Active,
+        )?;
+        let Some(allocations) = promotion.calculate_and_allocate(subtotals, now)? else {
+            continue;
+        };
+        if promotion.trigger() == PromotionTrigger::Code {
+            requested_code_eligible = true;
+        }
+        let amount = allocations.iter().try_fold(0_i64, |total, allocation| {
+            total
+                .checked_add(allocation.amount_minor())
+                .ok_or_else(corrupt_sales_state)
+        })?;
+        let replace = best.as_ref().is_none_or(|(current, _, current_amount)| {
+            amount > *current_amount
+                || (amount == *current_amount
+                    && (promotion.priority(), promotion.id()) < (current.priority(), current.id()))
+        });
+        if replace {
+            best = Some((promotion, allocations, amount));
+        }
+    }
+    if !requested_code_eligible {
+        return Err(invalid_promotion_code());
+    }
+    Ok(best.map(|(promotion, allocations, _)| (promotion, allocations)))
 }
 
 async fn load_active_shipping_service(
@@ -1832,6 +2055,82 @@ async fn load_order_tax(
     tax_snapshot_from_row(row)
 }
 
+fn promotion_snapshot_from_row(
+    row: PromotionSnapshotRow,
+) -> Result<PromotionSnapshot, ApplicationError> {
+    let value = match row.value_kind.as_str() {
+        "percentage" => PromotionValue::Percentage {
+            rate_basis_points: u32::try_from(
+                row.rate_basis_points.ok_or_else(corrupt_sales_state)?,
+            )
+            .map_err(unexpected_conversion)?,
+            maximum_amount_minor: row.maximum_amount_minor,
+        },
+        "fixed_amount" => PromotionValue::FixedAmount {
+            amount_minor: row.amount_minor.ok_or_else(corrupt_sales_state)?,
+        },
+        _ => return Err(corrupt_sales_state()),
+    };
+    PromotionSnapshot::rehydrate(
+        PromotionId::from_uuid(row.promotion_id),
+        row.handle,
+        row.name,
+        PromotionTrigger::parse(&row.trigger).ok_or_else(corrupt_sales_state)?,
+        row.redemption_code,
+        value,
+        parse_currency(&row.currency)?,
+        row.minimum_subtotal_amount_minor,
+        u16::try_from(row.priority).map_err(unexpected_conversion)?,
+        row.starts_at,
+        row.ends_at,
+    )
+    .map_err(ApplicationError::from)
+}
+
+async fn load_checkout_promotion(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+) -> Result<Option<PromotionSnapshot>, ApplicationError> {
+    sqlx::query_as::<_, PromotionSnapshotRow>(
+        "SELECT promotion_id, handle, name, trigger::text, redemption_code, value_kind::text, \
+                rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
+                minimum_subtotal_amount_minor, priority, starts_at, ends_at \
+         FROM sales.checkout_promotion_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .map(promotion_snapshot_from_row)
+    .transpose()
+}
+
+async fn load_order_promotion(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    order_id: OrderId,
+) -> Result<Option<PromotionSnapshot>, ApplicationError> {
+    sqlx::query_as::<_, PromotionSnapshotRow>(
+        "SELECT promotion_id, handle, name, trigger::text, redemption_code, value_kind::text, \
+                rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
+                minimum_subtotal_amount_minor, priority, starts_at, ends_at \
+         FROM sales.order_promotion_calculations \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .map(promotion_snapshot_from_row)
+    .transpose()
+}
+
 async fn load_checkout(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -1856,6 +2155,7 @@ async fn load_checkout(
     let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
     let shipping = load_checkout_shipping(transaction, actor, checkout_id).await?;
     let tax_rule = load_checkout_tax(transaction, actor, checkout_id).await?;
+    let promotion = load_checkout_promotion(transaction, actor, checkout_id).await?;
     let lines = sqlx::query_as::<_, CheckoutLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, quantity, unit_price_amount_minor, subtotal_amount_minor, \
@@ -1882,6 +2182,7 @@ async fn load_checkout(
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
         tax_rule,
+        promotion,
         tax_inclusive: row.10,
         shipping,
         shipping_amount_minor: row.11,
@@ -1937,6 +2238,7 @@ async fn load_order(
     let identity = load_order_identity(transaction, actor, order_id).await?;
     let shipping = load_order_shipping(transaction, actor, order_id).await?;
     let tax_rule = load_order_tax(transaction, actor, order_id).await?;
+    let promotion = load_order_promotion(transaction, actor, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -1984,6 +2286,7 @@ async fn load_order(
         discount_amount_minor: row.8,
         tax_amount_minor: row.9,
         tax_rule,
+        promotion,
         tax_inclusive: row.10,
         shipping,
         shipping_amount_minor: row.11,
@@ -2077,6 +2380,7 @@ struct CheckoutSnapshot {
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     tax_rule: TaxRuleSnapshotData,
+    promotion: Option<PromotionSnapshotData>,
     tax_inclusive: bool,
     shipping: Option<ShippingSelectionSnapshot>,
     shipping_amount_minor: i64,
@@ -2117,6 +2421,7 @@ struct OrderSnapshot {
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     tax_rule: TaxRuleSnapshotData,
+    promotion: Option<PromotionSnapshotData>,
     tax_inclusive: bool,
     shipping: Option<ShippingSelectionSnapshot>,
     shipping_amount_minor: i64,
@@ -2173,6 +2478,24 @@ struct TaxRuleSnapshotData {
     name: String,
     country_code: String,
     rate_basis_points: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PromotionSnapshotData {
+    promotion_id: Uuid,
+    handle: String,
+    name: String,
+    trigger: String,
+    redemption_code: Option<String>,
+    value_kind: String,
+    rate_basis_points: Option<u32>,
+    amount_minor: Option<i64>,
+    maximum_amount_minor: Option<i64>,
+    currency: String,
+    minimum_subtotal_amount_minor: i64,
+    priority: u16,
+    starts_at: Option<String>,
+    ends_at: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2248,6 +2571,11 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
         tax_rule: TaxRuleSnapshotData::from(&detail.tax_rule),
+        promotion: detail
+            .promotion
+            .as_ref()
+            .map(PromotionSnapshotData::try_from)
+            .transpose()?,
         tax_inclusive: detail.tax_inclusive,
         shipping: detail
             .shipping
@@ -2283,6 +2611,7 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
         tax_rule: snapshot.tax_rule.try_into()?,
+        promotion: snapshot.promotion.map(TryInto::try_into).transpose()?,
         tax_inclusive: snapshot.tax_inclusive,
         shipping: snapshot
             .shipping
@@ -2316,6 +2645,11 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         discount_amount_minor: detail.discount_amount_minor,
         tax_amount_minor: detail.tax_amount_minor,
         tax_rule: TaxRuleSnapshotData::from(&detail.tax_rule),
+        promotion: detail
+            .promotion
+            .as_ref()
+            .map(PromotionSnapshotData::try_from)
+            .transpose()?,
         tax_inclusive: detail.tax_inclusive,
         shipping: detail
             .shipping
@@ -2361,6 +2695,7 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         discount_amount_minor: snapshot.discount_amount_minor,
         tax_amount_minor: snapshot.tax_amount_minor,
         tax_rule: snapshot.tax_rule.try_into()?,
+        promotion: snapshot.promotion.map(TryInto::try_into).transpose()?,
         tax_inclusive: snapshot.tax_inclusive,
         shipping: snapshot
             .shipping
@@ -2463,6 +2798,60 @@ impl TryFrom<TaxRuleSnapshotData> for TaxRuleSnapshot {
             value.name,
             value.country_code,
             value.rate_basis_points,
+        )
+        .map_err(ApplicationError::from)
+    }
+}
+
+impl TryFrom<&PromotionSnapshot> for PromotionSnapshotData {
+    type Error = ApplicationError;
+
+    fn try_from(value: &PromotionSnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
+            promotion_id: value.promotion_id().as_uuid(),
+            handle: value.handle().into(),
+            name: value.name().into(),
+            trigger: value.trigger().as_str().into(),
+            redemption_code: value.redemption_code().map(Into::into),
+            value_kind: value.value().kind().into(),
+            rate_basis_points: value.value().rate_basis_points(),
+            amount_minor: value.value().amount_minor(),
+            maximum_amount_minor: value.value().maximum_amount_minor(),
+            currency: value.currency().as_str().into(),
+            minimum_subtotal_amount_minor: value.minimum_subtotal_amount_minor(),
+            priority: value.priority(),
+            starts_at: value.starts_at().map(format_time).transpose()?,
+            ends_at: value.ends_at().map(format_time).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<PromotionSnapshotData> for PromotionSnapshot {
+    type Error = ApplicationError;
+
+    fn try_from(value: PromotionSnapshotData) -> Result<Self, Self::Error> {
+        let promotion_value = match value.value_kind.as_str() {
+            "percentage" => PromotionValue::Percentage {
+                rate_basis_points: value.rate_basis_points.ok_or_else(corrupt_sales_state)?,
+                maximum_amount_minor: value.maximum_amount_minor,
+            },
+            "fixed_amount" => PromotionValue::FixedAmount {
+                amount_minor: value.amount_minor.ok_or_else(corrupt_sales_state)?,
+            },
+            _ => return Err(corrupt_sales_state()),
+        };
+        PromotionSnapshot::rehydrate(
+            PromotionId::from_uuid(value.promotion_id),
+            value.handle,
+            value.name,
+            PromotionTrigger::parse(&value.trigger).ok_or_else(corrupt_sales_state)?,
+            value.redemption_code,
+            promotion_value,
+            parse_currency(&value.currency)?,
+            value.minimum_subtotal_amount_minor,
+            value.priority,
+            value.starts_at.as_deref().map(parse_time).transpose()?,
+            value.ends_at.as_deref().map(parse_time).transpose()?,
         )
         .map_err(ApplicationError::from)
     }
@@ -2783,6 +3172,15 @@ fn invalid_shipping_selection() -> ApplicationError {
     }
 }
 
+fn invalid_promotion_code() -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "promotion_code",
+            reason: "must reference an active and eligible code for the Cart".into(),
+        }],
+    }
+}
+
 fn tax_rule_unavailable(country_code: &str) -> ApplicationError {
     ApplicationError::Validation {
         violations: vec![chaos_domain::FieldViolation {
@@ -2974,7 +3372,6 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-
         for (id, code) in [
             (store_id, "sales-store"),
             (other_store_id, "other-sales-store"),
@@ -3000,6 +3397,19 @@ mod tests {
             .await
             .unwrap();
         }
+        sqlx::query(
+            "INSERT INTO pricing.promotions \
+             (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+              rate_basis_points, currency, minimum_subtotal_amount_minor, priority) \
+             VALUES ($1, $2, $3, 'automatic-ten', 'Automatic ten percent', 'automatic', \
+                     'percentage', 1000, 'USD', 0, 100)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         let shipping_service_id = ShippingServiceId::new();
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
@@ -3201,6 +3611,7 @@ mod tests {
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
                     shipping_service_id: Some(shipping_service_id),
+                    promotion_code: None,
                     now,
                     idempotency: request(first_key, 3),
                 })
@@ -3218,6 +3629,7 @@ mod tests {
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
                     shipping_service_id: Some(shipping_service_id),
+                    promotion_code: None,
                     now,
                     idempotency: request(second_key, 3),
                 })
@@ -3226,8 +3638,10 @@ mod tests {
         let first = first.await.unwrap().unwrap();
         let second = second.await.unwrap().unwrap();
         assert_eq!(first.id, second.id);
-        assert_eq!(first.tax_amount_minor, 338);
-        assert_eq!(first.total_amount_minor, 4_088);
+        assert_eq!(first.discount_amount_minor, 375);
+        assert_eq!(first.tax_amount_minor, 304);
+        assert_eq!(first.total_amount_minor, 3_679);
+        assert_eq!(first.promotion.as_ref().unwrap().handle(), "automatic-ten");
         assert_eq!(first.lines[0].product_title, "Checkout Product");
         assert!(first.inventory_reservation_id.is_some());
         assert_eq!(first.identity.contact().email(), "guest@example.com");
@@ -3273,6 +3687,7 @@ mod tests {
                     billing_address: address_input(),
                     shipping_address: Some(address_input()),
                     shipping_service_id: Some(shipping_service_id),
+                    promotion_code: None,
                     now,
                     idempotency: request(format!("second-checkout-{suffix}"), 4),
                 })

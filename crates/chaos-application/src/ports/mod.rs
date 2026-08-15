@@ -11,6 +11,7 @@ mod passwordless;
 mod payments;
 mod pricing;
 mod pricing_management;
+mod promotion;
 mod sales;
 mod shopper;
 mod store;
@@ -54,6 +55,7 @@ pub use pricing_management::{
     PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
     PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
 };
+pub use promotion::{PromotionDetail, PromotionRepository};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
     CheckoutLineItem, OrderDetail, OrderLineItem, OrderManagementRepository, OrderTransitionItem,

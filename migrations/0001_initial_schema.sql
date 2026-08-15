@@ -71,6 +71,9 @@ CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
+CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
+CREATE TYPE pricing.promotion_trigger AS ENUM ('automatic', 'code');
+CREATE TYPE pricing.promotion_value_kind AS ENUM ('percentage', 'fixed_amount');
 CREATE TYPE inventory.inventory_location_status AS ENUM ('active', 'archived');
 CREATE TYPE inventory.inventory_reservation_status AS ENUM (
     'active',
@@ -671,6 +674,63 @@ CREATE UNIQUE INDEX tax_rules_active_country_key
 CREATE INDEX tax_rules_store_status_idx
     ON pricing.tax_rules (merchant_account_id, store_id, status, created_at, id);
 
+CREATE TABLE pricing.promotions (
+    id                            UUID                         NOT NULL PRIMARY KEY,
+    merchant_account_id           UUID                         NOT NULL,
+    store_id                      UUID                         NOT NULL,
+    handle                        TEXT                         NOT NULL,
+    name                          TEXT                         NOT NULL,
+    trigger                       pricing.promotion_trigger    NOT NULL,
+    redemption_code               extensions.citext,
+    value_kind                    pricing.promotion_value_kind NOT NULL,
+    rate_basis_points             INTEGER,
+    amount_minor                  BIGINT,
+    maximum_amount_minor          BIGINT,
+    currency                      CHAR(3)                      NOT NULL,
+    minimum_subtotal_amount_minor BIGINT                       NOT NULL DEFAULT 0,
+    priority                      SMALLINT                     NOT NULL DEFAULT 100,
+    starts_at                     TIMESTAMPTZ,
+    ends_at                       TIMESTAMPTZ,
+    status                        pricing.promotion_status     NOT NULL DEFAULT 'active',
+    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, handle),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, currency)
+        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    CONSTRAINT promotions_handle_format_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT promotions_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT promotions_redemption_shape_check CHECK (
+        (trigger = 'automatic' AND redemption_code IS NULL)
+        OR (trigger = 'code' AND redemption_code::text ~ '^[A-Z0-9-]{1,64}$')
+    ),
+    CONSTRAINT promotions_value_shape_check CHECK (
+        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
+            AND amount_minor IS NULL
+            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
+        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
+            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
+    ),
+    CONSTRAINT promotions_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT promotions_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
+    CONSTRAINT promotions_priority_check CHECK (priority BETWEEN 0 AND 32767),
+    CONSTRAINT promotions_schedule_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
+    )
+);
+
+CREATE UNIQUE INDEX promotions_active_redemption_code_key
+    ON pricing.promotions (merchant_account_id, store_id, redemption_code)
+    WHERE status = 'active' AND redemption_code IS NOT NULL;
+
+CREATE INDEX promotions_checkout_lookup_idx
+    ON pricing.promotions (
+        merchant_account_id, store_id, currency, status, trigger, priority, id
+    );
+
 CREATE TABLE inventory.inventory_locations (
     id                   UUID                                    NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                                    NOT NULL,
@@ -1087,6 +1147,53 @@ CREATE TABLE sales.checkout_tax_calculations (
     CONSTRAINT checkout_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
 );
 
+CREATE TABLE sales.checkout_promotion_calculations (
+    merchant_account_id           UUID                      NOT NULL,
+    store_id                      UUID                      NOT NULL,
+    checkout_id                   UUID                      NOT NULL,
+    promotion_id                  UUID                      NOT NULL,
+    handle                        TEXT                      NOT NULL,
+    name                          TEXT                      NOT NULL,
+    trigger                       pricing.promotion_trigger NOT NULL,
+    redemption_code               TEXT,
+    value_kind                    pricing.promotion_value_kind NOT NULL,
+    rate_basis_points             INTEGER,
+    amount_minor                  BIGINT,
+    maximum_amount_minor          BIGINT,
+    currency                      CHAR(3)                   NOT NULL,
+    minimum_subtotal_amount_minor BIGINT                    NOT NULL,
+    priority                      SMALLINT                  NOT NULL,
+    starts_at                     TIMESTAMPTZ,
+    ends_at                       TIMESTAMPTZ,
+    discount_amount_minor         BIGINT                    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
+    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
+        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, promotion_id)
+        REFERENCES pricing.promotions(merchant_account_id, store_id, id),
+    CONSTRAINT checkout_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT checkout_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT checkout_promotion_trigger_check CHECK (
+        (trigger = 'automatic' AND redemption_code IS NULL)
+        OR (trigger = 'code' AND redemption_code ~ '^[A-Z0-9-]{1,64}$')
+    ),
+    CONSTRAINT checkout_promotion_value_check CHECK (
+        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
+            AND amount_minor IS NULL
+            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
+        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
+            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
+    ),
+    CONSTRAINT checkout_promotion_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
+    CONSTRAINT checkout_promotion_priority_check CHECK (priority BETWEEN 0 AND 32767),
+    CONSTRAINT checkout_promotion_schedule_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
+    ),
+    CONSTRAINT checkout_promotion_discount_check CHECK (discount_amount_minor > 0),
+    CONSTRAINT checkout_promotion_currency_check CHECK (currency ~ '^[A-Z]{3}$')
+);
+
 CREATE TABLE sales.checkout_lines (
     merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
@@ -1267,6 +1374,53 @@ CREATE TABLE sales.order_tax_calculations (
     CONSTRAINT order_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
     CONSTRAINT order_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
     CONSTRAINT order_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
+);
+
+CREATE TABLE sales.order_promotion_calculations (
+    merchant_account_id           UUID                      NOT NULL,
+    store_id                      UUID                      NOT NULL,
+    order_id                      UUID                      NOT NULL,
+    promotion_id                  UUID                      NOT NULL,
+    handle                        TEXT                      NOT NULL,
+    name                          TEXT                      NOT NULL,
+    trigger                       pricing.promotion_trigger NOT NULL,
+    redemption_code               TEXT,
+    value_kind                    pricing.promotion_value_kind NOT NULL,
+    rate_basis_points             INTEGER,
+    amount_minor                  BIGINT,
+    maximum_amount_minor          BIGINT,
+    currency                      CHAR(3)                   NOT NULL,
+    minimum_subtotal_amount_minor BIGINT                    NOT NULL,
+    priority                      SMALLINT                  NOT NULL,
+    starts_at                     TIMESTAMPTZ,
+    ends_at                       TIMESTAMPTZ,
+    discount_amount_minor         BIGINT                    NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, order_id),
+    FOREIGN KEY (merchant_account_id, store_id, order_id)
+        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, promotion_id)
+        REFERENCES pricing.promotions(merchant_account_id, store_id, id),
+    CONSTRAINT order_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT order_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT order_promotion_trigger_check CHECK (
+        (trigger = 'automatic' AND redemption_code IS NULL)
+        OR (trigger = 'code' AND redemption_code ~ '^[A-Z0-9-]{1,64}$')
+    ),
+    CONSTRAINT order_promotion_value_check CHECK (
+        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
+            AND amount_minor IS NULL
+            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
+        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
+            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
+    ),
+    CONSTRAINT order_promotion_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
+    CONSTRAINT order_promotion_priority_check CHECK (priority BETWEEN 0 AND 32767),
+    CONSTRAINT order_promotion_schedule_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
+    ),
+    CONSTRAINT order_promotion_discount_check CHECK (discount_amount_minor > 0),
+    CONSTRAINT order_promotion_currency_check CHECK (currency ~ '^[A-Z]{3}$')
 );
 
 CREATE TABLE sales.order_lines (
@@ -2012,6 +2166,7 @@ ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pricing.promotions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.stock_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory.inventory_reservations ENABLE ROW LEVEL SECURITY;
@@ -2023,12 +2178,14 @@ ALTER TABLE sales.checkouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_tax_calculations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.checkout_promotion_calculations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.checkout_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_tax_calculations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales.order_promotion_calculations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales.order_transitions ENABLE ROW LEVEL SECURITY;
@@ -2249,6 +2406,16 @@ CREATE POLICY merchant_account_isolation ON pricing.tax_rules
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON pricing.promotions
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON inventory.inventory_locations
     USING (
         merchant_account_id =
@@ -2359,6 +2526,16 @@ CREATE POLICY merchant_account_isolation ON sales.checkout_tax_calculations
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON sales.checkout_promotion_calculations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON sales.checkout_lines
     USING (
         merchant_account_id =
@@ -2410,6 +2587,16 @@ CREATE POLICY merchant_account_isolation ON sales.order_addresses
     );
 
 CREATE POLICY merchant_account_isolation ON sales.order_tax_calculations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON sales.order_promotion_calculations
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -2972,10 +3159,12 @@ REVOKE UPDATE, DELETE
     ON inventory.stock_ledger_entries FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON sales.checkout_contacts, sales.checkout_addresses, sales.checkout_lines,
-       sales.checkout_shipping_selections, sales.checkout_tax_calculations FROM chaos_runtime;
+       sales.checkout_shipping_selections, sales.checkout_tax_calculations,
+       sales.checkout_promotion_calculations FROM chaos_runtime;
 REVOKE UPDATE, DELETE
     ON sales.order_contacts, sales.order_addresses, sales.order_lines,
-       sales.order_shipping_selections, sales.order_tax_calculations, sales.order_transitions
+       sales.order_shipping_selections, sales.order_tax_calculations,
+       sales.order_promotion_calculations, sales.order_transitions
     FROM chaos_runtime;
 REVOKE DELETE ON sales.checkouts, sales.orders FROM chaos_runtime;
 REVOKE UPDATE, DELETE

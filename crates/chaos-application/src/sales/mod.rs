@@ -50,6 +50,7 @@ pub struct CreateCheckoutInput {
     pub billing_address: PostalAddressInput,
     pub shipping_address: Option<PostalAddressInput>,
     pub shipping_service_id: Option<ShippingServiceId>,
+    pub promotion_code: Option<String>,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
 }
@@ -205,6 +206,7 @@ impl StorefrontSales {
                 input.now + Duration::minutes(15),
                 identity,
                 input.shipping_service_id,
+                input.promotion_code.as_deref(),
                 &input.idempotency,
             )
             .await
