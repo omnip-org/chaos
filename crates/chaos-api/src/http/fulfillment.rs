@@ -24,12 +24,11 @@ use chaos_domain::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext, merchant::idempotency_key,
-    response::format_time,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext,
+    merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -125,8 +124,8 @@ struct FulfillmentData {
     carrier: Option<String>,
     tracking_number: Option<String>,
     allocations: Vec<QuantityLine>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -135,8 +134,8 @@ struct ReturnData {
     order_id: Uuid,
     status: &'static str,
     lines: Vec<QuantityLine>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 async fn create_fulfillment(
@@ -196,7 +195,7 @@ async fn transition_fulfillment(
             target_status,
             carrier: body.carrier,
             tracking_number: body.tracking_number,
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -226,7 +225,7 @@ async fn create_return(
                     quantity: line.quantity,
                 })
                 .collect(),
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -279,7 +278,7 @@ async fn transition_return(
             return_id: ReturnId::from_uuid(path.return_id),
             target_status,
             receipt,
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -316,8 +315,8 @@ fn fulfillment_data(value: FulfillmentDetail) -> Result<FulfillmentData, Applica
                 quantity: line.quantity,
             })
             .collect(),
-        created_at: format_time(value.created_at)?,
-        updated_at: format_time(value.updated_at)?,
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
     })
 }
 
@@ -334,8 +333,8 @@ fn return_data(value: ReturnDetail) -> Result<ReturnData, ApplicationError> {
                 quantity: line.quantity,
             })
             .collect(),
-        created_at: format_time(value.created_at)?,
-        updated_at: format_time(value.updated_at)?,
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
     })
 }
 

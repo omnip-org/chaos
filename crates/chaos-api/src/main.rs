@@ -5,7 +5,6 @@ use chaos_api::{
     telemetry,
 };
 use chaos_infrastructure::{config::Settings, state::AppState};
-use time::OffsetDateTime;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
@@ -18,10 +17,12 @@ async fn main() -> anyhow::Result<()> {
     let state = ApiState::new(AppState::new(&settings)?, lifecycle.clone(), &settings)?;
     let payment_worker = tokio::spawn(payment_worker_loop(
         state.payment_workers.clone(),
+        state.clock.clone(),
         lifecycle.clone(),
     ));
     let search_worker = tokio::spawn(search_worker_loop(
         state.search_indexer.clone(),
+        state.clock.clone(),
         lifecycle.clone(),
     ));
     let app = http::router(state);
@@ -47,14 +48,12 @@ async fn main() -> anyhow::Result<()> {
 
 async fn search_worker_loop(
     indexer: std::sync::Arc<chaos_infrastructure::repositories::PostgresSearchIndexer>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = indexer
-            .run_batch(worker_id, 100, OffsetDateTime::now_utc())
-            .await
-        {
+        if let Err(error) = indexer.run_batch(worker_id, 100, clock.now()).await {
             tracing::warn!(%worker_id, %error, "search indexing batch failed");
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -63,11 +62,12 @@ async fn search_worker_loop(
 
 async fn payment_worker_loop(
     workers: std::sync::Arc<chaos_application::payments::PaymentWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
     while lifecycle.is_accepting_traffic() {
-        let now = OffsetDateTime::now_utc();
+        let now = clock.now();
         if let Err(error) = workers.run_outbox_batch(worker_id, now, 50).await {
             tracing::warn!(%worker_id, %error, "payment outbox batch failed");
         }

@@ -1,7 +1,28 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use chaos_application::ApplicationError;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ApiDateTime(OffsetDateTime);
+
+impl From<OffsetDateTime> for ApiDateTime {
+    fn from(value: OffsetDateTime) -> Self {
+        Self(value)
+    }
+}
+
+impl Serialize for ApiDateTime {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        time::serde::rfc3339::serialize(&self.0, serializer)
+    }
+}
+
+pub fn parse_api_time(value: &str) -> Result<OffsetDateTime, time::error::Parse> {
+    OffsetDateTime::parse(value, &Rfc3339)
+}
 
 #[derive(Debug, Serialize)]
 pub struct ResponseEnvelope<T> {
@@ -57,8 +78,17 @@ impl<T: Serialize> IntoResponse for ApiResponse<T> {
     }
 }
 
-pub(super) fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
-    value
-        .format(&Rfc3339)
-        .map_err(|error| ApplicationError::Unexpected(error.into()))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_time_has_one_rfc3339_representation() {
+        let value = parse_api_time("2026-08-15T12:34:56.123456Z").unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&ApiDateTime::from(value)).unwrap(),
+            "\"2026-08-15T12:34:56.123456Z\""
+        );
+    }
 }

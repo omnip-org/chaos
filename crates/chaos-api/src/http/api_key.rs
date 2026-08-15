@@ -12,9 +12,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
-    response::format_time,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -78,9 +77,9 @@ struct ApiKeyListData {
     class: &'static str,
     mode: &'static str,
     scopes: Vec<&'static str>,
-    created_at: String,
+    created_at: ApiDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
-    revoked_at: Option<String>,
+    revoked_at: Option<ApiDateTime>,
 }
 
 async fn create_api_key(
@@ -172,8 +171,8 @@ async fn list_api_keys(
                 class: item.class.as_str(),
                 mode: item.mode.as_str(),
                 scopes: item.scopes.iter().map(|scope| scope.as_str()).collect(),
-                created_at: format_time(item.created_at)?,
-                revoked_at: item.revoked_at.map(format_time).transpose()?,
+                created_at: item.created_at.into(),
+                revoked_at: item.revoked_at.map(Into::into),
             })
         })
         .collect::<Result<Vec<_>, ApplicationError>>()?;

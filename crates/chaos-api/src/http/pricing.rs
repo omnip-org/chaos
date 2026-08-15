@@ -16,13 +16,13 @@ use chaos_domain::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
-    response::format_time,
+    response::parse_api_time,
 };
 
 pub fn routes() -> Router<ApiState> {
@@ -121,12 +121,12 @@ struct PriceListData {
     tax_inclusive: bool,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    starts_at: Option<String>,
+    starts_at: Option<ApiDateTime>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    ends_at: Option<String>,
+    ends_at: Option<ApiDateTime>,
     price_count: u32,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -369,11 +369,11 @@ fn price_list_data(
         currency: item.currency.as_str().to_owned(),
         tax_inclusive: item.tax_inclusive,
         status: item.status.as_str(),
-        starts_at: item.starts_at.map(format_time).transpose()?,
-        ends_at: item.ends_at.map(format_time).transpose()?,
+        starts_at: item.starts_at.map(Into::into),
+        ends_at: item.ends_at.map(Into::into),
         price_count: item.price_count,
-        created_at: format_time(item.created_at)?,
-        updated_at: format_time(item.updated_at)?,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
     })
 }
 
@@ -391,7 +391,7 @@ fn parse_optional_time(
 ) -> Result<Option<OffsetDateTime>, ApiError> {
     value
         .map(|value| {
-            OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
+            parse_api_time(value).map_err(|_| {
                 ApplicationError::Validation {
                     violations: vec![FieldViolation {
                         field,

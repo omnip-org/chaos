@@ -1,5 +1,7 @@
 # System Architecture
 
+Cross-cutting time handling follows [Time conventions](time-conventions.md).
+
 ## 1. Architecture style
 
 The first production version uses a modular monolith. The initial deployment units are a stateless API process and asynchronous worker processes that share the same domain code. Code is organized by business domain rather than by one global technical layer. Modules interact only through public application services or domain events.

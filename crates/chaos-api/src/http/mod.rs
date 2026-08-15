@@ -27,7 +27,7 @@ use chaos_application::{
         MerchantQueries, StoreAdministration,
     },
     payments::{PaymentService, PaymentWorkers},
-    ports::PasswordlessAuthentication,
+    ports::{Clock, PasswordlessAuthentication},
     pricing::{CreatePriceList, PricingManagement},
     sales::{OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
@@ -35,6 +35,7 @@ use chaos_application::{
 use std::sync::Arc;
 
 use chaos_infrastructure::{
+    clock::SystemClock,
     config::Settings,
     passwordless::PasswordlessAuth,
     repositories::{
@@ -63,7 +64,7 @@ pub use extract::{
     ApiJson, ApiPath, ApiQuery, AuthenticatedSession, CartMachine, CheckoutMachine,
     MerchantContext, StorefrontMachine,
 };
-pub use response::{ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
+pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -90,6 +91,7 @@ pub struct ApiState {
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
+    pub clock: Arc<dyn Clock>,
 }
 
 impl ApiState {
@@ -201,6 +203,7 @@ impl ApiState {
             payment_workers: Arc::new(payment_workers),
             fulfillment_management: Arc::new(fulfillment_management),
             search_indexer: Arc::new(search_indexer),
+            clock: Arc::new(SystemClock),
         })
     }
 }

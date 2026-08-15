@@ -2,6 +2,7 @@ mod api_key;
 mod catalog;
 mod catalog_management;
 mod catalog_read;
+mod clock;
 mod fulfillment;
 mod inventory;
 mod merchant;
@@ -27,6 +28,7 @@ pub use catalog_read::{
     CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
     CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,
 };
+pub use clock::Clock;
 pub use fulfillment::{
     FulfillmentAllocationInput, FulfillmentDetail, FulfillmentRepository, ReturnDetail,
     ReturnLineInput, ReturnReceiptInput,

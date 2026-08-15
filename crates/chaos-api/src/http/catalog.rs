@@ -22,9 +22,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
-    response::format_time,
 };
 
 pub fn routes() -> Router<ApiState> {
@@ -145,8 +144,8 @@ struct ProductListData {
     title: String,
     status: &'static str,
     variant_count: u32,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -182,8 +181,8 @@ struct ProductVariantData {
     requires_shipping: bool,
     track_inventory: bool,
     selected_options: Vec<SelectedOptionData>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -195,8 +194,8 @@ struct ProductDetailData {
     status: &'static str,
     options: Vec<ProductOptionData>,
     variants: Vec<ProductVariantData>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 async fn create_product(
@@ -294,8 +293,8 @@ async fn list_products(
                 title: item.title,
                 status: item.status.as_str(),
                 variant_count: item.variant_count,
-                created_at: format_time(item.created_at)?,
-                updated_at: format_time(item.updated_at)?,
+                created_at: item.created_at.into(),
+                updated_at: item.updated_at.into(),
             })
         })
         .collect::<Result<Vec<_>, ApplicationError>>()?;
@@ -355,8 +354,8 @@ async fn get_product(
                         value: selection.value,
                     })
                     .collect(),
-                created_at: format_time(variant.created_at)?,
-                updated_at: format_time(variant.updated_at)?,
+                created_at: variant.created_at.into(),
+                updated_at: variant.updated_at.into(),
             })
         })
         .collect::<Result<Vec<_>, ApplicationError>>()?;
@@ -368,8 +367,8 @@ async fn get_product(
         status: product.status.as_str(),
         options,
         variants,
-        created_at: format_time(product.created_at)?,
-        updated_at: format_time(product.updated_at)?,
+        created_at: product.created_at.into(),
+        updated_at: product.updated_at.into(),
     }))
 }
 

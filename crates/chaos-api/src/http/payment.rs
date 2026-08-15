@@ -17,12 +17,11 @@ use chaos_domain::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutMachine, MerchantContext,
-    merchant::idempotency_key, response::format_time,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutMachine,
+    MerchantContext, merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -89,8 +88,8 @@ struct PaymentAttemptData {
     provider_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -104,8 +103,8 @@ struct RefundData {
     provider_reference: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -183,7 +182,7 @@ async fn receive_webhook(
         .ok_or(ApplicationError::Unauthorized)?;
     let accepted = state
         .payment_service
-        .receive_webhook(&path.provider, signature, &body, OffsetDateTime::now_utc())
+        .receive_webhook(&path.provider, signature, &body, state.clock.now())
         .await?;
     Ok(ApiResponse::new(
         StatusCode::ACCEPTED,
@@ -216,8 +215,8 @@ fn attempt_data(value: PaymentAttemptDetail) -> Result<PaymentAttemptData, Appli
         status: value.status.as_str(),
         provider_reference: value.provider_reference,
         failure_code: value.failure_code,
-        created_at: format_time(value.created_at)?,
-        updated_at: format_time(value.updated_at)?,
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
     })
 }
 
@@ -230,8 +229,8 @@ fn refund_data(value: RefundDetail) -> Result<RefundData, ApplicationError> {
         status: value.status.as_str(),
         provider_reference: value.provider_reference,
         failure_code: value.failure_code,
-        created_at: format_time(value.created_at)?,
-        updated_at: format_time(value.updated_at)?,
+        created_at: value.created_at.into(),
+        updated_at: value.updated_at.into(),
     })
 }
 

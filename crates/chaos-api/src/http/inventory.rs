@@ -19,9 +19,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
-    response::format_time,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -80,8 +79,8 @@ struct LocationData {
     code: String,
     name: String,
     status: &'static str,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -92,7 +91,7 @@ struct StockItemData {
     on_hand_quantity: i64,
     reserved_quantity: i64,
     available_quantity: i64,
-    updated_at: String,
+    updated_at: ApiDateTime,
 }
 
 async fn create_location(
@@ -224,8 +223,8 @@ fn location_data(item: InventoryLocationItem) -> Result<LocationData, Applicatio
         code: item.code,
         name: item.name,
         status: item.status.as_str(),
-        created_at: format_time(item.created_at)?,
-        updated_at: format_time(item.updated_at)?,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
     })
 }
 
@@ -237,7 +236,7 @@ fn stock_data(item: StockItemItem) -> Result<StockItemData, ApplicationError> {
         on_hand_quantity: item.on_hand_quantity,
         reserved_quantity: item.reserved_quantity,
         available_quantity: item.available_quantity,
-        updated_at: format_time(item.updated_at)?,
+        updated_at: item.updated_at.into(),
     })
 }
 

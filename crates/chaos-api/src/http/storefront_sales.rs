@@ -21,12 +21,11 @@ use chaos_domain::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CheckoutMachine,
-    merchant::idempotency_key, response::format_time,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CheckoutMachine,
+    merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -102,8 +101,8 @@ struct CartData {
     version: u64,
     lines: Vec<CartLineData>,
     subtotal_amount_minor: i64,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -137,9 +136,9 @@ struct CheckoutData {
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     total_amount_minor: i64,
-    expires_at: String,
+    expires_at: ApiDateTime,
     lines: Vec<CheckoutLineData>,
-    created_at: String,
+    created_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -168,7 +167,7 @@ struct OrderTransitionData {
     from_status: Option<&'static str>,
     to_status: &'static str,
     kind: String,
-    occurred_at: String,
+    occurred_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -186,8 +185,8 @@ pub(super) struct OrderData {
     total_amount_minor: i64,
     lines: Vec<OrderLineData>,
     transitions: Vec<OrderTransitionData>,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 async fn create_cart(
@@ -280,7 +279,7 @@ async fn create_checkout(
         .create_checkout(CreateCheckoutInput {
             actor,
             cart_id: CartId::from_uuid(path.cart_id),
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -311,7 +310,7 @@ async fn create_order(
         .create_order(CreateOrderInput {
             actor,
             checkout_id: CheckoutId::from_uuid(path.checkout_id),
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -354,8 +353,8 @@ fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
         version: cart.version,
         lines: cart.lines.into_iter().map(cart_line_data).collect(),
         subtotal_amount_minor: cart.subtotal_amount_minor,
-        created_at: format_time(cart.created_at)?,
-        updated_at: format_time(cart.updated_at)?,
+        created_at: cart.created_at.into(),
+        updated_at: cart.updated_at.into(),
     })
 }
 
@@ -387,9 +386,9 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
         discount_amount_minor: checkout.discount_amount_minor,
         tax_amount_minor: checkout.tax_amount_minor,
         total_amount_minor: checkout.total_amount_minor,
-        expires_at: format_time(checkout.expires_at)?,
+        expires_at: checkout.expires_at.into(),
         lines: checkout.lines.into_iter().map(checkout_line_data).collect(),
-        created_at: format_time(checkout.created_at)?,
+        created_at: checkout.created_at.into(),
     })
 }
 
@@ -433,12 +432,12 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
                     from_status: transition.from_status.map(|status| status.as_str()),
                     to_status: transition.to_status.as_str(),
                     kind: transition.kind,
-                    occurred_at: format_time(transition.occurred_at)?,
+                    occurred_at: transition.occurred_at.into(),
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: format_time(order.created_at)?,
-        updated_at: format_time(order.updated_at)?,
+        created_at: order.created_at.into(),
+        updated_at: order.updated_at.into(),
     })
 }
 
@@ -486,7 +485,6 @@ mod tests {
     use serde_json::{Value, json};
     use sha2::Sha256;
     use sqlx::{PgPool, postgres::PgPoolOptions};
-    use time::OffsetDateTime;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -800,6 +798,7 @@ mod tests {
         let catalog_secret = catalog_key.plaintext.expose_secret();
         let other_store_secret = other_store_key.plaintext.expose_secret();
         let state = test_state(&database_url, user_id);
+        let test_clock = state.clock.clone();
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             state.infrastructure.runtime_pool(),
         ));
@@ -1075,7 +1074,7 @@ mod tests {
             assert_eq!(response_json(duplicate).await["data"]["accepted"], false);
             assert_eq!(
                 payment_workers
-                    .run_webhook_batch(Uuid::now_v7(), OffsetDateTime::now_utc(), 10)
+                    .run_webhook_batch(Uuid::now_v7(), test_clock.now(), 10)
                     .await
                     .unwrap(),
                 1
@@ -1144,7 +1143,7 @@ mod tests {
         assert_eq!(refund_webhook.status(), StatusCode::ACCEPTED);
         assert_eq!(
             payment_workers
-                .run_webhook_batch(Uuid::now_v7(), OffsetDateTime::now_utc(), 10)
+                .run_webhook_batch(Uuid::now_v7(), test_clock.now(), 10)
                 .await
                 .unwrap(),
             1
@@ -1159,7 +1158,7 @@ mod tests {
 
         let first_worker = Uuid::now_v7();
         let second_worker = Uuid::now_v7();
-        let claimed_at = OffsetDateTime::now_utc();
+        let claimed_at = test_clock.now();
         let (first_jobs, second_jobs) = tokio::join!(
             payment_repository.claim_outbox(first_worker, 10, claimed_at),
             payment_repository.claim_outbox(second_worker, 10, claimed_at),
@@ -1206,7 +1205,7 @@ mod tests {
             .unwrap();
             let worker_id = Uuid::now_v7();
             let jobs = payment_repository
-                .claim_outbox(worker_id, 1, OffsetDateTime::now_utc())
+                .claim_outbox(worker_id, 1, test_clock.now())
                 .await
                 .unwrap();
             assert_eq!(jobs.len(), 1);
@@ -1216,7 +1215,7 @@ mod tests {
                     worker_id,
                     dead_letter_id,
                     Err("provider unavailable".into()),
-                    OffsetDateTime::now_utc(),
+                    test_clock.now(),
                 )
                 .await
                 .unwrap();

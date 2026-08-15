@@ -6,7 +6,6 @@ use chaos_domain::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
@@ -96,7 +95,7 @@ async fn transition(
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             target_status,
-            now: OffsetDateTime::now_utc(),
+            now: state.clock.now(),
             idempotency,
         })
         .await?;

@@ -18,9 +18,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
-    response::format_time,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -105,8 +104,8 @@ struct StoreData {
     default_region: String,
     default_currency: String,
     status: &'static str,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Serialize)]
@@ -117,8 +116,8 @@ struct SalesChannelData {
     kind: &'static str,
     status: &'static str,
     is_default: bool,
-    created_at: String,
-    updated_at: String,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 async fn get_store(
@@ -382,8 +381,8 @@ fn store_data(item: StoreAdminItem) -> Result<StoreData, ApplicationError> {
         default_region: item.default_region.as_str().into(),
         default_currency: item.default_currency.as_str().into(),
         status: item.status.as_str(),
-        created_at: format_time(item.created_at)?,
-        updated_at: format_time(item.updated_at)?,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
     })
 }
 
@@ -395,8 +394,8 @@ fn channel_data(item: SalesChannelAdminItem) -> Result<SalesChannelData, Applica
         kind: item.kind.as_str(),
         status: item.status.as_str(),
         is_default: item.is_default,
-        created_at: format_time(item.created_at)?,
-        updated_at: format_time(item.updated_at)?,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
     })
 }
 
