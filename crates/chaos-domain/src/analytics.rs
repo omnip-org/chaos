@@ -9,6 +9,8 @@ use crate::{
 
 pub const BROWSER_EVENT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_ENGAGEMENT_INTERVAL_MILLISECONDS: u32 = 60_000;
+pub const MAX_SESSION_ENGAGEMENT_MILLISECONDS: u64 = 14_400_000;
+pub const SESSION_INACTIVITY_MINUTES: i64 = 30;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsentSnapshot {
@@ -76,6 +78,84 @@ impl BrowserEventName {
             Self::EngagementHeartbeat => "engagement_heartbeat",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "page_viewed" => Some(Self::PageViewed),
+            "product_viewed" => Some(Self::ProductViewed),
+            "search_performed" => Some(Self::SearchPerformed),
+            "cart_line_added" => Some(Self::CartLineAdded),
+            "checkout_started" => Some(Self::CheckoutStarted),
+            "engagement_heartbeat" => Some(Self::EngagementHeartbeat),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SessionEventContribution {
+    pub event_count: u64,
+    pub page_view_count: u64,
+    pub product_view_count: u64,
+    pub search_count: u64,
+    pub cart_line_added_count: u64,
+    pub checkout_started_count: u64,
+    pub active_engagement_milliseconds: u64,
+}
+
+impl SessionEventContribution {
+    pub fn from_event(
+        event_name: BrowserEventName,
+        active_engagement_milliseconds: Option<u32>,
+    ) -> Result<Self, DomainError> {
+        let mut value = Self {
+            event_count: 1,
+            ..Self::default()
+        };
+        match event_name {
+            BrowserEventName::PageViewed => value.page_view_count = 1,
+            BrowserEventName::ProductViewed => value.product_view_count = 1,
+            BrowserEventName::SearchPerformed => value.search_count = 1,
+            BrowserEventName::CartLineAdded => value.cart_line_added_count = 1,
+            BrowserEventName::CheckoutStarted => value.checkout_started_count = 1,
+            BrowserEventName::EngagementHeartbeat => {
+                let active = active_engagement_milliseconds.ok_or_else(|| {
+                    validation(
+                        "active_engagement_milliseconds",
+                        "is required for an engagement heartbeat",
+                    )
+                })?;
+                if !(1..=MAX_ENGAGEMENT_INTERVAL_MILLISECONDS).contains(&active) {
+                    return Err(validation(
+                        "active_engagement_milliseconds",
+                        "must be between 1 and 60000",
+                    ));
+                }
+                value.active_engagement_milliseconds = u64::from(active);
+            }
+        }
+        if event_name != BrowserEventName::EngagementHeartbeat
+            && active_engagement_milliseconds.is_some()
+        {
+            return Err(validation(
+                "active_engagement_milliseconds",
+                "is allowed only for an engagement heartbeat",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+pub fn capped_session_engagement(current: u64, addition: u64) -> Result<u64, DomainError> {
+    if current > MAX_SESSION_ENGAGEMENT_MILLISECONDS {
+        return Err(validation(
+            "active_engagement_milliseconds",
+            "stored session engagement exceeds the supported cap",
+        ));
+    }
+    Ok(current
+        .saturating_add(addition)
+        .min(MAX_SESSION_ENGAGEMENT_MILLISECONDS))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -359,5 +439,23 @@ mod tests {
     fn consent_requires_an_explicit_bounded_policy_version() {
         assert!(ConsentSnapshot::new(true, false, "cmp-2026-08").is_ok());
         assert!(ConsentSnapshot::new(true, false, "contains spaces").is_err());
+    }
+
+    #[test]
+    fn session_contributions_cap_estimated_engagement() {
+        let contribution = SessionEventContribution::from_event(
+            BrowserEventName::EngagementHeartbeat,
+            Some(60_000),
+        )
+        .unwrap();
+        assert_eq!(contribution.active_engagement_milliseconds, 60_000);
+        assert_eq!(
+            capped_session_engagement(14_390_000, contribution.active_engagement_milliseconds)
+                .unwrap(),
+            MAX_SESSION_ENGAGEMENT_MILLISECONDS
+        );
+        assert!(
+            SessionEventContribution::from_event(BrowserEventName::PageViewed, Some(1)).is_err()
+        );
     }
 }

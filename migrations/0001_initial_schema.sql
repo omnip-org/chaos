@@ -2589,6 +2589,7 @@ CREATE TABLE analytics.behavior_events (
     retention_expires_at          TIMESTAMPTZ                  NOT NULL,
     created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    UNIQUE (merchant_account_id, store_id, id),
     UNIQUE (merchant_account_id, store_id, event_id),
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
@@ -2637,6 +2638,97 @@ CREATE INDEX behavior_events_retention_idx
         retention_expires_at,
         id
     );
+
+CREATE TABLE analytics.behavior_event_processing (
+    id                    UUID                     NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID                     NOT NULL,
+    store_id              UUID                     NOT NULL,
+    processing_status     integration.queue_status NOT NULL DEFAULT 'pending',
+    attempts              INTEGER                  NOT NULL DEFAULT 0,
+    available_at          TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    locked_by             UUID,
+    locked_at             TIMESTAMPTZ,
+    processed_at          TIMESTAMPTZ,
+    last_error            TEXT,
+    created_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, id)
+        REFERENCES analytics.behavior_events(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT behavior_event_processing_attempts_check CHECK (attempts BETWEEN 0 AND 31),
+    CONSTRAINT behavior_event_processing_lease_shape_check CHECK (
+        (processing_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
+        OR (processing_status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
+    ),
+    CONSTRAINT behavior_event_processing_completion_shape_check CHECK (
+        (processing_status = 'processed' AND processed_at IS NOT NULL)
+        OR (processing_status <> 'processed' AND processed_at IS NULL)
+    ),
+    CONSTRAINT behavior_event_processing_error_length_check CHECK (
+        last_error IS NULL OR length(last_error) BETWEEN 1 AND 2000
+    )
+);
+
+CREATE INDEX behavior_event_processing_claim_idx
+    ON analytics.behavior_event_processing (processing_status, available_at, created_at, id)
+    WHERE processing_status IN ('pending', 'processing');
+
+CREATE TABLE analytics.sessions (
+    id                               UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id              UUID        NOT NULL,
+    store_id                         UUID        NOT NULL,
+    sales_channel_id                 UUID        NOT NULL,
+    anonymous_id                     UUID        NOT NULL,
+    client_session_id                UUID        NOT NULL,
+    started_at                       TIMESTAMPTZ NOT NULL,
+    last_event_at                    TIMESTAMPTZ NOT NULL,
+    event_count                      BIGINT      NOT NULL,
+    page_view_count                  BIGINT      NOT NULL,
+    product_view_count               BIGINT      NOT NULL,
+    search_count                     BIGINT      NOT NULL,
+    cart_line_added_count            BIGINT      NOT NULL,
+    checkout_started_count           BIGINT      NOT NULL,
+    active_engagement_milliseconds   BIGINT      NOT NULL,
+    retention_expires_at             TIMESTAMPTZ NOT NULL,
+    created_at                       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    CONSTRAINT sessions_window_check CHECK (last_event_at >= started_at),
+    CONSTRAINT sessions_counts_check CHECK (
+        event_count > 0
+        AND page_view_count >= 0
+        AND product_view_count >= 0
+        AND search_count >= 0
+        AND cart_line_added_count >= 0
+        AND checkout_started_count >= 0
+        AND page_view_count + product_view_count + search_count
+            + cart_line_added_count + checkout_started_count <= event_count
+    ),
+    CONSTRAINT sessions_engagement_check CHECK (
+        active_engagement_milliseconds BETWEEN 0 AND 14400000
+    ),
+    CONSTRAINT sessions_retention_check CHECK (retention_expires_at > last_event_at)
+);
+
+CREATE INDEX sessions_identity_time_idx
+    ON analytics.sessions (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        anonymous_id,
+        client_session_id,
+        last_event_at DESC,
+        id
+    );
+
+CREATE INDEX sessions_retention_idx
+    ON analytics.sessions (merchant_account_id, retention_expires_at, id);
 
 CREATE TABLE integration.webhook_inbox (
     id                         UUID                     NOT NULL PRIMARY KEY,
@@ -3072,6 +3164,32 @@ AS $$
      WHERE label.cancellation_status = 'submitted';
 $$;
 
+CREATE FUNCTION analytics.sessionization_metrics()
+RETURNS TABLE (
+    pending BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    oldest_pending_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (WHERE job.processing_status = 'pending'),
+           count(*) FILTER (WHERE job.processing_status = 'processing'),
+           count(*) FILTER (WHERE job.processing_status = 'dead_letter'),
+           COALESCE(
+               extract(
+                   epoch FROM CURRENT_TIMESTAMP -
+                       (min(job.created_at)
+                            FILTER (WHERE job.processing_status = 'pending'))
+               ),
+               0
+           )::DOUBLE PRECISION
+      FROM analytics.behavior_event_processing AS job;
+$$;
+
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
@@ -3137,6 +3255,8 @@ ALTER TABLE notification.email_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.email_suppressions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notification.webhook_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.behavior_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.behavior_event_processing ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.sessions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -3803,6 +3923,26 @@ CREATE POLICY merchant_account_isolation ON notification.webhook_events
     );
 
 CREATE POLICY merchant_account_isolation ON analytics.behavior_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.behavior_event_processing
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.sessions
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -4584,6 +4724,77 @@ AS $$
               account.credential_secret_reference, label.cancellation_attempts;
 $$;
 
+CREATE FUNCTION analytics.claim_sessionization_events(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    behavior_event_id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    sales_channel_id UUID,
+    event_name TEXT,
+    anonymous_id UUID,
+    client_session_id UUID,
+    occurred_at TIMESTAMPTZ,
+    retention_expires_at TIMESTAMPTZ,
+    active_engagement_milliseconds INTEGER,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH claimable AS (
+        SELECT job.id
+          FROM analytics.behavior_event_processing AS job
+         WHERE (
+                   job.processing_status = 'pending'
+                   AND job.available_at <= claimed_at
+               )
+            OR (
+                   job.processing_status = 'processing'
+                   AND job.locked_at <= stale_before
+               )
+         ORDER BY job.available_at, job.created_at, job.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
+    ), claimed AS (
+        UPDATE analytics.behavior_event_processing AS job
+           SET processing_status = 'processing',
+               locked_by = worker_id,
+               locked_at = claimed_at,
+               attempts = least(job.attempts, 30) + 1,
+               updated_at = claimed_at
+          FROM claimable
+         WHERE job.id = claimable.id
+        RETURNING job.id, job.merchant_account_id, job.store_id, job.attempts
+    )
+    SELECT event.id,
+           claimed.merchant_account_id,
+           claimed.store_id,
+           event.sales_channel_id,
+           event.event_name::TEXT,
+           event.anonymous_id,
+           event.session_id,
+           event.occurred_at,
+           event.retention_expires_at,
+           CASE WHEN event.event_name = 'engagement_heartbeat'
+                THEN (event.properties ->> 'active_milliseconds')::INTEGER
+                ELSE NULL
+           END,
+           claimed.attempts
+      FROM claimed
+      INNER JOIN analytics.behavior_events AS event
+        ON event.merchant_account_id = claimed.merchant_account_id
+       AND event.store_id = claimed.store_id
+       AND event.id = claimed.id
+     ORDER BY event.received_at, event.id;
+$$;
+
 CREATE FUNCTION merchant.authenticate_api_key(
     presented_key_identifier  TEXT,
     presented_secret_digest  BYTEA
@@ -4685,11 +4896,15 @@ REVOKE ALL ON FUNCTION fulfillment.claim_shipping_tracking(
 REVOKE ALL ON FUNCTION fulfillment.claim_shipping_cancellations(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.claim_sessionization_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.provider_readiness_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION notification.email_delivery_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_tracking_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_cancellation_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.sessionization_metrics() FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -4772,12 +4987,16 @@ GRANT EXECUTE ON FUNCTION fulfillment.claim_shipping_tracking(
 GRANT EXECUTE ON FUNCTION fulfillment.claim_shipping_cancellations(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.claim_sessionization_events(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.provider_readiness_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION notification.email_delivery_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_tracking_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_cancellation_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.sessionization_metrics() TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
@@ -4798,8 +5017,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA fulfillment TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA notification TO chaos_runtime;
-GRANT SELECT, INSERT
+GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA analytics TO chaos_runtime;
+REVOKE UPDATE, DELETE ON analytics.behavior_events FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
@@ -4875,7 +5095,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
 ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
-    GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA search
     GRANT SELECT ON TABLES TO chaos_runtime;
 

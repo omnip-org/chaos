@@ -22,7 +22,9 @@ mod store_administration;
 mod storefront_catalog;
 mod tax;
 
-pub use analytics::AnalyticsEventRepository;
+pub use analytics::{
+    AnalyticsEventRepository, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
+};
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
     GeneratedApiKeyMaterial, MachineActor,

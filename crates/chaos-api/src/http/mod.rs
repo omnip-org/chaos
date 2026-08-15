@@ -22,7 +22,7 @@ mod storefront_sales;
 
 use axum::Router;
 use chaos_application::{
-    analytics::AnalyticsCollection,
+    analytics::{AnalyticsCollection, AnalyticsWorkers},
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -102,6 +102,7 @@ pub struct ApiState {
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub analytics_collection: Arc<AnalyticsCollection>,
+    pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
     pub customer_service: Arc<CustomerService>,
@@ -194,9 +195,11 @@ impl ApiState {
             Arc::new(SecureApiKeyMaterialGenerator),
         );
         let api_key_authentication = ApiKeyAuthentication::new(api_key_repository);
-        let analytics_collection = AnalyticsCollection::new(Arc::new(
-            PostgresAnalyticsEventRepository::new(infrastructure.runtime_pool()),
+        let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
+            infrastructure.runtime_pool(),
         ));
+        let analytics_collection = AnalyticsCollection::new(analytics_repository.clone());
+        let analytics_workers = AnalyticsWorkers::new(analytics_repository);
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
@@ -333,6 +336,7 @@ impl ApiState {
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
             analytics_collection: Arc::new(analytics_collection),
+            analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
             customer_service: Arc::new(customer_service),

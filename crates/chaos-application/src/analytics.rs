@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
-use chaos_domain::{FieldViolation, analytics::BrowserEvent, merchant::ApiKeyClass};
+use chaos_domain::{
+    FieldViolation,
+    analytics::{BrowserEvent, SessionEventContribution},
+    merchant::ApiKeyClass,
+};
 use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    ports::{AnalyticsEventRepository, MachineActor},
+    ports::{AnalyticsEventRepository, AnalyticsSessionizationQueue, MachineActor},
 };
 
 const COLLECTION_POLICY_VERSION: &str = "builtin-v1";
@@ -31,6 +35,41 @@ pub struct BrowserEventCollectionResult {
 
 pub struct AnalyticsCollection {
     repository: Arc<dyn AnalyticsEventRepository>,
+}
+
+pub struct AnalyticsWorkers {
+    sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
+}
+
+impl AnalyticsWorkers {
+    pub fn new(sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>) -> Self {
+        Self {
+            sessionization_queue,
+        }
+    }
+
+    pub async fn run_sessionization_batch(
+        &self,
+        worker_id: uuid::Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .sessionization_queue
+            .claim_sessionization(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let contribution = SessionEventContribution::from_event(
+                job.event_name,
+                job.active_engagement_milliseconds,
+            )
+            .map_err(|error| error.to_string());
+            self.sessionization_queue
+                .finish_sessionization(worker_id, job, contribution, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
 }
 
 impl AnalyticsCollection {

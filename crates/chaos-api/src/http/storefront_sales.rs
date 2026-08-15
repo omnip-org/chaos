@@ -759,7 +759,9 @@ mod tests {
         http::{HeaderValue, Method, Request, StatusCode},
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
+    use chaos_application::ports::{
+        AnalyticsSessionizationQueue, ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
+    };
     use chaos_application::{
         ApplicationError,
         fulfillment::{FulfillmentWorkers, ShippingProviderAdministration},
@@ -776,6 +778,7 @@ mod tests {
     };
     use chaos_domain::{
         CurrencyCode,
+        analytics::SessionEventContribution,
         catalog::{ProductId, ProductVariantId},
         fulfillment::ShippingServiceId,
         identity::UserId,
@@ -786,7 +789,7 @@ mod tests {
     };
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
     use chaos_infrastructure::repositories::{
-        PostgresFulfillmentRepository, PostgresPaymentRepository,
+        PostgresAnalyticsEventRepository, PostgresFulfillmentRepository, PostgresPaymentRepository,
         PostgresShippingServiceRepository, SandboxPaymentProvider,
     };
     use hmac::{Hmac, Mac};
@@ -1326,6 +1329,8 @@ mod tests {
         let mut state = test_state(&database_url, user_id);
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
+        let analytics_workers = state.analytics_workers.clone();
+        let analytics_repository = PostgresAnalyticsEventRepository::new(runtime_pool.clone());
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
         let shipping_repository =
             Arc::new(PostgresShippingServiceRepository::new(runtime_pool.clone()));
@@ -1517,6 +1522,162 @@ mod tests {
             response_json(other_store_analytics).await["data"]["stored"],
             1
         );
+        let session_anonymous_id = Uuid::now_v7();
+        let session_client_id = Uuid::now_v7();
+        let session_page_event_id = Uuid::now_v7();
+        let session_started_at = test_clock.now() - time::Duration::minutes(70);
+        let session_last_event_at = test_clock.now() - time::Duration::minutes(39);
+        let session_bridge_at = test_clock.now() - time::Duration::minutes(55);
+        let session_heartbeat_at = test_clock.now() - time::Duration::minutes(54);
+        let format_time = |value: time::OffsetDateTime| {
+            value
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
+        };
+        let sessionization_response = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(json!({
+                    "events": [
+                        {
+                            "event_id": session_page_event_id,
+                            "event_name": "page_viewed",
+                            "schema_version": 1,
+                            "occurred_at": format_time(session_started_at),
+                            "anonymous_id": session_anonymous_id,
+                            "session_id": session_client_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": false,
+                                "policy_version": "cmp-v1"
+                            },
+                            "properties": {"path": "/session/start"}
+                        },
+                        {
+                            "event_id": Uuid::now_v7(),
+                            "event_name": "page_viewed",
+                            "schema_version": 1,
+                            "occurred_at": format_time(session_last_event_at),
+                            "anonymous_id": session_anonymous_id,
+                            "session_id": session_client_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": false,
+                                "policy_version": "cmp-v1"
+                            },
+                            "properties": {"path": "/session/end"}
+                        },
+                        {
+                            "event_id": Uuid::now_v7(),
+                            "event_name": "page_viewed",
+                            "schema_version": 1,
+                            "occurred_at": format_time(session_bridge_at),
+                            "anonymous_id": session_anonymous_id,
+                            "session_id": session_client_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": false,
+                                "policy_version": "cmp-v1"
+                            },
+                            "properties": {"path": "/session/bridge"}
+                        },
+                        {
+                            "event_id": Uuid::now_v7(),
+                            "event_name": "engagement_heartbeat",
+                            "schema_version": 1,
+                            "occurred_at": format_time(session_heartbeat_at),
+                            "anonymous_id": session_anonymous_id,
+                            "session_id": session_client_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": false,
+                                "policy_version": "cmp-v1"
+                            },
+                            "properties": {
+                                "page_view_event_id": session_page_event_id,
+                                "active_milliseconds": 60000
+                            }
+                        }
+                    ]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(sessionization_response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(sessionization_response).await["data"]["stored"],
+            4
+        );
+
+        let abandoned_worker_id = Uuid::now_v7();
+        let abandoned_jobs = analytics_repository
+            .claim_sessionization(
+                abandoned_worker_id,
+                100,
+                test_clock.now(),
+                test_clock.now() - time::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert!(abandoned_jobs.len() >= 6);
+        let recovered_worker_id = Uuid::now_v7();
+        assert_eq!(
+            analytics_workers
+                .run_sessionization_batch(
+                    recovered_worker_id,
+                    test_clock.now() + time::Duration::minutes(2),
+                    100,
+                )
+                .await
+                .unwrap(),
+            abandoned_jobs.len()
+        );
+        let stale_result = analytics_repository
+            .finish_sessionization(
+                abandoned_worker_id,
+                &abandoned_jobs[0],
+                Ok(SessionEventContribution::from_event(
+                    abandoned_jobs[0].event_name,
+                    abandoned_jobs[0].active_engagement_milliseconds,
+                )
+                .unwrap()),
+                test_clock.now() + time::Duration::minutes(2),
+            )
+            .await;
+        assert!(matches!(
+            stale_result,
+            Err(ApplicationError::Conflict { .. })
+        ));
+
+        let session: (i64, i64, i64, time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
+            "SELECT event_count, page_view_count, active_engagement_milliseconds, \
+                        started_at, last_event_at \
+                 FROM analytics.sessions \
+                 WHERE merchant_account_id = $1 AND store_id = $2 \
+                   AND anonymous_id = $3 AND client_session_id = $4",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(session_anonymous_id)
+        .bind(session_client_id)
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!((session.0, session.1, session.2), (4, 3, 60_000));
+        assert_eq!(session.3, session_started_at);
+        assert_eq!(session.4, session_last_event_at);
+        let sessionization_metrics: (i64, i64, i64, f64) =
+            sqlx::query_as("SELECT * FROM analytics.sessionization_metrics()")
+                .fetch_one(&owner_pool)
+                .await
+                .unwrap();
+        assert_eq!(sessionization_metrics.0, 0);
+        assert_eq!(sessionization_metrics.1, 0);
+        assert_eq!(sessionization_metrics.2, 0);
         let analytics_rows: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events WHERE event_id = $1",
         )
@@ -1584,7 +1745,13 @@ mod tests {
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
-        assert_eq!(visible_analytics_rows, 2);
+        assert_eq!(visible_analytics_rows, 6);
+        let visible_analytics_sessions: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.sessions")
+                .fetch_one(&mut *analytics_rls)
+                .await
+                .unwrap();
+        assert_eq!(visible_analytics_sessions, 3);
         analytics_rls.rollback().await.unwrap();
 
         let provider_accounts_uri = format!(

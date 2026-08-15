@@ -14,6 +14,10 @@ Alert when `chaos_outbox_oldest_pending_seconds` exceeds 60 seconds, any dead le
 
 Query `integration.event_consumer_backlog()` to separate owned delivery failures from deliberately unowned event types. An unowned row has a null `consumer_owner` and must remain pending; it is not reconciled. Assigning a consumer requires a reviewed migration that updates the immutable registry and ships the idempotent consumer in the same release. Runtime roles cannot edit ownership declarations.
 
+## Analytics sessionization backlog
+
+Alert on `chaos_analytics_sessionization_oldest_pending_seconds`, `chaos_analytics_sessionization_dead_letter`, and sustained growth in `chaos_analytics_sessionization_pending`. A processing row is reclaimed after one minute; the former owner is rejected, and replay converges through identity-scoped locking and session merging. Inspect the bounded `last_error` without copying event properties into logs. Correct the parser or schema mismatch and replay through an audited operational procedure; do not edit raw behavior evidence or derived session counts by hand. Reporting traffic must not use the commerce transaction pool.
+
 ## Webhook replay
 
 Verify the provider signature and event identifier against provider records. Durable inbox uniqueness makes exact replay safe. Reset only a confirmed failed inbox row to pending in a reviewed transaction, retain its attempt history, and monitor the associated aggregate to completion.

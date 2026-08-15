@@ -31,6 +31,11 @@ async fn main() -> anyhow::Result<()> {
         state.clock.clone(),
         lifecycle.clone(),
     ));
+    let analytics_worker = tokio::spawn(analytics_worker_loop(
+        state.analytics_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
     let search_worker = tokio::spawn(search_worker_loop(
         state.search_indexer.clone(),
         state.clock.clone(),
@@ -55,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
         drain_worker("notification", notification_worker, worker_shutdown_timeout),
+        drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker(
             "checkout-expiry",
@@ -69,6 +75,23 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn analytics_worker_loop(
+    workers: std::sync::Arc<chaos_application::analytics::AnalyticsWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        if let Err(error) = workers
+            .run_sessionization_batch(worker_id, clock.now(), 100)
+            .await
+        {
+            tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
 }
 
 async fn notification_worker_loop(

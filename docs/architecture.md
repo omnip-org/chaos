@@ -136,7 +136,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 
 ## 8. PostgreSQL and Redis responsibilities
 
-PostgreSQL stores current business entities, transactions, idempotency records, outbox and inbox records, and domain-specific ledgers. A general audit log is planned. Merchant-owned table indexes generally start with `merchant_account_id`. Large tables are partitioned only after query and scale evidence justifies it.
+PostgreSQL stores current business entities, transactions, idempotency records, outbox and inbox records, domain-specific ledgers, immutable initial browser evidence, and the initial rebuildable analytics session projection. A general audit log is planned. Merchant-owned table indexes generally start with `merchant_account_id`. High-volume analytical scans remain excluded from the OLTP pool; partitioning or an external analytics store is selected only after query and scale evidence justifies it.
 
 PostgreSQL schemas follow bounded-context ownership. Current and reserved schemas include `identity`, `merchant`, `catalog`, `pricing`, `inventory`, `sales`, `payments`, `fulfillment`, `integration`, `audit`, and `extensions`. Business SQL uses qualified identifiers. Detailed rules are defined in `docs/database-conventions.md`.
 
@@ -150,7 +150,7 @@ Docker Compose runs blue and green API instances behind Caddy. A deployment repl
 
 Application instances never own sessions, WebAuthn ceremonies, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
 
-The platform emits structured logs, optional OpenTelemetry traces, and Prometheus metrics for bounded HTTP routes, database pool pressure, dependency health, checkout conversion, payment failures, inventory reservation conflicts, and queue lag. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network.
+The platform emits structured logs, optional OpenTelemetry traces, and Prometheus metrics for bounded HTTP routes, database pool pressure, dependency health, checkout conversion, payment failures, inventory reservation conflicts, queue lag, and analytics sessionization health. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network.
 
 ## 10. Delivery roadmap
 
