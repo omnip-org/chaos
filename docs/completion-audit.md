@@ -11,7 +11,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 2 — Catalog and Pricing | Complete for the declared phase scope | — |
 | 3 — Selling | Complete for the declared phase scope | Recoverable automatic Checkout and reservation expiry closes the final Phase 3 gate. Customer association and Order history belong to Phase 7. |
 | 4 — Payments | Complete for the declared phase scope | Store-owned Provider administration, sandbox and Stripe production adapters, possession-bound client handoff, signed webhooks, immutable provider-result persistence, stale processing-lease recovery, and bounded graceful worker drain are verified. |
-| 5 — Operations | Partial | Fulfillment and Return consumers are implemented and recoverable; the capacity harness still has no retained production-like execution report, and the security and operational release gates remain open. |
+| 5 — Operations | Partial | Fulfillment and Return consumers plus the security and operational release path are verified; the capacity harness still has no retained production-like 10-minute execution report. |
 | 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7 — Real Checkout | Complete for the declared phase scope | Guest and authenticated Customer checkout, saved addresses, recoverable Customer Order history, admin Order filtering, and immutable commercial snapshots are verified. |
 | 8 — Provider Integrations | Partial | Stripe direct-charge dispatch and webhook foundations are delivered. Automated onboarding readiness, overlap rotation, reconciliation, Resend, and the first shipping adapter remain open. |
@@ -37,7 +37,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | Search | Catalog triggers emit `search.product.changed` transactionally. A multi-instance `SKIP LOCKED` worker idempotently upserts Store-keyed GIN documents, so duplicate events converge. `search.rebuild_store_products` is idempotent. The runtime repository integration test covers event processing, search matches, Store isolation, and rebuilding. |
 | Telemetry | `telemetry.rs` exports tracing spans through OTLP/HTTP when configured and flushes on shutdown. Prometheus exposes bounded HTTP labels, checkout conversions, payment failures, reservation conflicts, dependency health, database pool use, queue depth, dead letters, and queue age. Worker logs include `worker_id`; HTTP spans retain request IDs without logging credentials. |
 | Capacity | `scripts/capacity-test.sh`, `scripts/capacity.js`, and `docs/capacity.md` define the environment, dataset, duration, concurrency, output, and release thresholds. A dated, production-like result with system measurements must be retained before this gate is complete. |
-| Runbooks | `docs/operations-runbook.md` covers migration failure, dependency degradation, queue backlog, webhook replay, credential rotation, rollback, and search rebuild. |
+| Runbooks | `docs/operations-runbook.md` covers migration failure, dependency degradation, queue backlog, webhook replay, credential rotation, rollback, and search rebuild. The retained Phase 5 operations record proves a fresh release-image build, migration job, hardened non-root containers, two-instance health, internal-only metrics, secret-log scan, and a 600-request zero-failure rolling update. |
 
 ## Current Phase 6 evidence
 
