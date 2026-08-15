@@ -14,6 +14,24 @@ use crate::{ApplicationError, merchant::MerchantActor};
 
 use super::{CustomerActor, IdempotencyRequest};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnalyticsRateLimitDecision {
+    pub allowed: bool,
+    pub retry_after_seconds: u32,
+}
+
+#[async_trait]
+pub trait AnalyticsCollectionRateLimiter: Send + Sync {
+    async fn consume(
+        &self,
+        merchant_account_id: Uuid,
+        store_id: StoreId,
+        sales_channel_id: SalesChannelId,
+        anonymous_event_counts: &[(Uuid, u16)],
+        event_count: u16,
+    ) -> Result<AnalyticsRateLimitDecision, ApplicationError>;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedAnalyticsPolicy {
     pub policy: AnalyticsPolicy,

@@ -432,7 +432,12 @@ async fn collect_events(
             events,
             received_at: state.clock.now(),
         })
-        .await?;
+        .await
+        .inspect_err(|error| {
+            if matches!(error, ApplicationError::RateLimited { .. }) {
+                ::metrics::counter!("chaos_analytics_collection_rate_limited_total").increment(1);
+            }
+        })?;
     Ok(ApiResponse::ok(collection_result_data(result)))
 }
 

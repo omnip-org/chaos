@@ -15,6 +15,8 @@ pub enum ApplicationError {
         code: &'static str,
         message: &'static str,
     },
+    #[error("request rate limit exceeded; retry after {retry_after_seconds} seconds")]
+    RateLimited { retry_after_seconds: u32 },
     #[error("dependency {service} is unavailable")]
     Unavailable {
         service: &'static str,

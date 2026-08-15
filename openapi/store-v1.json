@@ -30,7 +30,9 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
         }
       }
     },
@@ -1254,8 +1256,18 @@
         "description": "Invalid header, body, query, or path value",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
+      "RateLimited": {
+        "description": "Store, Sales Channel, or anonymous-identity collection budget exceeded",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds until the current fixed collection window expires",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 60 }
+          }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
       "Unavailable": {
-        "description": "Payment Provider or secret manager is temporarily unavailable",
+        "description": "A required dependency is temporarily unavailable",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       }
     }

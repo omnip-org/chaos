@@ -83,6 +83,12 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
+        let retry_after = match &self {
+            Self::Application(ApplicationError::RateLimited {
+                retry_after_seconds,
+            }) => Some(*retry_after_seconds),
+            _ => None,
+        };
         let (status, code, message, details) = match self {
             Self::Request {
                 status,
@@ -123,6 +129,12 @@ impl IntoResponse for ApiError {
                 ApplicationError::Conflict { code, message } => {
                     (StatusCode::CONFLICT, code.into(), message.into(), vec![])
                 }
+                ApplicationError::RateLimited { .. } => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited".into(),
+                    "the request rate limit was exceeded".into(),
+                    vec![],
+                ),
                 ApplicationError::Unavailable { service, source } => {
                     tracing::warn!(%service, error = %source, "application dependency unavailable");
                     (
@@ -144,7 +156,7 @@ impl IntoResponse for ApiError {
             },
         };
 
-        (
+        let mut response = (
             status,
             Json(ErrorEnvelope {
                 error: ErrorBody {
@@ -154,6 +166,32 @@ impl IntoResponse for ApiError {
                 },
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = retry_after
+            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{StatusCode, header::RETRY_AFTER};
+
+    use super::*;
+
+    #[test]
+    fn rate_limit_errors_include_retry_after() {
+        let response = ApiError::from(ApplicationError::RateLimited {
+            retry_after_seconds: 37,
+        })
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[RETRY_AFTER], "37");
     }
 }

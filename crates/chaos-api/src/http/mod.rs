@@ -43,6 +43,7 @@ use chaos_application::{
 use std::sync::Arc;
 
 use chaos_infrastructure::{
+    RedisAnalyticsCollectionRateLimiter,
     clock::SystemClock,
     config::Settings,
     easypost::{EasyPostShippingProvider, EnvironmentShippingSecretResolver},
@@ -200,7 +201,12 @@ impl ApiState {
         let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let analytics_collection = AnalyticsCollection::new(analytics_repository.clone());
+        let analytics_collection = AnalyticsCollection::new(
+            analytics_repository.clone(),
+            Arc::new(RedisAnalyticsCollectionRateLimiter::new(
+                infrastructure.redis_client(),
+            )),
+        );
         let analytics_administration = AnalyticsAdministration::new(analytics_repository.clone());
         let analytics_privacy = AnalyticsPrivacy::new(analytics_repository.clone());
         let analytics_workers =

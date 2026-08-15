@@ -759,8 +759,10 @@ mod tests {
         http::{HeaderValue, Method, Request, StatusCode},
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
+    use chaos_application::analytics::AnalyticsCollection;
     use chaos_application::ports::{
-        AnalyticsSessionizationQueue, ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
+        AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision, AnalyticsSessionizationQueue,
+        ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
     };
     use chaos_application::{
         ApplicationError,
@@ -806,6 +808,25 @@ mod tests {
     };
 
     struct ActionRequiredPaymentOnboarding;
+
+    struct AllowAnalyticsCollection;
+
+    #[async_trait]
+    impl AnalyticsCollectionRateLimiter for AllowAnalyticsCollection {
+        async fn consume(
+            &self,
+            _merchant_account_id: Uuid,
+            _store_id: StoreId,
+            _sales_channel_id: SalesChannelId,
+            _anonymous_event_counts: &[(Uuid, u16)],
+            _event_count: u16,
+        ) -> Result<AnalyticsRateLimitDecision, ApplicationError> {
+            Ok(AnalyticsRateLimitDecision {
+                allowed: true,
+                retry_after_seconds: 60,
+            })
+        }
+    }
 
     #[async_trait]
     impl PaymentProviderOnboarding for ActionRequiredPaymentOnboarding {
@@ -1331,6 +1352,10 @@ mod tests {
         let runtime_pool = state.infrastructure.runtime_pool();
         let analytics_workers = state.analytics_workers.clone();
         let analytics_repository = PostgresAnalyticsEventRepository::new(runtime_pool.clone());
+        state.analytics_collection = Arc::new(AnalyticsCollection::new(
+            Arc::new(PostgresAnalyticsEventRepository::new(runtime_pool.clone())),
+            Arc::new(AllowAnalyticsCollection),
+        ));
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
         let shipping_repository =
             Arc::new(PostgresShippingServiceRepository::new(runtime_pool.clone()));

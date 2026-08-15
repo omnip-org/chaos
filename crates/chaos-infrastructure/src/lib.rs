@@ -1,3 +1,4 @@
+mod analytics_rate_limit;
 pub mod clock;
 pub mod config;
 pub mod easypost;
@@ -8,3 +9,5 @@ pub mod repositories;
 pub mod shopper;
 pub mod state;
 pub mod stripe;
+
+pub use analytics_rate_limit::RedisAnalyticsCollectionRateLimiter;

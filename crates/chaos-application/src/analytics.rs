@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chaos_domain::{
@@ -11,10 +12,10 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsEventRepository,
-        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
-        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
-        StoreAnalyticsPolicy,
+        AnalyticsCollectionRateLimiter, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
+        AnalyticsPrivacyRepository, AnalyticsSessionizationQueue, CustomerActor,
+        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
     },
 };
 
@@ -40,6 +41,7 @@ pub struct BrowserEventCollectionResult {
 
 pub struct AnalyticsCollection {
     repository: Arc<dyn AnalyticsEventRepository>,
+    rate_limiter: Arc<dyn AnalyticsCollectionRateLimiter>,
 }
 
 pub struct AnalyticsWorkers {
@@ -261,8 +263,14 @@ impl AnalyticsWorkers {
 }
 
 impl AnalyticsCollection {
-    pub fn new(repository: Arc<dyn AnalyticsEventRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: Arc<dyn AnalyticsEventRepository>,
+        rate_limiter: Arc<dyn AnalyticsCollectionRateLimiter>,
+    ) -> Self {
+        Self {
+            repository,
+            rate_limiter,
+        }
     }
 
     pub async fn collect(
@@ -284,6 +292,31 @@ impl AnalyticsCollection {
                     "must be within 24 hours before or 5 minutes after receipt",
                 ));
             }
+        }
+
+        let sales_channel_id = input
+            .actor
+            .sales_channel_id
+            .ok_or(ApplicationError::Forbidden)?;
+        let mut counts = BTreeMap::<uuid::Uuid, u16>::new();
+        for event in &input.events {
+            *counts.entry(event.anonymous_id()).or_default() += 1;
+        }
+        let anonymous_event_counts = counts.into_iter().collect::<Vec<_>>();
+        let decision = self
+            .rate_limiter
+            .consume(
+                input.actor.merchant_account_id.as_uuid(),
+                input.actor.store_id,
+                sales_channel_id,
+                &anonymous_event_counts,
+                u16::try_from(input.events.len()).expect("validated analytics batch fits in u16"),
+            )
+            .await?;
+        if !decision.allowed {
+            return Err(ApplicationError::RateLimited {
+                retry_after_seconds: decision.retry_after_seconds,
+            });
         }
 
         let received = input.events.len();
@@ -373,6 +406,25 @@ mod tests {
     #[derive(Default)]
     struct RecordingRepository(Mutex<Vec<Uuid>>);
 
+    struct RateLimiter(bool);
+
+    #[async_trait]
+    impl AnalyticsCollectionRateLimiter for RateLimiter {
+        async fn consume(
+            &self,
+            _merchant_account_id: Uuid,
+            _store_id: StoreId,
+            _sales_channel_id: SalesChannelId,
+            _anonymous_event_counts: &[(Uuid, u16)],
+            _event_count: u16,
+        ) -> Result<crate::ports::AnalyticsRateLimitDecision, ApplicationError> {
+            Ok(crate::ports::AnalyticsRateLimitDecision {
+                allowed: self.0,
+                retry_after_seconds: 60,
+            })
+        }
+    }
+
     #[async_trait]
     impl AnalyticsEventRepository for RecordingRepository {
         async fn resolve_collection_policy(
@@ -430,7 +482,7 @@ mod tests {
     #[tokio::test]
     async fn collection_discards_events_without_storage_consent() {
         let repository = Arc::new(RecordingRepository::default());
-        let collection = AnalyticsCollection::new(repository.clone());
+        let collection = AnalyticsCollection::new(repository.clone(), Arc::new(RateLimiter(true)));
         let now = OffsetDateTime::now_utc();
         let result = collection
             .collect(CollectBrowserEventsInput {
@@ -448,7 +500,10 @@ mod tests {
 
     #[tokio::test]
     async fn collection_rejects_unbounded_batches_and_timestamp_skew() {
-        let collection = AnalyticsCollection::new(Arc::new(RecordingRepository::default()));
+        let collection = AnalyticsCollection::new(
+            Arc::new(RecordingRepository::default()),
+            Arc::new(RateLimiter(true)),
+        );
         let now = OffsetDateTime::now_utc();
         assert!(
             collection
@@ -470,5 +525,28 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn collection_rejects_a_rate_limited_batch_before_persistence() {
+        let repository = Arc::new(RecordingRepository::default());
+        let collection = AnalyticsCollection::new(repository.clone(), Arc::new(RateLimiter(false)));
+        let now = OffsetDateTime::now_utc();
+        let error = collection
+            .collect(CollectBrowserEventsInput {
+                actor: actor(),
+                events: vec![event(now, true)],
+                received_at: now,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplicationError::RateLimited {
+                retry_after_seconds: 60
+            }
+        ));
+        assert!(repository.0.lock().unwrap().is_empty());
     }
 }
