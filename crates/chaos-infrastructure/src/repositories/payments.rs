@@ -5,11 +5,12 @@ use chaos_application::{
     merchant::MerchantActor,
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentClientAction, PaymentProvider, PaymentProviderAccountDetail,
-        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentRepository,
-        PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-        ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, ShopperActor,
-        VerifiedWebhookEvent,
+        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
+        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
+        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessStatus,
+        PaymentRepository, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
+        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
+        RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
 };
 use chaos_domain::{
@@ -50,6 +51,9 @@ type ProviderAccountRow = (
     String,
     bool,
     bool,
+    String,
+    Option<OffsetDateTime>,
+    Value,
     Option<OffsetDateTime>,
     Option<OffsetDateTime>,
     OffsetDateTime,
@@ -95,7 +99,7 @@ impl PaymentProvider for SandboxPaymentProvider {
         command: ProviderClientActionCommand,
     ) -> Result<PaymentClientAction, ApplicationError> {
         Ok(PaymentClientAction {
-            provider: self.name().into(),
+            provider: "testpay".into(),
             kind: "confirm_payment",
             public_key: SecretString::from("testpay_public".to_owned()),
             client_token: SecretString::from(format!(
@@ -103,6 +107,27 @@ impl PaymentProvider for SandboxPaymentProvider {
                 command.provider_reference
             )),
             account_reference: command.external_account_reference,
+        })
+    }
+}
+
+#[async_trait]
+impl PaymentProviderOnboarding for SandboxPaymentProvider {
+    fn name(&self) -> &'static str {
+        "testpay"
+    }
+
+    async fn check_readiness(
+        &self,
+        _external_account_reference: &str,
+        _credential_secret_reference: &PaymentSecretReference,
+        checked_at: OffsetDateTime,
+    ) -> Result<PaymentProviderReadiness, ApplicationError> {
+        Ok(PaymentProviderReadiness {
+            ready: true,
+            blocker_codes: Vec::new(),
+            configuration: json!({"sandbox": true}),
+            checked_at,
         })
     }
 }
@@ -248,6 +273,8 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, external_account_reference, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                    readiness_status, readiness_checked_at, \
+                    COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                     credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
              FROM payments.provider_accounts \
@@ -295,8 +322,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         actor: MerchantActor,
         store_id: StoreId,
         account: &PaymentProviderAccount,
-        credential_secret_reference: &PaymentSecretReference,
-        webhook_secret_reference: &PaymentSecretReference,
+        configuration: &PaymentProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
@@ -311,12 +337,14 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         {
             return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
         }
+        let readiness = configuration.readiness.as_ref();
         sqlx::query(
             "INSERT INTO payments.provider_accounts \
              (id, merchant_account_id, store_id, provider, display_name, \
               external_account_reference, credential_secret_reference, webhook_secret_reference, \
+              readiness_status, readiness_snapshot, readiness_checked_at, \
               enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         )
         .bind(account.id().as_uuid())
         .bind(account_id)
@@ -324,8 +352,14 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .bind(account.provider())
         .bind(account.display_name())
         .bind(account.external_account_reference())
-        .bind(credential_secret_reference.expose_reference())
-        .bind(webhook_secret_reference.expose_reference())
+        .bind(configuration.credential_secret_reference.expose_reference())
+        .bind(configuration.webhook_secret_reference.expose_reference())
+        .bind(readiness.map_or(
+            PaymentProviderReadinessStatus::Unchecked.as_str(),
+            |value| readiness_status(value).as_str(),
+        ))
+        .bind(readiness.map(|value| &value.configuration))
+        .bind(readiness.map(|value| value.checked_at))
         .bind(account.enabled())
         .bind(actor.user_id().as_uuid())
         .execute(&mut *transaction)
@@ -351,8 +385,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         actor: MerchantActor,
         store_id: StoreId,
         account: &PaymentProviderAccount,
-        credential_secret_reference: &PaymentSecretReference,
-        webhook_secret_reference: &PaymentSecretReference,
+        configuration: &PaymentProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
@@ -367,6 +400,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         {
             return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
         }
+        let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
             "UPDATE payments.provider_accounts SET display_name = $4, \
                     previous_credential_secret_reference = CASE \
@@ -387,6 +421,18 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                              AND webhook_secret_reference IS DISTINCT FROM $6 \
                         THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE webhook_rotation_expires_at END, \
                     webhook_secret_reference = $6, \
+                    readiness_status = CASE \
+                        WHEN $8::text IS NOT NULL THEN $8 \
+                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN 'unchecked' \
+                        ELSE readiness_status END, \
+                    readiness_snapshot = CASE \
+                        WHEN $8::text IS NOT NULL THEN $9::jsonb \
+                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        ELSE readiness_snapshot END, \
+                    readiness_checked_at = CASE \
+                        WHEN $8::text IS NOT NULL THEN $10::timestamptz \
+                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        ELSE readiness_checked_at END, \
                     enabled = $7, updated_at = CURRENT_TIMESTAMP \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
@@ -394,9 +440,16 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .bind(store_id.as_uuid())
         .bind(account.id().as_uuid())
         .bind(account.display_name())
-        .bind(credential_secret_reference.expose_reference())
-        .bind(webhook_secret_reference.expose_reference())
+        .bind(
+            configuration
+                .credential_secret_reference
+                .expose_reference(),
+        )
+        .bind(configuration.webhook_secret_reference.expose_reference())
         .bind(account.enabled())
+        .bind(readiness.map(|value| readiness_status(value).as_str()))
+        .bind(readiness.map(|value| &value.configuration))
+        .bind(readiness.map(|value| value.checked_at))
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
@@ -1643,6 +1696,8 @@ async fn load_provider_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, external_account_reference, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
+                readiness_status, readiness_checked_at, \
+                COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                 credential_rotation_expires_at, webhook_rotation_expires_at, \
                 created_at, updated_at FROM payments.provider_accounts \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -1669,11 +1724,27 @@ fn provider_account_detail(
             row.4,
         )?,
         credentials_configured: row.5,
-        credential_rotation_expires_at: row.6,
-        webhook_rotation_expires_at: row.7,
-        created_at: row.8,
-        updated_at: row.9,
+        readiness_status: match row.6.as_str() {
+            "unchecked" => PaymentProviderReadinessStatus::Unchecked,
+            "ready" => PaymentProviderReadinessStatus::Ready,
+            "action_required" => PaymentProviderReadinessStatus::ActionRequired,
+            _ => return Err(corrupt_state()),
+        },
+        readiness_checked_at: row.7,
+        readiness_blocker_codes: serde_json::from_value(row.8).map_err(|_| corrupt_state())?,
+        credential_rotation_expires_at: row.9,
+        webhook_rotation_expires_at: row.10,
+        created_at: row.11,
+        updated_at: row.12,
     })
+}
+
+fn readiness_status(readiness: &PaymentProviderReadiness) -> PaymentProviderReadinessStatus {
+    if readiness.ready {
+        PaymentProviderReadinessStatus::Ready
+    } else {
+        PaymentProviderReadinessStatus::ActionRequired
+    }
 }
 
 async fn replay_provider_account(

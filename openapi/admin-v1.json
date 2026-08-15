@@ -2223,13 +2223,14 @@
       "CreatePaymentProviderAccount": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["provider", "display_name", "external_account_reference", "credential_secret_reference", "webhook_secret_reference"],
+        "required": ["provider", "display_name", "external_account_reference", "credential_secret_reference", "webhook_secret_reference", "enabled"],
         "properties": {
           "provider": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
           "display_name": { "type": "string", "minLength": 1, "maxLength": 120 },
           "external_account_reference": { "type": "string", "minLength": 1, "maxLength": 255 },
           "credential_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true, "description": "Opaque reference resolved by the deployment secret manager; never raw credentials." },
-          "webhook_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true, "description": "Opaque reference resolved by the deployment secret manager; never a raw signing secret." }
+          "webhook_secret_reference": { "type": "string", "minLength": 1, "maxLength": 255, "writeOnly": true, "description": "Opaque reference resolved by the deployment secret manager; never a raw signing secret." },
+          "enabled": { "type": "boolean", "description": "Requests a live Provider readiness check; effective enablement requires a ready result." }
         }
       },
       "UpdatePaymentProviderAccount": {
@@ -2246,7 +2247,7 @@
       "PaymentProviderAccount": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "provider", "display_name", "external_account_reference", "enabled", "credentials_configured", "created_at", "updated_at"],
+        "required": ["id", "provider", "display_name", "external_account_reference", "enabled", "credentials_configured", "readiness_status", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "provider": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" },
@@ -2254,6 +2255,9 @@
           "external_account_reference": { "type": "string", "minLength": 1, "maxLength": 255 },
           "enabled": { "type": "boolean" },
           "credentials_configured": { "type": "boolean" },
+          "readiness_status": { "type": "string", "enum": ["unchecked", "ready", "action_required"] },
+          "readiness_checked_at": { "type": "string", "format": "date-time" },
+          "readiness_blocker_codes": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" } },
           "credential_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the rollback window for the previous outbound credential reference, when a rotation is active." },
           "webhook_rotation_expires_at": { "type": "string", "format": "date-time", "description": "End of the verification overlap window for the previous webhook secret reference, when a rotation is active." },
           "created_at": { "type": "string", "format": "date-time" },

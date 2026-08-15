@@ -113,6 +113,7 @@ struct CreateProviderAccountBody {
     external_account_reference: String,
     credential_secret_reference: String,
     webhook_secret_reference: String,
+    enabled: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -189,6 +190,11 @@ struct PaymentProviderAccountData {
     external_account_reference: String,
     enabled: bool,
     credentials_configured: bool,
+    readiness_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readiness_checked_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    readiness_blocker_codes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_rotation_expires_at: Option<ApiDateTime>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -267,6 +273,8 @@ async fn create_provider_account(
             external_account_reference: body.external_account_reference,
             credential_secret_reference: body.credential_secret_reference,
             webhook_secret_reference: body.webhook_secret_reference,
+            enabled: body.enabled,
+            checked_at: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -296,6 +304,7 @@ async fn update_provider_account(
             credential_secret_reference: body.credential_secret_reference,
             webhook_secret_reference: body.webhook_secret_reference,
             enabled: body.enabled,
+            checked_at: state.clock.now(),
             idempotency,
         })
         .await?;
@@ -463,6 +472,9 @@ fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProvider
         external_account_reference: value.account.external_account_reference().into(),
         enabled: value.account.enabled(),
         credentials_configured: value.credentials_configured,
+        readiness_status: value.readiness_status.as_str(),
+        readiness_checked_at: value.readiness_checked_at.map(Into::into),
+        readiness_blocker_codes: value.readiness_blocker_codes,
         credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
         webhook_rotation_expires_at: value.webhook_rotation_expires_at.map(Into::into),
         created_at: value.created_at.into(),

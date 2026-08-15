@@ -1626,7 +1626,10 @@ CREATE TABLE payments.provider_accounts (
     webhook_secret_reference    TEXT,
     previous_webhook_secret_reference TEXT,
     webhook_rotation_expires_at TIMESTAMPTZ,
-    enabled                    BOOLEAN     NOT NULL DEFAULT true,
+    readiness_status            TEXT        NOT NULL DEFAULT 'unchecked',
+    readiness_snapshot          JSONB,
+    readiness_checked_at        TIMESTAMPTZ,
+    enabled                    BOOLEAN     NOT NULL DEFAULT false,
     created_by_user_id          UUID,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1670,6 +1673,25 @@ CREATE TABLE payments.provider_accounts (
     CONSTRAINT provider_accounts_webhook_rotation_shape_check CHECK (
         (previous_webhook_secret_reference IS NULL AND webhook_rotation_expires_at IS NULL)
         OR (previous_webhook_secret_reference IS NOT NULL AND webhook_rotation_expires_at IS NOT NULL)
+    ),
+    CONSTRAINT provider_accounts_readiness_status_check CHECK (
+        readiness_status IN ('unchecked', 'ready', 'action_required')
+    ),
+    CONSTRAINT provider_accounts_readiness_shape_check CHECK (
+        (
+            readiness_status = 'unchecked'
+            AND readiness_snapshot IS NULL
+            AND readiness_checked_at IS NULL
+        )
+        OR (
+            readiness_status <> 'unchecked'
+            AND jsonb_typeof(readiness_snapshot) = 'object'
+            AND pg_column_size(readiness_snapshot) <= 8192
+            AND readiness_checked_at IS NOT NULL
+        )
+    ),
+    CONSTRAINT provider_accounts_enabled_readiness_check CHECK (
+        NOT enabled OR readiness_status = 'ready'
     )
 );
 

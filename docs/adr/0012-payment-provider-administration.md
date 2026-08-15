@@ -18,6 +18,8 @@ Owners and administrators may create and update Provider accounts through the Ad
 - one provider API credential reference;
 - one webhook verification secret reference.
 
+Creation and update explicitly request the enabled state. Disabled configuration can be stored before external onboarding is complete. Enabling invokes the configured provider's onboarding-readiness port before persistence. A ready assessment is stored with its check time and a bounded normalized provider snapshot. An unsuccessful assessment stores stable blocker codes and leaves the account disabled. Provider-specific response types and identity data never enter this aggregate or its public response.
+
 The references identify values in a deployment secret manager. They are not credentials, and raw credentials are never accepted or persisted by this API. References are write-only in OpenAPI and never appear in response DTOs, logs, events, or idempotency snapshots. Responses expose only `credentials_configured`.
 
 Storefront Payment Attempt creation continues to accept a provider choice, but succeeds only when the current Store has exactly one enabled matching Provider account. Payment Attempts retain the Provider account foreign key. Webhook tenant resolution uses the immutable provider and external account mapping. Provider, Store, and merchant lifecycle changes do not suppress authenticated financial callbacks for existing activity.
@@ -33,4 +35,5 @@ Disabling blocks only new Payment Attempts. Existing Payment Attempts retain dis
 - Historical Provider identity cannot drift through administrative updates.
 - API and webhook secrets remain outside PostgreSQL; only opaque references are stored.
 - Credential rotation is rolling-deployment safe without allowing an update retry to prolong the overlap window.
+- Live traffic cannot be enabled from an unchecked or action-required provider assessment.
 - A production adapter must resolve references through a dedicated infrastructure port and must never place resolved values in application or domain types.

@@ -47,13 +47,14 @@ impl PaymentProviderAccount {
         provider: impl Into<String>,
         display_name: impl Into<String>,
         external_account_reference: impl Into<String>,
+        enabled: bool,
     ) -> Result<Self, DomainError> {
         Self::rehydrate(
             PaymentProviderAccountId::new(),
             provider,
             display_name,
             external_account_reference,
-            true,
+            enabled,
         )
     }
 
@@ -524,8 +525,8 @@ mod tests {
 
     #[test]
     fn provider_accounts_validate_canonical_names_and_opaque_secret_references() {
-        assert!(PaymentProviderAccount::create("stripe", "Stripe", "acct_123").is_ok());
-        assert!(PaymentProviderAccount::create("Stripe", "Stripe", "acct_123").is_err());
+        assert!(PaymentProviderAccount::create("stripe", "Stripe", "acct_123", false).is_ok());
+        assert!(PaymentProviderAccount::create("Stripe", "Stripe", "acct_123", false).is_err());
         assert!(
             PaymentSecretReference::new("credential_secret_reference", "vault://stripe/live")
                 .is_ok()

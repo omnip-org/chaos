@@ -750,6 +750,7 @@ fn order_line_data(line: OrderLineItem) -> OrderLineData {
 mod tests {
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use axum::{
         body::Body,
         http::{HeaderValue, Method, Request, StatusCode},
@@ -757,8 +758,12 @@ mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
     use chaos_application::{
-        payments::PaymentWorkers,
-        ports::{IntegrationQueue, PaymentRepository, ProviderCommandResult, QueueJob},
+        ApplicationError,
+        payments::{PaymentProviderAdministration, PaymentWorkers},
+        ports::{
+            IntegrationQueue, PaymentProviderOnboarding, PaymentProviderReadiness,
+            PaymentRepository, ProviderCommandResult, QueueJob,
+        },
     };
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
@@ -766,10 +771,11 @@ mod tests {
         identity::UserId,
         inventory::InventoryLocationId,
         merchant::{ApiKeyClass, ApiKeyId, ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
+        payments::PaymentSecretReference,
         pricing::PriceListId,
     };
-    use chaos_infrastructure::repositories::PostgresPaymentRepository;
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
+    use chaos_infrastructure::repositories::{PostgresPaymentRepository, SandboxPaymentProvider};
     use hmac::{Hmac, Mac};
     use secrecy::ExposeSecret;
     use serde_json::{Value, json};
@@ -782,6 +788,33 @@ mod tests {
         pricing::tests::{request, response_json, test_state},
         router,
     };
+
+    struct ActionRequiredPaymentOnboarding;
+
+    #[async_trait]
+    impl PaymentProviderOnboarding for ActionRequiredPaymentOnboarding {
+        fn name(&self) -> &'static str {
+            "blockedpay"
+        }
+
+        async fn check_readiness(
+            &self,
+            external_account_reference: &str,
+            _credential_secret_reference: &PaymentSecretReference,
+            checked_at: time::OffsetDateTime,
+        ) -> Result<PaymentProviderReadiness, ApplicationError> {
+            Ok(PaymentProviderReadiness {
+                ready: false,
+                blocker_codes: vec!["account_incomplete".into()],
+                configuration: json!({
+                    "account_reference": external_account_reference,
+                    "ready": false,
+                    "blocker_codes": ["account_incomplete"]
+                }),
+                checked_at,
+            })
+        }
+    }
 
     async fn insert_key(
         pool: &PgPool,
@@ -899,6 +932,7 @@ mod tests {
         let location_id = InventoryLocationId::new();
         let shipping_service_id = ShippingServiceId::new();
         let tax_rule_id = Uuid::now_v7();
+        let testpay_provider_account_id = Uuid::now_v7();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
@@ -1045,10 +1079,12 @@ mod tests {
         sqlx::query(
             "INSERT INTO payments.provider_accounts \
              (id, merchant_account_id, store_id, provider, external_account_reference, \
-              credential_secret_reference, webhook_secret_reference) \
-             VALUES ($1, $2, $3, 'testpay', $4, 'test://credential', 'test://webhook')",
+              credential_secret_reference, webhook_secret_reference, readiness_status, \
+              readiness_snapshot, readiness_checked_at, enabled) \
+             VALUES ($1, $2, $3, 'testpay', $4, 'test://credential', 'test://webhook', \
+                     'ready', '{\"blocker_codes\":[]}'::jsonb, CURRENT_TIMESTAMP, true)",
         )
-        .bind(Uuid::now_v7())
+        .bind(testpay_provider_account_id)
         .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(&provider_account_reference)
@@ -1166,10 +1202,17 @@ mod tests {
         let full_secret = full_key.plaintext.expose_secret();
         let catalog_secret = catalog_key.plaintext.expose_secret();
         let other_store_secret = other_store_key.plaintext.expose_secret();
-        let state = test_state(&database_url, user_id);
+        let mut state = test_state(&database_url, user_id);
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
         let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
+        state.payment_provider_administration = Arc::new(PaymentProviderAdministration::new(
+            payment_repository.clone(),
+            vec![
+                Arc::new(SandboxPaymentProvider) as Arc<dyn PaymentProviderOnboarding>,
+                Arc::new(ActionRequiredPaymentOnboarding) as Arc<dyn PaymentProviderOnboarding>,
+            ],
+        ));
         assert_eq!(
             chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
                 payment_repository.as_ref(),
@@ -1206,12 +1249,60 @@ mod tests {
             account_id.as_uuid(),
             store_id.as_uuid()
         );
+        let ready_testpay = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &format!("{provider_accounts_uri}/{testpay_provider_account_id}"),
+                Some("verify-testpay-readiness"),
+                Some(json!({
+                    "display_name": "TestPay",
+                    "credential_secret_reference": "test://credential",
+                    "webhook_secret_reference": "test://webhook",
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(ready_testpay.status(), StatusCode::OK);
+        let ready_testpay = response_json(ready_testpay).await;
+        assert_eq!(ready_testpay["data"]["readiness_status"], "ready");
+        assert!(ready_testpay["data"]["readiness_checked_at"].is_string());
+        let blocked_provider = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &provider_accounts_uri,
+                Some("create-blocked-provider"),
+                Some(json!({
+                    "provider": "blockedpay",
+                    "display_name": "Blocked Provider",
+                    "external_account_reference": "blocked-account",
+                    "credential_secret_reference": "test://blocked-credential",
+                    "webhook_secret_reference": "test://blocked-webhook",
+                    "enabled": true
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(blocked_provider.status(), StatusCode::CREATED);
+        let blocked_provider = response_json(blocked_provider).await;
+        assert_eq!(blocked_provider["data"]["enabled"], false);
+        assert_eq!(
+            blocked_provider["data"]["readiness_status"],
+            "action_required"
+        );
+        assert_eq!(
+            blocked_provider["data"]["readiness_blocker_codes"],
+            json!(["account_incomplete"])
+        );
         let stripe_configuration = json!({
             "provider": "stripe",
             "display_name": "Stripe Live",
             "external_account_reference": format!("acct_stripe_{suffix}"),
             "credential_secret_reference": "vault://payments/stripe/api-key",
-            "webhook_secret_reference": "vault://payments/stripe/webhook-secret"
+            "webhook_secret_reference": "vault://payments/stripe/webhook-secret",
+            "enabled": false
         });
         let stripe_account = app
             .clone()
@@ -1227,6 +1318,9 @@ mod tests {
         let stripe_account = response_json(stripe_account).await;
         let stripe_account_id = stripe_account["data"]["id"].as_str().unwrap().to_owned();
         assert_eq!(stripe_account["data"]["provider"], "stripe");
+        assert_eq!(stripe_account["data"]["enabled"], false);
+        assert_eq!(stripe_account["data"]["readiness_status"], "unchecked");
+        assert!(stripe_account["data"]["readiness_checked_at"].is_null());
         assert_eq!(stripe_account["data"]["credentials_configured"], true);
         assert!(stripe_account["data"]["credential_secret_reference"].is_null());
         assert!(stripe_account["data"]["webhook_secret_reference"].is_null());
@@ -1258,7 +1352,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            3
         );
 
         let stripe_account_uri = format!("{provider_accounts_uri}/{stripe_account_id}");

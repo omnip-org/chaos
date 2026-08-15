@@ -188,13 +188,20 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let payment_secrets = Arc::new(EnvironmentPaymentSecretResolver);
+        let sandbox_payment_provider = Arc::new(SandboxPaymentProvider);
+        let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
+            settings.stripe_api_base_url.clone(),
+            settings.dependency_timeout,
+            payment_secrets.clone(),
+        )?);
         let providers = vec![
-            Arc::new(SandboxPaymentProvider) as Arc<dyn chaos_application::ports::PaymentProvider>,
-            Arc::new(StripePaymentProvider::new(
-                settings.stripe_api_base_url.clone(),
-                settings.dependency_timeout,
-                payment_secrets.clone(),
-            )?) as Arc<dyn chaos_application::ports::PaymentProvider>,
+            sandbox_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
+            stripe_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
+        ];
+        let payment_onboarding = vec![
+            sandbox_payment_provider
+                as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
+            stripe_payment_provider as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
         ];
         let webhook_verifiers = vec![
             Arc::new(HmacPaymentWebhookVerifier::new(
@@ -211,7 +218,7 @@ impl ApiState {
             providers.clone(),
         );
         let payment_provider_administration =
-            PaymentProviderAdministration::new(payment_repository.clone());
+            PaymentProviderAdministration::new(payment_repository.clone(), payment_onboarding);
         let payment_workers =
             PaymentWorkers::new(payment_repository.clone(), payment_repository, providers);
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(

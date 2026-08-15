@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        PaymentClientAction, PaymentProvider, PaymentSecretResolver,
-        PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-        ProviderCommand, ProviderCommandResult, VerifiedWebhookEvent,
+        PaymentClientAction, PaymentProvider, PaymentProviderOnboarding, PaymentProviderReadiness,
+        PaymentSecretResolver, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
+        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, VerifiedWebhookEvent,
     },
 };
 use chaos_domain::payments::PaymentSecretReference;
@@ -228,11 +228,92 @@ impl PaymentProvider for StripePaymentProvider {
             .await?;
         let client_secret = object.client_secret.ok_or_else(provider_invalid_response)?;
         Ok(PaymentClientAction {
-            provider: self.name().into(),
+            provider: "stripe".into(),
             kind: "confirm_payment",
             public_key: credentials.publishable_key,
             client_token: SecretString::from(client_secret),
             account_reference: command.external_account_reference,
+        })
+    }
+}
+
+#[async_trait]
+impl PaymentProviderOnboarding for StripePaymentProvider {
+    fn name(&self) -> &'static str {
+        "stripe"
+    }
+
+    async fn check_readiness(
+        &self,
+        external_account_reference: &str,
+        credential_secret_reference: &PaymentSecretReference,
+        checked_at: OffsetDateTime,
+    ) -> Result<PaymentProviderReadiness, ApplicationError> {
+        if !valid_stripe_identifier(external_account_reference, "acct_") {
+            return Err(provider_invalid_response());
+        }
+        let credentials = self.credentials(credential_secret_reference).await?;
+        let response = self
+            .client
+            .get(self.endpoint(&format!("v1/accounts/{external_account_reference}"))?)
+            .headers(stripe_platform_headers(
+                credentials.secret_key.expose_secret(),
+            )?)
+            .send()
+            .await
+            .map_err(provider_network_error)?;
+        let account = parse_stripe_account_response(response).await?;
+        if account.id != external_account_reference {
+            return Err(provider_invalid_response());
+        }
+
+        let card_payments = account.capabilities.card_payments.as_deref();
+        let fee_payer = account.controller.fees.payer.as_deref();
+        let losses_payer = account.controller.losses.payments.as_deref();
+        let requirements_due =
+            account.requirements.currently_due.len() + account.requirements.past_due.len();
+        let mut blocker_codes = Vec::new();
+        if !account.charges_enabled {
+            blocker_codes.push("charges_disabled".into());
+        }
+        if !account.payouts_enabled {
+            blocker_codes.push("payouts_disabled".into());
+        }
+        if !account.details_submitted {
+            blocker_codes.push("details_incomplete".into());
+        }
+        if card_payments != Some("active") {
+            blocker_codes.push("card_payments_inactive".into());
+        }
+        if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
+            blocker_codes.push("requirements_due".into());
+        }
+        if fee_payer != Some("account") {
+            blocker_codes.push("fee_payer_mismatch".into());
+        }
+        if losses_payer != Some("stripe") {
+            blocker_codes.push("loss_liability_mismatch".into());
+        }
+
+        let ready = blocker_codes.is_empty();
+        let configuration = serde_json::json!({
+            "account_reference": account.id,
+            "ready": ready,
+            "blocker_codes": &blocker_codes,
+            "accepts_payments": account.charges_enabled,
+            "supports_payouts": account.payouts_enabled,
+            "details_submitted": account.details_submitted,
+            "card_payments": card_payments,
+            "fee_payer": fee_payer,
+            "losses_payer": losses_payer,
+            "requirements_due": requirements_due,
+            "disabled_reason": account.requirements.disabled_reason,
+        });
+        Ok(PaymentProviderReadiness {
+            ready,
+            blocker_codes,
+            configuration,
+            checked_at,
         })
     }
 }
@@ -348,6 +429,59 @@ struct StripeObject {
     id: String,
     #[serde(default)]
     client_secret: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StripeAccount {
+    id: String,
+    #[serde(default)]
+    charges_enabled: bool,
+    #[serde(default)]
+    payouts_enabled: bool,
+    #[serde(default)]
+    details_submitted: bool,
+    #[serde(default)]
+    capabilities: StripeAccountCapabilities,
+    #[serde(default)]
+    controller: StripeAccountController,
+    #[serde(default)]
+    requirements: StripeAccountRequirements,
+}
+
+#[derive(Default, Deserialize)]
+struct StripeAccountCapabilities {
+    #[serde(default)]
+    card_payments: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct StripeAccountController {
+    #[serde(default)]
+    fees: StripeAccountFees,
+    #[serde(default)]
+    losses: StripeAccountLosses,
+}
+
+#[derive(Default, Deserialize)]
+struct StripeAccountFees {
+    #[serde(default)]
+    payer: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct StripeAccountLosses {
+    #[serde(default)]
+    payments: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct StripeAccountRequirements {
+    #[serde(default)]
+    currently_due: Vec<Value>,
+    #[serde(default)]
+    past_due: Vec<Value>,
+    #[serde(default)]
+    disabled_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -468,6 +602,19 @@ fn stripe_headers(
     Ok(headers)
 }
 
+fn stripe_platform_headers(secret_key: &str) -> Result<HeaderMap, ApplicationError> {
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {secret_key}")).map_err(|_| secret_unavailable())?;
+    authorization.set_sensitive(true);
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, authorization);
+    headers.insert(
+        "stripe-version",
+        HeaderValue::from_static(STRIPE_API_VERSION),
+    );
+    Ok(headers)
+}
+
 async fn parse_stripe_response(
     response: reqwest::Response,
 ) -> Result<StripeObject, ApplicationError> {
@@ -487,6 +634,29 @@ async fn parse_stripe_response(
         Err(ApplicationError::Conflict {
             code: "stripe_request_rejected",
             message: "Stripe rejected the payment operation",
+        })
+    }
+}
+
+async fn parse_stripe_account_response(
+    response: reqwest::Response,
+) -> Result<StripeAccount, ApplicationError> {
+    let status = response.status();
+    if status.is_success() {
+        return response
+            .json::<StripeAccount>()
+            .await
+            .map_err(|_| provider_invalid_response());
+    }
+    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        Err(ApplicationError::Unavailable {
+            service: "stripe",
+            source: anyhow::anyhow!("Stripe returned HTTP {status}"),
+        })
+    } else {
+        Err(ApplicationError::Conflict {
+            code: "stripe_account_rejected",
+            message: "Stripe rejected the connected account lookup",
         })
     }
 }
@@ -681,6 +851,12 @@ mod tests {
             ("GET", "/v1/payment_intents/pi_created") => {
                 r#"{"id":"pi_created","client_secret":"pi_created_secret_value"}"#
             }
+            ("GET", "/v1/accounts/acct_connected") => {
+                r#"{"id":"acct_connected","charges_enabled":true,"payouts_enabled":true,"details_submitted":true,"capabilities":{"card_payments":"active"},"controller":{"fees":{"payer":"account"},"losses":{"payments":"stripe"}},"requirements":{"currently_due":[],"past_due":[],"disabled_reason":null}}"#
+            }
+            ("GET", "/v1/accounts/acct_not_ready") => {
+                r#"{"id":"acct_not_ready","charges_enabled":false,"payouts_enabled":false,"details_submitted":false,"capabilities":{"card_payments":"inactive"},"controller":{"fees":{"payer":"application"},"losses":{"payments":"application"}},"requirements":{"currently_due":["business_profile.url"],"past_due":[],"disabled_reason":"requirements.past_due"}}"#
+            }
             ("POST", "/v1/refunds") => r#"{"id":"re_created"}"#,
             _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
         };
@@ -751,15 +927,41 @@ mod tests {
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "refund-command".into(),
                 external_account_reference: "acct_connected".into(),
-                credential_secret_reference: reference,
+                credential_secret_reference: reference.clone(),
                 payment_provider_reference: Some(created.provider_reference),
             })
             .await
             .unwrap();
         assert_eq!(refunded.provider_reference, "re_created");
+        let checked_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let readiness = provider
+            .check_readiness("acct_connected", &reference, checked_at)
+            .await
+            .unwrap();
+        assert!(readiness.ready);
+        assert!(readiness.blocker_codes.is_empty());
+        assert_eq!(readiness.checked_at, checked_at);
+        assert_eq!(readiness.configuration["fee_payer"], "account");
+        let not_ready = provider
+            .check_readiness("acct_not_ready", &reference, checked_at)
+            .await
+            .unwrap();
+        assert!(!not_ready.ready);
+        assert_eq!(
+            not_ready.blocker_codes,
+            vec![
+                "charges_disabled",
+                "payouts_disabled",
+                "details_incomplete",
+                "card_payments_inactive",
+                "requirements_due",
+                "fee_payer_mismatch",
+                "loss_liability_mismatch"
+            ]
+        );
 
         let requests = state.0.lock().unwrap();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 5);
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/v1/payment_intents");
         assert_eq!(requests[0].headers["stripe-account"], "acct_connected");
@@ -778,6 +980,9 @@ mod tests {
             url::form_urlencoded::parse(requests[2].body.as_bytes()).collect();
         assert_eq!(refund_form["payment_intent"], "pi_created");
         assert_eq!(refund_form["amount"], "400");
+        assert_eq!(requests[3].path, "/v1/accounts/acct_connected");
+        assert!(requests[3].headers.get("stripe-account").is_none());
+        assert_eq!(requests[3].headers["stripe-version"], STRIPE_API_VERSION);
         drop(requests);
         server.abort();
     }

@@ -17,9 +17,10 @@ use crate::{
     merchant::MerchantActor,
     ports::{
         IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentClientAction, PaymentProvider, PaymentProviderAccountDetail,
-        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentRepository,
-        PaymentWebhookVerifier, QueueJob, RefundDetail, ShopperActor,
+        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
+        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
+        PaymentProviderOnboarding, PaymentRepository, PaymentWebhookVerifier, QueueJob,
+        RefundDetail, ShopperActor,
     },
 };
 
@@ -46,6 +47,8 @@ pub struct CreatePaymentProviderAccountInput {
     pub external_account_reference: String,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
+    pub enabled: bool,
+    pub checked_at: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -57,16 +60,27 @@ pub struct UpdatePaymentProviderAccountInput {
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
     pub enabled: bool,
+    pub checked_at: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct PaymentProviderAdministration {
     repository: Arc<dyn PaymentProviderAccountRepository>,
+    onboarding: HashMap<String, Arc<dyn PaymentProviderOnboarding>>,
 }
 
 impl PaymentProviderAdministration {
-    pub fn new(repository: Arc<dyn PaymentProviderAccountRepository>) -> Self {
-        Self { repository }
+    pub fn new(
+        repository: Arc<dyn PaymentProviderAccountRepository>,
+        onboarding: impl IntoIterator<Item = Arc<dyn PaymentProviderOnboarding>>,
+    ) -> Self {
+        Self {
+            repository,
+            onboarding: onboarding
+                .into_iter()
+                .map(|provider| (provider.name().to_owned(), provider))
+                .collect(),
+        }
     }
 
     pub async fn list(
@@ -96,10 +110,11 @@ impl PaymentProviderAdministration {
         input: CreatePaymentProviderAccountInput,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
         require_provider_administrator(input.actor)?;
-        let account = PaymentProviderAccount::create(
+        let mut account = PaymentProviderAccount::create(
             input.provider,
             input.display_name,
             input.external_account_reference,
+            input.enabled,
         )?;
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
@@ -109,13 +124,22 @@ impl PaymentProviderAdministration {
             "webhook_secret_reference",
             input.webhook_secret_reference,
         )?;
+        let configuration = self
+            .configuration(&account, credential, webhook, input.checked_at)
+            .await?;
+        if configuration
+            .readiness
+            .as_ref()
+            .is_some_and(|readiness| !readiness.ready)
+        {
+            account.update_administration(account.display_name().to_owned(), false)?;
+        }
         self.repository
             .create(
                 input.actor,
                 input.store_id,
                 &account,
-                &credential,
-                &webhook,
+                &configuration,
                 &input.idempotency,
             )
             .await
@@ -142,16 +166,60 @@ impl PaymentProviderAdministration {
             "webhook_secret_reference",
             input.webhook_secret_reference,
         )?;
+        let configuration = self
+            .configuration(&detail.account, credential, webhook, input.checked_at)
+            .await?;
+        if configuration
+            .readiness
+            .as_ref()
+            .is_some_and(|readiness| !readiness.ready)
+        {
+            detail
+                .account
+                .update_administration(detail.account.display_name().to_owned(), false)?;
+        }
         self.repository
             .update(
                 input.actor,
                 input.store_id,
                 &detail.account,
-                &credential,
-                &webhook,
+                &configuration,
                 &input.idempotency,
             )
             .await
+    }
+
+    async fn configuration(
+        &self,
+        account: &PaymentProviderAccount,
+        credential_secret_reference: PaymentSecretReference,
+        webhook_secret_reference: PaymentSecretReference,
+        checked_at: OffsetDateTime,
+    ) -> Result<PaymentProviderAccountConfiguration, ApplicationError> {
+        let readiness = if account.enabled() {
+            let provider =
+                self.onboarding
+                    .get(account.provider())
+                    .ok_or(ApplicationError::Conflict {
+                        code: "payment_provider_not_supported",
+                        message: "The Payment Provider cannot be enabled by this deployment",
+                    })?;
+            let readiness = provider
+                .check_readiness(
+                    account.external_account_reference(),
+                    &credential_secret_reference,
+                    checked_at,
+                )
+                .await?;
+            Some(readiness)
+        } else {
+            None
+        };
+        Ok(PaymentProviderAccountConfiguration {
+            credential_secret_reference,
+            webhook_secret_reference,
+            readiness,
+        })
     }
 }
 

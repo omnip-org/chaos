@@ -14,9 +14,42 @@ use crate::{ApplicationError, merchant::MerchantActor};
 
 use super::{IdempotencyRequest, ShopperActor};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaymentProviderReadinessStatus {
+    Unchecked,
+    Ready,
+    ActionRequired,
+}
+
+impl PaymentProviderReadinessStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unchecked => "unchecked",
+            Self::Ready => "ready",
+            Self::ActionRequired => "action_required",
+        }
+    }
+}
+
+pub struct PaymentProviderReadiness {
+    pub ready: bool,
+    pub blocker_codes: Vec<String>,
+    pub configuration: Value,
+    pub checked_at: OffsetDateTime,
+}
+
+pub struct PaymentProviderAccountConfiguration {
+    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub webhook_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub readiness: Option<PaymentProviderReadiness>,
+}
+
 pub struct PaymentProviderAccountDetail {
     pub account: chaos_domain::payments::PaymentProviderAccount,
     pub credentials_configured: bool,
+    pub readiness_status: PaymentProviderReadinessStatus,
+    pub readiness_checked_at: Option<OffsetDateTime>,
+    pub readiness_blocker_codes: Vec<String>,
     pub credential_rotation_expires_at: Option<OffsetDateTime>,
     pub webhook_rotation_expires_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
@@ -115,6 +148,18 @@ pub trait PaymentProvider: Send + Sync {
         &self,
         command: ProviderClientActionCommand,
     ) -> Result<PaymentClientAction, ApplicationError>;
+}
+
+#[async_trait]
+pub trait PaymentProviderOnboarding: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    async fn check_readiness(
+        &self,
+        external_account_reference: &str,
+        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        checked_at: OffsetDateTime,
+    ) -> Result<PaymentProviderReadiness, ApplicationError>;
 }
 
 #[async_trait]
@@ -221,8 +266,7 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
         actor: MerchantActor,
         store_id: StoreId,
         account: &chaos_domain::payments::PaymentProviderAccount,
-        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
-        webhook_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        configuration: &PaymentProviderAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
 
@@ -231,8 +275,7 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
         actor: MerchantActor,
         store_id: StoreId,
         account: &chaos_domain::payments::PaymentProviderAccount,
-        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
-        webhook_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        configuration: &PaymentProviderAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
 }

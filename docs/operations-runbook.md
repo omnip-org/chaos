@@ -26,6 +26,10 @@ Due Checkouts are claimed in bounded batches with one-minute recoverable leases.
 
 Create replacement values in the external secret manager, then update the Provider account with their opaque references. The outbound credential changes immediately and retains a 24-hour rollback deadline. Webhook verification tries the active reference first and accepts the immediately previous reference for the same 24-hour overlap. Repeating the update with unchanged references does not extend these deadlines. Confirm the deadlines through the Admin API, validate outbound calls with the new credential and inbound signatures with both webhook secrets, then revoke the previous external values after expiry. A later rotation replaces the previous references, so do not start another rotation before the current window closes. Never log plaintext secrets or secret references. Record owner, issue time, expiry, validation, and revocation evidence.
 
+## Payment Provider readiness
+
+Store Provider configuration as disabled until external onboarding is expected to be complete, then request enablement through the Admin API. For Stripe, `action_required` blocker codes identify disabled charges or payouts, incomplete details, inactive card payments, outstanding requirements, or a fee/loss responsibility mismatch. Remediate the connected Account in Stripe and repeat the enable request. Do not bypass readiness in PostgreSQL: the selected direct-charge model requires the connected account to pay Stripe fees and carry payment-loss liability. Treat Stripe unavailability as a dependency incident and retry without changing credential references.
+
 ## Rollback
 
 Shift traffic to the healthy adjacent version with `scripts/rolling-update.sh`. Application rollback is allowed only while database changes remain backward compatible. Otherwise ship a forward fix. Confirm readiness, error rate, queue age, checkout success, and payment failures before declaring recovery.
