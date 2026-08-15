@@ -12,7 +12,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | 3 — Selling | Complete for the declared phase scope | Recoverable automatic Checkout and reservation expiry closes the final Phase 3 gate. Customer association and Order history belong to Phase 7. |
 | 4 — Payments | Partial | The sandbox flow, stale processing-lease recovery, and bounded graceful worker drain are verified; provider administration and a live provider adapter remain open. |
 | 5 — Operations | Partial | Fulfillment and Return events are emitted but do not yet have downstream reconciliation consumers; the capacity harness has no retained production-like execution report. |
-| 6 — Transaction Hardening | Partial | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, and bounded worker drain are implemented; declared event-consumer ownership remains open. |
+| 6 — Transaction Hardening | Complete for the declared phase scope | Shopper ownership, stale lease recovery, automatic Checkout and reservation expiry, bounded worker drain, and enforced event-consumer ownership are verified. |
 | 7–10 | Planned | Acceptance evidence will be added as each capability is implemented. |
 
 ## Current Phase 5 evidence
@@ -34,7 +34,7 @@ This audit records current evidence and open gates. A passing test for an implem
 | Automatic expiry | A database claim function leases due Checkouts across tenants with `SKIP LOCKED`. The expiry worker establishes tenant context, expires the Checkout, releases active tracked-inventory reservations, and appends `reservation_expired` ledger entries in one transaction. |
 | Lease recovery | Payment inbox, payment outbox, and Checkout expiry claims recover one-minute-old leases. Integration tests abandon claims, advance the Clock, prove another worker can complete them, and reject the former owner. |
 | Shutdown | Every in-process worker stops claiming when draining begins and receives the configured bounded interval to finish before forced cancellation. |
-| Event ownership | Open. Event types and their responsible consumers still require an explicit registry plus evidence that unowned events remain visible and unreconciled. |
+| Event ownership | Every Outbox event type references the immutable `integration.event_consumer_registry`. Payment and Search claims require their declared owner. The real-router PostgreSQL test proves an unowned `return.completed` event remains pending after a Payment Worker batch, appears in `integration.event_consumer_backlog()`, reports no owner and no processed count, and cannot have its registry row changed by the runtime role. |
 
 ## Required release commands
 

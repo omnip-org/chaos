@@ -12,6 +12,8 @@ Use `/health/ready` and `chaos_dependencies_healthy` to identify PostgreSQL or R
 
 Alert when `chaos_outbox_oldest_pending_seconds` exceeds 60 seconds, any dead letter exists, or pending work grows for 10 minutes. Confirm provider health, database pool saturation, and worker logs by `worker_id`. Processing rows older than one minute are automatically reclaimed by another worker; repeated lease expiry on the eighth attempt moves the row to `dead_letter`. Scale workers only after confirming downstream capacity. Replay dead letters with a new audited event; never mutate payloads in place.
 
+Query `integration.event_consumer_backlog()` to separate owned delivery failures from deliberately unowned event types. An unowned row has a null `consumer_owner` and must remain pending; it is not reconciled. Assigning a consumer requires a reviewed migration that updates the immutable registry and ships the idempotent consumer in the same release. Runtime roles cannot edit ownership declarations.
+
 ## Webhook replay
 
 Verify the provider signature and event identifier against provider records. Durable inbox uniqueness makes exact replay safe. Reset only a confirmed failed inbox row to pending in a reviewed transaction, retain its attempt history, and monitor the associated aggregate to completion.

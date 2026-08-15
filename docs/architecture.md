@@ -101,7 +101,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Every write API accepts `Idempotency-Key` with a request fingerprint and response snapshot. Records are uniquely scoped by `(scope, scope_id, operation, key)`: authenticated user scope is used before a merchant account exists, and merchant-account scope is used for merchant-owned operations.
 - Inventory reservation uses PostgreSQL conditional updates and row locks. A recoverable scheduler leases due Checkouts and atomically closes the Checkout, releases active reservations, updates stock balances, and writes the inventory ledger. Redis may accelerate access but cannot own the invariant.
 - Business changes and outbox events commit in the same PostgreSQL transaction.
-- Workers claim outbox records with `FOR UPDATE SKIP LOCKED`. Delivery is at least once, so consumers must be idempotent.
+- Every Outbox event type references an immutable consumer registry. A registered event has at most one owner; claim functions verify that owner before using `FOR UPDATE SKIP LOCKED`. Unowned events remain pending and visible in the consumer backlog until a consumer is deliberately assigned. Delivery is at least once, so consumers must be idempotent.
 - Provider webhooks are signature-verified and written to an inbox before asynchronous processing. Provider event IDs enforce deduplication.
 - Payment providers are adapters. Payment state advances only from verified provider responses or webhooks.
 - Shipping providers are Fulfillment adapters. Notification providers deliver semantic requests without owning commerce state.

@@ -1427,6 +1427,40 @@ CREATE INDEX webhook_inbox_claim_idx
     ON integration.webhook_inbox (status, available_at, created_at, id)
     WHERE status IN ('pending', 'processing');
 
+CREATE TABLE integration.event_consumer_registry (
+    event_type      TEXT PRIMARY KEY,
+    consumer_owner  TEXT,
+    description     TEXT NOT NULL,
+
+    CONSTRAINT event_consumer_registry_event_type_check CHECK (
+        event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
+    ),
+    CONSTRAINT event_consumer_registry_owner_check CHECK (
+        consumer_owner IS NULL
+        OR consumer_owner ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
+    ),
+    CONSTRAINT event_consumer_registry_description_check CHECK (
+        length(trim(description)) BETWEEN 1 AND 255
+    )
+);
+
+INSERT INTO integration.event_consumer_registry (event_type, consumer_owner, description)
+VALUES
+    ('payment.create_requested', 'payments.provider_dispatch',
+     'Dispatches a Payment Attempt command to its configured provider'),
+    ('refund.create_requested', 'payments.provider_dispatch',
+     'Dispatches a Refund command to its configured provider'),
+    ('search.product.changed', 'search.product_indexer',
+     'Refreshes the Store-isolated Product search document'),
+    ('fulfillment.shipped', NULL,
+     'Awaits an Order reconciliation consumer'),
+    ('fulfillment.delivered', NULL,
+     'Awaits an Order reconciliation consumer'),
+    ('fulfillment.cancelled', NULL,
+     'Awaits an Order reconciliation consumer'),
+    ('return.completed', NULL,
+     'Awaits a refund-coordination consumer');
+
 CREATE TABLE integration.outbox_events (
     id                   UUID                     NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                     NOT NULL,
@@ -1446,6 +1480,8 @@ CREATE TABLE integration.outbox_events (
 
     FOREIGN KEY (merchant_account_id, store_id)
         REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (event_type)
+        REFERENCES integration.event_consumer_registry(event_type),
     CONSTRAINT outbox_events_attempts_nonnegative_check CHECK (attempts >= 0),
     CONSTRAINT outbox_events_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT outbox_events_processed_shape_check CHECK (
@@ -1571,12 +1607,15 @@ RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_c
 DECLARE event RECORD; processed BIGINT := 0;
 BEGIN
     FOR event IN
-        SELECT id, merchant_account_id, store_id, aggregate_id
-          FROM integration.outbox_events
-         WHERE status = 'pending' AND event_type = 'search.product.changed'
-           AND available_at <= $3
-         ORDER BY available_at, created_at, id
-         FOR UPDATE SKIP LOCKED
+        SELECT outbox.id, outbox.merchant_account_id, outbox.store_id, outbox.aggregate_id
+          FROM integration.outbox_events AS outbox
+          INNER JOIN integration.event_consumer_registry AS registry
+            ON registry.event_type = outbox.event_type
+           AND registry.consumer_owner = 'search.product_indexer'
+         WHERE outbox.status = 'pending' AND outbox.event_type = 'search.product.changed'
+           AND outbox.available_at <= $3
+         ORDER BY outbox.available_at, outbox.created_at, outbox.id
+         FOR UPDATE OF outbox SKIP LOCKED
          LIMIT greatest(least($2, 100), 1)
     LOOP
         UPDATE integration.outbox_events
@@ -1609,6 +1648,29 @@ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
                0
            )
       FROM integration.outbox_events;
+$$;
+
+CREATE FUNCTION integration.event_consumer_backlog()
+RETURNS TABLE (
+    event_type TEXT,
+    consumer_owner TEXT,
+    pending BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    processed BIGINT
+)
+LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+    SELECT registry.event_type,
+           registry.consumer_owner,
+           count(event.id) FILTER (WHERE event.status = 'pending'),
+           count(event.id) FILTER (WHERE event.status = 'processing'),
+           count(event.id) FILTER (WHERE event.status = 'dead_letter'),
+           count(event.id) FILTER (WHERE event.status = 'processed')
+      FROM integration.event_consumer_registry AS registry
+      LEFT JOIN integration.outbox_events AS event
+        ON event.event_type = registry.event_type
+     GROUP BY registry.event_type, registry.consumer_owner
+     ORDER BY registry.event_type;
 $$;
 
 ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
@@ -2118,20 +2180,25 @@ AS $$
                locked_by = NULL,
                locked_at = NULL,
                last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
-         WHERE event.status = 'processing' AND event.locked_at <= stale_before
+          FROM integration.event_consumer_registry AS registry
+         WHERE registry.event_type = event.event_type
+           AND registry.consumer_owner = 'payments.provider_dispatch'
+           AND event.status = 'processing' AND event.locked_at <= stale_before
            AND event.attempts >= 8
         RETURNING event.id
     ), claimable AS (
         SELECT event.id
         FROM integration.outbox_events AS event
+        INNER JOIN integration.event_consumer_registry AS registry
+          ON registry.event_type = event.event_type
+         AND registry.consumer_owner = 'payments.provider_dispatch'
         WHERE (
                 (event.status = 'pending' AND event.available_at <= claimed_at)
                 OR (event.status = 'processing' AND event.locked_at <= stale_before)
               )
           AND event.attempts < 8
-          AND event.event_type IN ('payment.create_requested', 'refund.create_requested')
         ORDER BY event.available_at, event.created_at, event.id
-        FOR UPDATE SKIP LOCKED
+        FOR UPDATE OF event SKIP LOCKED
         LIMIT greatest(least(batch_size, 100), 1)
     )
     UPDATE integration.outbox_events AS event
@@ -2382,6 +2449,7 @@ REVOKE ALL ON FUNCTION integration.finish_outbox_event(
 REVOKE ALL ON FUNCTION integration.finish_webhook_event(
     UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
 
 COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
     'Authenticates a machine credential without exposing stored secret digests';
@@ -2436,8 +2504,11 @@ GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(
     UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE
+    ON integration.event_consumer_registry FROM chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE

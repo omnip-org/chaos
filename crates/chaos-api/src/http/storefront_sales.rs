@@ -835,9 +835,8 @@ mod tests {
         let other_store_secret = other_store_key.plaintext.expose_secret();
         let state = test_state(&database_url, user_id);
         let test_clock = state.clock.clone();
-        let payment_repository = Arc::new(PostgresPaymentRepository::new(
-            state.infrastructure.runtime_pool(),
-        ));
+        let runtime_pool = state.infrastructure.runtime_pool();
+        let payment_repository = Arc::new(PostgresPaymentRepository::new(runtime_pool.clone()));
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
             payment_repository.clone(),
@@ -1604,15 +1603,55 @@ mod tests {
             assert_eq!(response_json(response).await["data"]["status"], expected);
         }
 
-        let return_events: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM integration.outbox_events WHERE aggregate_type = 'return' \
+        let _ = payment_workers
+            .run_outbox_batch(Uuid::now_v7(), test_clock.now(), 100)
+            .await;
+        let return_event_status: String = sqlx::query_scalar(
+            "SELECT status::text FROM integration.outbox_events WHERE aggregate_type = 'return' \
              AND aggregate_id = $1 AND event_type = 'return.completed'",
         )
         .bind(Uuid::parse_str(return_id).unwrap())
         .fetch_one(&owner_pool)
         .await
         .unwrap();
-        assert_eq!(return_events, 1);
+        assert_eq!(return_event_status, "pending");
+        let return_backlog: (Option<String>, i64, i64) = sqlx::query_as(
+            "SELECT consumer_owner, pending, processed \
+             FROM integration.event_consumer_backlog() WHERE event_type = 'return.completed'",
+        )
+        .fetch_one(&runtime_pool)
+        .await
+        .unwrap();
+        assert_eq!(return_backlog.0, None);
+        assert!(return_backlog.1 >= 1);
+        assert_eq!(return_backlog.2, 0);
+        let registered_owners: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT event_type, consumer_owner FROM integration.event_consumer_registry \
+             ORDER BY event_type",
+        )
+        .fetch_all(&runtime_pool)
+        .await
+        .unwrap();
+        assert_eq!(registered_owners.len(), 7);
+        assert!(registered_owners.contains(&(
+            "payment.create_requested".into(),
+            Some("payments.provider_dispatch".into())
+        )));
+        assert!(registered_owners.contains(&(
+            "search.product.changed".into(),
+            Some("search.product_indexer".into())
+        )));
+        assert!(registered_owners.contains(&("fulfillment.shipped".into(), None)));
+        assert!(
+            sqlx::query(
+                "UPDATE integration.event_consumer_registry \
+                 SET consumer_owner = 'unauthorized.owner' \
+                 WHERE event_type = 'return.completed'",
+            )
+            .execute(&runtime_pool)
+            .await
+            .is_err()
+        );
         let restocks: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM inventory.stock_ledger_entries WHERE kind = 'return_restock' \
              AND merchant_account_id = $1 AND store_id = $2",
