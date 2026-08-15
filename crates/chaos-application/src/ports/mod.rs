@@ -36,9 +36,13 @@ pub use catalog_read::{
 pub use clock::Clock;
 pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
-    FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob, FulfillmentEventQueue,
-    FulfillmentRepository, ReturnDetail, ReturnLineInput, ReturnReceiptInput,
-    ShippingServiceDetail, ShippingServiceRepository,
+    CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,
+    FulfillmentEventQueue, FulfillmentRepository, ProviderTrackingStatus,
+    PurchaseShippingLabelCommand, PurchasedShippingLabel, RefreshTrackingCommand, ReturnDetail,
+    ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingCancellationStatus,
+    ShippingParcel, ShippingProvider, ShippingQuoteCommand, ShippingRateQuote,
+    ShippingSecretResolver, ShippingServiceDetail, ShippingServiceRepository,
+    ShippingTrackingSnapshot,
 };
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,

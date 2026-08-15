@@ -4,13 +4,14 @@ use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{
         FulfillmentId, FulfillmentStatus, ReturnDisposition, ReturnId, ReturnStatus,
-        ShippingService, ShippingServiceId, ShippingServiceStatus,
+        ShippingSecretReference, ShippingService, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
     merchant::StoreId,
     payments::RefundId,
     sales::OrderId,
 };
+use secrecy::SecretString;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -177,4 +178,133 @@ pub trait FulfillmentEventQueue: Send + Sync {
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingAddress {
+    pub name: String,
+    pub company: Option<String>,
+    pub address_line_1: String,
+    pub address_line_2: Option<String>,
+    pub city: String,
+    pub region: Option<String>,
+    pub postal_code: String,
+    pub country_code: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShippingParcel {
+    pub length_millimetres: u32,
+    pub width_millimetres: u32,
+    pub height_millimetres: u32,
+    pub weight_grams: u32,
+}
+
+pub struct ShippingQuoteCommand {
+    pub from: ShippingAddress,
+    pub to: ShippingAddress,
+    pub parcel: ShippingParcel,
+    pub idempotency_key: String,
+    pub credential_secret_reference: ShippingSecretReference,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingRateQuote {
+    pub provider_shipment_reference: String,
+    pub provider_rate_reference: String,
+    pub carrier: String,
+    pub service: String,
+    pub amount_minor: i64,
+    pub currency: CurrencyCode,
+    pub estimated_delivery_days: Option<u16>,
+    pub guaranteed: bool,
+}
+
+pub struct PurchaseShippingLabelCommand {
+    pub provider_shipment_reference: String,
+    pub provider_rate_reference: String,
+    pub idempotency_key: String,
+    pub credential_secret_reference: ShippingSecretReference,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PurchasedShippingLabel {
+    pub provider_shipment_reference: String,
+    pub carrier: String,
+    pub tracking_number: String,
+    pub provider_tracker_reference: Option<String>,
+    pub label_url: String,
+    pub label_media_type: String,
+}
+
+pub struct CancelShippingLabelCommand {
+    pub provider_shipment_reference: String,
+    pub credential_secret_reference: ShippingSecretReference,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShippingCancellationStatus {
+    Submitted,
+    Cancelled,
+    Rejected,
+    NotAvailable,
+}
+
+pub struct RefreshTrackingCommand {
+    pub provider_tracker_reference: String,
+    pub credential_secret_reference: ShippingSecretReference,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderTrackingStatus {
+    PreTransit,
+    InTransit,
+    OutForDelivery,
+    Delivered,
+    Failure,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingTrackingSnapshot {
+    pub status: ProviderTrackingStatus,
+    pub status_detail: Option<String>,
+    pub estimated_delivery_at: Option<OffsetDateTime>,
+    pub observed_at: OffsetDateTime,
+}
+
+#[async_trait]
+pub trait ShippingSecretResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        reference: &ShippingSecretReference,
+    ) -> Result<SecretString, ApplicationError>;
+}
+
+#[async_trait]
+pub trait ShippingProvider: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    async fn quote_rates(
+        &self,
+        command: ShippingQuoteCommand,
+    ) -> Result<Vec<ShippingRateQuote>, ApplicationError>;
+
+    async fn purchase_label(
+        &self,
+        command: PurchaseShippingLabelCommand,
+    ) -> Result<PurchasedShippingLabel, ApplicationError>;
+
+    async fn cancel_label(
+        &self,
+        command: CancelShippingLabelCommand,
+    ) -> Result<ShippingCancellationStatus, ApplicationError>;
+
+    async fn refresh_tracking(
+        &self,
+        command: RefreshTrackingCommand,
+        observed_at: OffsetDateTime,
+    ) -> Result<ShippingTrackingSnapshot, ApplicationError>;
 }

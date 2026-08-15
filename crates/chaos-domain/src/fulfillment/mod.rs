@@ -36,6 +36,30 @@ operation_id!(FulfillmentId);
 operation_id!(ReturnId);
 operation_id!(ShippingServiceId);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShippingSecretReference(String);
+
+impl ShippingSecretReference {
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.len() < 8
+            || value.len() > 255
+            || value.chars().any(char::is_whitespace)
+            || !value.contains("://")
+        {
+            return Err(validation(
+                "credential_secret_reference",
+                "must be an opaque secret-manager reference between 8 and 255 characters",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn expose_reference(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShippingServiceStatus {
     Active,
@@ -673,5 +697,18 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn shipping_secret_reference_is_opaque_and_bounded() {
+        let reference =
+            ShippingSecretReference::new("env://CHAOS_SHIPPING_SECRET_EASYPOST").unwrap();
+
+        assert_eq!(
+            reference.expose_reference(),
+            "env://CHAOS_SHIPPING_SECRET_EASYPOST"
+        );
+        assert!(ShippingSecretReference::new("plaintext").is_err());
+        assert!(ShippingSecretReference::new("env://contains whitespace").is_err());
     }
 }
