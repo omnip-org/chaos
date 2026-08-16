@@ -872,7 +872,7 @@ pub(crate) mod tests {
             webauthn_rp_id: "localhost".into(),
             webauthn_rp_origin: "http://localhost:8080".into(),
             auth_public_base_url: "http://localhost:8080".into(),
-            smtp_url: "smtp://localhost:1025".into(),
+            smtp_url: Some("smtp://localhost:1025".into()),
             email_from: "Chaos <no-reply@localhost>".into(),
             resend_api_key: None,
             resend_webhook_secret: None,

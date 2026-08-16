@@ -21,7 +21,7 @@ pub struct Settings {
     pub webauthn_rp_id: String,
     pub webauthn_rp_origin: String,
     pub auth_public_base_url: String,
-    pub smtp_url: String,
+    pub smtp_url: Option<String>,
     pub email_from: String,
     pub resend_api_key: Option<SecretString>,
     pub resend_webhook_secret: Option<SecretString>,
@@ -115,7 +115,7 @@ impl Settings {
             webauthn_rp_id: required("WEBAUTHN_RP_ID")?,
             webauthn_rp_origin: required("WEBAUTHN_RP_ORIGIN")?,
             auth_public_base_url: required("AUTH_PUBLIC_BASE_URL")?,
-            smtp_url: required("SMTP_URL")?,
+            smtp_url: optional("SMTP_URL"),
             email_from: required("EMAIL_FROM")?,
             resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
             resend_webhook_secret: optional("RESEND_WEBHOOK_SECRET").map(SecretString::from),
@@ -154,6 +154,9 @@ impl Settings {
         };
         if settings.resend_api_key.is_some() != settings.resend_webhook_secret.is_some() {
             bail!("RESEND_API_KEY and RESEND_WEBHOOK_SECRET must be set together");
+        }
+        if settings.resend_api_key.is_none() && settings.smtp_url.is_none() {
+            bail!("either SMTP_URL or RESEND_API_KEY (with RESEND_WEBHOOK_SECRET) must be set");
         }
         Ok(settings)
     }

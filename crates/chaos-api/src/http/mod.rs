@@ -24,6 +24,7 @@ mod store_admin;
 mod storefront;
 mod storefront_sales;
 
+use anyhow::Context as _;
 use axum::Router;
 use chaos_application::{
     analytics::{
@@ -167,7 +168,11 @@ impl ApiState {
                     settings.dependency_timeout,
                 )?)
             } else {
-                Arc::new(SmtpEmailProvider::new(&settings.smtp_url)?)
+                let smtp_url = settings
+                    .smtp_url
+                    .as_deref()
+                    .context("SMTP_URL must be set when RESEND_API_KEY is not")?;
+                Arc::new(SmtpEmailProvider::new(smtp_url)?)
             };
         let passwordless_auth = PasswordlessAuth::new(
             infrastructure.control_plane_pool(),
@@ -537,7 +542,7 @@ mod tests {
             webauthn_rp_id: "localhost".into(),
             webauthn_rp_origin: "http://localhost:8080".into(),
             auth_public_base_url: "http://localhost:8080".into(),
-            smtp_url: "smtp://localhost:1025".into(),
+            smtp_url: Some("smtp://localhost:1025".into()),
             email_from: "Chaos <no-reply@localhost>".into(),
             resend_api_key: None,
             resend_webhook_secret: None,
