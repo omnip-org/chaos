@@ -78,3 +78,5 @@ TEST_DATABASE_URL=postgres://chaos:chaos@localhost:55432/chaos \
 ```
 
 See [Product Model](docs/product-model.md), [System Architecture](docs/architecture.md), [Delivery Roadmap](docs/delivery-roadmap.md), [Database Conventions](docs/database-conventions.md), [HTTP API Contract](docs/http-api.md), and [Contributing](CONTRIBUTING.md).
+
+For the Cloudflare-to-Caddy production topology, first-host bootstrap, Vault-backed dynamic Store Provider secrets, and release procedure, see [Production Deployment](docs/deployment.md).

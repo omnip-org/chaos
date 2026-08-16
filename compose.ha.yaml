@@ -1,34 +1,44 @@
 x-api: &api
-  image: chaos-api:local
+  image: ${CHAOS_IMAGE:-chaos-api:local}
   build:
     context: .
+  # Production secrets/values come from a .env file on the deploy host (written
+  # by deploy.yml from GitHub Secrets, git-ignored). The ${VAR:-default} fallbacks
+  # keep local dev / CI working with no .env present. NEVER commit a real .env.
+  env_file:
+    - path: .env
+      required: false
   environment:
-    APP_BIND_ADDR: 0.0.0.0:8080
-    DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
-    DATABASE_CONTROL_PLANE_URL: postgres://chaos:chaos@postgres:5432/chaos
-    DATABASE_CONTROL_PLANE_MAX_CONNECTIONS: "5"
-    DATABASE_ANALYTICS_MAX_CONNECTIONS: "3"
-    DATABASE_ANALYTICS_STATEMENT_TIMEOUT_MS: "2000"
-    DATABASE_RUNTIME_ROLE: chaos_runtime
-    DATABASE_CONTROL_PLANE_ROLE: chaos_control_plane
-    REDIS_URL: redis://redis:6379/0
-    WEBAUTHN_RP_ID: localhost
-    WEBAUTHN_RP_ORIGIN: http://localhost:${HTTP_PORT:-8080}
-    AUTH_PUBLIC_BASE_URL: http://localhost:${HTTP_PORT:-8080}
-    SMTP_URL: smtp://mailpit:1025
-    EMAIL_FROM: Chaos <no-reply@localhost>
+    APP_BIND_ADDR: ${APP_BIND_ADDR:-0.0.0.0:8080}
+    DATABASE_URL: ${DATABASE_URL:-postgres://chaos:chaos@postgres:5432/chaos}
+    DATABASE_CONTROL_PLANE_URL: ${DATABASE_CONTROL_PLANE_URL:-postgres://chaos:chaos@postgres:5432/chaos}
+    DATABASE_CONTROL_PLANE_MAX_CONNECTIONS: ${DATABASE_CONTROL_PLANE_MAX_CONNECTIONS:-5}
+    DATABASE_ANALYTICS_MAX_CONNECTIONS: ${DATABASE_ANALYTICS_MAX_CONNECTIONS:-3}
+    DATABASE_ANALYTICS_STATEMENT_TIMEOUT_MS: ${DATABASE_ANALYTICS_STATEMENT_TIMEOUT_MS:-2000}
+    DATABASE_RUNTIME_ROLE: ${DATABASE_RUNTIME_ROLE:-chaos_runtime}
+    DATABASE_CONTROL_PLANE_ROLE: ${DATABASE_CONTROL_PLANE_ROLE:-chaos_control_plane}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+    WEBAUTHN_RP_ORIGIN: ${WEBAUTHN_RP_ORIGIN:-http://localhost:${HTTP_PORT:-8080}}
+    AUTH_PUBLIC_BASE_URL: ${AUTH_PUBLIC_BASE_URL:-http://localhost:${HTTP_PORT:-8080}}
+    SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+    EMAIL_FROM: ${EMAIL_FROM:-Chaos <no-reply@localhost>}
+    RESEND_API_KEY: ${RESEND_API_KEY:-}
+    RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
     PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-development-payment-webhook-secret}
     SHOPPER_TOKEN_ACTIVE_KEY_ID: ${SHOPPER_TOKEN_ACTIVE_KEY_ID:-v1}
     SHOPPER_TOKEN_ACTIVE_SECRET: ${SHOPPER_TOKEN_ACTIVE_SECRET:-development-shopper-token-secret}
-    RUST_LOG: chaos=info,chaos_api=info,tower_http=info
-    LOG_JSON: "true"
-    SHUTDOWN_DRAIN_DELAY_MS: "5000"
-    SHUTDOWN_WORKER_TIMEOUT_MS: "30000"
+    RUST_LOG: ${RUST_LOG:-chaos=info,chaos_api=info,tower_http=info}
+    LOG_JSON: ${LOG_JSON:-true}
+    SHUTDOWN_DRAIN_DELAY_MS: ${SHUTDOWN_DRAIN_DELAY_MS:-5000}
+    SHUTDOWN_WORKER_TIMEOUT_MS: ${SHUTDOWN_WORKER_TIMEOUT_MS:-30000}
   expose:
     - "8080"
   read_only: true
   tmpfs:
     - /tmp:size=16m,mode=1777
+  volumes:
+    - ./deploy/vault/tls:/etc/chaos/vault-tls:ro
   security_opt:
     - no-new-privileges:true
   cap_drop:
@@ -37,8 +47,6 @@ x-api: &api
     migrate:
       condition: service_completed_successfully
     redis:
-      condition: service_healthy
-    mailpit:
       condition: service_healthy
   healthcheck:
     test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]
@@ -50,13 +58,47 @@ x-api: &api
   restart: unless-stopped
 
 services:
+  vault-data-init:
+    image: hashicorp/vault:1.21.4
+    entrypoint: ["sh", "-c"]
+    command: ["chown 100:1000 /vault/data"]
+    user: "0:0"
+    volumes:
+      - vault-data:/vault/data
+    restart: "no"
+
+  vault:
+    image: hashicorp/vault:1.21.4
+    command: ["server"]
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - ./deploy/vault/config.hcl:/vault/config/config.hcl:ro
+      - ./deploy/vault/tls:/vault/tls:ro
+      - vault-data:/vault/data
+    expose:
+      - "8200"
+      - "8201"
+    healthcheck:
+      test: ["CMD-SHELL", "vault status -address=https://127.0.0.1:8200 -ca-cert=/vault/tls/ca.pem >/dev/null 2>&1; code=$$?; [ $$code -eq 0 ] || [ $$code -eq 2 ]"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    depends_on:
+      vault-data-init:
+        condition: service_completed_successfully
+
   migrate:
-    image: chaos-api:local
+    image: ${CHAOS_IMAGE:-chaos-api:local}
     build:
       context: .
     entrypoint: ["/usr/local/bin/chaos-migrate"]
+    env_file:
+      - path: .env
+        required: false
     environment:
-      DATABASE_URL: postgres://chaos:chaos@postgres:5432/chaos
+      DATABASE_URL: ${DATABASE_URL:-postgres://chaos:chaos@postgres:5432/chaos}
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,3 +134,22 @@ services:
       timeout: 1s
       retries: 5
     restart: unless-stopped
+
+# Production overrides the base compose.yaml volumes as external, so a stray
+# `docker compose down -v` can never delete stateful data. These volumes must
+# be created manually on the host before the first deploy:
+#   docker volume create chaos-postgres-data
+#   docker volume create chaos-redis-data
+#   docker volume create chaos-vault-data
+# (compose.yaml alone — used for local dev / CI — keeps compose-managed volumes,
+# so local workflows stay zero-config.)
+volumes:
+  postgres-data:
+    external: true
+    name: chaos-postgres-data
+  redis-data:
+    external: true
+    name: chaos-redis-data
+  vault-data:
+    external: true
+    name: chaos-vault-data
