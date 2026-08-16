@@ -12,7 +12,7 @@ use chaos_domain::merchant::{
     ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
     StoreId,
 };
-use rand::RngCore;
+use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
 use sha2::{Digest, Sha256};

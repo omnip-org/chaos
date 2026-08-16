@@ -10,7 +10,7 @@ use chaos_application::{
 use chaos_domain::merchant::StoreHostname;
 use hickory_resolver::TokioResolver;
 use hickory_resolver::proto::rr::RData;
-use rand::RngCore;
+use rand::Rng;
 use secrecy::SecretString;
 use sha2::{Digest, Sha256};
 use std::time::Duration;

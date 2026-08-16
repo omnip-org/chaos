@@ -8,7 +8,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::identity::{Email, UserId};
-use rand::RngCore;
+use rand::Rng;
 use redis::{AsyncCommands, Client as RedisClient};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
