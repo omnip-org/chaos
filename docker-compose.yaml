@@ -43,10 +43,9 @@ services:
     image: chaos-postgres:18.4
     build:
       context: ./deploy/postgres
-    environment:
-      POSTGRES_DB: chaos
-      POSTGRES_USER: chaos
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    env_file:
+      - path: .env
+        required: true
     command: ["postgres", "-c", "shared_preload_libraries=pg_cron", "-c", "cron.database_name=chaos", "-c", "cron.use_background_workers=on"]
     ports:
       - "127.0.0.1:54320:5432"
