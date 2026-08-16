@@ -18,6 +18,7 @@ mod openapi;
 mod order;
 mod payment;
 mod pricing;
+mod provider_secret;
 mod response;
 mod store_admin;
 mod storefront;
@@ -40,7 +41,7 @@ use chaos_application::{
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
-        MerchantQueries, StoreAdministration, StoreDomainAdministration,
+        MerchantQueries, ProviderSecretManagement, StoreAdministration, StoreDomainAdministration,
     },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
@@ -53,13 +54,10 @@ use std::sync::Arc;
 
 use chaos_infrastructure::{
     RedisAnalyticsCollectionRateLimiter,
-    analytics_destinations::{
-        EnvironmentAnalyticsDestinationSecretResolver, Ga4MeasurementDestination,
-        MetaConversionsDestination,
-    },
+    analytics_destinations::{Ga4MeasurementDestination, MetaConversionsDestination},
     clock::SystemClock,
     config::Settings,
-    easypost::{EasyPostShippingProvider, EnvironmentShippingSecretResolver},
+    easypost::EasyPostShippingProvider,
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     passwordless::PasswordlessAuth,
@@ -79,12 +77,13 @@ use chaos_infrastructure::{
         PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
         SecureApiKeyMaterialGenerator,
     },
+    secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
     state::AppState,
     store_domain::{
         DnsStoreDomainOwnershipVerifier, SecureStoreDomainVerificationMaterialGenerator,
     },
-    stripe::{EnvironmentPaymentSecretResolver, StripePaymentProvider, StripeWebhookVerifier},
+    stripe::{StripePaymentProvider, StripeWebhookVerifier},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::{
@@ -127,6 +126,7 @@ pub struct ApiState {
     pub merchant_queries: Arc<MerchantQueries>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
+    pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
@@ -184,9 +184,11 @@ impl ApiState {
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             infrastructure.runtime_pool(),
         )));
-        let store_administration = StoreAdministration::new(Arc::new(
-            PostgresStoreAdministrationRepository::new(infrastructure.runtime_pool()),
+        let store_administration_repository = Arc::new(PostgresStoreAdministrationRepository::new(
+            infrastructure.runtime_pool(),
         ));
+        let store_administration =
+            StoreAdministration::new(store_administration_repository.clone());
         let store_domain_administration = StoreDomainAdministration::new(
             Arc::new(PostgresStoreDomainRepository::new(
                 infrastructure.runtime_pool(),
@@ -279,7 +281,13 @@ impl ApiState {
             PostgresAnalyticsReportingRepository::new(infrastructure.analytics_pool()),
         ));
         let analytics_destinations = AnalyticsDestinations::new(analytics_repository.clone());
-        let analytics_destination_secrets = Arc::new(EnvironmentAnalyticsDestinationSecretResolver);
+        let dynamic_secrets = Arc::new(DynamicSecretResolver::new(
+            settings.vault.as_ref(),
+            settings.dependency_timeout,
+        )?);
+        let provider_secret_management =
+            ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());
+        let analytics_destination_secrets = dynamic_secrets.clone();
         let analytics_destination_adapters = vec![
             Arc::new(MetaConversionsDestination::new(
                 settings.analytics_meta_api_base_url.clone(),
@@ -318,7 +326,7 @@ impl ApiState {
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let payment_secrets = Arc::new(EnvironmentPaymentSecretResolver);
+        let payment_secrets = dynamic_secrets.clone();
         let sandbox_payment_provider = Arc::new(SandboxPaymentProvider);
         let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
             settings.stripe_api_base_url.clone(),
@@ -395,7 +403,7 @@ impl ApiState {
             Arc::new(EasyPostShippingProvider::new(
                 settings.easypost_api_base_url.clone(),
                 settings.dependency_timeout,
-                Arc::new(EnvironmentShippingSecretResolver),
+                dynamic_secrets,
             )?);
         let shipping_provider_administration = ShippingProviderAdministration::new(
             shipping_repository.clone(),
@@ -440,6 +448,7 @@ impl ApiState {
             merchant_queries: Arc::new(merchant_queries),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
+            provider_secret_management: Arc::new(provider_secret_management),
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
             analytics_privacy: Arc::new(analytics_privacy),
@@ -486,6 +495,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", localization::routes())
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
+        .nest("/admin/v1", provider_secret::routes())
         .nest("/store/v1", storefront::routes())
         .nest("/store/v1", collection::storefront_routes())
         .nest("/store/v1", store_admin::domain_resolution_routes())
@@ -540,6 +550,7 @@ mod tests {
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
+            vault: None,
             media_storage: None,
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),

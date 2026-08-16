@@ -18,6 +18,7 @@ mod payments;
 mod pricing;
 mod pricing_management;
 mod promotion;
+mod provider_secret;
 mod sales;
 mod shopper;
 mod store;
@@ -107,6 +108,7 @@ pub use pricing_management::{
     PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
 };
 pub use promotion::{PromotionDetail, PromotionRepository};
+pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
     CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,

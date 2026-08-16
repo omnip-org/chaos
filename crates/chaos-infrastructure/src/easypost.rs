@@ -20,32 +20,6 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use time::OffsetDateTime;
 
-pub struct EnvironmentShippingSecretResolver;
-
-#[async_trait]
-impl ShippingSecretResolver for EnvironmentShippingSecretResolver {
-    async fn resolve(
-        &self,
-        reference: &ShippingSecretReference,
-    ) -> Result<SecretString, ApplicationError> {
-        let variable = reference
-            .expose_reference()
-            .strip_prefix("env://")
-            .filter(|value| {
-                value.starts_with("CHAOS_SHIPPING_SECRET_")
-                    && value.bytes().all(|byte| {
-                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                    })
-            })
-            .ok_or_else(secret_unavailable)?;
-        std::env::var(variable)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(SecretString::from)
-            .ok_or_else(secret_unavailable)
-    }
-}
-
 pub struct EasyPostShippingProvider {
     client: Client,
     api_base_url: Url,

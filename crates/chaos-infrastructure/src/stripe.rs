@@ -26,32 +26,6 @@ use uuid::Uuid;
 const STRIPE_API_VERSION: &str = "2026-02-25.clover";
 const WEBHOOK_TOLERANCE_SECONDS: i64 = 300;
 
-pub struct EnvironmentPaymentSecretResolver;
-
-#[async_trait]
-impl PaymentSecretResolver for EnvironmentPaymentSecretResolver {
-    async fn resolve(
-        &self,
-        reference: &PaymentSecretReference,
-    ) -> Result<SecretString, ApplicationError> {
-        let variable = reference
-            .expose_reference()
-            .strip_prefix("env://")
-            .filter(|value| {
-                value.starts_with("CHAOS_PAYMENT_SECRET_")
-                    && value.bytes().all(|byte| {
-                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                    })
-            })
-            .ok_or_else(secret_unavailable)?;
-        std::env::var(variable)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(SecretString::from)
-            .ok_or_else(secret_unavailable)
-    }
-}
-
 pub struct StripePaymentProvider {
     client: Client,
     api_base_url: Url,

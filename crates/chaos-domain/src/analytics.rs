@@ -30,7 +30,7 @@ pub struct AnalyticsDestinationSecretReference(String);
 impl AnalyticsDestinationSecretReference {
     pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
-        let valid = value
+        let environment_reference = value
             .strip_prefix("env://CHAOS_ANALYTICS_SECRET_")
             .is_some_and(|name| {
                 !name.is_empty()
@@ -39,10 +39,22 @@ impl AnalyticsDestinationSecretReference {
                         byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
                     })
             });
-        if !valid {
+        let vault_reference = value.strip_prefix("vault://").is_some_and(|location| {
+            location.len() <= 247
+                && location.split('/').count() >= 2
+                && location.split('/').all(|segment| {
+                    !segment.is_empty()
+                        && segment != "."
+                        && segment != ".."
+                        && segment.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+                        })
+                })
+        });
+        if !environment_reference && !vault_reference {
             return Err(validation(
                 "credential_secret_reference",
-                "must be an env://CHAOS_ANALYTICS_SECRET_* reference",
+                "must be an env://CHAOS_ANALYTICS_SECRET_* or vault://<mount>/<path> reference",
             ));
         }
         Ok(Self(value))
@@ -638,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn destination_secrets_are_constrained_environment_references() {
+    fn destination_secrets_are_constrained_secret_manager_references() {
         assert!(
             AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_META_PRIMARY")
                 .is_ok()
@@ -648,5 +660,12 @@ mod tests {
             AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_lowercase")
                 .is_err()
         );
+        assert!(
+            AnalyticsDestinationSecretReference::new(
+                "vault://secret/chaos/stores/store-1/meta-capi"
+            )
+            .is_ok()
+        );
+        assert!(AnalyticsDestinationSecretReference::new("vault://secret/../meta").is_err());
     }
 }

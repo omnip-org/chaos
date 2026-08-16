@@ -5,32 +5,12 @@ use chaos_application::ports::{
     AnalyticsDestination, AnalyticsDestinationError, AnalyticsDestinationSecretResolver,
     AnalyticsExportCommand, AnalyticsExportReceipt,
 };
-use chaos_domain::analytics::{AnalyticsDestinationProvider, AnalyticsDestinationSecretReference};
+use chaos_domain::analytics::AnalyticsDestinationProvider;
 use reqwest::{Client, StatusCode, Url};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value, json};
 use sha2::{Digest, Sha256};
-
-pub struct EnvironmentAnalyticsDestinationSecretResolver;
-
-#[async_trait]
-impl AnalyticsDestinationSecretResolver for EnvironmentAnalyticsDestinationSecretResolver {
-    async fn resolve(
-        &self,
-        reference: &AnalyticsDestinationSecretReference,
-    ) -> Result<SecretString, AnalyticsDestinationError> {
-        let variable = reference
-            .expose_reference()
-            .strip_prefix("env://")
-            .ok_or_else(secret_unavailable)?;
-        std::env::var(variable)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(SecretString::from)
-            .ok_or_else(secret_unavailable)
-    }
-}
 
 pub struct MetaConversionsDestination {
     client: Client,
@@ -363,13 +343,6 @@ fn is_loopback(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
-fn secret_unavailable() -> AnalyticsDestinationError {
-    AnalyticsDestinationError {
-        retryable: true,
-        message: "Analytics destination credentials are unavailable".into(),
-    }
-}
-
 fn invalid_command() -> AnalyticsDestinationError {
     AnalyticsDestinationError {
         retryable: false,
@@ -410,6 +383,8 @@ mod tests {
         routing::post,
     };
     use chaos_application::ports::AnalyticsExportItem;
+    use chaos_domain::analytics::AnalyticsDestinationSecretReference;
+    use secrecy::SecretString;
     use time::OffsetDateTime;
     use tokio::net::TcpListener;
     use uuid::Uuid;

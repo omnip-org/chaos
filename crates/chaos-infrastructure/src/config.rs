@@ -30,6 +30,7 @@ pub struct Settings {
     pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
     pub analytics_ga4_api_base_url: Url,
+    pub vault: Option<VaultSettings>,
     pub media_storage: Option<MediaStorageSettings>,
     pub shopper_token_active_key_id: String,
     pub shopper_token_active_secret: String,
@@ -51,6 +52,15 @@ pub struct MediaStorageSettings {
     pub session_token: Option<String>,
     pub force_path_style: bool,
     pub public_base_url: Url,
+}
+
+#[derive(Clone, Debug)]
+pub struct VaultSettings {
+    pub address: Url,
+    pub token: SecretString,
+    pub namespace: Option<String>,
+    pub ca_certificate_path: Option<String>,
+    pub kv_v2_mount: String,
 }
 
 impl Settings {
@@ -98,6 +108,7 @@ impl Settings {
                 "ANALYTICS_GA4_API_BASE_URL",
                 "https://www.google-analytics.com/",
             )?,
+            vault: vault_settings()?,
             media_storage: media_storage_settings()?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
             shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
@@ -123,6 +134,52 @@ impl Settings {
         }
         Ok(settings)
     }
+}
+
+fn vault_settings() -> anyhow::Result<Option<VaultSettings>> {
+    let address = optional("VAULT_ADDR");
+    let token = optional("VAULT_TOKEN");
+    match (address, token) {
+        (None, None) => {
+            if optional("VAULT_NAMESPACE").is_some() {
+                bail!("VAULT_NAMESPACE requires VAULT_ADDR and VAULT_TOKEN");
+            }
+            Ok(None)
+        }
+        (Some(address), Some(token)) => {
+            let address: Url = address
+                .parse()
+                .with_context(|| "environment variable VAULT_ADDR has an invalid value")?;
+            if address.scheme() != "https" && !address.host_str().is_some_and(is_loopback) {
+                bail!("VAULT_ADDR must use HTTPS outside loopback tests");
+            }
+            let kv_v2_mount = optional("VAULT_KV_V2_MOUNT").unwrap_or_else(|| "secret".into());
+            if !is_safe_vault_segment(&kv_v2_mount) {
+                bail!("VAULT_KV_V2_MOUNT must be one safe path segment");
+            }
+            Ok(Some(VaultSettings {
+                address,
+                token: SecretString::from(token),
+                namespace: optional("VAULT_NAMESPACE"),
+                ca_certificate_path: optional("VAULT_CA_CERT"),
+                kv_v2_mount,
+            }))
+        }
+        _ => bail!("VAULT_ADDR and VAULT_TOKEN must be set together"),
+    }
+}
+
+fn is_safe_vault_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 fn media_storage_settings() -> anyhow::Result<Option<MediaStorageSettings>> {

@@ -8,6 +8,7 @@ pub mod media_storage;
 pub mod merchant;
 pub mod passwordless;
 pub mod repositories;
+pub mod secret;
 pub mod shopper;
 pub mod state;
 pub mod store_domain;
