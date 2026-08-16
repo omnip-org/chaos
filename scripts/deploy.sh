@@ -1,8 +1,14 @@
 #!/bin/sh
 # Zero-downtime blue/green deploy from a pre-built registry image.
 #
-# Unlike rolling-update.sh (which builds locally), this pulls CHAOS_IMAGE from
-# the registry and rolls the api-blue / api-green replicas one at a time behind
+# Run this ON THE DEPLOY HOST, by hand, after a Release build has published a
+# new image tag to the registry (see the Release GitHub Actions workflow).
+# There is no CI-to-host automation: nothing outside this host can SSH in and
+# run this script, so a compromised or malicious CI run cannot reach
+# production on its own.
+#
+# This never builds an image locally — it only pulls CHAOS_IMAGE from the
+# registry and rolls the api-blue / api-green replicas one at a time behind
 # the Caddy gateway. If a replica fails to become healthy, the rollout aborts
 # before touching the second replica, so the previous version keeps serving.
 #
@@ -11,22 +17,24 @@
 # Use expand/contract: ship additive migrations now, drop/rename in a later
 # release once no old code references them.
 #
-# Usage:
-#   CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./scripts/deploy-remote.sh
+# Usage (from /opt/chaos, or wherever this repo is checked out on the host):
+#   git pull --ff-only
+#   ./scripts/deploy.sh                                  # deploys :latest
+#   CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./scripts/deploy.sh   # pinned/rollback
 set -eu
 
-: "${CHAOS_IMAGE:?CHAOS_IMAGE must be set (e.g. ghcr.io/omnip-org/chaos:0.1.0)}"
+export CHAOS_IMAGE="${CHAOS_IMAGE:-ghcr.io/omnip-org/chaos:latest}"
 
 if [ ! -f .env ]; then
-    echo "ERROR: production .env is missing; start from .env.production.example." >&2
+    echo "ERROR: .env is missing; start from .env.example." >&2
     exit 1
 fi
-if grep -q 'CHANGE_ME' .env; then
-    echo "ERROR: production .env still contains CHANGE_ME placeholders." >&2
+if grep -vE '^\s*#' .env | grep -q 'CHANGE_ME'; then
+    echo "ERROR: .env still contains CHANGE_ME placeholders." >&2
     exit 1
 fi
 
-COMPOSE="docker compose -f compose.yaml -f compose.ha.yaml"
+COMPOSE="docker compose -f docker-compose.yaml"
 HEALTH_URL="http://127.0.0.1:${HTTP_PORT:-8080}/health/live"
 
 # Fail before touching running services when interpolation or Compose structure
@@ -36,7 +44,7 @@ $COMPOSE config --quiet
 echo "Deploying image: ${CHAOS_IMAGE}"
 
 # Ensure the external data volumes exist. They are declared external in
-# compose.ha.yaml so compose never creates or deletes them (a stray
+# docker-compose.yaml so compose never creates or deletes them (a stray
 # `down -v` can't wipe production data). `volume create` is idempotent.
 docker volume create chaos-postgres-data >/dev/null
 docker volume create chaos-redis-data >/dev/null
@@ -76,16 +84,9 @@ if [ -x ./scripts/smoke-zero-downtime.sh ]; then
     ./scripts/smoke-zero-downtime.sh "$HEALTH_URL" 50
 fi
 
-# Reclaim disk from superseded images now that the new one is live.
-# Deploys use version-pinned tags (e.g. :0.1.0), so older tags are not
-# "dangling" — remove same-repo images other than the one we just deployed,
-# then clean up any leftover dangling layers.
-echo "Pruning old images ..."
-repo="${CHAOS_IMAGE%:*}"
-docker images --format '{{.Repository}}:{{.Tag}}' \
-    | grep -E "^${repo}:" \
-    | grep -vx "$CHAOS_IMAGE" \
-    | xargs -r docker rmi 2>/dev/null || true
+# Reclaim disk from dangling layers. Deliberately does not remove other
+# same-repo tags: with CHAOS_IMAGE defaulting to :latest, older version-pinned
+# tags (e.g. :0.1.0) are kept locally so a rollback doesn't have to re-pull.
 docker image prune -f >/dev/null
 
 echo "Deploy complete."

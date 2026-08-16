@@ -56,7 +56,7 @@ Enabled accounts reconcile every six hours and assessments expire after 24 hours
 
 ## Rollback
 
-Shift traffic to the healthy adjacent version with `scripts/rolling-update.sh`. Application rollback is allowed only while database changes remain backward compatible. Otherwise ship a forward fix. Confirm readiness, error rate, queue age, checkout success, and payment failures before declaring recovery.
+Shift traffic to the healthy adjacent version by re-running `./scripts/deploy.sh` on the host with `CHAOS_IMAGE` set to the previous release tag. Application rollback is allowed only while database changes remain backward compatible. Otherwise ship a forward fix. Confirm readiness, error rate, queue age, checkout success, and payment failures before declaring recovery.
 
 ## Search rebuild
 

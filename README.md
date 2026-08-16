@@ -4,14 +4,32 @@ A modern headless commerce backend where one user can operate multiple merchant 
 
 ## Local development
 
-Requirements: Rust 1.94+, Docker, Docker Compose, and SQLx CLI. Run `cargo sqlx --version` to verify the CLI installation.
+Requirements: Docker and Docker Compose. `docker-compose.yaml` is the one and only topology — local and production run the identical blue/green setup (`postgres`, `redis`, `migrate`, `api-blue`, `api-green`, `gateway`), differing only by environment variables. There is no `cargo run` shortcut: application code always runs inside the same image production uses, and migrations run through the `migrate` service, not `cargo sqlx migrate run`. Rust and the SQLx CLI are only needed for compiling/testing the code itself (see [Development commands](#development-commands)), not for running the stack.
+
+Its data volumes are `external: true` everywhere, so create them once:
 
 ```bash
-docker compose up -d
+docker volume create chaos-postgres-data
+docker volume create chaos-redis-data
+```
+
+Build a local image and bring the whole stack up:
+
+```bash
+docker build -t chaos-api:local .
 cp .env.example .env
-set -a && source .env && set +a
-cargo sqlx migrate run
-cargo run -p chaos-api --bin chaos
+# .env.example is the same template used in production: replace every
+# CHANGE_ME_* value (openssl rand -base64 32/48 as noted inline) before
+# the stack will boot. There is no weaker "just for local dev" shortcut.
+export CHAOS_IMAGE=chaos-api:local
+docker compose -f docker-compose.yaml up -d --wait
+```
+
+After changing code, rebuild and roll both replicas (see [Production Deployment](docs/deployment.md) for the health-gated, one-at-a-time version — for local iteration a plain rebuild + `up -d` is usually enough):
+
+```bash
+docker build -t chaos-api:local .
+docker compose -f docker-compose.yaml up -d --no-deps migrate api-blue api-green
 ```
 
 Verify the service:
@@ -21,44 +39,21 @@ curl http://localhost:8080/health/live
 curl http://localhost:8080/health/ready
 ```
 
-Development sign-in emails are captured by Mailpit at `http://localhost:58025`. The backend supports one-time email links and WebAuthn passkeys; it never stores account passwords.
+The backend supports one-time email links and WebAuthn passkeys; it never stores account passwords. There is no local mail catcher — set `RESEND_API_KEY`/`RESEND_WEBHOOK_SECRET` in `.env` to actually receive sign-in emails locally (see `.env.example`). Authentication tokens are sent directly from process memory and are never written to the general notification outbox. Ordinary commerce messages use durable, versioned notification requests.
 
-Production email uses Resend when `RESEND_API_KEY` is set; configure `RESEND_WEBHOOK_SECRET` to authenticate delivery callbacks. SMTP remains the local-development fallback. Authentication tokens are sent directly from process memory and are never written to the general notification outbox. Ordinary commerce messages use durable, versioned notification requests.
-
-Stop the dependencies:
+Stop the stack:
 
 ```bash
-docker compose down
+docker compose -f docker-compose.yaml down
 ```
 
-`docker compose down -v` also deletes the local PostgreSQL and Redis volumes. Use it with care.
+`.env` and `CHAOS_IMAGE` must still be present/set for `down` (and every other compose command) to work — compose parses the whole file, including every `${VAR:?...}`, before it can act. If you've deleted `.env` or unset `CHAOS_IMAGE` first, fall back to `docker rm -f` on the `chaos-*` containers.
 
-## Dual-instance Compose deployment
-
-Start Caddy, two blue/green API instances, the migration job, PostgreSQL, Redis, and the development mail catcher:
-
-```bash
-docker compose -f compose.yaml -f compose.ha.yaml up -d --build --wait
-curl http://localhost:8080/health/ready
-```
+The data volumes are `external: true`, so `down -v` cannot delete them — use `docker volume rm chaos-postgres-data chaos-redis-data` if you deliberately want a clean slate.
 
 The custom PostgreSQL 18 image includes `pg_cron`, `pgmq`, and `pg_partman`. The initial migration activates them with isolated extension-owned schemas. See [PostgreSQL extensions](docs/postgresql-extensions.md) for lifecycle and security requirements.
 
-Replace both API instances sequentially after a code or image update:
-
-```bash
-./scripts/rolling-update.sh
-```
-
-The script updates blue and waits for readiness before updating green, so an old or new instance remains available throughout the deployment. Both instances must be healthy before an update. Database migrations must remain compatible with both adjacent application versions.
-
-`/health/gateway` checks the stable gateway, `/health/live` checks an API process, and `/health/ready` checks whether one API instance can accept new traffic. A draining instance returns 503 from its readiness endpoint by design; this does not mean that business traffic through the gateway is interrupted.
-
-Stop the complete stack without deleting data:
-
-```bash
-docker compose -f compose.yaml -f compose.ha.yaml down
-```
+For the production rollout procedure (registry image, zero-downtime `scripts/deploy.sh`) see [Production Deployment](docs/deployment.md).
 
 ## Development commands
 
