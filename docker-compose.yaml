@@ -73,16 +73,17 @@ services:
   gateway:
     image: caddy:2-alpine
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      - "${HTTP_PORT:-443}:443"
     volumes:
       - ./deploy/compose/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
     depends_on:
       api-blue:
         condition: service_healthy
       api-green:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/health/gateway"]
+      test: ["CMD", "wget", "--quiet", "--no-check-certificate", "--spider", "https://localhost:443/health/gateway"]
       interval: 5s
       timeout: 1s
       retries: 5
@@ -97,3 +98,4 @@ volumes:
   redis-data:
     external: true
     name: chaos-redis-data
+  caddy-data:

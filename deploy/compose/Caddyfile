@@ -1,9 +1,10 @@
 {
-    auto_https off
     admin off
 }
 
-:8080 {
+:443 {
+    tls internal
+
     encode zstd gzip
 
     respond /health/gateway 200
