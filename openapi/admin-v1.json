@@ -1104,6 +1104,45 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/provider-secrets": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "post": {
+        "operationId": "createProviderSecret",
+        "tags": ["Provider secrets"],
+        "summary": "Write one Store Provider secret to Vault",
+        "description": "Owners and administrators may write a bounded secret value to a new immutable Vault KV v2 path. The value is never persisted in PostgreSQL or returned. The secret-manager reference is returned once for subsequent Provider account configuration.",
+        "security": [{ "bearerSession": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateProviderSecret" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Secret created in Vault",
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderSecretCreatedEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders": {
       "parameters": [
         { "$ref": "#/components/parameters/MerchantAccountId" },
@@ -2217,6 +2256,33 @@
       },
       "ApiKeyClass": { "type": "string", "enum": ["publishable", "secret"] },
       "ApiKeyMode": { "type": "string", "enum": ["test", "live"] },
+      "ProviderSecretKind": {
+        "type": "string",
+        "enum": ["payment_credential", "payment_webhook", "shipping_credential", "analytics_credential"]
+      },
+      "CreateProviderSecret": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": { "$ref": "#/components/schemas/ProviderSecretKind" },
+          "value": { "type": "string", "format": "password", "minLength": 1, "maxLength": 16384, "writeOnly": true, "x-sensitive": true }
+        }
+      },
+      "ProviderSecretCreated": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["secret_reference"],
+        "properties": {
+          "secret_reference": { "type": "string", "pattern": "^vault://[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$", "readOnly": true, "x-sensitive": true }
+        }
+      },
+      "ProviderSecretCreatedEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/ProviderSecretCreated" } }
+      },
       "ApiKeyScope": {
         "type": "string",
         "enum": [
@@ -2427,7 +2493,7 @@
           "provider": { "type": "string", "enum": ["meta_capi", "ga4"] },
           "external_destination_reference": { "type": "string", "description": "Meta dataset/pixel ID or GA4 measurement ID." },
           "event_source_base_url": { "type": "string", "format": "uri", "description": "Required HTTPS storefront base URL for Meta CAPI; omitted for GA4." },
-          "credential_secret_reference": { "type": "string", "pattern": "^env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}$", "writeOnly": true },
+          "credential_secret_reference": { "type": "string", "pattern": "^(env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}|vault://[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)$", "writeOnly": true },
           "enabled": { "type": "boolean" }
         }
       },

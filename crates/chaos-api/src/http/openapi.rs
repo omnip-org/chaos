@@ -447,6 +447,26 @@ mod tests {
     }
 
     #[test]
+    fn provider_secret_contract_never_echoes_plaintext() {
+        let specification = specification();
+        let request =
+            &specification["components"]["schemas"]["CreateProviderSecret"]["properties"]["value"];
+        let reference = &specification["components"]["schemas"]["ProviderSecretCreated"]["properties"]
+            ["secret_reference"];
+        let response = &specification["paths"]["/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/provider-secrets"]
+            ["post"]["responses"]["201"];
+
+        assert_eq!(request["writeOnly"], true);
+        assert_eq!(request["x-sensitive"], true);
+        assert_eq!(reference["readOnly"], true);
+        assert_eq!(reference["x-sensitive"], true);
+        assert_eq!(
+            response["headers"]["Cache-Control"]["schema"]["const"],
+            "no-store"
+        );
+    }
+
+    #[test]
     fn analytics_destination_contract_keeps_credentials_write_only() {
         let specification = specification();
         assert_eq!(
