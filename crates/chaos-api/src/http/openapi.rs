@@ -213,6 +213,42 @@ mod tests {
     }
 
     #[test]
+    fn media_contract_keeps_upload_credentials_sensitive_and_storefront_ready_only() {
+        let admin = specification();
+        let base = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media";
+        assert_eq!(
+            admin["paths"][base]["post"]["operationId"],
+            "createProductMedia"
+        );
+        assert_eq!(
+            admin["paths"][base]["post"]["responses"]["201"]["headers"]["Cache-Control"]["schema"]
+                ["const"],
+            "no-store"
+        );
+        assert_eq!(
+            admin["components"]["schemas"]["MediaUpload"]["properties"]["url"]["x-sensitive"],
+            true
+        );
+        assert_eq!(
+            admin["components"]["schemas"]["MediaUploadHeader"]["properties"]["value"]["writeOnly"],
+            true
+        );
+
+        let store: Value = serde_json::from_str(STORE_V1).unwrap();
+        assert_eq!(
+            store["components"]["schemas"]["Product"]["properties"]["media"]["items"]["$ref"],
+            "#/components/schemas/ProductMedia"
+        );
+        for field in ["status", "sha256", "byte_size"] {
+            assert!(
+                store["components"]["schemas"]["ProductMedia"]["properties"]
+                    .get(field)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn webhook_contract_requires_signature_and_has_resolved_references() {
         let specification: Value = serde_json::from_str(WEBHOOKS_V1).unwrap();
         assert_eq!(specification["openapi"], "3.1.0");

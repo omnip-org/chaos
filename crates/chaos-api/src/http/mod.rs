@@ -9,6 +9,7 @@ mod extract;
 mod fulfillment;
 mod health;
 mod inventory;
+mod media;
 mod merchant;
 mod metrics;
 mod notification;
@@ -29,7 +30,7 @@ use chaos_application::{
     },
     catalog::{
         CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
-        StorefrontCollections,
+        MediaAdministration, StorefrontCollections,
     },
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -42,7 +43,7 @@ use chaos_application::{
     },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
-    ports::{Clock, PasswordlessAuthentication, ShopperCredentialCodec},
+    ports::{Clock, MediaStorage, PasswordlessAuthentication, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
@@ -59,6 +60,7 @@ use chaos_infrastructure::{
     config::Settings,
     easypost::{EasyPostShippingProvider, EnvironmentShippingSecretResolver},
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
+    media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     passwordless::PasswordlessAuth,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
@@ -66,14 +68,15 @@ use chaos_infrastructure::{
         PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
         PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
         PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMerchantProvisioningUnitOfWork,
-        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
-        PostgresPaymentRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository, PostgresSearchIndexer,
-        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreDomainRepository, PostgresStoreProvisioningUnitOfWork,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
+        PostgresOrderManagementRepository, PostgresPaymentRepository,
+        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
+        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreDomainRepository,
+        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
@@ -114,6 +117,7 @@ pub struct ApiState {
     pub catalog_management: Arc<CatalogManagement>,
     pub collection_administration: Arc<CollectionAdministration>,
     pub storefront_collections: Arc<StorefrontCollections>,
+    pub media_administration: Arc<MediaAdministration>,
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
     pub tax_management: Arc<TaxManagement>,
@@ -208,6 +212,27 @@ impl ApiState {
         let collection_administration =
             CollectionAdministration::new(collection_repository.clone());
         let storefront_collections = StorefrontCollections::new(collection_repository);
+        let media_storage: Arc<dyn MediaStorage> =
+            if let Some(configuration) = &settings.media_storage {
+                Arc::new(S3MediaStorage::new(S3MediaStorageConfiguration {
+                    endpoint_url: configuration.endpoint_url.clone(),
+                    region: configuration.region.clone(),
+                    bucket: configuration.bucket.clone(),
+                    access_key_id: configuration.access_key_id.clone(),
+                    secret_access_key: configuration.secret_access_key.clone(),
+                    session_token: configuration.session_token.clone(),
+                    force_path_style: configuration.force_path_style,
+                    public_base_url: configuration.public_base_url.clone(),
+                })?)
+            } else {
+                Arc::new(UnavailableMediaStorage)
+            };
+        let media_administration = MediaAdministration::new(
+            Arc::new(PostgresMediaAssetRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            media_storage,
+        );
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
@@ -401,6 +426,7 @@ impl ApiState {
             catalog_management: Arc::new(catalog_management),
             collection_administration: Arc::new(collection_administration),
             storefront_collections: Arc::new(storefront_collections),
+            media_administration: Arc::new(media_administration),
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
             tax_management: Arc::new(tax_management),
@@ -450,6 +476,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(notification::routes())
         .nest("/admin/v1", catalog::routes())
         .nest("/admin/v1", collection::admin_routes())
+        .nest("/admin/v1", media::routes())
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
@@ -506,6 +533,7 @@ mod tests {
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
+            media_storage: None,
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,

@@ -23,6 +23,17 @@ pub struct StorefrontCatalogProduct {
     pub title: String,
     pub description: String,
     pub variants: Vec<StorefrontCatalogVariant>,
+    pub media: Vec<StorefrontMediaAsset>,
+}
+
+pub struct StorefrontMediaAsset {
+    pub id: chaos_domain::catalog::MediaAssetId,
+    pub product_variant_id: Option<ProductVariantId>,
+    pub media_type: String,
+    pub kind: chaos_domain::catalog::MediaKind,
+    pub alt_text: String,
+    pub position: u16,
+    pub url: String,
 }
 
 #[async_trait]

@@ -1581,6 +1581,13 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media": {
+      "get": { "operationId": "listProductMedia", "tags": ["Catalog"], "summary": "List Product Media Assets", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/ProductId" }], "responses": { "200": { "description": "Media Assets", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MediaAssetCollectionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "post": { "operationId": "createProductMedia", "tags": ["Catalog"], "summary": "Create a pending Media Asset and direct upload request", "description": "The signed upload URL and signed header values are credential-like and must not be logged or cached.", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/ProductId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateMediaAsset" } } } }, "responses": { "201": { "description": "Pending Media Asset and upload request", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedMediaAssetEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } } }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/upload": { "post": { "operationId": "refreshProductMediaUpload", "tags": ["Catalog"], "summary": "Refresh a pending Media direct upload request", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/ProductId" }, { "$ref": "#/components/parameters/MediaAssetId" }], "responses": { "200": { "description": "Upload request", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MediaUploadEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } } } },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/complete": { "post": { "operationId": "completeProductMediaUpload", "tags": ["Catalog"], "summary": "Verify the uploaded object and make the Media Asset ready", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/ProductId" }, { "$ref": "#/components/parameters/MediaAssetId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Ready Media Asset", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MediaAssetEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "503": { "$ref": "#/components/responses/ServiceUnavailable" } } } },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/archive": { "post": { "operationId": "archiveProductMedia", "tags": ["Catalog"], "summary": "Permanently archive a Media Asset", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/ProductId" }, { "$ref": "#/components/parameters/MediaAssetId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "description": "Archived Media Asset", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MediaAssetEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections": {
       "get": {
         "operationId": "listCollections", "tags": ["Catalog"], "summary": "List Collections", "security": [{ "bearerSession": [] }],
@@ -1659,6 +1666,12 @@
       },
       "CollectionId": {
         "name": "collection_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "MediaAssetId": {
+        "name": "media_asset_id",
         "in": "path",
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
@@ -2863,6 +2876,37 @@
           "meta": { "$ref": "#/components/schemas/ResponseMeta" }
         }
       },
+      "CreateMediaAsset": {
+        "type": "object", "additionalProperties": false,
+        "required": ["file_name", "media_type", "byte_size", "sha256", "position"],
+        "properties": {
+          "product_variant_id": { "type": ["string", "null"], "format": "uuid" },
+          "file_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "media_type": { "type": "string", "enum": ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif", "video/mp4", "video/webm"] },
+          "byte_size": { "type": "integer", "format": "int64", "minimum": 1, "maximum": 524288000 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "alt_text": { "type": "string", "maxLength": 500, "default": "" },
+          "position": { "type": "integer", "minimum": 0, "maximum": 99 }
+        }
+      },
+      "MediaAsset": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "product_id", "file_name", "media_type", "kind", "byte_size", "sha256", "alt_text", "position", "status", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "product_id": { "type": "string", "format": "uuid" }, "product_variant_id": { "type": "string", "format": "uuid" },
+          "file_name": { "type": "string" }, "media_type": { "type": "string" }, "kind": { "type": "string", "enum": ["image", "video"] },
+          "byte_size": { "type": "integer", "format": "int64", "minimum": 1 }, "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "alt_text": { "type": "string" },
+          "position": { "type": "integer", "minimum": 0, "maximum": 99 }, "status": { "type": "string", "enum": ["pending_upload", "ready", "archived"] },
+          "public_url": { "type": "string", "format": "uri", "pattern": "^https://" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MediaUploadHeader": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string" }, "value": { "type": "string", "writeOnly": true, "x-sensitive": true } } },
+      "MediaUpload": { "type": "object", "additionalProperties": false, "required": ["method", "url", "headers", "expires_at"], "properties": { "method": { "type": "string", "const": "PUT" }, "url": { "type": "string", "format": "uri", "writeOnly": true, "x-sensitive": true }, "headers": { "type": "array", "items": { "$ref": "#/components/schemas/MediaUploadHeader" } }, "expires_at": { "type": "string", "format": "date-time" } } },
+      "MediaAssetEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/MediaAsset" } } },
+      "MediaAssetCollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/MediaAsset" } } } },
+      "MediaUploadEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/MediaUpload" } } },
+      "CreatedMediaAsset": { "type": "object", "additionalProperties": false, "required": ["asset", "upload"], "properties": { "asset": { "$ref": "#/components/schemas/MediaAsset" }, "upload": { "$ref": "#/components/schemas/MediaUpload" } } },
+      "CreatedMediaAssetEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/CreatedMediaAsset" } } },
       "CollectionContent": {
         "type": "object",
         "additionalProperties": false,

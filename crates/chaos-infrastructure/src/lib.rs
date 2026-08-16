@@ -4,6 +4,7 @@ pub mod clock;
 pub mod config;
 pub mod easypost;
 pub mod email;
+pub mod media_storage;
 pub mod merchant;
 pub mod passwordless;
 pub mod repositories;

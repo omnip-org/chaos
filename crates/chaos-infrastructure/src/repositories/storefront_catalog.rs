@@ -3,12 +3,12 @@ use chaos_application::{
     ApplicationError,
     ports::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository,
-        StorefrontCatalogVariant,
+        StorefrontCatalogVariant, StorefrontMediaAsset,
     },
 };
 use chaos_domain::{
     CurrencyCode,
-    catalog::{ProductId, ProductVariantId},
+    catalog::{MediaAssetId, MediaKind, ProductId, ProductVariantId},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -115,6 +115,47 @@ impl PostgresStorefrontCatalogRepository {
                     })
                 },
             )
+            .collect()
+    }
+
+    async fn media(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_id: ProductId,
+    ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
+            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM catalog.media_assets WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND status='ready' ORDER BY position,id",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(StorefrontMediaAsset {
+                    id: MediaAssetId::from_uuid(row.0),
+                    product_variant_id: row.1.map(ProductVariantId::from_uuid),
+                    media_type: row.2,
+                    kind: match row.3.as_str() {
+                        "image" => MediaKind::Image,
+                        "video" => MediaKind::Video,
+                        _ => {
+                            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                                "database contains an invalid Media kind"
+                            )));
+                        }
+                    },
+                    alt_text: row.4,
+                    position: u16::try_from(row.5).map_err(|_| {
+                        ApplicationError::Unexpected(anyhow::anyhow!(
+                            "database contains an invalid Media position"
+                        ))
+                    })?,
+                    url: row.6,
+                })
+            })
             .collect()
     }
 }
@@ -230,12 +271,14 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 scan_after = Some(id);
                 let variants = Self::variants(&mut transaction, actor, id, currency).await?;
                 if !variants.is_empty() {
+                    let media = Self::media(&mut transaction, actor, id).await?;
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
                         title,
                         description,
                         variants,
+                        media,
                     });
                     if products.len() == usize::from(limit) {
                         break;
@@ -292,6 +335,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         };
         let id = ProductId::from_uuid(id);
         let variants = Self::variants(&mut transaction, actor, id, currency).await?;
+        let media = Self::media(&mut transaction, actor, id).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
             return Ok(None);
@@ -302,6 +346,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             title,
             description,
             variants,
+            media,
         }))
     }
 }

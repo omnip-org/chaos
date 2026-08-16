@@ -4,6 +4,7 @@ Cross-cutting time handling follows [Time conventions](time-conventions.md).
 External payment, shipping, and notification integrations follow [ADR 0007](adr/0007-external-provider-boundaries.md).
 The first carrier integration follows [ADR 0015](adr/0015-easypost-shipping-adapter.md).
 First-party behavior analytics and conversion exports follow [ADR 0008](adr/0008-first-party-analytics-and-conversion-exports.md).
+Verified direct-upload Catalog Media follows [ADR 0018](adr/0018-direct-upload-catalog-media.md).
 Storefront sales resources follow [ADR 0009](adr/0009-possession-bound-shopper-credentials.md).
 Fulfillment and Return reconciliation follows [ADR 0014](adr/0014-fulfillment-and-return-reconciliation.md).
 
@@ -73,7 +74,7 @@ Suggested implementation order:
 
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
 2. merchant: merchant accounts, memberships, roles, API keys, Stores, Channels, verified Domains, and public domain-context resolution;
-3. catalog: products, variants, options, channel publication, and manually ordered channel-published collections; media is reserved;
+3. catalog: products, variants, options, channel publication, manually ordered channel-published collections, and verified direct-upload media;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;
 6. sales: Store Customers, saved addresses, carts, line items, Checkout, Orders, and immutable contact/address snapshots;

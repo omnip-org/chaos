@@ -146,6 +146,10 @@ Every Product write requires `Idempotency-Key`. Owners, administrators, develope
 
 Collections are administered beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections`. The collection and detail resources support cursor reads, idempotent creation and content updates, terminal activation and archive actions, atomic ordered Product replacement, and explicit Sales Channel publication. Storefront `GET /store/v1/collections` and `GET /store/v1/collections/{handle}` return only active Collections published to the authenticated key's Channel. `GET /store/v1/products?collection={handle}` preserves manual Collection order and still requires every returned Product, Variant, price, Store, Channel, and Product publication to be independently active and visible.
 
+Media Assets are administered beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media`. Creation records bounded image or video metadata and returns a 15-minute S3-compatible signed PUT request. Its URL and signed header values are credential-like; responses use `Cache-Control: no-store`, and clients must not log or persist them beyond the upload. A pending request may be refreshed. Completion performs a server-side object metadata lookup and requires exact content type, byte count, and SHA-256 agreement before the Asset becomes ready. Missing or mismatched objects remain pending. Archiving is terminal and immediately hides the Asset. The API never accepts a public URL or fetches a merchant-controlled URL.
+
+Media storage is optional at process startup. Enabling upload creation requires `MEDIA_S3_REGION`, `MEDIA_S3_BUCKET`, `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY`, and an HTTPS `MEDIA_PUBLIC_BASE_URL` together. `MEDIA_S3_ENDPOINT_URL`, `MEDIA_S3_SESSION_TOKEN`, and `MEDIA_S3_FORCE_PATH_STYLE` support compatible storage services. When storage is absent, catalog reads continue but upload operations fail closed with HTTP 503.
+
 ## Pricing
 
 `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists` creates a Price List and its Variant prices atomically. The request requires `Idempotency-Key`. A Price List fixes one enabled Store currency, tax-inclusive behavior, and an optional RFC 3339 activation window. Each Variant appears at most once in a list and every amount is a non-negative integer in minor currency units.
@@ -202,7 +206,7 @@ Destination deliveries are created only after attribution records advertising co
 
 The optional `currency` query parameter selects an enabled Store currency and defaults to the Store default currency. Pricing uses one currently active Price List selected deterministically for that currency. Results include only active Stores, Sales Channels, Products, Variants, publications, enabled currencies, active Price Lists, and explicit Variant Prices. Products without at least one currently priced active Variant are omitted and are indistinguishable from unavailable Products on the detail endpoint.
 
-Storefront responses deliberately omit lifecycle status, drafts, archived records, unpublished Products, inventory cost, API key metadata, secret material, and merchant-account identifiers. Collection pagination uses the same opaque cursor behavior as the Admin API.
+Storefront responses deliberately omit lifecycle status, drafts, archived records, unpublished Products, pending or archived Media Assets, Media digests, upload credentials, inventory cost, API key metadata, secret material, and merchant-account identifiers. Product responses include ordered ready Media with their server-derived HTTPS URLs. Collection pagination uses the same opaque cursor behavior as the Admin API.
 
 ## Storefront Carts and Checkout
 

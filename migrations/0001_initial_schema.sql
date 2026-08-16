@@ -88,6 +88,9 @@ CREATE TYPE catalog.collection_event_kind AS ENUM (
     'published',
     'unpublished'
 );
+CREATE TYPE catalog.media_kind AS ENUM ('image', 'video');
+CREATE TYPE catalog.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
+CREATE TYPE catalog.media_event_kind AS ENUM ('created', 'ready', 'archived');
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
 CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
@@ -790,6 +793,106 @@ CREATE TABLE catalog.collection_events (
 CREATE INDEX collection_events_collection_occurred_idx
     ON catalog.collection_events (
         merchant_account_id, store_id, collection_id, occurred_at, id
+    );
+
+CREATE TABLE catalog.media_assets (
+    id                   UUID                        NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                        NOT NULL,
+    store_id             UUID                        NOT NULL,
+    product_id           UUID                        NOT NULL,
+    product_variant_id   UUID,
+    object_key           TEXT                        NOT NULL UNIQUE,
+    file_name            TEXT                        NOT NULL,
+    media_type           TEXT                        NOT NULL,
+    media_kind           catalog.media_kind          NOT NULL,
+    byte_size            BIGINT                      NOT NULL,
+    sha256_digest        BYTEA                       NOT NULL,
+    alt_text             TEXT                        NOT NULL DEFAULT '',
+    position             SMALLINT                    NOT NULL,
+    status               catalog.media_asset_status  NOT NULL DEFAULT 'pending_upload',
+    public_url           TEXT,
+    created_by           UUID                        NOT NULL,
+    ready_by             UUID,
+    archived_by          UUID,
+    ready_at             TIMESTAMPTZ,
+    archived_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ                 NOT NULL,
+    updated_at           TIMESTAMPTZ                 NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, product_id, id),
+    FOREIGN KEY (created_by) REFERENCES identity.users(id),
+    FOREIGN KEY (ready_by) REFERENCES identity.users(id),
+    FOREIGN KEY (archived_by) REFERENCES identity.users(id),
+    CONSTRAINT media_assets_object_key_check CHECK (
+        length(object_key) BETWEEN 20 AND 255
+        AND object_key ~ '^stores/[0-9a-f-]{36}/media/[0-9a-f-]{36}/original$'
+    ),
+    CONSTRAINT media_assets_file_name_check CHECK (
+        length(trim(file_name)) BETWEEN 1 AND 255
+        AND file_name !~ '[[:cntrl:]/\\]'
+    ),
+    CONSTRAINT media_assets_type_kind_check CHECK (
+        (media_kind = 'image' AND media_type IN (
+            'image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif'
+        ) AND byte_size BETWEEN 1 AND 26214400)
+        OR (media_kind = 'video' AND media_type IN (
+            'video/mp4', 'video/webm'
+        ) AND byte_size BETWEEN 1 AND 524288000)
+    ),
+    CONSTRAINT media_assets_sha256_check CHECK (octet_length(sha256_digest) = 32),
+    CONSTRAINT media_assets_alt_text_check CHECK (
+        length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'
+    ),
+    CONSTRAINT media_assets_position_check CHECK (position BETWEEN 0 AND 99),
+    CONSTRAINT media_assets_public_url_check CHECK (
+        public_url IS NULL OR (length(public_url) BETWEEN 12 AND 2048 AND public_url ~ '^https://')
+    ),
+    CONSTRAINT media_assets_lifecycle_check CHECK (
+        (status = 'pending_upload' AND public_url IS NULL
+            AND ready_by IS NULL AND ready_at IS NULL
+            AND archived_by IS NULL AND archived_at IS NULL)
+        OR (status = 'ready' AND public_url IS NOT NULL
+            AND ready_by IS NOT NULL AND ready_at IS NOT NULL
+            AND archived_by IS NULL AND archived_at IS NULL)
+        OR (status = 'archived' AND archived_by IS NOT NULL AND archived_at IS NOT NULL
+            AND ((public_url IS NULL AND ready_by IS NULL AND ready_at IS NULL)
+                OR (public_url IS NOT NULL AND ready_by IS NOT NULL AND ready_at IS NOT NULL)))
+    )
+);
+
+CREATE UNIQUE INDEX media_assets_product_position_active_idx
+    ON catalog.media_assets (merchant_account_id, store_id, product_id, position)
+    WHERE status <> 'archived';
+
+CREATE INDEX media_assets_product_status_position_idx
+    ON catalog.media_assets (
+        merchant_account_id, store_id, product_id, status, position, id
+    );
+
+CREATE TABLE catalog.media_events (
+    id                   UUID                      NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                      NOT NULL,
+    store_id             UUID                      NOT NULL,
+    product_id           UUID                      NOT NULL,
+    media_asset_id       UUID                      NOT NULL,
+    event_kind           catalog.media_event_kind  NOT NULL,
+    actor_user_id        UUID                      NOT NULL,
+    occurred_at          TIMESTAMPTZ               NOT NULL,
+
+    FOREIGN KEY (merchant_account_id, store_id, media_asset_id)
+        REFERENCES catalog.media_assets(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id)
+);
+
+CREATE INDEX media_events_asset_occurred_idx
+    ON catalog.media_events (
+        merchant_account_id, store_id, product_id, media_asset_id, occurred_at, id
     );
 
 CREATE TABLE pricing.price_lists (
@@ -4269,6 +4372,8 @@ ALTER TABLE catalog.collections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.media_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
@@ -4548,6 +4653,26 @@ CREATE POLICY merchant_account_isolation ON catalog.collection_publications
     );
 
 CREATE POLICY merchant_account_isolation ON catalog.collection_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.media_assets
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.media_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -6562,6 +6687,8 @@ REVOKE DELETE ON merchant.store_domains FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON merchant.store_domain_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
 REVOKE DELETE ON catalog.collections FROM chaos_runtime;
+REVOKE DELETE ON catalog.media_assets FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON catalog.media_events FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

@@ -803,17 +803,27 @@
       "Product": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "handle", "title", "description", "variants"],
+        "required": ["id", "handle", "title", "description", "media", "variants"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "handle": { "type": "string" },
           "title": { "type": "string" },
           "description": { "type": "string" },
+          "media": { "type": "array", "items": { "$ref": "#/components/schemas/ProductMedia" } },
           "variants": {
             "type": "array",
             "minItems": 1,
             "items": { "$ref": "#/components/schemas/ProductVariant" }
           }
+        }
+      },
+      "ProductMedia": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "media_type", "kind", "alt_text", "position", "url"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "product_variant_id": { "type": "string", "format": "uuid" },
+          "media_type": { "type": "string" }, "kind": { "type": "string", "enum": ["image", "video"] }, "alt_text": { "type": "string", "maxLength": 500 },
+          "position": { "type": "integer", "minimum": 0, "maximum": 99 }, "url": { "type": "string", "format": "uri", "pattern": "^https://" }
         }
       },
       "CreateCart": {

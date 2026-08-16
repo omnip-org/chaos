@@ -67,6 +67,10 @@ The explicit relationship that makes an active Product visible through a Sales C
 
 A Store-owned curated Product group with canonical content, a terminal lifecycle, atomic manual ordering, independent Sales Channel publication, and immutable audit events. Storefront visibility is the intersection of Collection publication and every Product's own lifecycle and publication.
 
+### MediaAsset
+
+A Store-owned image or video attached to one Product and optionally one of its Variants. Clients upload bytes directly to configured S3-compatible object storage with a short-lived signed request. The server verifies content type, byte count, and SHA-256 metadata before the Asset becomes ready. Only ready, non-archived Media is visible through Storefront Product responses.
+
 ### PriceList
 
 A Store-owned pricing context with one enabled currency, tax semantics, an optional activation window, and explicit Product Variant prices. A Price List is independent from Product content and Sales Channel publication. The same Variant may have different authoritative prices in different Price Lists.
@@ -116,6 +120,6 @@ A Store-owned connection to one external payment provider account. Its provider 
 
 ### Reserved
 
-- Collections, media, localization, customer segments, exchanges, and advanced logistics.
+- Localization, customer segments, exchanges, and advanced logistics.
 - MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.
 - Advanced experimentation, recommendations, customer scoring, and cross-Store analytics.

@@ -1,5 +1,7 @@
 use axum::{Router, extract::State, routing::get};
-use chaos_application::ports::{StorefrontCatalogProduct, StorefrontCatalogVariant};
+use chaos_application::ports::{
+    StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
+};
 use chaos_domain::catalog::ProductId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -58,6 +60,19 @@ struct StorefrontProductData {
     title: String,
     description: String,
     variants: Vec<StorefrontVariantData>,
+    media: Vec<StorefrontMediaData>,
+}
+
+#[derive(Serialize)]
+struct StorefrontMediaData {
+    id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product_variant_id: Option<Uuid>,
+    media_type: String,
+    kind: &'static str,
+    alt_text: String,
+    position: u16,
+    url: String,
 }
 
 async fn list_products(
@@ -114,6 +129,19 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         title: product.title,
         description: product.description,
         variants: product.variants.into_iter().map(variant_data).collect(),
+        media: product.media.into_iter().map(media_data).collect(),
+    }
+}
+
+fn media_data(media: StorefrontMediaAsset) -> StorefrontMediaData {
+    StorefrontMediaData {
+        id: media.id.as_uuid(),
+        product_variant_id: media.product_variant_id.map(|id| id.as_uuid()),
+        media_type: media.media_type,
+        kind: media.kind.as_str(),
+        alt_text: media.alt_text,
+        position: media.position,
+        url: media.url,
     }
 }
 

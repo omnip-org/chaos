@@ -1,6 +1,7 @@
 mod collections;
 mod create_product;
 mod management;
+mod media;
 mod queries;
 
 pub use collections::{
@@ -14,5 +15,9 @@ pub use create_product::{
 };
 pub use management::{
     CatalogManagement, ChangeProductStatusInput, ProductPublicationInput, UpdateProductInput,
+};
+pub use media::{
+    CreateMediaAssetInput, CreatedMediaAsset, MediaAdministration, MediaAssetActionInput,
+    RefreshMediaUploadInput,
 };
 pub use queries::{CatalogQueries, ProductPage};

@@ -30,6 +30,7 @@ pub struct Settings {
     pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
     pub analytics_ga4_api_base_url: Url,
+    pub media_storage: Option<MediaStorageSettings>,
     pub shopper_token_active_key_id: String,
     pub shopper_token_active_secret: String,
     pub shopper_token_previous_key: Option<(String, String)>,
@@ -38,6 +39,18 @@ pub struct Settings {
     pub shutdown_worker_timeout: Duration,
     pub log_filter: String,
     pub log_json: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MediaStorageSettings {
+    pub endpoint_url: Option<String>,
+    pub region: String,
+    pub bucket: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub session_token: Option<String>,
+    pub force_path_style: bool,
+    pub public_base_url: Url,
 }
 
 impl Settings {
@@ -85,6 +98,7 @@ impl Settings {
                 "ANALYTICS_GA4_API_BASE_URL",
                 "https://www.google-analytics.com/",
             )?,
+            media_storage: media_storage_settings()?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
             shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
             shopper_token_previous_key: optional_pair(
@@ -109,6 +123,39 @@ impl Settings {
         }
         Ok(settings)
     }
+}
+
+fn media_storage_settings() -> anyhow::Result<Option<MediaStorageSettings>> {
+    let names = [
+        "MEDIA_S3_REGION",
+        "MEDIA_S3_BUCKET",
+        "MEDIA_S3_ACCESS_KEY_ID",
+        "MEDIA_S3_SECRET_ACCESS_KEY",
+        "MEDIA_PUBLIC_BASE_URL",
+    ];
+    let values = names.map(optional);
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    if values.iter().any(Option::is_none) {
+        bail!(
+            "Media storage requires MEDIA_S3_REGION, MEDIA_S3_BUCKET, MEDIA_S3_ACCESS_KEY_ID, MEDIA_S3_SECRET_ACCESS_KEY, and MEDIA_PUBLIC_BASE_URL together"
+        );
+    }
+    Ok(Some(MediaStorageSettings {
+        endpoint_url: optional("MEDIA_S3_ENDPOINT_URL"),
+        region: values[0].clone().unwrap(),
+        bucket: values[1].clone().unwrap(),
+        access_key_id: values[2].clone().unwrap(),
+        secret_access_key: values[3].clone().unwrap(),
+        session_token: optional("MEDIA_S3_SESSION_TOKEN"),
+        force_path_style: parse_or("MEDIA_S3_FORCE_PATH_STYLE", "false")?,
+        public_base_url: values[4]
+            .as_deref()
+            .unwrap()
+            .parse()
+            .with_context(|| "environment variable MEDIA_PUBLIC_BASE_URL has an invalid value")?,
+    }))
 }
 
 fn optional(name: &str) -> Option<String> {

@@ -8,6 +8,7 @@ mod collection;
 mod customer;
 mod fulfillment;
 mod inventory;
+mod media;
 mod merchant;
 mod merchant_query;
 mod notification;
@@ -73,6 +74,10 @@ pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
     InventoryReservationTransition, StockAdjustment, StockItemItem,
 };
+pub use media::{
+    CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
+    MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
+};
 pub use merchant::{
     IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
 };
@@ -115,6 +120,6 @@ pub use store_domain::{
 };
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
-    StorefrontContext,
+    StorefrontContext, StorefrontMediaAsset,
 };
 pub use tax::{TaxRuleDetail, TaxRuleRepository};
