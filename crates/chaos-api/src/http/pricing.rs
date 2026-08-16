@@ -882,7 +882,10 @@ pub(crate) mod tests {
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
-            vault: None,
+            provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
+                "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+            )
+            .unwrap(),
             media_storage: None,
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),

@@ -13,6 +13,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+aes-gcm = { version = "0.11.0", default-features = false, features = ["aes", "alloc"] }
 anyhow = "1.0"
 async-trait = "0.1.91"
 aws-sdk-s3 = { version = "1.141.0", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }

@@ -2233,10 +2233,18 @@ CREATE TABLE payments.provider_accounts (
     CONSTRAINT provider_accounts_credential_reference_check CHECK (
         credential_secret_reference IS NULL
         OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+        OR (
+            char_length(credential_secret_reference) <= 32768
+            AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT provider_accounts_previous_credential_reference_check CHECK (
         previous_credential_secret_reference IS NULL
         OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+        OR (
+            char_length(previous_credential_secret_reference) <= 32768
+            AND previous_credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT provider_accounts_credential_rotation_shape_check CHECK (
         (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
@@ -2245,10 +2253,18 @@ CREATE TABLE payments.provider_accounts (
     CONSTRAINT provider_accounts_webhook_reference_check CHECK (
         webhook_secret_reference IS NULL
         OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+        OR (
+            char_length(webhook_secret_reference) <= 32768
+            AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT provider_accounts_previous_webhook_reference_check CHECK (
         previous_webhook_secret_reference IS NULL
         OR previous_webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
+        OR (
+            char_length(previous_webhook_secret_reference) <= 32768
+            AND previous_webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT provider_accounts_webhook_rotation_shape_check CHECK (
         (previous_webhook_secret_reference IS NULL AND webhook_rotation_expires_at IS NULL)
@@ -2472,10 +2488,18 @@ CREATE TABLE fulfillment.shipping_provider_accounts (
     ),
     CONSTRAINT shipping_provider_accounts_credential_reference_check CHECK (
         credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
+        OR (
+            char_length(credential_secret_reference) <= 32768
+            AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT shipping_provider_accounts_previous_credential_reference_check CHECK (
         previous_credential_secret_reference IS NULL
         OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
+        OR (
+            char_length(previous_credential_secret_reference) <= 32768
+            AND previous_credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     ),
     CONSTRAINT shipping_provider_accounts_credential_rotation_shape_check CHECK (
         (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
@@ -3885,6 +3909,10 @@ CREATE TABLE analytics.destination_accounts (
     ),
     CONSTRAINT destination_accounts_secret_reference_check CHECK (
         credential_secret_reference ~ '^env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}$'
+        OR (
+            char_length(credential_secret_reference) <= 32768
+            AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
+        )
     )
 );
 

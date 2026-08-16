@@ -281,10 +281,7 @@ impl ApiState {
             PostgresAnalyticsReportingRepository::new(infrastructure.analytics_pool()),
         ));
         let analytics_destinations = AnalyticsDestinations::new(analytics_repository.clone());
-        let dynamic_secrets = Arc::new(DynamicSecretResolver::new(
-            settings.vault.as_ref(),
-            settings.dependency_timeout,
-        )?);
+        let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =
             ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());
         let analytics_destination_secrets = dynamic_secrets.clone();
@@ -550,7 +547,10 @@ mod tests {
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
-            vault: None,
+            provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
+                "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
+            )
+            .unwrap(),
             media_storage: None,
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),

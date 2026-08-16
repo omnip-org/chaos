@@ -1,6 +1,8 @@
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, pricing::Money, sales::OrderId};
+use crate::{
+    DomainError, FieldViolation, MAX_SECRET_REFERENCE_LEN, pricing::Money, sales::OrderId,
+};
 
 macro_rules! payment_id {
     ($name:ident) => {
@@ -129,14 +131,14 @@ impl PaymentSecretReference {
     pub fn new(field: &'static str, value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         if value.is_empty()
-            || value.len() > 255
+            || value.len() > MAX_SECRET_REFERENCE_LEN
             || !value.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':')
             })
         {
             return Err(validation(
                 field,
-                "must be a 1-255 character secret-manager reference",
+                "must be a 1-32768 character secret-manager reference",
             ));
         }
         Ok(Self(value))
@@ -528,7 +530,7 @@ mod tests {
         assert!(PaymentProviderAccount::create("stripe", "Stripe", "acct_123", false).is_ok());
         assert!(PaymentProviderAccount::create("Stripe", "Stripe", "acct_123", false).is_err());
         assert!(
-            PaymentSecretReference::new("credential_secret_reference", "vault://stripe/live")
+            PaymentSecretReference::new("credential_secret_reference", "enc://c3RyaXBlLWxpdmU")
                 .is_ok()
         );
         assert!(

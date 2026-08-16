@@ -19,6 +19,11 @@ pub use currency::CurrencyCode;
 pub use locale::Locale;
 pub use region::RegionCode;
 
+/// Upper bound for opaque secret-manager reference strings (`env://...`, `enc://...`),
+/// sized to cover a base64-encoded, AES-256-GCM-sealed 16KB Provider Key value
+/// (nonce + ciphertext + tag), with margin.
+pub const MAX_SECRET_REFERENCE_LEN: usize = 32_768;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FieldViolation {
     pub field: &'static str,

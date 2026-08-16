@@ -39,22 +39,17 @@ impl AnalyticsDestinationSecretReference {
                         byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
                     })
             });
-        let vault_reference = value.strip_prefix("vault://").is_some_and(|location| {
-            location.len() <= 247
-                && location.split('/').count() >= 2
-                && location.split('/').all(|segment| {
-                    !segment.is_empty()
-                        && segment != "."
-                        && segment != ".."
-                        && segment.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-                        })
-                })
+        let encrypted_reference = value.strip_prefix("enc://").is_some_and(|payload| {
+            !payload.is_empty()
+                && payload.len() <= MAX_SECRET_REFERENCE_LEN
+                && payload
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         });
-        if !environment_reference && !vault_reference {
+        if !environment_reference && !encrypted_reference {
             return Err(validation(
                 "credential_secret_reference",
-                "must be an env://CHAOS_ANALYTICS_SECRET_* or vault://<mount>/<path> reference",
+                "must be an env://CHAOS_ANALYTICS_SECRET_* or enc://<base64> reference",
             ));
         }
         Ok(Self(value))
@@ -66,7 +61,7 @@ impl AnalyticsDestinationSecretReference {
 }
 
 use crate::{
-    DomainError, FieldViolation,
+    DomainError, FieldViolation, MAX_SECRET_REFERENCE_LEN,
     catalog::{ProductId, ProductVariantId},
     sales::{CartId, CheckoutId},
 };
@@ -661,11 +656,16 @@ mod tests {
                 .is_err()
         );
         assert!(
-            AnalyticsDestinationSecretReference::new(
-                "vault://secret/chaos/stores/store-1/meta-capi"
-            )
-            .is_ok()
+            AnalyticsDestinationSecretReference::new("enc://bm9uY2UtY2lwaGVydGV4dC10YWc").is_ok()
         );
-        assert!(AnalyticsDestinationSecretReference::new("vault://secret/../meta").is_err());
+        assert!(AnalyticsDestinationSecretReference::new("enc://").is_err());
+        assert!(AnalyticsDestinationSecretReference::new("enc://not valid base64!!!").is_err());
+        assert!(
+            AnalyticsDestinationSecretReference::new(format!(
+                "enc://{}",
+                "a".repeat(MAX_SECRET_REFERENCE_LEN + 1)
+            ))
+            .is_err()
+        );
     }
 }

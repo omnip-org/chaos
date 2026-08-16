@@ -33,7 +33,7 @@ Disabling blocks only new Payment Attempts. Existing Payment Attempts retain dis
 - Provider configuration is explicit, Store-isolated, RLS-protected, idempotent, and auditable through its creator and timestamps.
 - Checkout cannot dispatch to an unconfigured or disabled provider.
 - Historical Provider identity cannot drift through administrative updates.
-- API and webhook secrets remain outside PostgreSQL; only opaque references are stored.
+- API and webhook secret values are never persisted in plaintext; only an opaque reference is stored, which may itself be an AES-256-GCM-encrypted value kept in PostgreSQL rather than an external secret manager.
 - Credential rotation is rolling-deployment safe without allowing an update retry to prolong the overlap window.
 - Live traffic cannot be enabled from an unchecked or action-required provider assessment.
 - A production adapter must resolve references through a dedicated infrastructure port and must never place resolved values in application or domain types.

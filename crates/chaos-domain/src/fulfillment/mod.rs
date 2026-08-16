@@ -1,8 +1,8 @@
 use uuid::Uuid;
 
 use crate::{
-    CurrencyCode, DomainError, FieldViolation, catalog::ProductVariantId, pricing::Money,
-    sales::OrderId,
+    CurrencyCode, DomainError, FieldViolation, MAX_SECRET_REFERENCE_LEN, catalog::ProductVariantId,
+    pricing::Money, sales::OrderId,
 };
 
 macro_rules! operation_id {
@@ -135,13 +135,13 @@ impl ShippingSecretReference {
     pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         if value.len() < 8
-            || value.len() > 255
+            || value.len() > MAX_SECRET_REFERENCE_LEN
             || value.chars().any(char::is_whitespace)
             || !value.contains("://")
         {
             return Err(validation(
                 "credential_secret_reference",
-                "must be an opaque secret-manager reference between 8 and 255 characters",
+                "must be an opaque secret-manager reference between 8 and 32768 characters",
             ));
         }
         Ok(Self(value))

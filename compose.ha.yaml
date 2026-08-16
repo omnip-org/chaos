@@ -8,11 +8,6 @@ x-api: &api
   env_file:
     - path: .env
       required: false
-    # Runtime-only overrides written by deploy-remote.sh (git-ignored). Holds
-    # VAULT_TOKEN minted by the bootstrap so it never travels through CI. Loaded
-    # after .env, so it wins. Optional so local dev / CI need no file.
-    - path: .env.vault
-      required: false
   environment:
     APP_BIND_ADDR: ${APP_BIND_ADDR:-0.0.0.0:8080}
     DATABASE_URL: ${DATABASE_URL:-postgres://chaos:chaos@postgres:5432/chaos}
@@ -31,6 +26,7 @@ x-api: &api
     RESEND_API_KEY: ${RESEND_API_KEY:-}
     RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
     PAYMENT_WEBHOOK_SECRET: ${PAYMENT_WEBHOOK_SECRET:-development-payment-webhook-secret}
+    CHAOS_PROVIDER_SECRET_KEY: ${CHAOS_PROVIDER_SECRET_KEY:-ZGV2LW9ubHktcHJvdmlkZXItc2VjcmV0LWtleS0zMiE=}
     SHOPPER_TOKEN_ACTIVE_KEY_ID: ${SHOPPER_TOKEN_ACTIVE_KEY_ID:-v1}
     SHOPPER_TOKEN_ACTIVE_SECRET: ${SHOPPER_TOKEN_ACTIVE_SECRET:-development-shopper-token-secret}
     RUST_LOG: ${RUST_LOG:-chaos=info,chaos_api=info,tower_http=info}
@@ -42,8 +38,6 @@ x-api: &api
   read_only: true
   tmpfs:
     - /tmp:size=16m,mode=1777
-  volumes:
-    - ./deploy/vault/tls:/etc/chaos/vault-tls:ro
   security_opt:
     - no-new-privileges:true
   cap_drop:
@@ -63,37 +57,6 @@ x-api: &api
   restart: unless-stopped
 
 services:
-  vault-data-init:
-    image: hashicorp/vault:1.21.4
-    entrypoint: ["sh", "-c"]
-    command: ["chown 100:1000 /vault/data"]
-    user: "0:0"
-    volumes:
-      - vault-data:/vault/data
-    restart: "no"
-
-  vault:
-    image: hashicorp/vault:1.21.4
-    command: ["server"]
-    cap_add:
-      - IPC_LOCK
-    volumes:
-      - ./deploy/vault/config.hcl:/vault/config/config.hcl:ro
-      - ./deploy/vault/tls:/vault/tls:ro
-      - vault-data:/vault/data
-    expose:
-      - "8200"
-      - "8201"
-    healthcheck:
-      test: ["CMD-SHELL", "vault status -address=https://127.0.0.1:8200 -ca-cert=/vault/tls/ca.pem >/dev/null 2>&1; code=$$?; [ $$code -eq 0 ] || [ $$code -eq 2 ]"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    restart: unless-stopped
-    depends_on:
-      vault-data-init:
-        condition: service_completed_successfully
-
   migrate:
     image: ${CHAOS_IMAGE:-chaos-api:local}
     build:
@@ -145,7 +108,6 @@ services:
 # be created manually on the host before the first deploy:
 #   docker volume create chaos-postgres-data
 #   docker volume create chaos-redis-data
-#   docker volume create chaos-vault-data
 # (compose.yaml alone — used for local dev / CI — keeps compose-managed volumes,
 # so local workflows stay zero-config.)
 volumes:
@@ -155,6 +117,3 @@ volumes:
   redis-data:
     external: true
     name: chaos-redis-data
-  vault-data:
-    external: true
-    name: chaos-vault-data

@@ -2363,8 +2363,8 @@ mod tests {
             "provider": "stripe",
             "display_name": "Stripe Live",
             "external_account_reference": format!("acct_stripe_{suffix}"),
-            "credential_secret_reference": "vault://payments/stripe/api-key",
-            "webhook_secret_reference": "vault://payments/stripe/webhook-secret",
+            "credential_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLWFwaS1rZXk",
+            "webhook_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0",
             "enabled": false
         });
         let stripe_account = app
@@ -2427,8 +2427,8 @@ mod tests {
                 Some("disable-stripe-provider"),
                 Some(json!({
                     "display_name": "Stripe",
-                    "credential_secret_reference": "vault://payments/stripe/api-key-v2",
-                    "webhook_secret_reference": "vault://payments/stripe/webhook-secret-v2",
+                    "credential_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLWFwaS1rZXktdjI",
+                    "webhook_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0LXYy",
                     "enabled": false
                 })),
             ))
@@ -2451,8 +2451,8 @@ mod tests {
             .map(|reference| reference.expose_reference())
             .collect::<Vec<_>>(),
             vec![
-                "vault://payments/stripe/webhook-secret-v2",
-                "vault://payments/stripe/webhook-secret"
+                "enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0LXYy",
+                "enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0"
             ]
         );
 
@@ -2472,8 +2472,8 @@ mod tests {
                 Some("retain-stripe-rotation-window"),
                 Some(json!({
                     "display_name": "Stripe",
-                    "credential_secret_reference": "vault://payments/stripe/api-key-v2",
-                    "webhook_secret_reference": "vault://payments/stripe/webhook-secret-v2",
+                    "credential_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLWFwaS1rZXktdjI",
+                    "webhook_secret_reference": "enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0LXYy",
                     "enabled": false
                 })),
             ))
@@ -2511,7 +2511,7 @@ mod tests {
             .iter()
             .map(|reference| reference.expose_reference())
             .collect::<Vec<_>>(),
-            vec!["vault://payments/stripe/webhook-secret-v2"]
+            vec!["enc://cGF5bWVudHMtc3RyaXBlLXdlYmhvb2stc2VjcmV0LXYy"]
         );
 
         let cross_store_provider = app

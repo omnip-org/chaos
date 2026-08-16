@@ -1112,8 +1112,8 @@
       "post": {
         "operationId": "createProviderSecret",
         "tags": ["Provider secrets"],
-        "summary": "Write one Store Provider secret to Vault",
-        "description": "Owners and administrators may write a bounded secret value to a new immutable Vault KV v2 path. The value is never persisted in PostgreSQL or returned. The secret-manager reference is returned once for subsequent Provider account configuration.",
+        "summary": "Encrypt and store one Store Provider secret",
+        "description": "Owners and administrators may write a bounded secret value, which is AES-256-GCM encrypted and stored as a new opaque reference. The plaintext value is never persisted or returned. The secret-manager reference is returned once for subsequent Provider account configuration.",
         "security": [{ "bearerSession": [] }],
         "requestBody": {
           "required": true,
@@ -1125,7 +1125,7 @@
         },
         "responses": {
           "201": {
-            "description": "Secret created in Vault",
+            "description": "Secret encrypted and stored",
             "headers": {
               "Cache-Control": {
                 "required": true,
@@ -2274,7 +2274,7 @@
         "additionalProperties": false,
         "required": ["secret_reference"],
         "properties": {
-          "secret_reference": { "type": "string", "pattern": "^vault://[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$", "readOnly": true, "x-sensitive": true }
+          "secret_reference": { "type": "string", "pattern": "^enc://[A-Za-z0-9_-]+$", "readOnly": true, "x-sensitive": true }
         }
       },
       "ProviderSecretCreatedEnvelope": {
@@ -2493,7 +2493,7 @@
           "provider": { "type": "string", "enum": ["meta_capi", "ga4"] },
           "external_destination_reference": { "type": "string", "description": "Meta dataset/pixel ID or GA4 measurement ID." },
           "event_source_base_url": { "type": "string", "format": "uri", "description": "Required HTTPS storefront base URL for Meta CAPI; omitted for GA4." },
-          "credential_secret_reference": { "type": "string", "pattern": "^(env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}|vault://[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+)$", "writeOnly": true },
+          "credential_secret_reference": { "type": "string", "pattern": "^(env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}|enc://[A-Za-z0-9_-]+)$", "writeOnly": true },
           "enabled": { "type": "boolean" }
         }
       },

@@ -40,47 +40,6 @@ echo "Deploying image: ${CHAOS_IMAGE}"
 # `down -v` can't wipe production data). `volume create` is idempotent.
 docker volume create chaos-postgres-data >/dev/null
 docker volume create chaos-redis-data >/dev/null
-docker volume create chaos-vault-data >/dev/null
-
-# Bring the repository-managed Vault to a ready (initialized + unsealed +
-# bootstrapped) state fully automatically, so first and subsequent deploys take
-# the same path with no operator on the host. Only runs when the deployment
-# points the application at the Compose Vault service.
-#
-# Unseal shares and the application token are held in a git-ignored host state
-# dir (VAULT_STATE_DIR) alongside the Raft volume. This is the accepted
-# trade-off of unattended Shamir unsealing; switch to a KMS/HSM seal to remove
-# the co-location.
-VAULT_STATE_DIR="${VAULT_STATE_DIR:-.vault}"
-export VAULT_STATE_DIR
-if grep -Eq '^VAULT_ADDR=https://vault:8200/?$' .env; then
-    # Generate the internal CA + server certificate on first deploy so a fresh
-    # host needs no manual pre-step.
-    if [ ! -f deploy/vault/tls/ca.pem ] || [ ! -f deploy/vault/tls/vault.pem ] || [ ! -f deploy/vault/tls/vault-key.pem ]; then
-        echo "Generating Vault TLS material ..."
-        ./scripts/vault-generate-tls.sh
-    fi
-
-    $COMPOSE up -d --wait vault
-
-    # init-if-needed, unseal-if-needed, bootstrap-if-needed. Each is idempotent,
-    # so this converges whether Vault is brand new or already running.
-    ./scripts/vault-initialize.sh
-    ./scripts/vault-unseal.sh
-    ./scripts/vault-bootstrap.sh
-
-    # Inject the bootstrap-minted token as a runtime-only env override, so the
-    # application connects to Vault without the token ever passing through CI or
-    # PRODUCTION_ENV. compose.ha.yaml loads .env.vault after .env.
-    token_file="${VAULT_TOKEN_OUTPUT:-$VAULT_STATE_DIR/token}"
-    if [ ! -s "$token_file" ]; then
-        echo "ERROR: expected Vault token at $token_file after bootstrap." >&2
-        exit 1
-    fi
-    umask 077
-    printf 'VAULT_TOKEN=%s\n' "$(cat "$token_file")" > .env.vault.tmp
-    mv .env.vault.tmp .env.vault
-fi
 
 # Pull the new image up front so the swap is fast and atomic-ish.
 $COMPOSE pull migrate api-blue api-green

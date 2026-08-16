@@ -1,6 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::sync::Arc;
 
+use aes_gcm::{
+    Aes256Gcm, Key, Nonce,
+    aead::{Aead, KeyInit},
+};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
@@ -15,30 +20,24 @@ use chaos_domain::{
     merchant::{MerchantAccountId, StoreId},
     payments::PaymentSecretReference,
 };
-use reqwest::{
-    Client, StatusCode, Url,
-    header::{HeaderMap, HeaderValue},
-};
+use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::config::VaultSettings;
+use crate::config::SecretKey;
 
-const VAULT_TOKEN_HEADER: &str = "x-vault-token";
-const VAULT_NAMESPACE_HEADER: &str = "x-vault-namespace";
+const ENCRYPTED_PREFIX: &str = "enc://";
+const NONCE_LEN: usize = 12;
 
 #[derive(Clone)]
 pub struct DynamicSecretResolver {
-    vault: Option<Arc<VaultKvV2SecretStore>>,
+    store: Arc<EncryptedProviderSecretStore>,
 }
 
 impl DynamicSecretResolver {
-    pub fn new(settings: Option<&VaultSettings>, timeout: Duration) -> anyhow::Result<Self> {
-        let vault = settings
-            .map(|settings| VaultKvV2SecretStore::new(settings, timeout).map(Arc::new))
-            .transpose()?;
-        Ok(Self { vault })
+    pub fn new(key: &SecretKey) -> Self {
+        Self {
+            store: Arc::new(EncryptedProviderSecretStore::new(key)),
+        }
     }
 
     async fn resolve_reference(
@@ -60,8 +59,7 @@ impl DynamicSecretResolver {
                 .map(SecretString::from)
                 .ok_or(SecretUnavailable);
         }
-        let vault = self.vault.as_ref().ok_or(SecretUnavailable)?;
-        vault.resolve(reference).await
+        self.store.decrypt(reference)
     }
 }
 
@@ -114,193 +112,66 @@ impl AnalyticsDestinationSecretResolver for DynamicSecretResolver {
 impl ProviderSecretWriter for DynamicSecretResolver {
     async fn create(
         &self,
-        merchant_account_id: MerchantAccountId,
-        store_id: StoreId,
-        created_by: UserId,
-        kind: ProviderSecretKind,
+        _merchant_account_id: MerchantAccountId,
+        _store_id: StoreId,
+        _created_by: UserId,
+        _kind: ProviderSecretKind,
         value: &SecretString,
     ) -> Result<String, ApplicationError> {
-        let vault = self.vault.as_ref().ok_or_else(secret_manager_unavailable)?;
-        vault
-            .create(merchant_account_id, store_id, created_by, kind, value)
-            .await
+        self.store
+            .encrypt(value)
             .map_err(|_| secret_manager_unavailable())
     }
 }
 
-struct VaultKvV2SecretStore {
-    client: Client,
-    address: Url,
-    token: SecretString,
-    namespace: Option<String>,
-    kv_v2_mount: String,
+struct EncryptedProviderSecretStore {
+    cipher: Aes256Gcm,
 }
 
-impl VaultKvV2SecretStore {
-    fn new(settings: &VaultSettings, timeout: Duration) -> anyhow::Result<Self> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut client = Client::builder().timeout(timeout);
-        if let Some(path) = &settings.ca_certificate_path {
-            let certificate = std::fs::read(path)
-                .map_err(|error| anyhow::anyhow!("failed to read VAULT_CA_CERT: {error}"))?;
-            client = client.add_root_certificate(reqwest::Certificate::from_pem(&certificate)?);
+impl EncryptedProviderSecretStore {
+    fn new(key: &SecretKey) -> Self {
+        Self {
+            cipher: Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key.expose_bytes())),
         }
-        Ok(Self {
-            client: client.build()?,
-            address: settings.address.clone(),
-            token: settings.token.clone(),
-            namespace: settings.namespace.clone(),
-            kv_v2_mount: settings.kv_v2_mount.clone(),
-        })
     }
 
-    async fn resolve(&self, reference: &str) -> Result<SecretString, SecretUnavailable> {
-        let location = VaultLocation::parse(reference)?;
-        let endpoint = self
-            .address
-            .join(&format!("/v1/{}/data/{}", location.mount, location.path))
+    fn encrypt(&self, value: &SecretString) -> Result<String, SecretUnavailable> {
+        let mut nonce_bytes = [0_u8; NONCE_LEN];
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
+        let ciphertext = self
+            .cipher
+            .encrypt(&nonce, value.expose_secret().as_bytes())
             .map_err(|_| SecretUnavailable)?;
-        let response = self
-            .client
-            .get(endpoint)
-            .headers(self.headers()?)
-            .send()
-            .await
-            .map_err(|_| SecretUnavailable)?;
-        if response.status() != StatusCode::OK {
-            return Err(SecretUnavailable);
-        }
-        let response: VaultReadResponse = response.json().await.map_err(|_| SecretUnavailable)?;
-        response
-            .data
-            .data
-            .get("value")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| SecretString::from(value.to_owned()))
-            .ok_or(SecretUnavailable)
+        let mut payload = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+        payload.extend_from_slice(&nonce_bytes);
+        payload.extend_from_slice(&ciphertext);
+        Ok(format!(
+            "{ENCRYPTED_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode(payload)
+        ))
     }
 
-    async fn create(
-        &self,
-        merchant_account_id: MerchantAccountId,
-        store_id: StoreId,
-        created_by: UserId,
-        kind: ProviderSecretKind,
-        value: &SecretString,
-    ) -> Result<String, SecretUnavailable> {
-        if !valid_segment(&self.kv_v2_mount) {
-            return Err(SecretUnavailable);
-        }
-        let path = format!(
-            "chaos/stores/{}/{}/{}/{}",
-            merchant_account_id.as_uuid(),
-            store_id.as_uuid(),
-            kind.as_path_segment(),
-            uuid::Uuid::now_v7()
-        );
-        let endpoint = self
-            .address
-            .join(&format!("/v1/{}/data/{path}", self.kv_v2_mount))
-            .map_err(|_| SecretUnavailable)?;
-        let response = self
-            .client
-            .post(endpoint)
-            .headers(self.headers()?)
-            .json(&VaultWriteRequest {
-                options: VaultWriteOptions { cas: 0 },
-                data: VaultWriteData {
-                    value: value.expose_secret(),
-                    merchant_account_id: merchant_account_id.as_uuid().to_string(),
-                    store_id: store_id.as_uuid().to_string(),
-                    created_by_user_id: created_by.as_uuid().to_string(),
-                    kind: kind.as_path_segment(),
-                },
-            })
-            .send()
-            .await
-            .map_err(|_| SecretUnavailable)?;
-        if !response.status().is_success() {
-            return Err(SecretUnavailable);
-        }
-        Ok(format!("vault://{}/{path}", self.kv_v2_mount))
-    }
-
-    fn headers(&self) -> Result<HeaderMap, SecretUnavailable> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            VAULT_TOKEN_HEADER,
-            HeaderValue::from_str(self.token.expose_secret()).map_err(|_| SecretUnavailable)?,
-        );
-        if let Some(namespace) = &self.namespace {
-            headers.insert(
-                VAULT_NAMESPACE_HEADER,
-                HeaderValue::from_str(namespace).map_err(|_| SecretUnavailable)?,
-            );
-        }
-        Ok(headers)
-    }
-}
-
-struct VaultLocation<'a> {
-    mount: &'a str,
-    path: &'a str,
-}
-
-impl<'a> VaultLocation<'a> {
-    fn parse(reference: &'a str) -> Result<Self, SecretUnavailable> {
-        let location = reference
-            .strip_prefix("vault://")
+    fn decrypt(&self, reference: &str) -> Result<SecretString, SecretUnavailable> {
+        let encoded = reference
+            .strip_prefix(ENCRYPTED_PREFIX)
             .ok_or(SecretUnavailable)?;
-        let (mount, path) = location.split_once('/').ok_or(SecretUnavailable)?;
-        if !valid_segment(mount)
-            || path.is_empty()
-            || path.len() > 220
-            || !path.split('/').all(valid_segment)
-        {
+        let payload = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| SecretUnavailable)?;
+        if payload.len() <= NONCE_LEN {
             return Err(SecretUnavailable);
         }
-        Ok(Self { mount, path })
+        let (nonce_bytes, ciphertext) = payload.split_at(NONCE_LEN);
+        let nonce = Nonce::try_from(nonce_bytes).map_err(|_| SecretUnavailable)?;
+        let plaintext = self
+            .cipher
+            .decrypt(&nonce, ciphertext)
+            .map_err(|_| SecretUnavailable)?;
+        String::from_utf8(plaintext)
+            .map(SecretString::from)
+            .map_err(|_| SecretUnavailable)
     }
-}
-
-fn valid_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value != "."
-        && value != ".."
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-}
-
-#[derive(Deserialize)]
-struct VaultReadResponse {
-    data: VaultReadData,
-}
-
-#[derive(Deserialize)]
-struct VaultReadData {
-    data: HashMap<String, Value>,
-}
-
-#[derive(Serialize)]
-struct VaultWriteRequest<'a> {
-    options: VaultWriteOptions,
-    data: VaultWriteData<'a>,
-}
-
-#[derive(Serialize)]
-struct VaultWriteOptions {
-    cas: u8,
-}
-
-#[derive(Serialize)]
-struct VaultWriteData<'a> {
-    value: &'a str,
-    merchant_account_id: String,
-    store_id: String,
-    created_by_user_id: String,
-    kind: &'static str,
 }
 
 fn secret_manager_unavailable() -> ApplicationError {
@@ -315,115 +186,113 @@ struct SecretUnavailable;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    use axum::{
-        Json, Router,
-        extract::{OriginalUri, State},
-        http::HeaderMap,
-        routing::{get, post},
-    };
-    use serde_json::json;
-
     use super::*;
 
-    type CapturedVaultWrite = Arc<Mutex<Option<(String, Value)>>>;
-
-    #[test]
-    fn accepts_a_bounded_vault_kv_v2_location() {
-        let location = VaultLocation::parse("vault://secret/chaos/stores/store-1/stripe").unwrap();
-        assert_eq!(location.mount, "secret");
-        assert_eq!(location.path, "chaos/stores/store-1/stripe");
+    fn store(seed: u8) -> EncryptedProviderSecretStore {
+        EncryptedProviderSecretStore::new(&SecretKey::from_raw([seed; 32]))
     }
 
     #[test]
-    fn rejects_traversal_and_non_vault_references() {
-        assert!(VaultLocation::parse("vault://secret/../stripe").is_err());
-        assert!(VaultLocation::parse("env://CHAOS_PAYMENT_SECRET_TEST").is_err());
+    fn round_trips_encrypted_values() {
+        let store = store(1);
+        let reference = store
+            .encrypt(&SecretString::from("sk_live_secret"))
+            .unwrap();
+
+        assert!(reference.starts_with("enc://"));
+        let value = store.decrypt(&reference).unwrap();
+        assert_eq!(value.expose_secret(), "sk_live_secret");
+    }
+
+    #[test]
+    fn distinct_encryptions_of_the_same_value_produce_distinct_references() {
+        let store = store(1);
+        let value = SecretString::from("sk_live_secret");
+
+        let first = store.encrypt(&value).unwrap();
+        let second = store.encrypt(&value).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(
+            store.decrypt(&first).unwrap().expose_secret(),
+            "sk_live_secret"
+        );
+        assert_eq!(
+            store.decrypt(&second).unwrap().expose_secret(),
+            "sk_live_secret"
+        );
+    }
+
+    #[test]
+    fn rejects_tampered_ciphertext() {
+        let store = store(1);
+        let reference = store
+            .encrypt(&SecretString::from("sk_live_secret"))
+            .unwrap();
+        let encoded = reference.strip_prefix("enc://").unwrap();
+        let mut payload = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+        let last = payload.len() - 1;
+        payload[last] ^= 0xFF;
+        let tampered = format!("enc://{}", URL_SAFE_NO_PAD.encode(payload));
+
+        assert!(store.decrypt(&tampered).is_err());
+    }
+
+    #[test]
+    fn rejects_decryption_with_the_wrong_key() {
+        let encrypting_store = store(1);
+        let decrypting_store = store(2);
+        let reference = encrypting_store
+            .encrypt(&SecretString::from("sk_live_secret"))
+            .unwrap();
+
+        assert!(decrypting_store.decrypt(&reference).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_references() {
+        let store = store(1);
+
+        assert!(
+            store
+                .decrypt("vault://secret/chaos/stores/store-1/stripe")
+                .is_err()
+        );
+        assert!(store.decrypt("enc://not-valid-base64!!!").is_err());
+        assert!(store.decrypt("enc://").is_err());
+        assert!(
+            store
+                .decrypt(&format!("enc://{}", URL_SAFE_NO_PAD.encode([0_u8; 4])))
+                .is_err()
+        );
     }
 
     #[tokio::test]
-    async fn reads_the_current_value_from_vault_kv_v2() {
-        let reads = Arc::new(AtomicUsize::new(0));
-        let app = Router::new().route(
-            "/v1/secret/data/chaos/stores/store-1/stripe",
-            get({
-                let reads = reads.clone();
-                move |headers: HeaderMap| {
-                    let reads = reads.clone();
-                    async move {
-                        assert_eq!(headers[VAULT_TOKEN_HEADER], "test-token");
-                        let value = match reads.fetch_add(1, Ordering::SeqCst) {
-                            0 => "first-secret",
-                            _ => "rotated-secret",
-                        };
-                        Json(json!({ "data": { "data": { "value": value } } }))
-                    }
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address: Url = format!("http://{}/", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let store = VaultKvV2SecretStore::new(
-            &VaultSettings {
-                address,
-                token: SecretString::from("test-token"),
-                namespace: None,
-                ca_certificate_path: None,
-                kv_v2_mount: "secret".into(),
-            },
-            Duration::from_secs(1),
+    async fn resolves_environment_references_for_payment_secrets() {
+        let resolver = DynamicSecretResolver::new(&SecretKey::from_raw([1; 32]));
+        // SAFETY: test-only, single-threaded env var scoped to this test.
+        unsafe {
+            std::env::set_var("CHAOS_PAYMENT_SECRET_TEST", "sk_live_from_env");
+        }
+        let reference = PaymentSecretReference::new(
+            "credential_secret_reference",
+            "env://CHAOS_PAYMENT_SECRET_TEST",
         )
         .unwrap();
 
-        let first = store
-            .resolve("vault://secret/chaos/stores/store-1/stripe")
-            .await
-            .unwrap();
-        let second = store
-            .resolve("vault://secret/chaos/stores/store-1/stripe")
+        let value = PaymentSecretResolver::resolve(&resolver, &reference)
             .await
             .unwrap();
 
-        assert_eq!(first.expose_secret(), "first-secret");
-        assert_eq!(second.expose_secret(), "rotated-secret");
+        assert_eq!(value.expose_secret(), "sk_live_from_env");
+        unsafe {
+            std::env::remove_var("CHAOS_PAYMENT_SECRET_TEST");
+        }
     }
 
     #[tokio::test]
-    async fn creates_a_new_store_scoped_secret_with_cas_zero() {
-        let request: CapturedVaultWrite = Arc::new(Mutex::new(None));
-        let app = Router::new()
-            .route(
-                "/{*path}",
-                post(
-                    |State(request): State<CapturedVaultWrite>,
-                     OriginalUri(uri): OriginalUri,
-                     Json(body): Json<Value>| async move {
-                        *request.lock().unwrap() = Some((uri.to_string(), body));
-                        Json(json!({ "data": { "version": 1 } }))
-                    },
-                ),
-            )
-            .with_state(request.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address: Url = format!("http://{}/", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let settings = VaultSettings {
-            address,
-            token: SecretString::from("test-token"),
-            namespace: None,
-            ca_certificate_path: None,
-            kv_v2_mount: "secret".into(),
-        };
-        let resolver = DynamicSecretResolver::new(Some(&settings), Duration::from_secs(1)).unwrap();
+    async fn creates_and_resolves_an_encrypted_provider_secret() {
+        let resolver = DynamicSecretResolver::new(&SecretKey::from_raw([7; 32]));
         let merchant_account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let created_by = UserId::new();
@@ -439,18 +308,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(reference.starts_with(&format!(
-            "vault://secret/chaos/stores/{}/{}/payment-webhook/",
-            merchant_account_id.as_uuid(),
-            store_id.as_uuid()
-        )));
-        let (path, body) = request.lock().unwrap().take().unwrap();
-        assert!(path.starts_with("/v1/secret/data/chaos/stores/"));
-        assert_eq!(body["options"]["cas"], 0);
-        assert_eq!(body["data"]["value"], "whsec_test");
-        assert_eq!(
-            body["data"]["created_by_user_id"],
-            created_by.as_uuid().to_string()
-        );
+        assert!(reference.starts_with("enc://"));
+        let parsed = PaymentSecretReference::new("credential_secret_reference", reference).unwrap();
+        let value = PaymentSecretResolver::resolve(&resolver, &parsed)
+            .await
+            .unwrap();
+        assert_eq!(value.expose_secret(), "whsec_test");
     }
 }

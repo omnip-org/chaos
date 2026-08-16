@@ -1,6 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
+use base64::Engine as _;
 use secrecy::SecretString;
 use url::Url;
 
@@ -30,7 +31,7 @@ pub struct Settings {
     pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
     pub analytics_ga4_api_base_url: Url,
-    pub vault: Option<VaultSettings>,
+    pub provider_secret_key: SecretKey,
     pub media_storage: Option<MediaStorageSettings>,
     pub shopper_token_active_key_id: String,
     pub shopper_token_active_secret: String,
@@ -54,13 +55,35 @@ pub struct MediaStorageSettings {
     pub public_base_url: Url,
 }
 
-#[derive(Clone, Debug)]
-pub struct VaultSettings {
-    pub address: Url,
-    pub token: SecretString,
-    pub namespace: Option<String>,
-    pub ca_certificate_path: Option<String>,
-    pub kv_v2_mount: String,
+/// 32 raw bytes (AES-256) used to encrypt/decrypt Provider Key secrets stored in PostgreSQL.
+#[derive(Clone)]
+pub struct SecretKey([u8; 32]);
+
+impl SecretKey {
+    pub fn from_base64(value: &str) -> anyhow::Result<Self> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value.trim())
+            .context("must be valid base64")?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("must decode to exactly 32 bytes"))?;
+        Ok(Self(bytes))
+    }
+
+    #[cfg(test)]
+    pub fn from_raw(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn expose_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretKey(REDACTED)")
+    }
 }
 
 impl Settings {
@@ -108,7 +131,7 @@ impl Settings {
                 "ANALYTICS_GA4_API_BASE_URL",
                 "https://www.google-analytics.com/",
             )?,
-            vault: vault_settings()?,
+            provider_secret_key: provider_secret_key()?,
             media_storage: media_storage_settings()?,
             shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
             shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
@@ -136,50 +159,10 @@ impl Settings {
     }
 }
 
-fn vault_settings() -> anyhow::Result<Option<VaultSettings>> {
-    let address = optional("VAULT_ADDR");
-    let token = optional("VAULT_TOKEN");
-    match (address, token) {
-        (None, None) => {
-            if optional("VAULT_NAMESPACE").is_some() {
-                bail!("VAULT_NAMESPACE requires VAULT_ADDR and VAULT_TOKEN");
-            }
-            Ok(None)
-        }
-        (Some(address), Some(token)) => {
-            let address: Url = address
-                .parse()
-                .with_context(|| "environment variable VAULT_ADDR has an invalid value")?;
-            if address.scheme() != "https" && !address.host_str().is_some_and(is_loopback) {
-                bail!("VAULT_ADDR must use HTTPS outside loopback tests");
-            }
-            let kv_v2_mount = optional("VAULT_KV_V2_MOUNT").unwrap_or_else(|| "secret".into());
-            if !is_safe_vault_segment(&kv_v2_mount) {
-                bail!("VAULT_KV_V2_MOUNT must be one safe path segment");
-            }
-            Ok(Some(VaultSettings {
-                address,
-                token: SecretString::from(token),
-                namespace: optional("VAULT_NAMESPACE"),
-                ca_certificate_path: optional("VAULT_CA_CERT"),
-                kv_v2_mount,
-            }))
-        }
-        _ => bail!("VAULT_ADDR and VAULT_TOKEN must be set together"),
-    }
-}
-
-fn is_safe_vault_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value != "."
-        && value != ".."
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-}
-
-fn is_loopback(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "::1")
+fn provider_secret_key() -> anyhow::Result<SecretKey> {
+    let raw = required("CHAOS_PROVIDER_SECRET_KEY")?;
+    SecretKey::from_base64(&raw)
+        .with_context(|| "environment variable CHAOS_PROVIDER_SECRET_KEY is invalid")
 }
 
 fn media_storage_settings() -> anyhow::Result<Option<MediaStorageSettings>> {
