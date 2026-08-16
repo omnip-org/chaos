@@ -1,0 +1,76 @@
+name: Deploy
+
+on:
+  # Auto-deploy after a successful release build.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # Manual deploy of an arbitrary tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to deploy (e.g. 0.1.0 or latest)"
+        required: true
+        default: "latest"
+
+# Never run two deploys at once.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Rolling deploy over SSH
+    runs-on: ubuntu-latest
+    # For workflow_run: only proceed if the Release run succeeded.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment: production
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # Release ran on a v* tag; derive the semver tag it published.
+            ref="${{ github.event.workflow_run.head_branch }}"
+            echo "value=${ref#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          # Fail the job if any remote command fails.
+          script_stop: true
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,GITHUB_REPO,PRODUCTION_ENV
+          script: |
+            set -eu
+            cd "${CHAOS_DEPLOY_DIR:-/opt/chaos}"
+
+            # Pull latest compose files / scripts.
+            git fetch --tags origin
+            git checkout main
+            git pull --ff-only
+
+            # Materialize production env (secrets) into a git-ignored .env with
+            # locked-down permissions. Written atomically via a temp file.
+            umask 077
+            printf '%s' "$PRODUCTION_ENV" > .env.tmp
+            mv .env.tmp .env
+
+            # Log in to GHCR (needed only if the package is private).
+            if [ -n "${GHCR_TOKEN:-}" ]; then
+              echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            fi
+
+            export CHAOS_IMAGE="ghcr.io/${GITHUB_REPO}:${IMAGE_TAG}"
+            ./scripts/deploy-remote.sh
+        env:
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
