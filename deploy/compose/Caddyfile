@@ -3,7 +3,7 @@
 }
 
 :443 {
-    tls internal
+    tls /etc/caddy/certs/gateway.crt /etc/caddy/certs/gateway.key
 
     encode zstd gzip
 

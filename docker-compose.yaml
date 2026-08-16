@@ -76,6 +76,7 @@ services:
       - "${HTTP_PORT:-443}:443"
     volumes:
       - ./deploy/compose/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/compose/certs:/etc/caddy/certs:ro
       - caddy-data:/data
     depends_on:
       api-blue:
@@ -99,4 +100,3 @@ volumes:
     external: true
     name: chaos-redis-data
   caddy-data:
-    name: chaos-caddy-data
