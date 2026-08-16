@@ -35,7 +35,7 @@ if grep -vE '^\s*#' .env | grep -q 'CHANGE_ME'; then
 fi
 
 COMPOSE="docker compose -f docker-compose.yaml"
-HEALTH_URL="http://127.0.0.1:${HTTP_PORT:-8080}/health/live"
+HEALTH_URL="https://127.0.0.1:${HTTP_PORT:-443}/health/live"
 
 # Fail before touching running services when interpolation or Compose structure
 # is invalid.
