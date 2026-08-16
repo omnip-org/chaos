@@ -99,3 +99,4 @@ volumes:
     external: true
     name: chaos-redis-data
   caddy-data:
+    name: chaos-caddy-data
