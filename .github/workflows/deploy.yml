@@ -1,11 +1,9 @@
 name: Deploy
 
 on:
-  # Auto-deploy after a successful release build.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
-  # Manual deploy of an arbitrary tag.
   workflow_dispatch:
     inputs:
       tag:
@@ -13,7 +11,6 @@ on:
         required: true
         default: "latest"
 
-# Never run two deploys at once.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -22,7 +19,6 @@ jobs:
   deploy:
     name: Rolling deploy over SSH
     runs-on: ubuntu-latest
-    # For workflow_run: only proceed if the Release run succeeded.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     environment: production
     steps:
@@ -43,7 +39,6 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          # Fail the job if any remote command fails.
           script_stop: true
           envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,GITHUB_REPO,PRODUCTION_ENV
           script: |

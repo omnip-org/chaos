@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: ["main"]
 
-# Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,7 +20,7 @@ jobs:
     name: Format & Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -29,7 +28,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@master
         with:
           shared-key: lint
 
@@ -42,22 +41,20 @@ jobs:
       - name: Check repository language convention
         run: ./scripts/check-language.sh
 
-  test:
-    name: Unit tests
+  unit:
+    name: Unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@master
         with:
           shared-key: test
 
-      # Default suite; database-backed tests are #[ignore] and run in the
-      # integration job below.
       - name: Run unit tests
         run: cargo test --workspace --locked
 
@@ -65,10 +62,8 @@ jobs:
         run: npm test --prefix packages/storefront-analytics
 
   integration:
-    name: Integration tests (Postgres + Redis)
+    name: Integration
     runs-on: ubuntu-latest
-    # Database-backed tests are slow (custom Postgres image build + migrations);
-    # run them only on pushes to main, not on every PR.
     if: ${{ github.event_name == 'push' }}
     services:
       redis:
@@ -81,11 +76,8 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@main
 
-      # The stock postgres image lacks pg_cron/pgmq/pg_partman and cannot set
-      # shared_preload_libraries via `services:`, so we build and run the
-      # project's custom image manually.
       - name: Build Postgres image
         uses: docker/build-push-action@v6
         with:
@@ -124,7 +116,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@master
         with:
           shared-key: test
 
