@@ -152,6 +152,8 @@ Application instances never own sessions, WebAuthn ceremonies, carts, or job own
 
 Analytics reporting uses typed daily read models rather than querying raw behavior or commerce aggregates on request. Its query adapter owns a separate, low-capacity PostgreSQL pool configured read-only with short statement and lock timeouts. This isolates HTTP reporting concurrency from the OLTP pool while preserving the same runtime role, merchant context, RLS, and Store predicates. Read-model refreshes run only in asynchronous Analytics workers after canonical processing; they never extend a commerce transaction.
 
+Conversion destinations are capability ports in the application layer with Meta CAPI and GA4 wire contracts isolated in infrastructure. Store-owned destination accounts contain only constrained secret references. Attribution eligibility gates queue creation; database claims are bounded, provider calls hold no database transaction or connection, and eight-attempt leases recover after worker loss. Provider identities are pseudonymous, and the canonical Order UUID is the cross-channel deduplication key.
+
 The platform emits structured logs, optional OpenTelemetry traces, and Prometheus metrics for bounded HTTP routes, database pool pressure, dependency health, checkout conversion, payment failures, inventory reservation conflicts, queue lag, and analytics sessionization health. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network.
 
 ## 10. Delivery roadmap

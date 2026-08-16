@@ -759,10 +759,12 @@ mod tests {
         http::{HeaderValue, Method, Request, StatusCode},
     };
     use base64::{Engine, engine::general_purpose::STANDARD};
-    use chaos_application::analytics::AnalyticsCollection;
+    use chaos_application::analytics::{AnalyticsCollection, AnalyticsWorkers};
     use chaos_application::ports::{
-        AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision,
-        AnalyticsSessionizationQueue, ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
+        AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsDestination,
+        AnalyticsDestinationError, AnalyticsExportCommand, AnalyticsExportReceipt,
+        AnalyticsRateLimitDecision, AnalyticsSessionizationQueue, ApiKeyMaterialGenerator,
+        GeneratedApiKeyMaterial,
     };
     use chaos_application::{
         ApplicationError,
@@ -780,7 +782,7 @@ mod tests {
     };
     use chaos_domain::{
         CurrencyCode,
-        analytics::SessionEventContribution,
+        analytics::{AnalyticsDestinationProvider, SessionEventContribution},
         catalog::{ProductId, ProductVariantId},
         fulfillment::ShippingServiceId,
         identity::UserId,
@@ -810,6 +812,32 @@ mod tests {
     struct ActionRequiredPaymentOnboarding;
 
     struct AllowAnalyticsCollection;
+
+    struct RecordingAnalyticsDestination {
+        provider: AnalyticsDestinationProvider,
+        deliveries: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AnalyticsDestination for RecordingAnalyticsDestination {
+        fn provider(&self) -> AnalyticsDestinationProvider {
+            self.provider
+        }
+
+        async fn send(
+            &self,
+            command: &AnalyticsExportCommand,
+        ) -> Result<AnalyticsExportReceipt, AnalyticsDestinationError> {
+            assert_eq!(command.provider, self.provider);
+            assert!(!command.order_id.is_nil());
+            assert!(!command.anonymous_id.is_nil());
+            assert!(!command.items.is_empty());
+            self.deliveries.fetch_add(1, Ordering::SeqCst);
+            Ok(AnalyticsExportReceipt {
+                provider_reference: command.fact_id.to_string(),
+            })
+        }
+    }
 
     #[async_trait]
     impl AnalyticsCollectionRateLimiter for AllowAnalyticsCollection {
@@ -1351,8 +1379,27 @@ mod tests {
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
         let reporting_pool = state.infrastructure.analytics_pool();
+        let analytics_repository =
+            Arc::new(PostgresAnalyticsEventRepository::new(runtime_pool.clone()));
+        let analytics_delivery_count = Arc::new(AtomicUsize::new(0));
+        state.analytics_workers = Arc::new(AnalyticsWorkers::new(
+            analytics_repository.clone(),
+            analytics_repository.clone(),
+            analytics_repository.clone(),
+            analytics_repository.clone(),
+            analytics_repository.clone(),
+            vec![
+                Arc::new(RecordingAnalyticsDestination {
+                    provider: AnalyticsDestinationProvider::MetaCapi,
+                    deliveries: analytics_delivery_count.clone(),
+                }),
+                Arc::new(RecordingAnalyticsDestination {
+                    provider: AnalyticsDestinationProvider::Ga4,
+                    deliveries: analytics_delivery_count.clone(),
+                }),
+            ],
+        ));
         let analytics_workers = state.analytics_workers.clone();
-        let analytics_repository = PostgresAnalyticsEventRepository::new(runtime_pool.clone());
         state.analytics_collection = Arc::new(AnalyticsCollection::new(
             Arc::new(PostgresAnalyticsEventRepository::new(runtime_pool.clone())),
             Arc::new(AllowAnalyticsCollection),
@@ -1438,6 +1485,70 @@ mod tests {
         assert_eq!(
             default_analytics_policy["data"]["advertising_exports_enabled"],
             false
+        );
+        let analytics_destinations_uri = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-destinations",
+            account_id.as_uuid(),
+            store_id.as_uuid()
+        );
+        for (provider, reference, source_url, secret_reference) in [
+            (
+                "meta_capi",
+                "123456789",
+                Some("https://store.example/"),
+                "env://CHAOS_ANALYTICS_SECRET_META_TEST",
+            ),
+            (
+                "ga4",
+                "G-ABC123",
+                None,
+                "env://CHAOS_ANALYTICS_SECRET_GA4_TEST",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(
+                    Method::PUT,
+                    &analytics_destinations_uri,
+                    Some(&format!("analytics-destination-{provider}")),
+                    Some(json!({
+                        "provider": provider,
+                        "external_destination_reference": reference,
+                        "event_source_base_url": source_url,
+                        "credential_secret_reference": secret_reference,
+                        "enabled": true
+                    })),
+                ))
+                .await
+                .unwrap();
+            let status = response.status();
+            let response = response_json(response).await;
+            assert_eq!(status, StatusCode::OK, "{response}");
+            assert_eq!(response["data"]["provider"], provider);
+            assert_eq!(response["data"]["credentials_configured"], true);
+            assert!(
+                response["data"]
+                    .get("credential_secret_reference")
+                    .is_none()
+            );
+        }
+        let destinations = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &analytics_destinations_uri,
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(destinations.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(destinations).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
 
         let analytics_event_id = Uuid::now_v7();
@@ -4681,6 +4792,39 @@ mod tests {
         assert_eq!(attribution_results[1].0, "last_touch");
         assert_eq!(attribution_results[1].2.as_deref(), Some("last-source"));
         assert!(attribution_results[1].3);
+        let pending_exports: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.export_deliveries \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND delivery_status = 'pending'",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_exports, 12);
+        assert_eq!(
+            analytics_workers
+                .run_export_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::minutes(7),
+                    20,
+                )
+                .await
+                .unwrap(),
+            12
+        );
+        assert_eq!(analytics_delivery_count.load(Ordering::SeqCst), 12);
+        assert_eq!(
+            analytics_workers
+                .run_export_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::minutes(7),
+                    20,
+                )
+                .await
+                .unwrap(),
+            0
+        );
 
         let report_date = test_clock.now().date().to_string();
         let daily_reports = app

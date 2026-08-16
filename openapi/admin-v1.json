@@ -1425,6 +1425,41 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "listStoreAnalyticsDestinations",
+        "tags": ["Analytics"],
+        "summary": "List configured Analytics destinations",
+        "security": [{ "bearerSession": [] }],
+        "responses": {
+          "200": { "description": "Analytics destinations", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsDestinationCollectionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "operationId": "configureStoreAnalyticsDestination",
+        "tags": ["Analytics"],
+        "summary": "Create or replace one Store Analytics destination",
+        "description": "Stores only an environment-secret reference. Credential values are never returned.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WriteAnalyticsDestination" } } } },
+        "responses": {
+          "200": { "description": "Analytics destination configured", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsDestinationEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests": {
       "post": {
         "operationId": "requestStoreAnalyticsErasure",
@@ -2223,6 +2258,42 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/AnalyticsPolicy" } }
+      },
+      "WriteAnalyticsDestination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "external_destination_reference", "credential_secret_reference", "enabled"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["meta_capi", "ga4"] },
+          "external_destination_reference": { "type": "string", "description": "Meta dataset/pixel ID or GA4 measurement ID." },
+          "event_source_base_url": { "type": "string", "format": "uri", "description": "Required HTTPS storefront base URL for Meta CAPI; omitted for GA4." },
+          "credential_secret_reference": { "type": "string", "pattern": "^env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}$", "writeOnly": true },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "AnalyticsDestination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "store_id", "provider", "external_destination_reference", "enabled", "credentials_configured", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "store_id": { "type": "string", "format": "uuid" },
+          "provider": { "type": "string", "enum": ["meta_capi", "ga4"] },
+          "external_destination_reference": { "type": "string" },
+          "event_source_base_url": { "type": "string", "format": "uri" },
+          "enabled": { "type": "boolean" },
+          "credentials_configured": { "type": "boolean", "const": true },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AnalyticsDestinationEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsDestination" } }
+      },
+      "AnalyticsDestinationCollectionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "type": "array", "maxItems": 2, "items": { "$ref": "#/components/schemas/AnalyticsDestination" } } }
       },
       "RequestAnalyticsErasure": {
         "type": "object",

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use chaos_domain::{
     analytics::{
-        AnalyticsPolicy, BrowserEvent, BrowserEventName, ConsentSnapshot, SessionEventContribution,
+        AnalyticsDestinationProvider, AnalyticsDestinationSecretReference, AnalyticsPolicy,
+        BrowserEvent, BrowserEventName, ConsentSnapshot, SessionEventContribution,
     },
     identity::UserId,
     merchant::{SalesChannelId, StoreId},
@@ -152,6 +153,131 @@ pub trait AnalyticsReportingRepository: Send + Sync {
         from: time::Date,
         to: time::Date,
     ) -> Result<Option<AnalyticsDailyReports>, ApplicationError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsDestinationAccount {
+    pub id: Uuid,
+    pub store_id: StoreId,
+    pub provider: AnalyticsDestinationProvider,
+    pub external_destination_reference: String,
+    pub event_source_base_url: Option<String>,
+    pub enabled: bool,
+    pub credentials_configured: bool,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+pub struct AnalyticsDestinationConfiguration {
+    pub provider: AnalyticsDestinationProvider,
+    pub external_destination_reference: String,
+    pub event_source_base_url: Option<String>,
+    pub credential_secret_reference: AnalyticsDestinationSecretReference,
+    pub enabled: bool,
+}
+
+#[async_trait]
+pub trait AnalyticsDestinationRepository: Send + Sync {
+    async fn list_destinations(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Option<Vec<AnalyticsDestinationAccount>>, ApplicationError>;
+
+    async fn configure_destination(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        configuration: AnalyticsDestinationConfiguration,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsDestinationAccount, ApplicationError>;
+}
+
+pub struct AnalyticsExportJob {
+    pub id: Uuid,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub destination_id: Uuid,
+    pub commerce_fact_id: Uuid,
+    pub attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsExportItem {
+    pub product_variant_id: Uuid,
+    pub item_name: String,
+    pub quantity: u32,
+    pub unit_price_amount_minor: u64,
+}
+
+pub struct AnalyticsExportCommand {
+    pub provider: AnalyticsDestinationProvider,
+    pub external_destination_reference: String,
+    pub event_source_base_url: Option<String>,
+    pub credential_secret_reference: AnalyticsDestinationSecretReference,
+    pub commerce_event_name: String,
+    pub fact_id: Uuid,
+    pub order_id: Uuid,
+    pub anonymous_id: Uuid,
+    pub occurred_at: OffsetDateTime,
+    pub amount_minor: Option<u64>,
+    pub currency: String,
+    pub shipping_amount_minor: u64,
+    pub tax_amount_minor: u64,
+    pub items: Vec<AnalyticsExportItem>,
+}
+
+pub struct AnalyticsExportReceipt {
+    pub provider_reference: String,
+}
+
+#[derive(Debug)]
+pub struct AnalyticsDestinationError {
+    pub retryable: bool,
+    pub message: String,
+}
+
+#[async_trait]
+pub trait AnalyticsDestination: Send + Sync {
+    fn provider(&self) -> AnalyticsDestinationProvider;
+
+    async fn send(
+        &self,
+        command: &AnalyticsExportCommand,
+    ) -> Result<AnalyticsExportReceipt, AnalyticsDestinationError>;
+}
+
+#[async_trait]
+pub trait AnalyticsDestinationSecretResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        reference: &AnalyticsDestinationSecretReference,
+    ) -> Result<secrecy::SecretString, AnalyticsDestinationError>;
+}
+
+#[async_trait]
+pub trait AnalyticsExportQueue: Send + Sync {
+    async fn claim_exports(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsExportJob>, ApplicationError>;
+
+    async fn load_export(
+        &self,
+        job: &AnalyticsExportJob,
+    ) -> Result<AnalyticsExportCommand, ApplicationError>;
+
+    async fn finish_export(
+        &self,
+        worker_id: Uuid,
+        job: &AnalyticsExportJob,
+        result: Result<AnalyticsExportReceipt, AnalyticsDestinationError>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 }
 
 pub struct AnalyticsSessionizationJob {

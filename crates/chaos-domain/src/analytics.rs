@@ -1,6 +1,58 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnalyticsDestinationProvider {
+    MetaCapi,
+    Ga4,
+}
+
+impl AnalyticsDestinationProvider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MetaCapi => "meta_capi",
+            Self::Ga4 => "ga4",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "meta_capi" => Some(Self::MetaCapi),
+            "ga4" => Some(Self::Ga4),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsDestinationSecretReference(String);
+
+impl AnalyticsDestinationSecretReference {
+    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        let valid = value
+            .strip_prefix("env://CHAOS_ANALYTICS_SECRET_")
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name.len() <= 96
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+            });
+        if !valid {
+            return Err(validation(
+                "credential_secret_reference",
+                "must be an env://CHAOS_ANALYTICS_SECRET_* reference",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn expose_reference(&self) -> &str {
+        &self.0
+    }
+}
+
 use crate::{
     DomainError, FieldViolation,
     catalog::{ProductId, ProductVariantId},
@@ -583,5 +635,18 @@ mod tests {
         assert_eq!(default.raw_event_retention_days(), 30);
         assert!(AnalyticsPolicy::new(true, false, false, 0).is_err());
         assert!(AnalyticsPolicy::new(true, false, false, 401).is_err());
+    }
+
+    #[test]
+    fn destination_secrets_are_constrained_environment_references() {
+        assert!(
+            AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_META_PRIMARY")
+                .is_ok()
+        );
+        assert!(AnalyticsDestinationSecretReference::new("env://META_TOKEN").is_err());
+        assert!(
+            AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_lowercase")
+                .is_err()
+        );
     }
 }

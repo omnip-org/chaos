@@ -313,4 +313,24 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn analytics_destination_contract_keeps_credentials_write_only() {
+        let specification = specification();
+        assert_eq!(
+            specification["components"]["schemas"]["WriteAnalyticsDestination"]["properties"]["credential_secret_reference"]
+                ["writeOnly"],
+            true
+        );
+        assert!(
+            specification["components"]["schemas"]["AnalyticsDestination"]["properties"]
+                .get("credential_secret_reference")
+                .is_none()
+        );
+        assert_eq!(
+            specification["paths"]["/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations"]
+                ["put"]["parameters"][0]["$ref"],
+            "#/components/parameters/IdempotencyKey"
+        );
+    }
 }

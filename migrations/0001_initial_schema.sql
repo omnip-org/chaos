@@ -155,6 +155,7 @@ CREATE TYPE analytics.commerce_fact_name AS ENUM (
     'return_completed'
 );
 CREATE TYPE analytics.attribution_model AS ENUM ('first_touch', 'last_touch');
+CREATE TYPE analytics.destination_provider AS ENUM ('meta_capi', 'ga4');
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
     'shipped',
@@ -3324,6 +3325,86 @@ CREATE INDEX daily_attribution_reports_store_date_idx
         attribution_model, model_version, sales_channel_id
     );
 
+CREATE TABLE analytics.destination_accounts (
+    id                              UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id             UUID                           NOT NULL,
+    store_id                        UUID                           NOT NULL,
+    provider                        analytics.destination_provider NOT NULL,
+    external_destination_reference  TEXT                           NOT NULL,
+    event_source_base_url           TEXT,
+    credential_secret_reference     TEXT                           NOT NULL,
+    enabled                         BOOLEAN                        NOT NULL,
+    created_by                      UUID                           NOT NULL,
+    created_at                      TIMESTAMPTZ                    NOT NULL,
+    updated_at                      TIMESTAMPTZ                    NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, provider),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES identity.users(id),
+    CONSTRAINT destination_accounts_reference_check CHECK (
+        (provider = 'meta_capi'
+            AND external_destination_reference ~ '^[0-9]{5,32}$'
+            AND event_source_base_url ~ '^https://[^?#]+/$'
+            AND octet_length(event_source_base_url) <= 2048)
+        OR (provider = 'ga4'
+            AND external_destination_reference ~ '^G-[A-Z0-9]{5,20}$'
+            AND event_source_base_url IS NULL)
+    ),
+    CONSTRAINT destination_accounts_secret_reference_check CHECK (
+        credential_secret_reference ~ '^env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96}$'
+    )
+);
+
+CREATE TABLE analytics.export_deliveries (
+    id                    UUID                     NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID                     NOT NULL,
+    store_id              UUID                     NOT NULL,
+    destination_id        UUID                     NOT NULL,
+    commerce_fact_id      UUID                     NOT NULL,
+    delivery_status       integration.queue_status NOT NULL DEFAULT 'pending',
+    attempts              INTEGER                  NOT NULL DEFAULT 0,
+    available_at          TIMESTAMPTZ              NOT NULL,
+    locked_by             UUID,
+    locked_at             TIMESTAMPTZ,
+    delivered_at          TIMESTAMPTZ,
+    provider_reference    TEXT,
+    last_error            TEXT,
+    created_at            TIMESTAMPTZ              NOT NULL,
+    updated_at            TIMESTAMPTZ              NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, destination_id, commerce_fact_id),
+    FOREIGN KEY (merchant_account_id, store_id, destination_id)
+        REFERENCES analytics.destination_accounts(merchant_account_id, store_id, id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id)
+        ON DELETE CASCADE,
+    CONSTRAINT export_deliveries_attempts_check CHECK (attempts BETWEEN 0 AND 31),
+    CONSTRAINT export_deliveries_lease_shape_check CHECK (
+        (delivery_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
+        OR (delivery_status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
+    ),
+    CONSTRAINT export_deliveries_completion_shape_check CHECK (
+        (delivery_status = 'processed' AND delivered_at IS NOT NULL
+            AND provider_reference IS NOT NULL)
+        OR (delivery_status <> 'processed' AND delivered_at IS NULL
+            AND provider_reference IS NULL)
+    ),
+    CONSTRAINT export_deliveries_provider_reference_check CHECK (
+        provider_reference IS NULL OR length(provider_reference) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT export_deliveries_error_check CHECK (
+        last_error IS NULL OR length(last_error) BETWEEN 1 AND 2000
+    )
+);
+
+CREATE INDEX export_deliveries_claim_idx
+    ON analytics.export_deliveries (delivery_status, available_at, created_at, id)
+    WHERE delivery_status IN ('pending', 'processing');
+
 CREATE TABLE sales.order_fulfillment_transitions (
     id                       UUID                           NOT NULL PRIMARY KEY,
     merchant_account_id      UUID                           NOT NULL,
@@ -3701,6 +3782,24 @@ AS $$
       FROM analytics.attribution_jobs AS job;
 $$;
 
+CREATE FUNCTION analytics.export_delivery_metrics()
+RETURNS TABLE (
+    pending BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    oldest_pending_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+    SELECT count(*) FILTER (WHERE delivery.delivery_status = 'pending'),
+           count(*) FILTER (WHERE delivery.delivery_status = 'processing'),
+           count(*) FILTER (WHERE delivery.delivery_status = 'dead_letter'),
+           COALESCE(extract(epoch FROM CURRENT_TIMESTAMP -
+               min(delivery.available_at) FILTER (
+                   WHERE delivery.delivery_status = 'pending'
+               )), 0)::DOUBLE PRECISION
+      FROM analytics.export_deliveries AS delivery;
+$$;
+
 CREATE FUNCTION analytics.retention_metrics()
 RETURNS TABLE (
     expired_behavior_events BIGINT,
@@ -4060,6 +4159,8 @@ ALTER TABLE analytics.attribution_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.daily_behavior_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.daily_commerce_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.daily_attribution_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.destination_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.export_deliveries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -4845,6 +4946,26 @@ CREATE POLICY merchant_account_isolation ON analytics.daily_attribution_reports
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON analytics.destination_accounts
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.export_deliveries
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE FUNCTION payments.resolve_provider_account(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
@@ -5245,6 +5366,63 @@ AS $$
        AND job.model_version = claimable.model_version
     RETURNING job.commerce_fact_id, job.merchant_account_id, job.store_id,
               job.model_version, job.attempts;
+$$;
+
+CREATE FUNCTION analytics.claim_export_deliveries(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    destination_id UUID,
+    commerce_fact_id UUID,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired AS (
+        UPDATE analytics.export_deliveries AS delivery
+           SET delivery_status = 'dead_letter', locked_by = NULL, locked_at = NULL,
+               last_error = COALESCE(
+                   delivery.last_error,
+                   'worker lease expired after final attempt'
+               ), updated_at = claimed_at
+         WHERE delivery.delivery_status = 'processing'
+           AND delivery.locked_at <= stale_before AND delivery.attempts >= 8
+        RETURNING delivery.id
+    ), claimable AS (
+        SELECT delivery.id
+          FROM analytics.export_deliveries AS delivery
+          INNER JOIN analytics.destination_accounts AS destination
+            ON destination.merchant_account_id = delivery.merchant_account_id
+           AND destination.store_id = delivery.store_id
+           AND destination.id = delivery.destination_id
+         WHERE (
+                 (delivery.delivery_status = 'pending'
+                    AND delivery.available_at <= claimed_at)
+                 OR (delivery.delivery_status = 'processing'
+                    AND delivery.locked_at <= stale_before)
+               )
+           AND destination.enabled
+           AND delivery.attempts < 8
+         ORDER BY delivery.available_at, delivery.created_at, delivery.id
+         FOR UPDATE OF delivery SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE analytics.export_deliveries AS delivery
+       SET delivery_status = 'processing', attempts = delivery.attempts + 1,
+           locked_by = worker_id, locked_at = claimed_at, updated_at = claimed_at
+      FROM claimable
+     WHERE delivery.id = claimable.id
+    RETURNING delivery.id, delivery.merchant_account_id, delivery.store_id,
+              delivery.destination_id, delivery.commerce_fact_id, delivery.attempts;
 $$;
 
 CREATE FUNCTION analytics.rebuild_store_attribution(
@@ -5929,6 +6107,9 @@ REVOKE ALL ON FUNCTION analytics.claim_commerce_fact_events(
 REVOKE ALL ON FUNCTION analytics.claim_attribution_jobs(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.claim_export_deliveries(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.rebuild_store_attribution(
     UUID, UUID, SMALLINT, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -5969,6 +6150,7 @@ REVOKE ALL ON FUNCTION fulfillment.shipping_tracking_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_cancellation_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.sessionization_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.attribution_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.export_delivery_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.retention_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
@@ -6035,6 +6217,10 @@ GRANT EXECUTE ON FUNCTION analytics.claim_attribution_jobs(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
     TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.claim_export_deliveries(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.rebuild_store_attribution(
     UUID, UUID, SMALLINT, TIMESTAMPTZ
 )
@@ -6079,6 +6265,7 @@ GRANT EXECUTE ON FUNCTION fulfillment.shipping_tracking_metrics() TO chaos_runti
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_cancellation_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.sessionization_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.attribution_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.export_delivery_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.retention_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER)
     TO chaos_runtime;

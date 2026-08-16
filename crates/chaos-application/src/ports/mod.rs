@@ -25,8 +25,11 @@ mod tax;
 pub use analytics::{
     AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter,
     AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsDailyReports,
+    AnalyticsDestination, AnalyticsDestinationAccount, AnalyticsDestinationConfiguration,
+    AnalyticsDestinationError, AnalyticsDestinationRepository, AnalyticsDestinationSecretResolver,
     AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
-    AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
+    AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsExportCommand, AnalyticsExportItem,
+    AnalyticsExportJob, AnalyticsExportQueue, AnalyticsExportReceipt, AnalyticsIdentityLink,
     AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRateLimitDecision,
     AnalyticsReportingRepository, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
     AnalyticsSessionizationQueue, DailyAttributionReport, DailyBehaviorReport, DailyCommerceReport,

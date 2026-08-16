@@ -880,6 +880,8 @@ pub(crate) mod tests {
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
+            analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
+            analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,

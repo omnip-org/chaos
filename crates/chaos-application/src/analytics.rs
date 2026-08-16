@@ -13,10 +13,12 @@ use crate::{
     merchant::MerchantActor,
     ports::{
         AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue,
-        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsEventRepository,
-        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
-        AnalyticsReportingRepository, AnalyticsSessionizationQueue, CustomerActor,
-        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
+        AnalyticsDestination, AnalyticsDestinationAccount, AnalyticsDestinationConfiguration,
+        AnalyticsDestinationRepository, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsEventRepository, AnalyticsExportQueue, AnalyticsIdentityLink,
+        AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsReportingRepository,
+        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
+        StoreAnalyticsPolicy,
     },
 };
 
@@ -52,6 +54,8 @@ pub struct AnalyticsWorkers {
     privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
     commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
     attribution_queue: Arc<dyn AnalyticsAttributionQueue>,
+    export_queue: Arc<dyn AnalyticsExportQueue>,
+    destinations: Vec<Arc<dyn AnalyticsDestination>>,
 }
 
 pub struct LinkAnalyticsIdentityInput {
@@ -171,6 +175,43 @@ pub struct AnalyticsReporting {
     repository: Arc<dyn AnalyticsReportingRepository>,
 }
 
+pub struct AnalyticsDestinations {
+    repository: Arc<dyn AnalyticsDestinationRepository>,
+}
+
+impl AnalyticsDestinations {
+    pub fn new(repository: Arc<dyn AnalyticsDestinationRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn list(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Vec<AnalyticsDestinationAccount>, ApplicationError> {
+        require_destination_administrator(actor)?;
+        self.repository
+            .list_destinations(actor, store_id)
+            .await?
+            .ok_or_else(|| store_not_found(store_id))
+    }
+
+    pub async fn configure(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        configuration: AnalyticsDestinationConfiguration,
+        request: IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsDestinationAccount, ApplicationError> {
+        require_destination_administrator(actor)?;
+        validate_destination_configuration(&configuration)?;
+        self.repository
+            .configure_destination(actor, store_id, configuration, &request, now)
+            .await
+    }
+}
+
 impl AnalyticsReporting {
     pub fn new(repository: Arc<dyn AnalyticsReportingRepository>) -> Self {
         Self { repository }
@@ -257,12 +298,16 @@ impl AnalyticsWorkers {
         privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
         commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
         attribution_queue: Arc<dyn AnalyticsAttributionQueue>,
+        export_queue: Arc<dyn AnalyticsExportQueue>,
+        destinations: Vec<Arc<dyn AnalyticsDestination>>,
     ) -> Self {
         Self {
             sessionization_queue,
             privacy_repository,
             commerce_fact_queue,
             attribution_queue,
+            export_queue,
+            destinations,
         }
     }
 
@@ -355,6 +400,43 @@ impl AnalyticsWorkers {
                 .map_err(|error| error.to_string());
             self.attribution_queue
                 .finish_attribution(worker_id, job, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
+
+    pub async fn run_export_batch(
+        &self,
+        worker_id: uuid::Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .export_queue
+            .claim_exports(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let command = self.export_queue.load_export(job).await;
+            let result = match command {
+                Ok(command) => match self
+                    .destinations
+                    .iter()
+                    .find(|destination| destination.provider() == command.provider)
+                {
+                    Some(destination) => destination.send(&command).await,
+                    None => Err(crate::ports::AnalyticsDestinationError {
+                        retryable: false,
+                        message: "the configured Analytics destination provider is unavailable"
+                            .into(),
+                    }),
+                },
+                Err(error) => Err(crate::ports::AnalyticsDestinationError {
+                    retryable: false,
+                    message: error.to_string(),
+                }),
+            };
+            self.export_queue
+                .finish_export(worker_id, job, result, now)
                 .await?;
         }
         Ok(jobs.len())
@@ -479,6 +561,59 @@ fn require_privacy_administrator(actor: MerchantActor) -> Result<(), Application
             Err(ApplicationError::Forbidden)
         }
     }
+}
+
+fn require_destination_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
+    match actor.role() {
+        MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
+        MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
+            Err(ApplicationError::Forbidden)
+        }
+    }
+}
+
+fn validate_destination_configuration(
+    configuration: &AnalyticsDestinationConfiguration,
+) -> Result<(), ApplicationError> {
+    let reference = configuration.external_destination_reference.as_str();
+    match configuration.provider {
+        chaos_domain::analytics::AnalyticsDestinationProvider::MetaCapi => {
+            if !(5..=32).contains(&reference.len())
+                || !reference.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return Err(validation(
+                    "external_destination_reference",
+                    "must be a 5-32 digit Meta dataset identifier",
+                ));
+            }
+            let source = configuration.event_source_base_url.as_deref().unwrap_or("");
+            if !source.starts_with("https://")
+                || !source.ends_with('/')
+                || source.len() > 2048
+                || source.contains(['?', '#'])
+            {
+                return Err(validation(
+                    "event_source_base_url",
+                    "must be an HTTPS base URL ending in a slash",
+                ));
+            }
+        }
+        chaos_domain::analytics::AnalyticsDestinationProvider::Ga4 => {
+            let suffix = reference.strip_prefix("G-").unwrap_or("");
+            if !(5..=20).contains(&suffix.len())
+                || !suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+                || configuration.event_source_base_url.is_some()
+            {
+                return Err(validation(
+                    "external_destination_reference",
+                    "must be a GA4 G-* measurement identifier without an event source URL",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validation(field: &'static str, reason: &'static str) -> ApplicationError {

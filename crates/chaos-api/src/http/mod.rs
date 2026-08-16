@@ -23,8 +23,8 @@ mod storefront_sales;
 use axum::Router;
 use chaos_application::{
     analytics::{
-        AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsReporting,
-        AnalyticsWorkers,
+        AnalyticsAdministration, AnalyticsCollection, AnalyticsDestinations, AnalyticsPrivacy,
+        AnalyticsReporting, AnalyticsWorkers,
     },
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
@@ -47,6 +47,10 @@ use std::sync::Arc;
 
 use chaos_infrastructure::{
     RedisAnalyticsCollectionRateLimiter,
+    analytics_destinations::{
+        EnvironmentAnalyticsDestinationSecretResolver, Ga4MeasurementDestination,
+        MetaConversionsDestination,
+    },
     clock::SystemClock,
     config::Settings,
     easypost::{EasyPostShippingProvider, EnvironmentShippingSecretResolver},
@@ -110,6 +114,7 @@ pub struct ApiState {
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
     pub analytics_reporting: Arc<AnalyticsReporting>,
+    pub analytics_destinations: Arc<AnalyticsDestinations>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -217,11 +222,27 @@ impl ApiState {
         let analytics_reporting = AnalyticsReporting::new(Arc::new(
             PostgresAnalyticsReportingRepository::new(infrastructure.analytics_pool()),
         ));
+        let analytics_destinations = AnalyticsDestinations::new(analytics_repository.clone());
+        let analytics_destination_secrets = Arc::new(EnvironmentAnalyticsDestinationSecretResolver);
+        let analytics_destination_adapters = vec![
+            Arc::new(MetaConversionsDestination::new(
+                settings.analytics_meta_api_base_url.clone(),
+                settings.dependency_timeout,
+                analytics_destination_secrets.clone(),
+            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
+            Arc::new(Ga4MeasurementDestination::new(
+                settings.analytics_ga4_api_base_url.clone(),
+                settings.dependency_timeout,
+                analytics_destination_secrets,
+            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
+        ];
         let analytics_workers = AnalyticsWorkers::new(
             analytics_repository.clone(),
             analytics_repository.clone(),
             analytics_repository.clone(),
+            analytics_repository.clone(),
             analytics_repository,
+            analytics_destination_adapters,
         );
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
@@ -362,6 +383,7 @@ impl ApiState {
             analytics_administration: Arc::new(analytics_administration),
             analytics_privacy: Arc::new(analytics_privacy),
             analytics_reporting: Arc::new(analytics_reporting),
+            analytics_destinations: Arc::new(analytics_destinations),
             analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
@@ -450,6 +472,8 @@ mod tests {
             payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
+            analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
+            analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
             shopper_token_active_key_id: "test".into(),
             shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
             shopper_token_previous_key: None,

@@ -4,9 +4,12 @@ use chaos_application::{
     merchant::MerchantActor,
     ports::{
         AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCommerceFactJob,
-        AnalyticsCommerceFactQueue, AnalyticsDailyReports, AnalyticsErasureBatchResult,
-        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
-        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
+        AnalyticsCommerceFactQueue, AnalyticsDailyReports, AnalyticsDestinationAccount,
+        AnalyticsDestinationConfiguration, AnalyticsDestinationError,
+        AnalyticsDestinationRepository, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
+        AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventRepository,
+        AnalyticsExportCommand, AnalyticsExportItem, AnalyticsExportJob, AnalyticsExportQueue,
+        AnalyticsExportReceipt, AnalyticsIdentityLink, AnalyticsPolicyRepository,
         AnalyticsPrivacyRepository, AnalyticsReportingRepository, AnalyticsRetentionPurgeResult,
         AnalyticsSessionizationJob, AnalyticsSessionizationQueue, CustomerActor,
         DailyAttributionReport, DailyBehaviorReport, DailyCommerceReport, IdempotencyRequest,
@@ -15,7 +18,8 @@ use chaos_application::{
 };
 use chaos_domain::{
     analytics::{
-        AnalyticsPolicy, BrowserEvent, BrowserEventName, BrowserEventProperties, ConsentSnapshot,
+        AnalyticsDestinationProvider, AnalyticsDestinationSecretReference, AnalyticsPolicy,
+        BrowserEvent, BrowserEventName, BrowserEventProperties, ConsentSnapshot,
         SESSION_INACTIVITY_MINUTES, SessionEventContribution, capped_session_engagement,
     },
     identity::UserId,
@@ -32,6 +36,7 @@ use super::idempotency::{self, IdempotencyScope};
 const UPDATE_POLICY_OPERATION: &str = "analytics_policies.update.v1";
 const LINK_IDENTITY_OPERATION: &str = "analytics_identity_links.create.v1";
 const REQUEST_ERASURE_OPERATION: &str = "analytics_erasure_requests.create.v1";
+const CONFIGURE_DESTINATION_OPERATION: &str = "analytics_destinations.configure.v1";
 
 #[derive(Clone)]
 pub struct PostgresAnalyticsEventRepository {
@@ -94,6 +99,166 @@ struct DailyAttributionReportRow {
     attributed_amount_minor: i64,
     currency: String,
     refreshed_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct DestinationAccountRow {
+    id: Uuid,
+    store_id: Uuid,
+    provider: String,
+    external_destination_reference: String,
+    event_source_base_url: Option<String>,
+    enabled: bool,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[async_trait]
+impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
+    async fn list_destinations(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+    ) -> Result<Option<Vec<AnalyticsDestinationAccount>>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2)",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !exists {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        }
+        let rows = sqlx::query_as::<_, DestinationAccountRow>(
+            "SELECT id, store_id, provider::text, external_destination_reference, \
+                    event_source_base_url, enabled, created_at, updated_at \
+             FROM analytics.destination_accounts \
+             WHERE merchant_account_id = $1 AND store_id = $2 ORDER BY provider",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(Some(
+            rows.into_iter()
+                .map(destination_account)
+                .collect::<Result<_, _>>()?,
+        ))
+    }
+
+    async fn configure_destination(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        configuration: AnalyticsDestinationConfiguration,
+        request: &IdempotencyRequest,
+        now: OffsetDateTime,
+    ) -> Result<AnalyticsDestinationAccount, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        let scope = IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid());
+        if let Some(snapshot) = idempotency::reserve(
+            &mut transaction,
+            &scope,
+            CONFIGURE_DESTINATION_OPERATION,
+            request,
+        )
+        .await?
+        {
+            let id = snapshot
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .ok_or_else(invalid_destination_snapshot)?;
+            let row = load_destination(&mut transaction, actor, store_id, id)
+                .await?
+                .ok_or_else(invalid_destination_snapshot)?;
+            transaction.commit().await.map_err(database_error)?;
+            return destination_account(row);
+        }
+        let writable: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2 AND status <> 'archived')",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !writable {
+            return Err(store_not_found(store_id));
+        }
+        let id = Uuid::now_v7();
+        let destination_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO analytics.destination_accounts \
+             (id, merchant_account_id, store_id, provider, external_destination_reference, \
+              event_source_base_url, credential_secret_reference, enabled, created_by, \
+              created_at, updated_at) \
+             VALUES ($1,$2,$3,$4::analytics.destination_provider,$5,$6,$7,$8,$9,$10,$10) \
+             ON CONFLICT (merchant_account_id, store_id, provider) DO UPDATE \
+             SET external_destination_reference = EXCLUDED.external_destination_reference, \
+                 event_source_base_url = EXCLUDED.event_source_base_url, \
+                 credential_secret_reference = EXCLUDED.credential_secret_reference, \
+                 enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at \
+             RETURNING id",
+        )
+        .bind(id)
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(configuration.provider.as_str())
+        .bind(&configuration.external_destination_reference)
+        .bind(&configuration.event_source_base_url)
+        .bind(configuration.credential_secret_reference.expose_reference())
+        .bind(configuration.enabled)
+        .bind(actor.user_id().as_uuid())
+        .bind(now)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if configuration.enabled {
+            enqueue_eligible_exports(
+                &mut transaction,
+                actor.merchant_account_id().as_uuid(),
+                store_id,
+                Some(destination_id),
+                None,
+                now,
+            )
+            .await?;
+        }
+        idempotency::complete(
+            &mut transaction,
+            &scope,
+            CONFIGURE_DESTINATION_OPERATION,
+            request,
+            200,
+            json!({"id": destination_id}),
+        )
+        .await?;
+        let row = load_destination(&mut transaction, actor, store_id, destination_id)
+            .await?
+            .ok_or_else(invalid_destination_snapshot)?;
+        transaction.commit().await.map_err(database_error)?;
+        destination_account(row)
+    }
 }
 
 #[async_trait]
@@ -1404,6 +1569,15 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
             attributed_at,
         )
         .await?;
+        enqueue_eligible_exports(
+            &mut transaction,
+            job.merchant_account_id,
+            job.store_id,
+            None,
+            Some(job.commerce_fact_id),
+            attributed_at,
+        )
+        .await?;
         transaction.commit().await.map_err(database_error)
     }
 
@@ -1455,6 +1629,218 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
             return Err(ApplicationError::Conflict {
                 code: "analytics_attribution_lease_lost",
                 message: "the Analytics attribution lease is no longer owned by this worker",
+            });
+        }
+        transaction.commit().await.map_err(database_error)
+    }
+}
+
+#[async_trait]
+impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
+    async fn claim_exports(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsExportJob>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, i32)>(
+            "SELECT id, merchant_account_id, store_id, destination_id, commerce_fact_id, attempts \
+             FROM analytics.claim_export_deliveries($1,$2,$3,$4)",
+        )
+        .bind(worker_id)
+        .bind(i32::from(limit.clamp(1, 100)))
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AnalyticsExportJob {
+                    id: row.0,
+                    merchant_account_id: row.1,
+                    store_id: StoreId::from_uuid(row.2),
+                    destination_id: row.3,
+                    commerce_fact_id: row.4,
+                    attempts: u32::try_from(row.5).map_err(conversion_error)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn load_export(
+        &self,
+        job: &AnalyticsExportJob,
+    ) -> Result<AnalyticsExportCommand, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                Uuid,
+                Uuid,
+                OffsetDateTime,
+                Option<i64>,
+                String,
+                i64,
+                i64,
+            ),
+        >(
+            "SELECT destination.provider::text, destination.external_destination_reference, \
+                    destination.event_source_base_url, destination.credential_secret_reference, \
+                    fact.fact_name::text, fact.id, fact.order_id, fact.occurred_at, \
+                    fact.amount_minor, orders.currency::text, orders.shipping_amount_minor, \
+                    orders.tax_amount_minor \
+             FROM analytics.export_deliveries AS delivery \
+             INNER JOIN analytics.destination_accounts AS destination \
+               ON destination.merchant_account_id = delivery.merchant_account_id \
+              AND destination.store_id = delivery.store_id \
+              AND destination.id = delivery.destination_id \
+             INNER JOIN analytics.commerce_facts AS fact \
+               ON fact.merchant_account_id = delivery.merchant_account_id \
+              AND fact.store_id = delivery.store_id AND fact.id = delivery.commerce_fact_id \
+             INNER JOIN sales.orders AS orders \
+               ON orders.merchant_account_id = fact.merchant_account_id \
+              AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
+             WHERE delivery.merchant_account_id = $1 AND delivery.store_id = $2 \
+               AND delivery.id = $3 AND delivery.destination_id = $4 \
+               AND delivery.commerce_fact_id = $5 AND delivery.delivery_status = 'processing' \
+               AND destination.enabled",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(job.id)
+        .bind(job.destination_id)
+        .bind(job.commerce_fact_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(invalid_export_delivery)?;
+        let anonymous_id: Uuid = sqlx::query_scalar(
+            "SELECT anonymous_id FROM analytics.attribution_results \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 \
+               AND advertising_export_eligible AND anonymous_id IS NOT NULL \
+             ORDER BY (attribution_model = 'last_touch') DESC, model_version DESC LIMIT 1",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(row.6)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(invalid_export_delivery)?;
+        let item_rows = sqlx::query_as::<_, (Uuid, String, i32, i64)>(
+            "SELECT product_variant_id, variant_title, quantity, unit_price_amount_minor \
+             FROM sales.order_lines WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND order_id = $3 ORDER BY position",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(row.6)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(AnalyticsExportCommand {
+            provider: AnalyticsDestinationProvider::parse(&row.0)
+                .ok_or_else(invalid_export_delivery)?,
+            external_destination_reference: row.1,
+            event_source_base_url: row.2,
+            credential_secret_reference: AnalyticsDestinationSecretReference::new(row.3)
+                .map_err(ApplicationError::from)?,
+            commerce_event_name: row.4,
+            fact_id: row.5,
+            order_id: row.6,
+            anonymous_id,
+            occurred_at: row.7,
+            amount_minor: row
+                .8
+                .map(u64::try_from)
+                .transpose()
+                .map_err(conversion_error)?,
+            currency: row.9,
+            shipping_amount_minor: u64::try_from(row.10).map_err(conversion_error)?,
+            tax_amount_minor: u64::try_from(row.11).map_err(conversion_error)?,
+            items: item_rows
+                .into_iter()
+                .map(|item| {
+                    Ok(AnalyticsExportItem {
+                        product_variant_id: item.0,
+                        item_name: item.1,
+                        quantity: u32::try_from(item.2).map_err(conversion_error)?,
+                        unit_price_amount_minor: u64::try_from(item.3).map_err(conversion_error)?,
+                    })
+                })
+                .collect::<Result<_, ApplicationError>>()?,
+        })
+    }
+
+    async fn finish_export(
+        &self,
+        worker_id: Uuid,
+        job: &AnalyticsExportJob,
+        result: Result<AnalyticsExportReceipt, AnalyticsDestinationError>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let (status, available_at, delivered_at, provider_reference, error) = match result {
+            Ok(receipt) => (
+                "processed",
+                now,
+                Some(now),
+                Some(receipt.provider_reference),
+                None,
+            ),
+            Err(error) if !error.retryable || job.attempts >= 8 => (
+                "dead_letter",
+                now,
+                None,
+                None,
+                Some(bounded_error(error.message)),
+            ),
+            Err(error) => (
+                "pending",
+                now + time::Duration::seconds(1_i64 << job.attempts.min(8)),
+                None,
+                None,
+                Some(bounded_error(error.message)),
+            ),
+        };
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        let updated = sqlx::query(
+            "UPDATE analytics.export_deliveries \
+             SET delivery_status = $6::integration.queue_status, available_at = $7, \
+                 locked_by = NULL, locked_at = NULL, delivered_at = $8, \
+                 provider_reference = $9, last_error = $10, updated_at = $11 \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+               AND destination_id = $4 AND commerce_fact_id = $5 \
+               AND delivery_status = 'processing' AND locked_by = $12",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(job.id)
+        .bind(job.destination_id)
+        .bind(job.commerce_fact_id)
+        .bind(status)
+        .bind(available_at)
+        .bind(delivered_at)
+        .bind(provider_reference)
+        .bind(error)
+        .bind(now)
+        .bind(worker_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(ApplicationError::Conflict {
+                code: "analytics_export_lease_lost",
+                message: "the Analytics export lease is no longer owned by this worker",
             });
         }
         transaction.commit().await.map_err(database_error)
@@ -1679,6 +2065,18 @@ fn corrupt_sessionization_event() -> ApplicationError {
 fn corrupt_attribution_job() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "the Analytics attribution queue references an invalid Order fact"
+    ))
+}
+
+fn invalid_destination_snapshot() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "the Analytics destination snapshot is invalid"
+    ))
+}
+
+fn invalid_export_delivery() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "the Analytics export delivery is no longer eligible"
     ))
 }
 
@@ -2250,6 +2648,88 @@ async fn refresh_behavior_report(
     .bind(sales_channel_id.as_uuid())
     .bind(report_date)
     .bind(refreshed_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn load_destination(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: MerchantActor,
+    store_id: StoreId,
+    id: Uuid,
+) -> Result<Option<DestinationAccountRow>, ApplicationError> {
+    sqlx::query_as(
+        "SELECT id, store_id, provider::text, external_destination_reference, \
+                event_source_base_url, enabled, created_at, updated_at \
+         FROM analytics.destination_accounts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(actor.merchant_account_id().as_uuid())
+    .bind(store_id.as_uuid())
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+fn destination_account(
+    row: DestinationAccountRow,
+) -> Result<AnalyticsDestinationAccount, ApplicationError> {
+    Ok(AnalyticsDestinationAccount {
+        id: row.id,
+        store_id: StoreId::from_uuid(row.store_id),
+        provider: AnalyticsDestinationProvider::parse(&row.provider)
+            .ok_or_else(invalid_destination_snapshot)?,
+        external_destination_reference: row.external_destination_reference,
+        event_source_base_url: row.event_source_base_url,
+        enabled: row.enabled,
+        credentials_configured: true,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+async fn enqueue_eligible_exports(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    destination_id: Option<Uuid>,
+    source_fact_id: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO analytics.export_deliveries \
+         (id, merchant_account_id, store_id, destination_id, commerce_fact_id, \
+          available_at, created_at, updated_at) \
+         SELECT uuidv7(), fact.merchant_account_id, fact.store_id, destination.id, fact.id, \
+                $5, $5, $5 \
+           FROM analytics.commerce_facts AS fact \
+           INNER JOIN analytics.destination_accounts AS destination \
+             ON destination.merchant_account_id = fact.merchant_account_id \
+            AND destination.store_id = fact.store_id AND destination.enabled \
+          WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 \
+            AND ($3::uuid IS NULL OR destination.id = $3) \
+            AND ($4::uuid IS NULL OR fact.order_id = ( \
+                SELECT source.order_id FROM analytics.commerce_facts AS source \
+                 WHERE source.merchant_account_id = $1 AND source.store_id = $2 \
+                   AND source.id = $4 \
+            )) \
+            AND EXISTS ( \
+                SELECT 1 FROM analytics.attribution_results AS result \
+                 WHERE result.merchant_account_id = fact.merchant_account_id \
+                   AND result.store_id = fact.store_id AND result.order_id = fact.order_id \
+                   AND result.advertising_export_eligible \
+            ) \
+         ON CONFLICT (merchant_account_id, store_id, destination_id, commerce_fact_id) \
+         DO NOTHING",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(destination_id)
+    .bind(source_fact_id)
+    .bind(now)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;

@@ -11,13 +11,17 @@ use chaos_application::{
         RequestAnalyticsErasureInput, UpdateAnalyticsPolicyInput,
     },
     ports::{
-        AnalyticsDailyReports, AnalyticsErasureRequest, AnalyticsErasureSelector,
-        AnalyticsErasureStatus, AnalyticsIdentityLink, IdempotencyRequest, StoreAnalyticsPolicy,
+        AnalyticsDailyReports, AnalyticsDestinationAccount, AnalyticsDestinationConfiguration,
+        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
+        AnalyticsIdentityLink, IdempotencyRequest, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
     FieldViolation,
-    analytics::{BrowserEvent, BrowserEventProperties, ConsentSnapshot},
+    analytics::{
+        AnalyticsDestinationProvider, AnalyticsDestinationSecretReference, BrowserEvent,
+        BrowserEventProperties, ConsentSnapshot,
+    },
     catalog::{ProductId, ProductVariantId},
     merchant::{MerchantAccountId, StoreId},
     sales::{CartId, CheckoutId, CustomerId},
@@ -55,6 +59,10 @@ pub(super) fn admin_routes() -> Router<ApiState> {
         .route(
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-reports/daily",
             get(list_daily_reports),
+        )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations",
+            get(list_destinations).put(configure_destination),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
@@ -134,6 +142,30 @@ struct AnalyticsDailyReportsData {
     behavior: Vec<DailyBehaviorReportData>,
     commerce: Vec<DailyCommerceReportData>,
     attribution: Vec<DailyAttributionReportData>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AnalyticsDestinationBody {
+    provider: String,
+    external_destination_reference: String,
+    event_source_base_url: Option<String>,
+    credential_secret_reference: String,
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct AnalyticsDestinationData {
+    id: Uuid,
+    store_id: Uuid,
+    provider: &'static str,
+    external_destination_reference: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_source_base_url: Option<String>,
+    enabled: bool,
+    credentials_configured: bool,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -309,6 +341,53 @@ async fn get_policy(
     Ok(ApiResponse::ok(policy_data(policy)))
 }
 
+async fn list_destinations(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+) -> Result<ApiResponse<Vec<AnalyticsDestinationData>>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let destinations = state
+        .analytics_destinations
+        .list(actor, StoreId::from_uuid(path.store_id))
+        .await?;
+    Ok(ApiResponse::ok(
+        destinations.into_iter().map(destination_data).collect(),
+    ))
+}
+
+async fn configure_destination(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiJson(body): ApiJson<AnalyticsDestinationBody>,
+) -> Result<ApiResponse<AnalyticsDestinationData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let provider = AnalyticsDestinationProvider::parse(&body.provider)
+        .ok_or_else(|| invalid_value("provider", "must be meta_capi or ga4"))?;
+    let credential_secret_reference =
+        AnalyticsDestinationSecretReference::new(body.credential_secret_reference.clone())?;
+    let request = fingerprinted_request(&headers, &(path.store_id, &body))?;
+    let destination = state
+        .analytics_destinations
+        .configure(
+            actor,
+            StoreId::from_uuid(path.store_id),
+            AnalyticsDestinationConfiguration {
+                provider,
+                external_destination_reference: body.external_destination_reference,
+                event_source_base_url: body.event_source_base_url,
+                credential_secret_reference,
+                enabled: body.enabled,
+            },
+            request,
+            state.clock.now(),
+        )
+        .await?;
+    Ok(ApiResponse::ok(destination_data(destination)))
+}
+
 async fn update_policy(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -352,6 +431,20 @@ fn policy_data(item: StoreAnalyticsPolicy) -> AnalyticsPolicyData {
         created_by: item.created_by.map(|id| id.as_uuid()),
         effective_at: item.effective_at.map(ApiDateTime::from),
         created_at: item.created_at.map(ApiDateTime::from),
+    }
+}
+
+fn destination_data(item: AnalyticsDestinationAccount) -> AnalyticsDestinationData {
+    AnalyticsDestinationData {
+        id: item.id,
+        store_id: item.store_id.as_uuid(),
+        provider: item.provider.as_str(),
+        external_destination_reference: item.external_destination_reference,
+        event_source_base_url: item.event_source_base_url,
+        enabled: item.enabled,
+        credentials_configured: item.credentials_configured,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
     }
 }
 

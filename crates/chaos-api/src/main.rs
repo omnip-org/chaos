@@ -108,6 +108,15 @@ async fn analytics_worker_loop(
                 tracing::warn!(%worker_id, %error, "analytics attribution batch failed");
             }
         }
+        match workers.run_export_batch(worker_id, now, 100).await {
+            Ok(processed) => {
+                ::metrics::counter!("chaos_analytics_export_jobs_claimed_total")
+                    .increment(processed as u64);
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics export batch failed");
+            }
+        }
         if now >= next_retention_at {
             match workers.run_retention_batch(now, 1000).await {
                 Ok(result) => {
