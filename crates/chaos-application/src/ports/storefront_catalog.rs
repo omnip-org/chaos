@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
     merchant::{ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
 };
@@ -22,6 +22,7 @@ pub struct StorefrontCatalogProduct {
     pub handle: String,
     pub title: String,
     pub description: String,
+    pub locale: Locale,
     pub variants: Vec<StorefrontCatalogVariant>,
     pub media: Vec<StorefrontMediaAsset>,
 }
@@ -38,10 +39,12 @@ pub struct StorefrontMediaAsset {
 
 #[async_trait]
 pub trait StorefrontCatalogRepository: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     async fn list_products(
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
+        locale: Option<Locale>,
         query: Option<&str>,
         collection_handle: Option<&str>,
         after: Option<ProductId>,
@@ -52,6 +55,7 @@ pub trait StorefrontCatalogRepository: Send + Sync {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
+        locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError>;
 }

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 email_address.workspace = true
+language-tags.workspace = true
 thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true

@@ -9,6 +9,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
+    Locale,
     catalog::{CollectionContent, CollectionId, CollectionStatus, ProductId},
     merchant::{SalesChannelId, StoreId},
 };
@@ -381,33 +382,83 @@ impl CollectionRepository for PostgresCollectionRepository {
     async fn list_storefront(
         &self,
         actor: &MachineActor,
+        requested_locale: Option<Locale>,
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let rows=sqlx::query_as::<_,(Uuid,String,String,String,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND ($4::uuid IS NULL OR collection.id>$4) GROUP BY collection.id ORDER BY collection.id LIMIT $5")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).fetch_all(&mut *tx).await.map_err(database_error)?;
+        let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
+        let rows=sqlx::query_as::<_,(Uuid,String,String,String,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),collection.description),count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND ($4::uuid IS NULL OR collection.id>$4) GROUP BY collection.id ORDER BY collection.id LIMIT $5")
+            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
-        rows.into_iter().map(storefront_item).collect()
+        rows.into_iter()
+            .map(|row| storefront_item(row, locale.0.clone()))
+            .collect()
     }
 
     async fn get_storefront_by_handle(
         &self,
         actor: &MachineActor,
+        requested_locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let row=sqlx::query_as::<_,(Uuid,String,String,String,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND collection.handle=$4 GROUP BY collection.id")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).fetch_optional(&mut *tx).await.map_err(database_error)?;
+        let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
+        let row=sqlx::query_as::<_,(Uuid,String,String,String,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.description),count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND collection.handle=$4 GROUP BY collection.id")
+            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_optional(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
-        row.map(storefront_item).transpose()
+        row.map(|row| storefront_item(row, locale.0)).transpose()
     }
+}
+
+async fn resolve_collection_locale(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    requested: Option<Locale>,
+) -> Result<(Locale, Option<String>, Option<String>), ApplicationError> {
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let default = default.ok_or_else(|| ApplicationError::NotFound {
+        resource: "store",
+        id: actor.store_id.as_uuid().to_string(),
+    })?;
+    let selected = requested.unwrap_or(Locale::parse(&default)?);
+    let exact = if selected.as_str() == default {
+        None
+    } else {
+        let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)")
+            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(selected.as_str()).fetch_one(&mut **transaction).await.map_err(database_error)?;
+        if !enabled {
+            return Err(ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "locale",
+                    reason: "must be enabled for the Store".into(),
+                }],
+            });
+        }
+        Some(selected.as_str().to_owned())
+    };
+    let language = selected.language();
+    let primary = if exact.is_some() && language != selected.as_str() && language != default {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)")
+            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(language).fetch_one(&mut **transaction).await.map_err(database_error)?.then(||language.to_owned())
+    } else {
+        None
+    };
+    Ok((selected, exact, primary))
 }
 
 fn storefront_item(
     row: (Uuid, String, String, String, i64),
+    locale: Locale,
 ) -> Result<StorefrontCollectionItem, ApplicationError> {
     Ok(StorefrontCollectionItem {
         id: CollectionId::from_uuid(row.0),
@@ -415,6 +466,7 @@ fn storefront_item(
         title: row.2,
         description: row.3,
         product_count: u32::try_from(row.4).map_err(|_| invalid_snapshot())?,
+        locale,
     })
 }
 async fn require_store(

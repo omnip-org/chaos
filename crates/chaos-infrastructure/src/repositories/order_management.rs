@@ -8,7 +8,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
@@ -352,6 +352,16 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let locale = sqlx::query_scalar::<_, String>(
+        "SELECT locale FROM sales.orders \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(account_id)
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     let derived_statuses = sqlx::query_as::<_, (String, String)>(
         "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -408,6 +418,7 @@ async fn load_order(
         inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
         price_list_id: PriceListId::from_uuid(row.5),
         currency: CurrencyCode::parse(&row.6)?,
+        locale: Locale::parse(&locale)?,
         status: OrderStatus::parse(&row.7).ok_or_else(corrupt_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
             .ok_or_else(corrupt_state)?,

@@ -527,6 +527,38 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["data"]["status"], "ready");
 
+        let locale = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/locales/de",
+            account.as_uuid(),
+            store.as_uuid()
+        );
+        assert_eq!(
+            router(owner_state.clone())
+                .oneshot(request(
+                    Method::PUT,
+                    &locale,
+                    Some(&format!("enable-de-{suffix}")),
+                    None,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            router(owner_state.clone())
+                .oneshot(request(
+                    Method::PUT,
+                    &format!("{base}/{media_id}/translations/de"),
+                    Some(&format!("translate-de-{suffix}")),
+                    Some(json!({"alt_text":"Produktbild"})),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+
         let material = publishable_key(&pool, account, store, channel, owner).await;
         let auth = format!("Bearer {}", material.plaintext.expose_secret());
         let storefront = || {
@@ -543,6 +575,20 @@ mod tests {
         assert_eq!(
             response_json(response).await["data"]["media"][0]["alt_text"],
             "Product hero"
+        );
+        let response = router(owner_state.clone())
+            .oneshot(
+                Request::get("/store/v1/products/media-product?locale=de")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(response).await["data"]["media"][0]["alt_text"],
+            "Produktbild"
         );
 
         let support_state = test_state(&database_url, support);

@@ -213,6 +213,51 @@ mod tests {
     }
 
     #[test]
+    fn localization_contract_covers_admin_authoring_and_storefront_snapshots() {
+        let admin = specification();
+        let locales = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales";
+        let product_translation = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/translations/{locale}";
+        assert_eq!(
+            admin["paths"][locales]["get"]["operationId"],
+            "getStoreLocales"
+        );
+        assert_eq!(
+            admin["paths"][product_translation]["put"]["operationId"],
+            "upsertProductTranslation"
+        );
+        assert_eq!(
+            admin["components"]["schemas"]["ProductTranslationInput"]["additionalProperties"],
+            false
+        );
+
+        let store: Value = serde_json::from_str(STORE_V1).unwrap();
+        for path in [
+            "/products",
+            "/products/{handle}",
+            "/collections",
+            "/collections/{handle}",
+        ] {
+            assert!(
+                store["paths"][path]["get"]["parameters"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|parameter| parameter["$ref"] == "#/components/parameters/Locale")
+            );
+        }
+        for schema in ["Product", "Collection", "Cart", "Checkout", "Order"] {
+            assert_eq!(
+                store["components"]["schemas"][schema]["properties"]["locale"]["$ref"],
+                "#/components/schemas/Locale"
+            );
+        }
+        assert_eq!(
+            store["components"]["schemas"]["CreateCart"]["properties"]["locale"]["$ref"],
+            "#/components/schemas/Locale"
+        );
+    }
+
+    #[test]
     fn media_contract_keeps_upload_credentials_sensitive_and_storefront_ready_only() {
         let admin = specification();
         let base = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media";

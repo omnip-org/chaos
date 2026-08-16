@@ -150,6 +150,10 @@ Media Assets are administered beneath `/admin/v1/merchant-accounts/{merchant_acc
 
 Media storage is optional at process startup. Enabling upload creation requires `MEDIA_S3_REGION`, `MEDIA_S3_BUCKET`, `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY`, and an HTTPS `MEDIA_PUBLIC_BASE_URL` together. `MEDIA_S3_ENDPOINT_URL`, `MEDIA_S3_SESSION_TOKEN`, and `MEDIA_S3_FORCE_PATH_STYLE` support compatible storage services. When storage is absent, catalog reads continue but upload operations fail closed with HTTP 503.
 
+Store Locales are administered beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales`. Owners and administrators may enable, disable, or select the default Locale; the current default cannot be disabled. Product, Collection, and Media translation resources use a canonical Locale path segment and require an enabled non-default Locale. Catalog authors may manage typed Product title/description plus Variant titles, Collection title/description, and Media alternative text. Mutations are idempotent and append immutable Store-owned audit events.
+
+Storefront Product and Collection reads accept an explicit optional `locale` query parameter and return the selected canonical Locale. Omission uses the Store default. An explicit Locale must be enabled; content resolves through exact Locale, enabled primary language, and canonical fields. Search matching remains canonical in this release. `POST /store/v1/carts` accepts the same optional Locale. The Cart freezes it, localized line text is retained during checkout recalculation, and Checkout and Order responses preserve both Locale and customer-facing text even after later translation changes.
+
 ## Pricing
 
 `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists` creates a Price List and its Variant prices atomically. The request requires `Idempotency-Key`. A Price List fixes one enabled Store currency, tax-inclusive behavior, and an optional RFC 3339 activation window. Each Variant appears at most once in a list and every amount is a non-negative integer in minor currency units.

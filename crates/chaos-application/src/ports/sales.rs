@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
@@ -36,6 +36,7 @@ pub struct CartDetail {
     pub shopper_id: ShopperId,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
+    pub locale: Locale,
     pub status: CartStatus,
     pub version: u64,
     pub lines: Vec<CartLineItem>,
@@ -68,6 +69,7 @@ pub struct CheckoutDetail {
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
+    pub locale: Locale,
     pub status: String,
     pub identity: CheckoutIdentity,
     pub subtotal_amount_minor: i64,
@@ -118,6 +120,7 @@ pub struct OrderDetail {
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
+    pub locale: Locale,
     pub status: OrderStatus,
     pub fulfillment_status: OrderFulfillmentStatus,
     pub delivery_status: OrderDeliveryStatus,
@@ -162,6 +165,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
         &self,
         actor: &ShopperActor,
         currency: Option<CurrencyCode>,
+        locale: Option<Locale>,
         idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 

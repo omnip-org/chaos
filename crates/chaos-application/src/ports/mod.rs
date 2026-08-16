@@ -8,6 +8,7 @@ mod collection;
 mod customer;
 mod fulfillment;
 mod inventory;
+mod localization;
 mod media;
 mod merchant;
 mod merchant_query;
@@ -73,6 +74,10 @@ pub use fulfillment::{
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
     InventoryReservationTransition, StockAdjustment, StockItemItem,
+};
+pub use localization::{
+    CatalogLocalizationRepository, CollectionTranslation, MediaTranslation, ProductTranslation,
+    ProductVariantTranslation, StoreLocaleConfiguration,
 };
 pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,

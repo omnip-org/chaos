@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, FieldViolation,
+    CurrencyCode, FieldViolation, Locale,
     catalog::ProductVariantId,
     fulfillment::{ShippingSelection, ShippingServiceId},
     merchant::{ApiKeyClass, ApiKeyScope},
@@ -30,6 +30,7 @@ const EXPIRY_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 pub struct CreateCartInput {
     pub actor: ShopperActor,
     pub currency: Option<String>,
+    pub locale: Option<String>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -142,8 +143,9 @@ impl StorefrontSales {
             .as_deref()
             .map(CurrencyCode::parse)
             .transpose()?;
+        let locale = input.locale.as_deref().map(Locale::parse).transpose()?;
         self.repository
-            .create_cart(&input.actor, currency, &input.idempotency)
+            .create_cart(&input.actor, currency, locale, &input.idempotency)
             .await
     }
 

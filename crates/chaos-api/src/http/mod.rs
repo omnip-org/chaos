@@ -9,6 +9,7 @@ mod extract;
 mod fulfillment;
 mod health;
 mod inventory;
+mod localization;
 mod media;
 mod merchant;
 mod metrics;
@@ -29,8 +30,8 @@ use chaos_application::{
         AnalyticsReporting, AnalyticsWorkers,
     },
     catalog::{
-        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
-        MediaAdministration, StorefrontCollections,
+        CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
+        CreateProduct, MediaAdministration, StorefrontCollections,
     },
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -65,10 +66,10 @@ use chaos_infrastructure::{
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
         PostgresAnalyticsReportingRepository, PostgresApiKeyRepository,
-        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
-        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
+        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+        PostgresCollectionRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
+        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
@@ -118,6 +119,7 @@ pub struct ApiState {
     pub collection_administration: Arc<CollectionAdministration>,
     pub storefront_collections: Arc<StorefrontCollections>,
     pub media_administration: Arc<MediaAdministration>,
+    pub catalog_localization: Arc<CatalogLocalization>,
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
     pub tax_management: Arc<TaxManagement>,
@@ -233,6 +235,9 @@ impl ApiState {
             )),
             media_storage,
         );
+        let catalog_localization = CatalogLocalization::new(Arc::new(
+            PostgresCatalogLocalizationRepository::new(infrastructure.runtime_pool()),
+        ));
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
@@ -427,6 +432,7 @@ impl ApiState {
             collection_administration: Arc::new(collection_administration),
             storefront_collections: Arc::new(storefront_collections),
             media_administration: Arc::new(media_administration),
+            catalog_localization: Arc::new(catalog_localization),
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
             tax_management: Arc::new(tax_management),
@@ -477,6 +483,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", catalog::routes())
         .nest("/admin/v1", collection::admin_routes())
         .nest("/admin/v1", media::routes())
+        .nest("/admin/v1", localization::routes())
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())

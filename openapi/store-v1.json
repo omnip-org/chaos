@@ -34,7 +34,8 @@
           { "name": "q", "in": "query", "description": "Store-isolated full-text search", "schema": { "type": "string", "minLength": 1, "maxLength": 200 } },
           { "name": "collection", "in": "query", "description": "Active Collection handle published to the current Sales Channel. Results preserve manual Collection order.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } },
           { "$ref": "#/components/parameters/Cursor" },
-          { "$ref": "#/components/parameters/Limit" }
+          { "$ref": "#/components/parameters/Limit" },
+          { "$ref": "#/components/parameters/Locale" }
         ],
         "responses": {
           "200": {
@@ -66,7 +67,8 @@
             "required": true,
             "schema": { "type": "string", "minLength": 2, "maxLength": 128 }
           },
-          { "$ref": "#/components/parameters/Currency" }
+          { "$ref": "#/components/parameters/Currency" },
+          { "$ref": "#/components/parameters/Locale" }
         ],
         "responses": {
           "200": {
@@ -90,7 +92,7 @@
         "tags": ["Catalog"],
         "summary": "List active Collections published to the current Sales Channel",
         "security": [{ "publishableKey": ["catalog:read"] }],
-        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }],
+        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Locale" }],
         "responses": {
           "200": { "description": "Storefront Collection page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionCollectionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -105,7 +107,7 @@
         "tags": ["Catalog"],
         "summary": "Get an active Collection published to the current Sales Channel",
         "security": [{ "publishableKey": ["catalog:read"] }],
-        "parameters": [{ "name": "handle", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } }],
+        "parameters": [{ "name": "handle", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } }, { "$ref": "#/components/parameters/Locale" }],
         "responses": {
           "200": { "description": "Storefront Collection", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -614,6 +616,13 @@
         "in": "path",
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
+      },
+      "Locale": {
+        "name": "locale",
+        "in": "query",
+        "required": false,
+        "description": "Enabled Store Locale. Omit to use the Store default.",
+        "schema": { "$ref": "#/components/schemas/Locale" }
       }
     },
     "schemas": {
@@ -803,10 +812,11 @@
       "Product": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "handle", "title", "description", "media", "variants"],
+        "required": ["id", "handle", "locale", "title", "description", "media", "variants"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "handle": { "type": "string" },
+          "locale": { "$ref": "#/components/schemas/Locale" },
           "title": { "type": "string" },
           "description": { "type": "string" },
           "media": { "type": "array", "items": { "$ref": "#/components/schemas/ProductMedia" } },
@@ -830,7 +840,8 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "locale": { "$ref": "#/components/schemas/Locale" }
         }
       },
       "ShopperSession": {
@@ -879,11 +890,12 @@
       "Cart": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "price_list_id", "currency", "status", "version", "lines", "subtotal_amount_minor", "created_at", "updated_at"],
+        "required": ["id", "price_list_id", "currency", "locale", "status", "version", "lines", "subtotal_amount_minor", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "locale": { "$ref": "#/components/schemas/Locale" },
           "status": { "type": "string", "enum": ["active", "completed", "abandoned"] },
           "version": { "type": "integer", "format": "int64", "minimum": 0 },
           "lines": { "type": "array", "items": { "$ref": "#/components/schemas/CartLine" } },
@@ -1028,7 +1040,7 @@
       "Checkout": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "cart_id", "price_list_id", "currency", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "expires_at", "lines", "created_at"],
+        "required": ["id", "cart_id", "price_list_id", "currency", "locale", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "expires_at", "lines", "created_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "cart_id": { "type": "string", "format": "uuid" },
@@ -1036,6 +1048,7 @@
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "locale": { "$ref": "#/components/schemas/Locale" },
           "status": { "type": "string", "enum": ["pending", "completed", "expired"] },
           "contact": { "$ref": "#/components/schemas/CheckoutContact" },
           "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
@@ -1091,7 +1104,7 @@
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "checkout_id", "price_list_id", "currency", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": ["id", "checkout_id", "price_list_id", "currency", "locale", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "checkout_id": { "type": "string", "format": "uuid" },
@@ -1099,6 +1112,7 @@
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
           "price_list_id": { "type": "string", "format": "uuid" },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "locale": { "$ref": "#/components/schemas/Locale" },
           "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
           "fulfillment_status": { "type": "string", "enum": ["unfulfilled", "partially_fulfilled", "fulfilled"] },
           "delivery_status": { "type": "string", "enum": ["not_delivered", "partially_delivered", "delivered"] },
@@ -1289,10 +1303,11 @@
       "Collection": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "handle", "title", "description", "product_count"],
+        "required": ["id", "handle", "locale", "title", "description", "product_count"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "handle": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" },
+          "locale": { "$ref": "#/components/schemas/Locale" },
           "title": { "type": "string", "minLength": 1, "maxLength": 255 },
           "description": { "type": "string", "maxLength": 100000 },
           "product_count": { "type": "integer", "minimum": 0, "maximum": 1000 }
@@ -1300,6 +1315,12 @@
       },
       "CollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Collection" } } },
       "CollectionCollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Collection" } }, "meta": { "$ref": "#/components/schemas/Meta" } } },
+      "Locale": {
+        "type": "string",
+        "description": "Canonical enabled Store Locale (BCP 47 without extensions or private use).",
+        "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$",
+        "maxLength": 63
+      },
       "ErrorDetail": {
         "type": "object",
         "additionalProperties": false,

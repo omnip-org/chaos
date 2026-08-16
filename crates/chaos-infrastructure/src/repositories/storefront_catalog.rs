@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
@@ -7,11 +9,17 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, Locale,
     catalog::{MediaAssetId, MediaKind, ProductId, ProductVariantId},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
+
+struct ResolvedLocale {
+    selected: Locale,
+    exact_translation: Option<String>,
+    language_translation: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct PostgresStorefrontCatalogRepository {
@@ -45,6 +53,7 @@ impl PostgresStorefrontCatalogRepository {
         actor: &MachineActor,
         product_id: ProductId,
         currency: Option<CurrencyCode>,
+        locale: &ResolvedLocale,
     ) -> Result<Vec<StorefrontCatalogVariant>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, String, Option<String>, bool, i64, String, bool)>(
             "WITH selected_price_list AS ( \
@@ -97,12 +106,13 @@ impl PostgresStorefrontCatalogRepository {
         .await
         .map_err(database_error)?;
 
+        let translations = variant_translations(transaction, actor, product_id, locale).await?;
         rows.into_iter()
             .map(
                 |(id, title, sku, requires_shipping, amount_minor, currency, tax_inclusive)| {
                     Ok(StorefrontCatalogVariant {
                         id: ProductVariantId::from_uuid(id),
-                        title,
+                        title: translations.get(&id).cloned().unwrap_or(title),
                         sku,
                         requires_shipping,
                         amount_minor,
@@ -122,6 +132,7 @@ impl PostgresStorefrontCatalogRepository {
         transaction: &mut Transaction<'_, Postgres>,
         actor: &MachineActor,
         product_id: ProductId,
+        locale: &ResolvedLocale,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
             "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM catalog.media_assets WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND status='ready' ORDER BY position,id",
@@ -132,6 +143,7 @@ impl PostgresStorefrontCatalogRepository {
         .fetch_all(&mut **transaction)
         .await
         .map_err(database_error)?;
+        let translations = media_translations(transaction, actor, product_id, locale).await?;
         rows.into_iter()
             .map(|row| {
                 Ok(StorefrontMediaAsset {
@@ -147,7 +159,7 @@ impl PostgresStorefrontCatalogRepository {
                             )));
                         }
                     },
-                    alt_text: row.4,
+                    alt_text: translations.get(&row.0).cloned().unwrap_or(row.4),
                     position: u16::try_from(row.5).map_err(|_| {
                         ApplicationError::Unexpected(anyhow::anyhow!(
                             "database contains an invalid Media position"
@@ -166,12 +178,14 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
+        requested_locale: Option<Locale>,
         query: Option<&str>,
         collection_handle: Option<&str>,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
+        let locale = resolve_locale(&mut transaction, actor, requested_locale).await?;
         let mut scan_after = after;
         let mut products = Vec::with_capacity(usize::from(limit));
         while products.len() < usize::from(limit) {
@@ -269,14 +283,25 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             for (id, handle, title, description) in rows {
                 let id = ProductId::from_uuid(id);
                 scan_after = Some(id);
-                let variants = Self::variants(&mut transaction, actor, id, currency).await?;
+                let (title, description) = localized_product_content(
+                    &mut transaction,
+                    actor,
+                    id,
+                    &locale,
+                    title,
+                    description,
+                )
+                .await?;
+                let variants =
+                    Self::variants(&mut transaction, actor, id, currency, &locale).await?;
                 if !variants.is_empty() {
-                    let media = Self::media(&mut transaction, actor, id).await?;
+                    let media = Self::media(&mut transaction, actor, id, &locale).await?;
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
                         title,
                         description,
+                        locale: locale.selected.clone(),
                         variants,
                         media,
                     });
@@ -297,9 +322,11 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
+        requested_locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
+        let locale = resolve_locale(&mut transaction, actor, requested_locale).await?;
         let row = sqlx::query_as::<_, (Uuid, String, String, String)>(
             "SELECT product.id, product.handle::text, product.title, product.description \
              FROM catalog.products AS product \
@@ -334,8 +361,11 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             return Ok(None);
         };
         let id = ProductId::from_uuid(id);
-        let variants = Self::variants(&mut transaction, actor, id, currency).await?;
-        let media = Self::media(&mut transaction, actor, id).await?;
+        let (title, description) =
+            localized_product_content(&mut transaction, actor, id, &locale, title, description)
+                .await?;
+        let variants = Self::variants(&mut transaction, actor, id, currency, &locale).await?;
+        let media = Self::media(&mut transaction, actor, id, &locale).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
             return Ok(None);
@@ -345,10 +375,145 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             handle,
             title,
             description,
+            locale: locale.selected,
             variants,
             media,
         }))
     }
+}
+
+async fn resolve_locale(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    requested: Option<Locale>,
+) -> Result<ResolvedLocale, ApplicationError> {
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let default = default.ok_or_else(|| ApplicationError::NotFound {
+        resource: "store",
+        id: actor.store_id.as_uuid().to_string(),
+    })?;
+    let selected = requested.unwrap_or(Locale::parse(&default)?);
+    if selected.as_str() != default {
+        let enabled: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(selected.as_str())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if !enabled {
+            return Err(ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "locale",
+                    reason: "must be enabled for the Store".into(),
+                }],
+            });
+        }
+    }
+    let exact_translation = (selected.as_str() != default).then(|| selected.as_str().to_owned());
+    let language = selected.language();
+    let language_translation = if language != default && language != selected.as_str() {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(language)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .then(|| language.to_owned())
+    } else {
+        None
+    };
+    Ok(ResolvedLocale {
+        selected,
+        exact_translation,
+        language_translation,
+    })
+}
+
+async fn localized_product_content(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    product_id: ProductId,
+    locale: &ResolvedLocale,
+    canonical_title: String,
+    canonical_description: String,
+) -> Result<(String, String), ApplicationError> {
+    let Some(exact) = locale.exact_translation.as_deref() else {
+        return Ok((canonical_title, canonical_description));
+    };
+    let translated: Option<(String, String)> = sqlx::query_as(
+        "SELECT title,description FROM catalog.product_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 0 ELSE 1 END LIMIT 1",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(exact)
+    .bind(locale.language_translation.as_deref())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(translated.unwrap_or((canonical_title, canonical_description)))
+}
+
+async fn variant_translations(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    product_id: ProductId,
+    locale: &ResolvedLocale,
+) -> Result<HashMap<Uuid, String>, ApplicationError> {
+    let Some(exact) = locale.exact_translation.as_deref() else {
+        return Ok(HashMap::new());
+    };
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT product_variant_id,title,locale FROM catalog.product_variant_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 1 ELSE 0 END",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(exact)
+    .bind(locale.language_translation.as_deref())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(rows.into_iter().map(|(id, title, _)| (id, title)).collect())
+}
+
+async fn media_translations(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    product_id: ProductId,
+    locale: &ResolvedLocale,
+) -> Result<HashMap<Uuid, String>, ApplicationError> {
+    let Some(exact) = locale.exact_translation.as_deref() else {
+        return Ok(HashMap::new());
+    };
+    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT media_asset_id,alt_text,locale FROM catalog.media_asset_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 1 ELSE 0 END",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(exact)
+    .bind(locale.language_translation.as_deref())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, alt_text, _)| (id, alt_text))
+        .collect())
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {
@@ -585,7 +750,7 @@ mod tests {
         );
         let repository = PostgresStorefrontCatalogRepository::new(runtime_pool);
         let products = repository
-            .list_products(&actor, None, None, None, None, 20)
+            .list_products(&actor, None, None, None, None, None, 20)
             .await
             .unwrap();
         assert_eq!(products.len(), 1);
@@ -593,14 +758,14 @@ mod tests {
         assert_eq!(products[0].variants.len(), 1);
         assert_eq!(products[0].variants[0].amount_minor, 2500);
         let searched = repository
-            .list_products(&actor, None, Some("visible"), None, None, 20)
+            .list_products(&actor, None, None, Some("visible"), None, None, 20)
             .await
             .unwrap();
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].id, visible_product_id);
         assert!(
             repository
-                .list_products(&actor, None, Some("missing"), None, None, 20)
+                .list_products(&actor, None, None, Some("missing"), None, None, 20)
                 .await
                 .unwrap()
                 .is_empty()
@@ -624,14 +789,14 @@ mod tests {
         assert_eq!(indexed, 2);
         assert!(
             repository
-                .get_product_by_handle(&actor, None, "draft-shirt")
+                .get_product_by_handle(&actor, None, None, "draft-shirt")
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .get_product_by_handle(&actor, None, "other-shirt")
+                .get_product_by_handle(&actor, None, None, "other-shirt")
                 .await
                 .unwrap()
                 .is_none()

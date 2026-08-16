@@ -52,6 +52,7 @@ pub(super) fn routes() -> Router<ApiState> {
 #[serde(deny_unknown_fields)]
 struct CreateCartBody {
     currency: Option<String>,
+    locale: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -138,6 +139,7 @@ struct CartData {
     id: Uuid,
     price_list_id: Uuid,
     currency: String,
+    locale: String,
     status: &'static str,
     version: u64,
     lines: Vec<CartLineData>,
@@ -181,6 +183,7 @@ struct CheckoutData {
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
+    locale: String,
     status: String,
     contact: CheckoutContactData,
     billing_address: PostalAddressData,
@@ -241,6 +244,7 @@ pub(super) struct OrderData {
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
+    locale: String,
     status: &'static str,
     fulfillment_status: &'static str,
     delivery_status: &'static str,
@@ -355,6 +359,7 @@ async fn create_cart(
         .create_cart(CreateCartInput {
             actor,
             currency: body.currency,
+            locale: body.locale,
             idempotency,
         })
         .await?;
@@ -614,6 +619,7 @@ fn cart_data(
         id: cart.id.as_uuid(),
         price_list_id: cart.price_list_id.as_uuid(),
         currency: cart.currency.as_str().to_owned(),
+        locale: cart.locale.as_str().to_owned(),
         status: cart.status.as_str(),
         version: cart.version,
         lines: cart.lines.into_iter().map(cart_line_data).collect(),
@@ -648,6 +654,7 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
         inventory_reservation_id: checkout.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: checkout.price_list_id.as_uuid(),
         currency: checkout.currency.as_str().to_owned(),
+        locale: checkout.locale.as_str().to_owned(),
         status: checkout.status,
         contact: contact_data(checkout.identity.contact()),
         billing_address: address_data(checkout.identity.billing_address()),
@@ -693,6 +700,7 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         inventory_reservation_id: order.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
+        locale: order.locale.as_str().to_owned(),
         status: order.status.as_str(),
         fulfillment_status: order.fulfillment_status.as_str(),
         delivery_status: order.delivery_status.as_str(),
@@ -2332,7 +2340,7 @@ mod tests {
                 Some(json!({
                     "provider": "blockedpay",
                     "display_name": "Blocked Provider",
-                    "external_account_reference": "blocked-account",
+                    "external_account_reference": format!("blocked-account-{suffix}"),
                     "credential_secret_reference": "test://blocked-credential",
                     "webhook_secret_reference": "test://blocked-webhook",
                     "enabled": true

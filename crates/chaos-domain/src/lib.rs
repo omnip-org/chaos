@@ -12,9 +12,11 @@ pub mod pricing;
 pub mod sales;
 
 mod currency;
+mod locale;
 mod region;
 
 pub use currency::CurrencyCode;
+pub use locale::Locale;
 pub use region::RegionCode;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

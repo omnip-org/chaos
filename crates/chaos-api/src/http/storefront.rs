@@ -20,6 +20,7 @@ pub(super) fn routes() -> Router<ApiState> {
 #[derive(Deserialize)]
 struct CatalogQuery {
     currency: Option<String>,
+    locale: Option<String>,
     q: Option<String>,
     collection: Option<String>,
     cursor: Option<String>,
@@ -29,6 +30,7 @@ struct CatalogQuery {
 #[derive(Deserialize)]
 struct ProductQuery {
     currency: Option<String>,
+    locale: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +61,7 @@ struct StorefrontProductData {
     handle: String,
     title: String,
     description: String,
+    locale: String,
     variants: Vec<StorefrontVariantData>,
     media: Vec<StorefrontMediaData>,
 }
@@ -92,6 +95,7 @@ async fn list_products(
         .list_products(
             &actor,
             query.currency.as_deref(),
+            query.locale.as_deref(),
             query.q.as_deref(),
             query.collection.as_deref(),
             after,
@@ -117,7 +121,12 @@ async fn get_product(
 ) -> Result<ApiResponse<StorefrontProductData>, ApiError> {
     let product = state
         .storefront_catalog
-        .get_product_by_handle(&actor, query.currency.as_deref(), &path.handle)
+        .get_product_by_handle(
+            &actor,
+            query.currency.as_deref(),
+            query.locale.as_deref(),
+            &path.handle,
+        )
         .await?;
     Ok(ApiResponse::ok(product_data(product)))
 }
@@ -128,6 +137,7 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         handle: product.handle,
         title: product.title,
         description: product.description,
+        locale: product.locale.as_str().into(),
         variants: product.variants.into_iter().map(variant_data).collect(),
         media: product.media.into_iter().map(media_data).collect(),
     }
@@ -345,6 +355,52 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
+        for locale in ["zh", "zh-CN", "fr"] {
+            sqlx::query(
+                "INSERT INTO merchant.store_locales \
+                 (merchant_account_id, store_id, locale, created_by_user_id, created_at) \
+                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
+            .bind(locale)
+            .bind(user_id.as_uuid())
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+        for (locale, title) in [("zh", "Language Shirt"), ("zh-CN", "Regional Shirt")] {
+            sqlx::query(
+                "INSERT INTO catalog.product_translations \
+                 (merchant_account_id, store_id, product_id, locale, title, description, \
+                  updated_by_user_id, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, 'Localized description', $6, \
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
+            .bind(product_id.as_uuid())
+            .bind(locale)
+            .bind(title)
+            .bind(user_id.as_uuid())
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO catalog.product_variant_translations \
+             (merchant_account_id, store_id, product_id, product_variant_id, locale, title, \
+              updated_by_user_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, 'zh', 'Localized Default', $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .bind(variant_id.as_uuid())
+        .bind(user_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         let material = insert_publishable_key(&owner_pool, account_id, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
@@ -369,6 +425,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["data"][0]["handle"], "public-shirt");
+        assert_eq!(body["data"][0]["locale"], "en-US");
         assert_eq!(
             body["data"][0]["variants"][0]["price"]["amount_minor"],
             4200
@@ -386,6 +443,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        let response = router(state.clone())
+            .oneshot(
+                Request::get("/store/v1/products/public-shirt?locale=zh-CN")
+                    .header("authorization", &authorize)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let localized = response_json(response).await;
+        assert_eq!(localized["data"]["locale"], "zh-CN");
+        assert_eq!(localized["data"]["title"], "Regional Shirt");
+        assert_eq!(
+            localized["data"]["variants"][0]["title"],
+            "Localized Default"
+        );
+
+        let response = router(state.clone())
+            .oneshot(
+                Request::get("/store/v1/products/public-shirt?locale=fr")
+                    .header("authorization", &authorize)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let fallback = response_json(response).await;
+        assert_eq!(fallback["data"]["locale"], "fr");
+        assert_eq!(fallback["data"]["title"], "Public Shirt");
+
+        assert_eq!(
+            router(state.clone())
+                .oneshot(
+                    Request::get("/store/v1/products/public-shirt?locale=es")
+                        .header("authorization", &authorize)
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
 
         let response = router(state.clone())
             .oneshot(

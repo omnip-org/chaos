@@ -74,7 +74,7 @@ Suggested implementation order:
 
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
 2. merchant: merchant accounts, memberships, roles, API keys, Stores, Channels, verified Domains, and public domain-context resolution;
-3. catalog: products, variants, options, channel publication, manually ordered channel-published collections, and verified direct-upload media;
+3. catalog: products, variants, options, channel publication, manually ordered channel-published collections, verified direct-upload media, and typed Store-scoped translations;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;
 6. sales: Store Customers, saved addresses, carts, line items, Checkout, Orders, and immutable contact/address snapshots;
@@ -83,6 +83,8 @@ Suggested implementation order:
 9. customer: Customer profiles and saved addresses currently live within Sales because association is part of checkout ownership; segmentation remains a future boundary that may justify extraction;
 10. notifications: semantic, versioned delivery requests; a recoverable email worker; Store-isolated suppression and delivery status; Resend production delivery and signed webhooks; and SMTP development delivery;
 11. analytics: behavior events, consent evidence, immutable Store policies, consent-aware Customer identity links, data-subject erasure audit, sessions, versioned attribution, and future aggregates and conversion exports behind the same boundary.
+
+Locale is an explicit Store configuration and Storefront request input, independent of currency and destination country. The domain canonicalizes bounded BCP 47 tags. Catalog owns typed Product, Variant, Collection, and Media translations, while Merchant owns the Store default and enabled Locale set. Storefront resolution is deterministic: exact Locale, then an enabled primary language, then canonical Catalog content. Sales freezes the selected Locale and localized line text in Cart, Checkout, and Order history.
 
 The Cargo workspace enforces dependency direction with separate packages:
 

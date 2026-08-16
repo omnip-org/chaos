@@ -1,6 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use chaos_domain::{
+    Locale,
     catalog::{CollectionContent, CollectionHandle, CollectionId, CollectionStatus, ProductId},
     merchant::{MerchantRole, SalesChannelId, StoreId},
 };
@@ -248,13 +249,14 @@ impl StorefrontCollections {
     pub async fn list(
         &self,
         actor: &MachineActor,
+        locale: Option<&str>,
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Page<StorefrontCollectionItem>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
-            .list_storefront(actor, after, limit + 1)
+            .list_storefront(actor, parse_locale(locale)?, after, limit + 1)
             .await?;
         let has_more = items.len() > usize::from(limit);
         if has_more {
@@ -266,17 +268,22 @@ impl StorefrontCollections {
     pub async fn get(
         &self,
         actor: &MachineActor,
+        locale: Option<&str>,
         handle: &str,
     ) -> Result<StorefrontCollectionItem, ApplicationError> {
         let handle = CollectionHandle::parse(handle.to_owned())?;
         self.repository
-            .get_storefront_by_handle(actor, handle.as_str())
+            .get_storefront_by_handle(actor, parse_locale(locale)?, handle.as_str())
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "collection",
                 id: handle.as_str().to_owned(),
             })
     }
+}
+
+fn parse_locale(value: Option<&str>) -> Result<Option<Locale>, ApplicationError> {
+    value.map(Locale::parse).transpose().map_err(Into::into)
 }
 
 fn content(

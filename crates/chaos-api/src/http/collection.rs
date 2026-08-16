@@ -87,6 +87,11 @@ struct HandlePath {
 struct ListQuery {
     cursor: Option<String>,
     limit: Option<u16>,
+    locale: Option<String>,
+}
+#[derive(Deserialize)]
+struct LocaleQuery {
+    locale: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -141,6 +146,7 @@ struct StorefrontCollectionData {
     title: String,
     description: String,
     product_count: u32,
+    locale: String,
 }
 
 async fn create_collection(
@@ -380,7 +386,7 @@ async fn list_storefront_collections(
         .map(CollectionId::from_uuid);
     let page = state
         .storefront_collections
-        .list(&actor, after, limit)
+        .list(&actor, query.locale.as_deref(), after, limit)
         .await?;
     let next = page
         .has_more
@@ -399,11 +405,12 @@ async fn get_storefront_collection(
     State(state): State<ApiState>,
     StorefrontMachine(actor): StorefrontMachine,
     ApiPath(path): ApiPath<HandlePath>,
+    ApiQuery(query): ApiQuery<LocaleQuery>,
 ) -> Result<ApiResponse<StorefrontCollectionData>, ApiError> {
     Ok(ApiResponse::ok(storefront_data(
         state
             .storefront_collections
-            .get(&actor, &path.handle)
+            .get(&actor, query.locale.as_deref(), &path.handle)
             .await?,
     )))
 }
@@ -439,6 +446,7 @@ fn storefront_data(v: StorefrontCollectionItem) -> StorefrontCollectionData {
         title: v.title,
         description: v.description,
         product_count: v.product_count,
+        locale: v.locale.as_str().into(),
     }
 }
 fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {
@@ -595,6 +603,37 @@ mod tests {
             .to_owned();
         let detail = format!("{base}/{collection_id}");
         let publication = format!("{detail}/publications/{}", channel.as_uuid());
+        let locale_base = format!(
+            "/admin/v1/merchant-accounts/{}/stores/{}/locales/fr",
+            account.as_uuid(),
+            store.as_uuid()
+        );
+        assert_eq!(
+            router(owner_state.clone())
+                .oneshot(request(
+                    Method::PUT,
+                    &locale_base,
+                    Some(&format!("enable-fr-{suffix}")),
+                    None,
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            router(owner_state.clone())
+                .oneshot(request(
+                    Method::PUT,
+                    &format!("{detail}/translations/fr"),
+                    Some(&format!("translate-fr-{suffix}")),
+                    Some(json!({"title":"En vedette","description":"Collection française"})),
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
 
         assert_eq!(
             router(owner_state.clone())
@@ -693,6 +732,19 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["data"]["product_count"], 2);
+        let response = router(owner_state.clone())
+            .oneshot(
+                Request::get("/store/v1/collections/featured?locale=fr")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let localized = response_json(response).await;
+        assert_eq!(localized["data"]["locale"], "fr");
+        assert_eq!(localized["data"]["title"], "En vedette");
         let response = router(owner_state.clone())
             .oneshot(
                 Request::get("/store/v1/products?collection=featured")

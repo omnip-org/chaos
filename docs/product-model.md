@@ -83,6 +83,10 @@ An exact amount in integer minor units paired with one ISO 4217 currency. Arithm
 
 A revocable machine credential bound to one Store and an explicit set of capabilities. Publishable keys identify public Store API clients. Secret keys authenticate trusted integrations and MCP clients. Plaintext secrets are visible only when a key is created.
 
+### Locale
+
+A canonical bounded BCP 47 language tag configured per Store. Every Store has one default Locale and may enable additional Locales. Product and Variant titles, Product and Collection descriptions, Collection titles, and Media alternative text may be translated; handles, SKUs, identifiers, lifecycle state, money, and inventory remain canonical. Exact translation, enabled primary-language translation, and canonical content form the fixed fallback chain.
+
 ### Customer
 
 A Store-owned shopping profile linked to one verified global User. Customers hold reusable contact data and saved addresses. Immutable shopper links recover Order history across devices without replacing possession-bound guest ownership. The same User has independent Customer profiles in different Stores.
@@ -111,6 +115,7 @@ A Store-owned connection to one external payment provider account. Its provider 
 - Provider-neutral Payment Attempt and Refund state machines, Store-owned Provider administration, and a sandbox adapter.
 - Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
 - First-party behavior collection, active-engagement sessions, Store Analytics Policy, consent-aware identity links, retention, data-subject erasure, and typed trusted commerce facts.
+- Store-scoped Catalog localization with deterministic Storefront resolution and immutable Cart-to-Order Locale and text snapshots.
 
 ### Next
 
@@ -120,6 +125,6 @@ A Store-owned connection to one external payment provider account. Its provider 
 
 ### Reserved
 
-- Localization, customer segments, exchanges, and advanced logistics.
+- Customer segments, exchanges, and advanced logistics.
 - MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.
 - Advanced experimentation, recommendations, customer scoring, and cross-Store analytics.

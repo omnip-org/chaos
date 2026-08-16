@@ -65,6 +65,7 @@ CREATE TYPE merchant.sales_channel_kind AS ENUM (
 CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
 CREATE TYPE merchant.store_domain_status AS ENUM ('pending', 'verified', 'archived');
 CREATE TYPE merchant.store_domain_event_kind AS ENUM ('created', 'verified', 'archived');
+CREATE TYPE merchant.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
 CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
 CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
 CREATE TYPE merchant.api_key_scope AS ENUM (
@@ -91,6 +92,7 @@ CREATE TYPE catalog.collection_event_kind AS ENUM (
 CREATE TYPE catalog.media_kind AS ENUM ('image', 'video');
 CREATE TYPE catalog.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
 CREATE TYPE catalog.media_event_kind AS ENUM ('created', 'ready', 'archived');
+CREATE TYPE catalog.translation_event_kind AS ENUM ('upserted', 'removed');
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
 CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
@@ -333,6 +335,7 @@ CREATE TABLE merchant.stores (
     name                 TEXT                     NOT NULL,
     default_region       CHAR(2)                  NOT NULL DEFAULT 'US',
     default_currency     CHAR(3)                  NOT NULL DEFAULT 'USD',
+    default_locale       VARCHAR(63)              NOT NULL DEFAULT 'en-US',
     status               merchant.store_status    NOT NULL DEFAULT 'draft',
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -352,11 +355,81 @@ CREATE TABLE merchant.stores (
     ),
     CONSTRAINT stores_currency_format_check CHECK (
         default_currency ~ '^[A-Z]{3}$'
+    ),
+    CONSTRAINT stores_default_locale_check CHECK (
+        default_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
     )
 );
 
 CREATE INDEX stores_merchant_account_status_idx
     ON merchant.stores (merchant_account_id, status);
+
+CREATE TABLE merchant.store_locales (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    locale              VARCHAR(63) NOT NULL,
+    created_by_user_id  UUID        NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, locale),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT store_locales_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    )
+);
+
+CREATE TABLE merchant.store_locale_events (
+    id                  UUID                             NOT NULL PRIMARY KEY,
+    merchant_account_id UUID                             NOT NULL,
+    store_id            UUID                             NOT NULL,
+    locale              VARCHAR(63)                      NOT NULL,
+    previous_locale     VARCHAR(63),
+    event_kind          merchant.store_locale_event_kind NOT NULL,
+    actor_user_id       UUID                             NOT NULL,
+    occurred_at         TIMESTAMPTZ                      NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    CONSTRAINT store_locale_events_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+        AND (previous_locale IS NULL
+            OR previous_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
+    ),
+    CONSTRAINT store_locale_events_shape_check CHECK (
+        (event_kind = 'default_changed' AND previous_locale IS NOT NULL)
+        OR (event_kind <> 'default_changed' AND previous_locale IS NULL)
+    )
+);
+
+CREATE INDEX store_locale_events_store_occurred_idx
+    ON merchant.store_locale_events (merchant_account_id, store_id, occurred_at, id);
+
+CREATE FUNCTION merchant.prevent_default_locale_removal()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM merchant.stores
+        WHERE merchant_account_id = OLD.merchant_account_id
+          AND id = OLD.store_id
+          AND default_locale = OLD.locale
+    ) THEN
+        RAISE EXCEPTION 'the default Store Locale cannot be disabled'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER store_locales_protect_default
+BEFORE DELETE ON merchant.store_locales
+FOR EACH ROW EXECUTE FUNCTION merchant.prevent_default_locale_removal();
 
 CREATE TABLE merchant.sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
@@ -562,6 +635,32 @@ CREATE TABLE catalog.products (
 CREATE INDEX products_store_status_created_idx
     ON catalog.products (merchant_account_id, store_id, status, created_at DESC, id DESC);
 
+CREATE TABLE catalog.product_translations (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    product_id          UUID        NOT NULL,
+    locale              VARCHAR(63) NOT NULL,
+    title               TEXT        NOT NULL,
+    description         TEXT        NOT NULL DEFAULT '',
+    updated_by_user_id  UUID        NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, product_id, locale),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT product_translations_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
+    CONSTRAINT product_translations_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT product_translations_description_length_check CHECK (
+        length(description) <= 100000
+    )
+);
+
 CREATE TABLE catalog.product_options (
     id                   UUID                 NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                 NOT NULL,
@@ -645,6 +744,57 @@ CREATE UNIQUE INDEX product_variants_store_sku_key
 CREATE INDEX product_variants_product_status_idx
     ON catalog.product_variants (merchant_account_id, store_id, product_id, status);
 
+CREATE TABLE catalog.product_variant_translations (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    product_id          UUID        NOT NULL,
+    product_variant_id  UUID        NOT NULL,
+    locale              VARCHAR(63) NOT NULL,
+    title               TEXT        NOT NULL,
+    updated_by_user_id  UUID        NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, product_id, product_variant_id, locale),
+    FOREIGN KEY (merchant_account_id, store_id, product_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, product_id, id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id, locale)
+        REFERENCES catalog.product_translations(
+            merchant_account_id, store_id, product_id, locale
+        ) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT product_variant_translations_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
+    CONSTRAINT product_variant_translations_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    )
+);
+
+CREATE TABLE catalog.product_translation_events (
+    id                  UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id UUID                           NOT NULL,
+    store_id            UUID                           NOT NULL,
+    product_id          UUID                           NOT NULL,
+    locale              VARCHAR(63)                    NOT NULL,
+    event_kind          catalog.translation_event_kind NOT NULL,
+    actor_user_id       UUID                           NOT NULL,
+    occurred_at         TIMESTAMPTZ                    NOT NULL,
+
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    CONSTRAINT product_translation_events_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    )
+);
+
+CREATE INDEX product_translation_events_product_occurred_idx
+    ON catalog.product_translation_events (
+        merchant_account_id, store_id, product_id, occurred_at, id
+    );
+
 CREATE TABLE catalog.variant_selected_options (
     merchant_account_id  UUID    NOT NULL,
     store_id             UUID    NOT NULL,
@@ -720,6 +870,55 @@ CREATE TABLE catalog.collections (
 CREATE INDEX collections_store_status_created_idx
     ON catalog.collections (
         merchant_account_id, store_id, status, created_at DESC, id DESC
+    );
+
+CREATE TABLE catalog.collection_translations (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    collection_id       UUID        NOT NULL,
+    locale              VARCHAR(63) NOT NULL,
+    title               TEXT        NOT NULL,
+    description         TEXT        NOT NULL DEFAULT '',
+    updated_by_user_id  UUID        NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, collection_id, locale),
+    FOREIGN KEY (merchant_account_id, store_id, collection_id)
+        REFERENCES catalog.collections(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT collection_translations_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
+    CONSTRAINT collection_translations_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT collection_translations_description_length_check CHECK (
+        length(description) <= 100000
+    )
+);
+
+CREATE TABLE catalog.collection_translation_events (
+    id                  UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id UUID                           NOT NULL,
+    store_id            UUID                           NOT NULL,
+    collection_id       UUID                           NOT NULL,
+    locale              VARCHAR(63)                    NOT NULL,
+    event_kind          catalog.translation_event_kind NOT NULL,
+    actor_user_id       UUID                           NOT NULL,
+    occurred_at         TIMESTAMPTZ                    NOT NULL,
+
+    FOREIGN KEY (merchant_account_id, store_id, collection_id)
+        REFERENCES catalog.collections(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    CONSTRAINT collection_translation_events_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    )
+);
+
+CREATE INDEX collection_translation_events_collection_occurred_idx
+    ON catalog.collection_translation_events (
+        merchant_account_id, store_id, collection_id, occurred_at, id
     );
 
 CREATE TABLE catalog.collection_products (
@@ -871,6 +1070,57 @@ CREATE UNIQUE INDEX media_assets_product_position_active_idx
 CREATE INDEX media_assets_product_status_position_idx
     ON catalog.media_assets (
         merchant_account_id, store_id, product_id, status, position, id
+    );
+
+CREATE TABLE catalog.media_asset_translations (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    product_id          UUID        NOT NULL,
+    media_asset_id      UUID        NOT NULL,
+    locale              VARCHAR(63) NOT NULL,
+    alt_text            TEXT        NOT NULL DEFAULT '',
+    updated_by_user_id  UUID        NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    updated_at          TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, product_id, media_asset_id, locale),
+    FOREIGN KEY (merchant_account_id, store_id, media_asset_id)
+        REFERENCES catalog.media_assets(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT media_asset_translations_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
+    CONSTRAINT media_asset_translations_alt_text_check CHECK (
+        length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'
+    )
+);
+
+CREATE TABLE catalog.media_translation_events (
+    id                  UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id UUID                           NOT NULL,
+    store_id            UUID                           NOT NULL,
+    product_id          UUID                           NOT NULL,
+    media_asset_id      UUID                           NOT NULL,
+    locale              VARCHAR(63)                    NOT NULL,
+    event_kind          catalog.translation_event_kind NOT NULL,
+    actor_user_id       UUID                           NOT NULL,
+    occurred_at         TIMESTAMPTZ                    NOT NULL,
+
+    FOREIGN KEY (merchant_account_id, store_id, media_asset_id)
+        REFERENCES catalog.media_assets(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    CONSTRAINT media_translation_events_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    )
+);
+
+CREATE INDEX media_translation_events_asset_occurred_idx
+    ON catalog.media_translation_events (
+        merchant_account_id, store_id, media_asset_id, occurred_at, id
     );
 
 CREATE TABLE catalog.media_events (
@@ -1332,6 +1582,7 @@ CREATE TABLE sales.carts (
     customer_id          UUID,
     price_list_id        UUID                NOT NULL,
     currency             CHAR(3)             NOT NULL,
+    locale               VARCHAR(63)         NOT NULL DEFAULT 'en-US',
     status               sales.cart_status   NOT NULL DEFAULT 'active',
     version              BIGINT              NOT NULL DEFAULT 0,
     created_at           TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1348,6 +1599,9 @@ CREATE TABLE sales.carts (
     FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
         REFERENCES pricing.price_lists(merchant_account_id, store_id, id, currency),
     CONSTRAINT carts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT carts_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
     CONSTRAINT carts_version_nonnegative_check CHECK (version >= 0)
 );
 
@@ -1410,6 +1664,7 @@ CREATE TABLE sales.checkouts (
     price_list_id          UUID                    NOT NULL,
     inventory_reservation_id UUID,
     currency               CHAR(3)                 NOT NULL,
+    locale                 VARCHAR(63)             NOT NULL DEFAULT 'en-US',
     status                 sales.checkout_status   NOT NULL DEFAULT 'pending',
     subtotal_amount_minor  BIGINT                  NOT NULL,
     discount_amount_minor  BIGINT                  NOT NULL,
@@ -1439,6 +1694,9 @@ CREATE TABLE sales.checkouts (
     FOREIGN KEY (merchant_account_id, store_id, inventory_reservation_id)
         REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
     CONSTRAINT checkouts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT checkouts_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
     CONSTRAINT checkouts_amounts_check CHECK (
         subtotal_amount_minor >= 0
         AND discount_amount_minor >= 0
@@ -1663,6 +1921,7 @@ CREATE TABLE sales.orders (
     inventory_reservation_id UUID,
     price_list_id            UUID                  NOT NULL,
     currency                 CHAR(3)               NOT NULL,
+    locale                   VARCHAR(63)           NOT NULL DEFAULT 'en-US',
     status                   sales.order_status    NOT NULL DEFAULT 'pending',
     fulfillment_status       sales.order_fulfillment_status NOT NULL DEFAULT 'unfulfilled',
     delivery_status          sales.order_delivery_status NOT NULL DEFAULT 'not_delivered',
@@ -1689,6 +1948,9 @@ CREATE TABLE sales.orders (
     FOREIGN KEY (merchant_account_id, store_id, inventory_reservation_id)
         REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
     CONSTRAINT orders_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT orders_locale_check CHECK (
+        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
+    ),
     CONSTRAINT orders_amounts_check CHECK (
         subtotal_amount_minor >= 0
         AND discount_amount_minor >= 0
@@ -4356,6 +4618,8 @@ ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant.store_locales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant.store_locale_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_domains ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_domain_events ENABLE ROW LEVEL SECURITY;
@@ -4363,16 +4627,23 @@ ALTER TABLE merchant.sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_translations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_option_values ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_variants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_variant_translations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.product_translation_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.variant_selected_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collection_translations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collection_translation_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.collection_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.media_asset_translations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.media_translation_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.media_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
@@ -4502,6 +4773,26 @@ CREATE POLICY merchant_account_isolation ON merchant.stores
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON merchant.store_locales
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.store_locale_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON merchant.store_currencies
     USING (
         merchant_account_id =
@@ -4572,6 +4863,16 @@ CREATE POLICY merchant_account_isolation ON catalog.products
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON catalog.product_translations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON catalog.product_options
     USING (
         merchant_account_id =
@@ -4602,6 +4903,26 @@ CREATE POLICY merchant_account_isolation ON catalog.product_variants
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON catalog.product_variant_translations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.product_translation_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE POLICY merchant_account_isolation ON catalog.variant_selected_options
     USING (
         merchant_account_id =
@@ -4623,6 +4944,26 @@ CREATE POLICY merchant_account_isolation ON catalog.product_publications
     );
 
 CREATE POLICY merchant_account_isolation ON catalog.collections
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collection_translations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collection_translation_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -4663,6 +5004,26 @@ CREATE POLICY merchant_account_isolation ON catalog.collection_events
     );
 
 CREATE POLICY merchant_account_isolation ON catalog.media_assets
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.media_asset_translations
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.media_translation_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -6685,10 +7046,14 @@ REVOKE UPDATE, DELETE ON analytics.erasure_requests FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
 REVOKE DELETE ON merchant.store_domains FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON merchant.store_domain_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON merchant.store_locale_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON catalog.collection_translation_events FROM chaos_runtime;
 REVOKE DELETE ON catalog.collections FROM chaos_runtime;
 REVOKE DELETE ON catalog.media_assets FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON catalog.media_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON catalog.media_translation_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON catalog.product_translation_events FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

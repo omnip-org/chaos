@@ -8,7 +8,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode,
+    CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::{InventoryReservationId, StockBalance},
@@ -42,6 +42,7 @@ type CartHeaderRow = (
     Uuid,
     Uuid,
     Uuid,
+    String,
     String,
     String,
     i64,
@@ -217,6 +218,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         currency: Option<CurrencyCode>,
+        requested_locale: Option<Locale>,
         request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
         let shopper_id = shopper.shopper_id;
@@ -237,6 +239,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             select_price_list(&mut transaction, actor, channel_id, currency)
                 .await?
                 .ok_or_else(price_context_unavailable)?;
+        let locale = select_locale(&mut transaction, actor, requested_locale).await?;
         let cart = Cart::create(
             actor.merchant_account_id,
             actor.store_id,
@@ -246,10 +249,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO sales.carts \
-             (id, merchant_account_id, store_id, shopper_id, customer_id, sales_channel_id, price_list_id, currency) \
+             (id, merchant_account_id, store_id, shopper_id, customer_id, sales_channel_id, price_list_id, currency, locale) \
              VALUES ($1, $2, $3, $4, \
                      (SELECT customer_id FROM sales.customer_shopper_links WHERE merchant_account_id = $2 \
-                        AND store_id = $3 AND shopper_id = $4 AND sales_channel_id = $5), $5, $6, $7)",
+                        AND store_id = $3 AND shopper_id = $4 AND sales_channel_id = $5), $5, $6, $7, $8)",
         )
         .bind(cart.id().as_uuid())
         .bind(actor.merchant_account_id.as_uuid())
@@ -258,6 +261,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
         .bind(currency.as_str())
+        .bind(locale.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -313,12 +317,14 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         }
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
         let currency = parse_currency(&header.2)?;
+        let locale = parse_locale(&header.3)?;
         let row = resolve_variant(
             &mut transaction,
             actor,
             SalesChannelId::from_uuid(header.0),
             PriceListId::from_uuid(header.1),
             product_variant_id,
+            &locale,
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
@@ -431,6 +437,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             return Err(cart_not_found(cart_id));
         }
         let currency = parse_currency(&header.2)?;
+        let locale = parse_locale(&header.3)?;
         require_price_list_active(
             &mut transaction,
             actor,
@@ -559,6 +566,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             shopper.shopper_id,
             channel_id,
             &checkout,
+            &locale,
         )
         .await?;
         let result = sqlx::query(
@@ -696,10 +704,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         sqlx::query(
             "INSERT INTO sales.orders \
              (id, merchant_account_id, store_id, sales_channel_id, checkout_id, \
-              shopper_id, customer_id, inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
+              shopper_id, customer_id, inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
              SELECT $5, merchant_account_id, store_id, sales_channel_id, id, shopper_id, customer_id, \
-                    inventory_reservation_id, price_list_id, currency, subtotal_amount_minor, \
+                    inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
                     discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $6, $6 \
              FROM sales.checkouts WHERE merchant_account_id = $1 AND store_id = $2 \
                AND sales_channel_id = $3 AND id = $4",
@@ -961,16 +969,91 @@ async fn select_price_list(
         .transpose()
 }
 
+async fn select_locale(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    requested: Option<Locale>,
+) -> Result<Locale, ApplicationError> {
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let default = default.ok_or_else(price_context_unavailable)?;
+    let selected = requested.unwrap_or(parse_locale(&default)?);
+    if selected.as_str() == default {
+        return Ok(selected);
+    }
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(selected.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if enabled {
+        Ok(selected)
+    } else {
+        Err(ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field: "locale",
+                reason: "must be enabled for the Store".into(),
+            }],
+        })
+    }
+}
+
+async fn translation_locales(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    locale: &Locale,
+) -> Result<(Option<String>, Option<String>), ApplicationError> {
+    let default: String = sqlx::query_scalar(
+        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if locale.as_str() == default {
+        return Ok((None, None));
+    }
+    let language = locale.language();
+    let primary = if language != locale.as_str() && language != default {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(language)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .then(|| language.to_owned())
+    } else {
+        None
+    };
+    Ok((Some(locale.as_str().to_owned()), primary))
+}
+
 async fn resolve_variant(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
+    locale: &Locale,
 ) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64, bool)>, ApplicationError>
 {
+    let translations = translation_locales(transaction, actor, locale).await?;
     sqlx::query_as(
-        "SELECT product.id, product.title, variant.title, variant.sku::text, \
+        "SELECT product.id, COALESCE((SELECT translation.title FROM catalog.product_translations AS translation WHERE translation.merchant_account_id=product.merchant_account_id AND translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM catalog.product_variant_translations AS translation WHERE translation.merchant_account_id=variant.merchant_account_id AND translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
                 variant.requires_shipping, variant.track_inventory, price.amount_minor, \
                 price_list.tax_inclusive \
          FROM catalog.product_variants AS variant \
@@ -999,6 +1082,8 @@ async fn resolve_variant(
     .bind(channel_id.as_uuid())
     .bind(price_list_id.as_uuid())
     .bind(variant_id.as_uuid())
+    .bind(translations.0.as_deref())
+    .bind(translations.1.as_deref())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)
@@ -1065,9 +1150,9 @@ async fn lock_active_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-        "SELECT sales_channel_id, price_list_id, currency::text, status::text \
+) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, String)>(
+        "SELECT sales_channel_id, price_list_id, currency::text, locale, status::text \
          FROM sales.carts WHERE merchant_account_id = $1 AND store_id = $2 \
            AND sales_channel_id = $3 AND id = $4 FOR UPDATE",
     )
@@ -1079,10 +1164,10 @@ async fn lock_active_cart(
     .await
     .map_err(database_error)?
     .ok_or_else(|| cart_not_found(cart_id))?;
-    if row.3 != "active" {
+    if row.4 != "active" {
         return Err(cart_not_active());
     }
-    Ok((row.0, row.1, row.2))
+    Ok((row.0, row.1, row.2, row.3))
 }
 
 async fn load_cart(
@@ -1091,7 +1176,7 @@ async fn load_cart(
     cart_id: CartId,
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
-        "SELECT id, shopper_id, price_list_id, currency::text, status::text, version, created_at, updated_at \
+        "SELECT id, shopper_id, price_list_id, currency::text, locale, status::text, version, created_at, updated_at \
          FROM sales.carts WHERE merchant_account_id = $1 AND store_id = $2 \
            AND sales_channel_id = $3 AND id = $4",
     )
@@ -1106,7 +1191,8 @@ async fn load_cart(
         return Ok(None);
     };
     let currency = parse_currency(&row.3)?;
-    let status = CartStatus::parse(&row.4).ok_or_else(corrupt_sales_state)?;
+    let locale = parse_locale(&row.4)?;
+    let status = CartStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?;
     let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
     let items = lines
         .into_iter()
@@ -1122,12 +1208,13 @@ async fn load_cart(
         shopper_id: ShopperId::from_uuid(row.1),
         price_list_id: PriceListId::from_uuid(row.2),
         currency,
+        locale,
         status,
-        version: u64::try_from(row.5).map_err(unexpected_conversion)?,
+        version: u64::try_from(row.6).map_err(unexpected_conversion)?,
         lines: items,
         subtotal_amount_minor: subtotal.amount_minor(),
-        created_at: row.6,
-        updated_at: row.7,
+        created_at: row.7,
+        updated_at: row.8,
     }))
 }
 
@@ -1181,7 +1268,8 @@ async fn refresh_cart_lines(
     currency: CurrencyCode,
 ) -> Result<Vec<CartLine>, ApplicationError> {
     let rows = sqlx::query_as::<_, CartLineRow>(
-        "SELECT product.id, variant.id, product.title, variant.title, variant.sku::text, \
+        "SELECT product.id, variant.id, cart_line.product_title, cart_line.variant_title, \
+                cart_line.sku::text, \
                 variant.requires_shipping, variant.track_inventory, cart_line.quantity, \
                 price.amount_minor, price_list.tax_inclusive \
          FROM sales.cart_lines AS cart_line \
@@ -1372,16 +1460,17 @@ async fn insert_checkout(
     shopper_id: ShopperId,
     channel_id: SalesChannelId,
     checkout: &Checkout,
+    locale: &Locale,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.checkouts \
          (id, merchant_account_id, store_id, cart_id, shopper_id, customer_id, sales_channel_id, price_list_id, \
-          inventory_reservation_id, currency, subtotal_amount_minor, discount_amount_minor, \
+          inventory_reservation_id, currency, locale, subtotal_amount_minor, discount_amount_minor, \
           tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at) \
          VALUES ($1, $2, $3, $4, $5, \
                  (SELECT customer_id FROM sales.customer_shopper_links WHERE merchant_account_id = $2 \
                     AND store_id = $3 AND shopper_id = $5 AND sales_channel_id = $6), \
-                 $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                 $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
     )
     .bind(checkout.id().as_uuid())
     .bind(actor.merchant_account_id.as_uuid())
@@ -1396,6 +1485,7 @@ async fn insert_checkout(
             .map(InventoryReservationId::as_uuid),
     )
     .bind(checkout.currency().as_str())
+    .bind(locale.as_str())
     .bind(checkout.subtotal().amount_minor())
     .bind(checkout.discount().amount_minor())
     .bind(checkout.tax().amount_minor())
@@ -2172,6 +2262,15 @@ async fn load_checkout(
     let Some(row) = row else {
         return Ok(None);
     };
+    let locale: String = sqlx::query_scalar(
+        "SELECT locale FROM sales.checkouts WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
     let shipping = load_checkout_shipping(transaction, actor, checkout_id).await?;
     let tax_rule = load_checkout_tax(transaction, actor, checkout_id).await?;
@@ -2197,6 +2296,7 @@ async fn load_checkout(
         inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
         price_list_id: PriceListId::from_uuid(row.5),
         currency: parse_currency(&row.6)?,
+        locale: parse_locale(&locale)?,
         status: row.7,
         identity,
         subtotal_amount_minor: row.8,
@@ -2256,6 +2356,15 @@ pub(super) async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
+    let locale: String = sqlx::query_scalar(
+        "SELECT locale FROM sales.orders WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     let derived_statuses = sqlx::query_as::<_, (String, String)>(
         "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -2312,6 +2421,7 @@ pub(super) async fn load_order(
         inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
         price_list_id: PriceListId::from_uuid(row.5),
         currency: parse_currency(&row.6)?,
+        locale: parse_locale(&locale)?,
         status: OrderStatus::parse(&row.7).ok_or_else(corrupt_sales_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
             .ok_or_else(corrupt_sales_state)?,
@@ -2379,6 +2489,8 @@ struct CartSnapshot {
     shopper_id: Uuid,
     price_list_id: Uuid,
     currency: String,
+    #[serde(default = "default_locale_snapshot")]
+    locale: String,
     status: String,
     version: u64,
     lines: Vec<CartLineSnapshot>,
@@ -2412,6 +2524,8 @@ struct CheckoutSnapshot {
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
+    #[serde(default = "default_locale_snapshot")]
+    locale: String,
     status: String,
     identity: CheckoutIdentitySnapshot,
     subtotal_amount_minor: i64,
@@ -2455,6 +2569,8 @@ struct OrderSnapshot {
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
+    #[serde(default = "default_locale_snapshot")]
+    locale: String,
     status: String,
     fulfillment_status: String,
     delivery_status: String,
@@ -2571,6 +2687,7 @@ fn cart_snapshot(detail: &CartDetail) -> Result<Value, ApplicationError> {
         shopper_id: detail.shopper_id.as_uuid(),
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
+        locale: detail.locale.as_str().into(),
         status: detail.status.as_str().into(),
         version: detail.version,
         lines: detail.lines.iter().map(CartLineSnapshot::from).collect(),
@@ -2588,6 +2705,7 @@ fn replay_cart(value: Value) -> Result<CartDetail, ApplicationError> {
         shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
+        locale: parse_locale(&snapshot.locale)?,
         status: CartStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
         version: snapshot.version,
         lines: snapshot.lines.into_iter().map(CartLineItem::from).collect(),
@@ -2608,6 +2726,7 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
             .map(InventoryReservationId::as_uuid),
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
+        locale: detail.locale.as_str().into(),
         status: detail.status.clone(),
         identity: CheckoutIdentitySnapshot::from(&detail.identity),
         subtotal_amount_minor: detail.subtotal_amount_minor,
@@ -2649,6 +2768,7 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
             .map(InventoryReservationId::from_uuid),
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
+        locale: parse_locale(&snapshot.locale)?,
         status: snapshot.status,
         identity: snapshot.identity.try_into()?,
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
@@ -2684,6 +2804,7 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
             .map(InventoryReservationId::as_uuid),
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
+        locale: detail.locale.as_str().into(),
         status: detail.status.as_str().into(),
         fulfillment_status: detail.fulfillment_status.as_str().into(),
         delivery_status: detail.delivery_status.as_str().into(),
@@ -2737,6 +2858,7 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
             .map(InventoryReservationId::from_uuid),
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
+        locale: parse_locale(&snapshot.locale)?,
         status: OrderStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&snapshot.fulfillment_status)
             .ok_or_else(corrupt_sales_state)?,
@@ -3178,6 +3300,14 @@ fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
     CurrencyCode::parse(value).map_err(ApplicationError::from)
 }
 
+fn parse_locale(value: &str) -> Result<Locale, ApplicationError> {
+    Locale::parse(value).map_err(Into::into)
+}
+
+fn default_locale_snapshot() -> String {
+    "en-US".into()
+}
+
 fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
     value
         .format(&time::format_description::well_known::Rfc3339)
@@ -3537,6 +3667,47 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
+        for locale in ["zh", "zh-CN"] {
+            sqlx::query(
+                "INSERT INTO merchant.store_locales \
+                 (merchant_account_id, store_id, locale, created_by_user_id, created_at) \
+                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+            )
+            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
+            .bind(locale)
+            .bind(user_id.as_uuid())
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO catalog.product_translations \
+             (merchant_account_id, store_id, product_id, locale, title, description, \
+              updated_by_user_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'zh', 'Localized Checkout Product', '', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .bind(user_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO catalog.product_variant_translations \
+             (merchant_account_id, store_id, product_id, product_variant_id, locale, title, \
+              updated_by_user_id, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, 'zh', 'Localized Default', $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .bind(variant_id.as_uuid())
+        .bind(user_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_publications \
              (merchant_account_id, store_id, product_id, sales_channel_id) \
@@ -3617,11 +3788,13 @@ mod tests {
             .create_cart(CreateCartInput {
                 actor: actor.clone(),
                 currency: None,
+                locale: Some("zh-CN".into()),
                 idempotency: request(format!("create-cart-{suffix}"), 1),
             })
             .await
             .unwrap();
         assert!(cart.lines.is_empty());
+        assert_eq!(cart.locale.as_str(), "zh-CN");
         let unrelated_shopper = ShopperActor {
             machine: actor.machine.clone(),
             shopper_id: ShopperId::new(),
@@ -3639,16 +3812,31 @@ mod tests {
             .unwrap();
         assert_eq!(updated.subtotal_amount_minor, 3_750);
         assert_eq!(updated.version, 1);
+        assert_eq!(updated.lines[0].product_title, "Localized Checkout Product");
+        assert_eq!(updated.lines[0].variant_title, "Localized Default");
         let replayed_creation = service
             .create_cart(CreateCartInput {
                 actor: actor.clone(),
                 currency: None,
+                locale: Some("zh-CN".into()),
                 idempotency: request(format!("create-cart-{suffix}"), 1),
             })
             .await
             .unwrap();
         assert!(replayed_creation.lines.is_empty());
         assert_eq!(replayed_creation.version, 0);
+
+        sqlx::query(
+            "UPDATE catalog.product_translations SET title = 'Changed Translation' \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+               AND locale = 'zh'",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
 
         let now = OffsetDateTime::now_utc();
         let first_service = service.clone();
@@ -3694,7 +3882,8 @@ mod tests {
         assert_eq!(first.tax_amount_minor, 304);
         assert_eq!(first.total_amount_minor, 3_679);
         assert_eq!(first.promotion.as_ref().unwrap().handle(), "automatic-ten");
-        assert_eq!(first.lines[0].product_title, "Checkout Product");
+        assert_eq!(first.locale.as_str(), "zh-CN");
+        assert_eq!(first.lines[0].product_title, "Localized Checkout Product");
         assert!(first.inventory_reservation_id.is_some());
         assert_eq!(first.identity.contact().email(), "guest@example.com");
         assert_eq!(

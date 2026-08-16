@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chaos_domain::{
+    Locale,
     catalog::{CollectionContent, CollectionId, CollectionStatus, ProductId},
     merchant::{SalesChannelId, StoreId},
 };
@@ -42,6 +43,7 @@ pub struct StorefrontCollectionItem {
     pub title: String,
     pub description: String,
     pub product_count: u32,
+    pub locale: Locale,
 }
 
 pub struct CreateCollectionRecord {
@@ -123,6 +125,7 @@ pub trait CollectionRepository: Send + Sync {
     async fn list_storefront(
         &self,
         actor: &MachineActor,
+        locale: Option<Locale>,
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCollectionItem>, ApplicationError>;
@@ -130,6 +133,7 @@ pub trait CollectionRepository: Send + Sync {
     async fn get_storefront_by_handle(
         &self,
         actor: &MachineActor,
+        locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCollectionItem>, ApplicationError>;
 }
