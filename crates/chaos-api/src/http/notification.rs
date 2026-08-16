@@ -73,7 +73,7 @@ mod tests {
         },
     };
     use chaos_infrastructure::email::ResendWebhookVerifier;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use secrecy::SecretString;
     use sha2::Sha256;
     use time::OffsetDateTime;

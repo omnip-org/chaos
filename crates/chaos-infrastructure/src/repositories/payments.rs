@@ -25,7 +25,7 @@ use chaos_domain::{
     pricing::Money,
     sales::{CheckoutId, Order, OrderId, OrderStatus},
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
