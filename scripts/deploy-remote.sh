@@ -42,31 +42,44 @@ docker volume create chaos-postgres-data >/dev/null
 docker volume create chaos-redis-data >/dev/null
 docker volume create chaos-vault-data >/dev/null
 
-# Start the repository-managed Vault when the deployment points at its Compose
-# service. A sealed Vault is process-healthy but cannot serve secrets until the
-# one-time initialization/unseal procedure has been completed.
+# Bring the repository-managed Vault to a ready (initialized + unsealed +
+# bootstrapped) state fully automatically, so first and subsequent deploys take
+# the same path with no operator on the host. Only runs when the deployment
+# points the application at the Compose Vault service.
+#
+# Unseal shares and the application token are held in a git-ignored host state
+# dir (VAULT_STATE_DIR) alongside the Raft volume. This is the accepted
+# trade-off of unattended Shamir unsealing; switch to a KMS/HSM seal to remove
+# the co-location.
+VAULT_STATE_DIR="${VAULT_STATE_DIR:-.vault}"
+export VAULT_STATE_DIR
 if grep -Eq '^VAULT_ADDR=https://vault:8200/?$' .env; then
+    # Generate the internal CA + server certificate on first deploy so a fresh
+    # host needs no manual pre-step.
     if [ ! -f deploy/vault/tls/ca.pem ] || [ ! -f deploy/vault/tls/vault.pem ] || [ ! -f deploy/vault/tls/vault-key.pem ]; then
-        echo "ERROR: Vault TLS material is missing; run ./scripts/vault-generate-tls.sh first." >&2
-        exit 1
+        echo "Generating Vault TLS material ..."
+        ./scripts/vault-generate-tls.sh
     fi
+
     $COMPOSE up -d --wait vault
 
-    # Compose considers a sealed Vault healthy because the server process is
-    # available for operator actions. Deployment, however, must not continue
-    # until the secret service can actually answer application requests.
-    vault_status="$($COMPOSE exec -T \
-        -e VAULT_ADDR=https://127.0.0.1:8200 \
-        -e VAULT_CACERT=/vault/tls/ca.pem \
-        vault vault status -format=json 2>/dev/null || true)"
-    if ! printf '%s' "$vault_status" | jq -e '.initialized == true' >/dev/null 2>&1; then
-        echo "ERROR: Vault is not initialized; run scripts/vault-initialize.sh as documented." >&2
+    # init-if-needed, unseal-if-needed, bootstrap-if-needed. Each is idempotent,
+    # so this converges whether Vault is brand new or already running.
+    ./scripts/vault-initialize.sh
+    ./scripts/vault-unseal.sh
+    ./scripts/vault-bootstrap.sh
+
+    # Inject the bootstrap-minted token as a runtime-only env override, so the
+    # application connects to Vault without the token ever passing through CI or
+    # PRODUCTION_ENV. compose.ha.yaml loads .env.vault after .env.
+    token_file="${VAULT_TOKEN_OUTPUT:-$VAULT_STATE_DIR/token}"
+    if [ ! -s "$token_file" ]; then
+        echo "ERROR: expected Vault token at $token_file after bootstrap." >&2
         exit 1
     fi
-    if printf '%s' "$vault_status" | jq -e '.sealed == true' >/dev/null 2>&1; then
-        echo "ERROR: Vault is sealed; run scripts/vault-unseal.sh before deploying." >&2
-        exit 1
-    fi
+    umask 077
+    printf 'VAULT_TOKEN=%s\n' "$(cat "$token_file")" > .env.vault.tmp
+    mv .env.vault.tmp .env.vault
 fi
 
 # Pull the new image up front so the swap is fast and atomic-ish.

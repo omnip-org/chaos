@@ -8,6 +8,11 @@ x-api: &api
   env_file:
     - path: .env
       required: false
+    # Runtime-only overrides written by deploy-remote.sh (git-ignored). Holds
+    # VAULT_TOKEN minted by the bootstrap so it never travels through CI. Loaded
+    # after .env, so it wins. Optional so local dev / CI need no file.
+    - path: .env.vault
+      required: false
   environment:
     APP_BIND_ADDR: ${APP_BIND_ADDR:-0.0.0.0:8080}
     DATABASE_URL: ${DATABASE_URL:-postgres://chaos:chaos@postgres:5432/chaos}

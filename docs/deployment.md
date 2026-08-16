@@ -20,29 +20,18 @@ Configure Cloudflare's public origin as the external `AUTH_PUBLIC_BASE_URL` and 
 
 ## Self-hosted Vault KV v2
 
-Vault runs as a non-public Compose service with integrated Raft storage and internal TLS. Generate the internal CA and server certificate before the first start:
+Vault runs as a non-public Compose service with integrated Raft storage and internal TLS. Provisioning is fully automated: `deploy-remote.sh` generates the internal CA and server certificate on the first deploy, then runs three idempotent steps on every deploy — initialize (once), unseal, and bootstrap. First and subsequent deploys take the same path, so no operator ever needs to log in to the host to bring Vault up.
 
-```bash
-./scripts/vault-generate-tls.sh
-docker volume create chaos-vault-data
-docker compose -f compose.yaml -f compose.ha.yaml up -d --wait vault
-```
+The bootstrap enables KV v2, installs the bounded `chaos-api` policy, and mints a one-year orphan application token scoped to create/update/read `secret/data/chaos/stores/*` only. That token is written to a git-ignored host file and injected into the API replicas at runtime through `.env.vault`; it never passes through CI or `PRODUCTION_ENV`. To opt in, set only `VAULT_ADDR=https://vault:8200/` in `PRODUCTION_ENV` — do not set `VAULT_TOKEN`.
 
-Initialize and unseal it once. The output path must be outside the repository and backed by secure offline storage:
+### Host state and the unattended-unseal trade-off
 
-```bash
-VAULT_INIT_OUTPUT=/secure/chaos-vault-init.json ./scripts/vault-initialize.sh
-```
+Because Shamir sealing re-seals Vault on every restart, unattended unsealing requires the shares to be reachable by the deploy. They live, together with the minted application token, in a git-ignored state directory next to the Raft volume (default `/opt/chaos/.vault/`, files `init.json` and `token`, mode `0600`):
 
-The initialization script enables KV v2, installs the bounded `chaos-api` policy, and prints a one-year orphan service token. Put that token in `VAULT_TOKEN`, then remove the initial root token from routine operations. With Shamir sealing, Vault must be unsealed after a restart:
+- `init.json` holds the five unseal shares and the initial root token. **Back it up to secure offline storage** — losing it makes the Vault data unrecoverable.
+- Co-locating the shares with the data volume is the accepted cost of hands-off Shamir unsealing. If that co-location is unacceptable, switch `deploy/vault/config.hcl` to a KMS/HSM `seal` stanza (for example AWS KMS) and drop the unseal step; the rest of the flow is unchanged.
 
-```bash
-VAULT_INIT_OUTPUT=/secure/chaos-vault-init.json ./scripts/vault-unseal.sh
-```
-
-Use a supported KMS/HSM seal when automatic unseal is required. Never store unseal shares beside the Raft volume.
-
-The application token can create, update, and read only `secret/data/chaos/stores/*`. Supply it through `VAULT_TOKEN`; do not use a root token.
+Operators do not run the Vault scripts by hand in normal operation. They exist so the deploy can drive them, and can also be run manually from `/opt/chaos` for recovery.
 
 Operators may still write directly with the Vault CLI. Use a new path and CAS zero so a typo cannot overwrite an existing value:
 
@@ -82,16 +71,18 @@ The response contains a newly generated `vault://secret/chaos/stores/...` refere
 
 Adding or changing a Vault value takes effect on the next Provider operation on both replicas. It does not require a deployment or restart. Create a new path and update the Provider account reference when the 24-hour application-level overlap is required; updating a value in place is immediate but bypasses that overlap evidence.
 
-## First deployment
+## Deployment
 
-Set a version-pinned image and run the deployment script:
+Deploys are fully automated through GitHub Actions: pushing a `v*` tag builds and publishes the image (Release), which triggers Deploy to roll it out over SSH. `deploy.yml` writes `PRODUCTION_ENV` to `/opt/chaos/.env` and runs `deploy-remote.sh`. The same flow serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure.
+
+To roll out manually (or from a fresh checkout on the host):
 
 ```bash
 export CHAOS_IMAGE=ghcr.io/OWNER/chaos:VERSION
 ./scripts/deploy-remote.sh
 ```
 
-The script creates the external volumes if absent, starts the repository-managed Vault, refuses to continue while Vault is uninitialized or sealed, pulls the release image, starts PostgreSQL and Redis, applies migrations once, rolls blue and green independently, starts the gateway, and runs health probes.
+The script creates the external volumes if absent; generates Vault TLS on first run; starts the repository-managed Vault and drives it to initialized + unsealed + bootstrapped; injects the minted Vault token at runtime; pulls the release image; starts PostgreSQL and Redis; applies migrations once; rolls blue and green independently; starts the gateway; and runs health probes. If a replica fails to become healthy the rollout aborts before touching the second replica, so the previous version keeps serving.
 
 Verify the origin and Cloudflare paths:
 
@@ -112,6 +103,6 @@ curl --fail https://api.example.com/health/ready
 
 ## Deployment secrets and rotation
 
-`PRODUCTION_ENV` contains platform bootstrap configuration only: database access, token signing, email, media storage, and Vault access. Store-specific Provider values live in Vault and are not copied into GitHub Actions secrets or `.env`.
+`PRODUCTION_ENV` contains platform bootstrap configuration only: database access, token signing, email, media storage, and `VAULT_ADDR`. It does **not** contain `VAULT_TOKEN` — the deploy mints that on the host and injects it at runtime, so the Vault credential never enters a GitHub Actions secret. Store-specific Provider values live in Vault and are likewise never copied into CI secrets or `.env`.
 
 Changing `PRODUCTION_ENV` causes a normal blue/green rollout. Changing or adding a Vault Provider secret does not.
