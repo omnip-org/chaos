@@ -19,6 +19,7 @@ mod sales;
 mod shopper;
 mod store;
 mod store_administration;
+mod store_domain;
 mod storefront_catalog;
 mod tax;
 
@@ -100,6 +101,12 @@ pub use shopper::{CustomerActor, ShopperActor, ShopperCredentialCodec};
 pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
+};
+pub use store_domain::{
+    CreateStoreDomainRecord, PendingStoreDomainVerification, ResolvedStoreDomain,
+    StoreDomainCreationResult, StoreDomainCreationStatus, StoreDomainItem,
+    StoreDomainOwnershipVerifier, StoreDomainRepository, StoreDomainVerificationMaterial,
+    StoreDomainVerificationMaterialGenerator,
 };
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,

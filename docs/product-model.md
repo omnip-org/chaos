@@ -88,7 +88,7 @@ A Store-owned connection to one external payment provider account. Its provider 
 - `merchant_account_id` is the primary RLS and authorization boundary.
 - Store-owned commerce data also carries `store_id`.
 - The authenticated user selects a merchant account only through a verified membership.
-- Storefront requests currently derive merchant account, Store, and Channel from a publishable key. Verified-domain resolution is reserved.
+- Storefront commerce requests derive merchant account, Store, and Channel from a publishable key. A separate public bootstrap lookup resolves only DNS-verified custom hostnames bound to an active Store and active Web Sales Channel; it does not replace authentication or possession credentials.
 - Integration requests derive merchant account and Store from a scoped secret key. Future MCP tools will reuse that boundary with an additional tool scope.
 - Webhooks derive merchant account and store from a verified local provider mapping.
 - Internal events carry both identifiers whenever the event belongs to a store.
@@ -112,6 +112,6 @@ A Store-owned connection to one external payment provider account. Its provider 
 
 ### Reserved
 
-- Collections, media, localization, domains, customer segments, exchanges, and advanced logistics.
+- Collections, media, localization, customer segments, exchanges, and advanced logistics.
 - MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.
 - Advanced experimentation, recommendations, customer scoring, and cross-Store analytics.

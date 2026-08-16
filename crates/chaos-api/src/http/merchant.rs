@@ -50,6 +50,7 @@ pub(super) enum CursorKind {
     CustomerOrder = 10,
     AdminOrder = 11,
     PaymentProviderAccount = 12,
+    StoreDomain = 13,
 }
 
 #[derive(Deserialize, Serialize)]

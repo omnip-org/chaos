@@ -110,6 +110,15 @@ This audit records current evidence and open gates. A passing test for an implem
 | Destination evidence | Infrastructure mock-HTTP tests inspect Meta and GA4 authentication, purchase mapping, money conversion, pseudonymization, shared Order deduplication identity, and retry classification. The real-router PostgreSQL matrix proves non-disclosing Meta/GA4 configuration, eligible fan-out for every canonical fact, exactly-once queue convergence, successful dispatch, and replay with no second delivery. |
 | Open gates | Phase 9 has no open gates. Phase 10 and the retained Phase 5 capacity artifact remain open for the overall roadmap. |
 
+## Current Phase 10 evidence
+
+| Criterion | Evidence |
+| --- | --- |
+| Store Domain ownership | Canonical lowercase public hostnames bind one Store and one active Web Sales Channel. Owner/administrator creation emits a random 256-bit DNS TXT challenge once and stores only its SHA-256 digest. Pending and verified hostnames are globally exclusive; archived history remains immutable while a later claim requires a fresh row and proof. |
+| Verification and audit | A timeout-bounded Hickory resolver checks only `_chaos-verification.<hostname>` TXT data and performs no merchant-controlled HTTP fetch. Pending, verified, and archived transitions have database-enforced timestamp/actor shapes and append immutable Store-owned events. RLS hides domain and event rows across accounts; runtime privileges forbid event mutation and Domain deletion. |
+| Context resolution | A narrowly granted cross-tenant function accepts only a canonical hostname and returns only a verified binding whose Merchant Account, Store, and Web Sales Channel are all active. The public Store bootstrap endpoint reads the direct `Host` authority, ignores forwarding headers, and does not replace publishable-key, shopper, or Customer authentication. Real-router tests prove pending and archived non-resolution, verified resolution, exact Store/Channel results, cross-account RLS, one-time challenge non-disclosure, audit events, and authorization. |
+| Open gates | Rich Catalog, outbound integrations, MCP, generated SDKs, compatibility automation, and third-party workflows remain open. |
+
 ## Required release commands
 
 Run from a clean PostgreSQL 18 database with the production extensions preloaded:

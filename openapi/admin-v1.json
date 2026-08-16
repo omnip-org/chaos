@@ -474,6 +474,84 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains": {
+      "parameters": [
+        { "$ref": "#/components/parameters/MerchantAccountId" },
+        { "$ref": "#/components/parameters/StoreId" }
+      ],
+      "get": {
+        "operationId": "listStoreDomains",
+        "tags": ["Stores"],
+        "summary": "List Store Domains without verification secrets",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }],
+        "responses": {
+          "200": { "description": "Store Domain page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StoreDomainCollectionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      },
+      "post": {
+        "operationId": "createStoreDomain",
+        "tags": ["Stores"],
+        "summary": "Create a pending Store Domain and issue its DNS TXT challenge once",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateStoreDomain" } } } },
+        "responses": {
+          "201": { "description": "Pending Store Domain with one-time DNS challenge", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StoreDomainCreatedEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains/{domain_id}/verify": {
+      "post": {
+        "operationId": "verifyStoreDomain",
+        "tags": ["Stores"],
+        "summary": "Verify a Store Domain against its DNS TXT challenge",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/MerchantAccountId" },
+          { "$ref": "#/components/parameters/StoreId" },
+          { "name": "domain_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "200": { "description": "Verified Store Domain", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StoreDomainEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains/{domain_id}/archive": {
+      "post": {
+        "operationId": "archiveStoreDomain",
+        "tags": ["Stores"],
+        "summary": "Archive a Store Domain and stop public resolution",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/MerchantAccountId" },
+          { "$ref": "#/components/parameters/StoreId" },
+          { "name": "domain_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "responses": {
+          "200": { "description": "Archived Store Domain", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StoreDomainEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products": {
       "parameters": [
         { "$ref": "#/components/parameters/MerchantAccountId" },
@@ -2406,6 +2484,66 @@
         "required": ["data", "meta"],
         "properties": {
           "data": { "type": "array", "items": { "$ref": "#/components/schemas/SalesChannel" } },
+          "meta": { "$ref": "#/components/schemas/ResponseMeta" }
+        }
+      },
+      "CreateStoreDomain": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hostname", "sales_channel_id"],
+        "properties": {
+          "hostname": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9.-]+$" },
+          "sales_channel_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "StoreDomain": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "store_id", "sales_channel_id", "hostname", "domain_status", "created_by", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "store_id": { "type": "string", "format": "uuid" },
+          "sales_channel_id": { "type": "string", "format": "uuid" },
+          "hostname": { "type": "string", "minLength": 3, "maxLength": 253 },
+          "domain_status": { "type": "string", "enum": ["pending", "verified", "archived"] },
+          "created_by": { "type": "string", "format": "uuid" },
+          "verified_at": { "type": "string", "format": "date-time" },
+          "archived_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "StoreDomainCreated": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "store_id", "sales_channel_id", "hostname", "domain_status", "created_by", "created_at", "updated_at", "verification_record_name", "verification_record_value"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "store_id": { "type": "string", "format": "uuid" },
+          "sales_channel_id": { "type": "string", "format": "uuid" },
+          "hostname": { "type": "string", "minLength": 3, "maxLength": 253 },
+          "domain_status": { "type": "string", "const": "pending" },
+          "created_by": { "type": "string", "format": "uuid" },
+          "verified_at": { "type": "string", "format": "date-time" },
+          "archived_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "verification_record_name": { "type": "string", "readOnly": true },
+          "verification_record_value": { "type": "string", "readOnly": true, "x-sensitive": true, "description": "One-time DNS TXT challenge value. It is never returned by list operations or idempotent replay." }
+        }
+      },
+      "StoreDomainEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/StoreDomain" } }
+      },
+      "StoreDomainCreatedEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/StoreDomainCreated" } }
+      },
+      "StoreDomainCollectionEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data", "meta"],
+        "properties": {
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/StoreDomain" } },
           "meta": { "$ref": "#/components/schemas/ResponseMeta" }
         }
       },

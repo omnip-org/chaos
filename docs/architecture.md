@@ -49,7 +49,7 @@ The hierarchy is `user -> merchant_account -> store -> sales_channel`:
 Account and store resolution must never trust client-supplied identifiers by themselves:
 
 - Admin API requests derive the merchant account from the authenticated user and membership.
-- Storefront API requests currently derive merchant account, Store, and Channel from a publishable key. Verified-domain resolution is reserved.
+- Storefront commerce requests derive merchant account, Store, and Channel from a publishable key. Public custom-domain bootstrap resolution is a separate exact-hostname lookup that returns only DNS-verified bindings to an active Store and active Web Sales Channel; it does not authenticate commerce operations.
 - Future MCP requests will derive merchant account and Store from a scoped secret key; each tool will also enforce its capability scope.
 - Webhooks derive merchant account and store from a locally stored provider mapping after signature verification.
 - Internal jobs carry `merchant_account_id` and `store_id` when applicable and establish a fresh account context in every consumer.
@@ -72,7 +72,7 @@ The pricing domain provides a Money value object with checked arithmetic, same-c
 Suggested implementation order:
 
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
-2. merchant: merchant accounts, memberships, roles, API keys, Stores, and Channels; domain resolution is reserved;
+2. merchant: merchant accounts, memberships, roles, API keys, Stores, Channels, verified Domains, and public domain-context resolution;
 3. catalog: products, variants, options, and publication; collections and media are reserved;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;

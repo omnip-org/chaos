@@ -34,7 +34,7 @@ use chaos_application::{
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
-        MerchantQueries, StoreAdministration,
+        MerchantQueries, StoreAdministration, StoreDomainAdministration,
     },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
@@ -66,12 +66,16 @@ use chaos_infrastructure::{
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
+        PostgresStoreAdministrationRepository, PostgresStoreDomainRepository,
+        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
+    store_domain::{
+        DnsStoreDomainOwnershipVerifier, SecureStoreDomainVerificationMaterialGenerator,
+    },
     stripe::{EnvironmentPaymentSecretResolver, StripePaymentProvider, StripeWebhookVerifier},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -99,6 +103,7 @@ pub struct ApiState {
     pub create_merchant_account: Arc<CreateMerchantAccount>,
     pub create_store: Arc<CreateStore>,
     pub store_administration: Arc<StoreAdministration>,
+    pub store_domain_administration: Arc<StoreDomainAdministration>,
     pub inventory_management: Arc<InventoryManagement>,
     pub create_product: Arc<CreateProduct>,
     pub catalog_queries: Arc<CatalogQueries>,
@@ -170,6 +175,15 @@ impl ApiState {
         let store_administration = StoreAdministration::new(Arc::new(
             PostgresStoreAdministrationRepository::new(infrastructure.runtime_pool()),
         ));
+        let store_domain_administration = StoreDomainAdministration::new(
+            Arc::new(PostgresStoreDomainRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            Arc::new(SecureStoreDomainVerificationMaterialGenerator),
+            Arc::new(DnsStoreDomainOwnershipVerifier::from_system_configuration(
+                settings.dependency_timeout,
+            )?),
+        );
         let inventory_management = InventoryManagement::new(Arc::new(
             PostgresInventoryRepository::new(infrastructure.runtime_pool()),
         ));
@@ -368,6 +382,7 @@ impl ApiState {
             create_merchant_account: Arc::new(create_merchant_account),
             create_store: Arc::new(create_store),
             store_administration: Arc::new(store_administration),
+            store_domain_administration: Arc::new(store_domain_administration),
             inventory_management: Arc::new(inventory_management),
             create_product: Arc::new(create_product),
             catalog_queries: Arc::new(catalog_queries),
@@ -423,6 +438,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
+        .nest("/store/v1", store_admin::domain_resolution_routes())
         .nest("/store/v1", analytics::storefront_routes())
         .nest("/store/v1", storefront_sales::routes())
         .nest("/store/v1", customer::routes())

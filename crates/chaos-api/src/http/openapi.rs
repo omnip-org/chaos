@@ -75,6 +75,15 @@ mod tests {
             specification["paths"]["/analytics/events"]["post"]["security"],
             serde_json::json!([{ "publishableKey": ["analytics:write"] }])
         );
+        assert!(
+            specification["paths"]["/domain-context"]["get"]
+                .get("security")
+                .is_none()
+        );
+        assert_eq!(
+            specification["paths"]["/domain-context"]["get"]["parameters"][0]["name"],
+            "Host"
+        );
         assert_eq!(
             specification["components"]["schemas"]["CollectAnalyticsEvents"]["properties"]["events"]
                 ["maxItems"],
@@ -331,6 +340,21 @@ mod tests {
             specification["paths"]["/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations"]
                 ["put"]["parameters"][0]["$ref"],
             "#/components/parameters/IdempotencyKey"
+        );
+    }
+
+    #[test]
+    fn store_domain_contract_exposes_the_dns_challenge_only_on_creation() {
+        let specification = specification();
+        assert_eq!(
+            specification["components"]["schemas"]["StoreDomainCreated"]["properties"]["verification_record_value"]
+                ["x-sensitive"],
+            true
+        );
+        assert!(
+            specification["components"]["schemas"]["StoreDomain"]["properties"]
+                .get("verification_record_value")
+                .is_none()
         );
     }
 }
