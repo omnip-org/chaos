@@ -2215,7 +2215,7 @@
       "AnalyticsErasureRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "store_id", "selector_kind", "selector_id", "status", "requested_by", "behavior_events_deleted", "sessions_deleted", "identity_links_deleted", "requested_at"],
+        "required": ["id", "store_id", "selector_kind", "selector_id", "status", "requested_by", "behavior_events_deleted", "attribution_results_deleted", "sessions_deleted", "identity_links_deleted", "requested_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "store_id": { "type": "string", "format": "uuid" },
@@ -2224,6 +2224,7 @@
           "status": { "type": "string", "enum": ["pending", "completed"] },
           "requested_by": { "type": "string", "format": "uuid" },
           "behavior_events_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
+          "attribution_results_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
           "sessions_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
           "identity_links_deleted": { "type": "integer", "format": "int64", "minimum": 0 },
           "requested_at": { "type": "string", "format": "date-time" },

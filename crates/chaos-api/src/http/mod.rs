@@ -212,6 +212,7 @@ impl ApiState {
         let analytics_workers = AnalyticsWorkers::new(
             analytics_repository.clone(),
             analytics_repository.clone(),
+            analytics_repository.clone(),
             analytics_repository,
         );
         let storefront_catalog = StorefrontCatalog::new(Arc::new(

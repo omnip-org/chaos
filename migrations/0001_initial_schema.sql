@@ -154,6 +154,7 @@ CREATE TYPE analytics.commerce_fact_name AS ENUM (
     'fulfillment_shipped',
     'return_completed'
 );
+CREATE TYPE analytics.attribution_model AS ENUM ('first_touch', 'last_touch');
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
     'shipped',
@@ -2666,6 +2667,7 @@ CREATE TABLE analytics.behavior_events (
     session_id                    UUID                         NOT NULL,
     analytics_storage_consent     BOOLEAN                      NOT NULL,
     advertising_storage_consent   BOOLEAN                      NOT NULL,
+    advertising_export_eligible   BOOLEAN                      NOT NULL,
     consent_policy_version        TEXT                         NOT NULL,
     collection_policy_version     TEXT                         NOT NULL,
     properties                    JSONB                        NOT NULL,
@@ -2674,6 +2676,8 @@ CREATE TABLE analytics.behavior_events (
     campaign_source               TEXT,
     campaign_medium               TEXT,
     campaign_name                 TEXT,
+    cart_id                       UUID,
+    checkout_id                   UUID,
     occurred_at                   TIMESTAMPTZ                  NOT NULL,
     received_at                   TIMESTAMPTZ                  NOT NULL,
     retention_expires_at          TIMESTAMPTZ                  NOT NULL,
@@ -2721,6 +2725,20 @@ CREATE TABLE analytics.behavior_events (
             AND campaign_name IS NULL
         )
     ),
+    CONSTRAINT behavior_events_commerce_reference_shape_check CHECK (
+        (
+            event_name IN ('cart_line_added', 'checkout_started')
+            AND cart_id IS NOT NULL
+            AND (event_name = 'checkout_started' OR checkout_id IS NULL)
+        )
+        OR (
+            event_name NOT IN ('cart_line_added', 'checkout_started')
+            AND cart_id IS NULL AND checkout_id IS NULL
+        )
+    ),
+    CONSTRAINT behavior_events_export_eligibility_check CHECK (
+        NOT advertising_export_eligible OR advertising_storage_consent
+    ),
     CONSTRAINT behavior_events_timestamp_skew_check CHECK (
         occurred_at >= received_at - INTERVAL '24 hours'
         AND occurred_at <= received_at + INTERVAL '5 minutes'
@@ -2758,6 +2776,17 @@ CREATE INDEX behavior_events_attribution_touch_idx
         occurred_at,
         id
     ) WHERE event_name = 'page_viewed';
+
+CREATE INDEX behavior_events_checkout_attribution_idx
+    ON analytics.behavior_events (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        checkout_id,
+        cart_id,
+        occurred_at DESC,
+        id DESC
+    ) WHERE event_name = 'checkout_started';
 
 CREATE TABLE analytics.behavior_event_processing (
     id                    UUID                     NOT NULL PRIMARY KEY,
@@ -2859,6 +2888,7 @@ CREATE TABLE analytics.erasure_requests (
     status                   analytics.erasure_status NOT NULL DEFAULT 'pending',
     requested_by             UUID                      NOT NULL,
     behavior_events_deleted  BIGINT                    NOT NULL DEFAULT 0,
+    attribution_results_deleted BIGINT                 NOT NULL DEFAULT 0,
     sessions_deleted         BIGINT                    NOT NULL DEFAULT 0,
     identity_links_deleted   BIGINT                    NOT NULL DEFAULT 0,
     requested_at             TIMESTAMPTZ               NOT NULL,
@@ -2879,6 +2909,7 @@ CREATE TABLE analytics.erasure_requests (
     ),
     CONSTRAINT erasure_requests_counts_check CHECK (
         behavior_events_deleted >= 0
+        AND attribution_results_deleted >= 0
         AND sessions_deleted >= 0
         AND identity_links_deleted >= 0
     ),
@@ -3076,6 +3107,115 @@ CREATE INDEX commerce_facts_store_name_time_idx
     ON analytics.commerce_facts (
         merchant_account_id, store_id, fact_name, occurred_at DESC, id DESC
     );
+
+CREATE TABLE analytics.attribution_jobs (
+    commerce_fact_id     UUID                     NOT NULL,
+    merchant_account_id  UUID                     NOT NULL,
+    store_id             UUID                     NOT NULL,
+    model_version        SMALLINT                 NOT NULL,
+    processing_status    integration.queue_status NOT NULL DEFAULT 'pending',
+    attempts             INTEGER                  NOT NULL DEFAULT 0,
+    available_at         TIMESTAMPTZ              NOT NULL,
+    locked_by            UUID,
+    locked_at            TIMESTAMPTZ,
+    processed_at         TIMESTAMPTZ,
+    last_error           TEXT,
+    created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, store_id, commerce_fact_id, model_version),
+    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT attribution_jobs_model_version_check CHECK (model_version > 0),
+    CONSTRAINT attribution_jobs_attempts_check CHECK (attempts BETWEEN 0 AND 31),
+    CONSTRAINT attribution_jobs_lease_shape_check CHECK (
+        (processing_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
+        OR (processing_status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
+    ),
+    CONSTRAINT attribution_jobs_completion_shape_check CHECK (
+        (processing_status = 'processed' AND processed_at IS NOT NULL)
+        OR (processing_status <> 'processed' AND processed_at IS NULL)
+    ),
+    CONSTRAINT attribution_jobs_error_length_check CHECK (
+        last_error IS NULL OR length(last_error) BETWEEN 1 AND 2000
+    )
+);
+
+CREATE INDEX attribution_jobs_claim_idx
+    ON analytics.attribution_jobs (processing_status, available_at, created_at, commerce_fact_id)
+    WHERE processing_status IN ('pending', 'processing');
+
+CREATE TABLE analytics.attribution_results (
+    id                            UUID                        NOT NULL PRIMARY KEY,
+    merchant_account_id           UUID                        NOT NULL,
+    store_id                      UUID                        NOT NULL,
+    sales_channel_id              UUID                        NOT NULL,
+    commerce_fact_id              UUID                        NOT NULL,
+    order_id                      UUID                        NOT NULL,
+    customer_id                   UUID,
+    checkout_id                   UUID                        NOT NULL,
+    cart_id                       UUID                        NOT NULL,
+    attribution_model             analytics.attribution_model NOT NULL,
+    model_version                 SMALLINT                    NOT NULL,
+    is_direct                     BOOLEAN                     NOT NULL,
+    touch_event_id                UUID,
+    anonymous_id                  UUID,
+    session_id                    UUID,
+    landing_path                  TEXT,
+    referrer_domain               TEXT,
+    campaign_source               TEXT,
+    campaign_medium               TEXT,
+    campaign_name                 TEXT,
+    advertising_storage_consent   BOOLEAN,
+    consent_policy_version        TEXT,
+    collection_policy_version     TEXT,
+    advertising_export_eligible   BOOLEAN                     NOT NULL,
+    touch_occurred_at             TIMESTAMPTZ,
+    input_event_watermark         TIMESTAMPTZ,
+    attributed_at                 TIMESTAMPTZ                 NOT NULL,
+
+    UNIQUE (merchant_account_id, store_id, commerce_fact_id, attribution_model, model_version),
+    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, touch_event_id)
+        REFERENCES analytics.behavior_events(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    CONSTRAINT attribution_results_model_version_check CHECK (model_version > 0),
+    CONSTRAINT attribution_results_touch_shape_check CHECK (
+        (
+            is_direct
+            AND touch_event_id IS NULL AND anonymous_id IS NULL AND session_id IS NULL
+            AND landing_path IS NULL AND referrer_domain IS NULL
+            AND campaign_source IS NULL AND campaign_medium IS NULL AND campaign_name IS NULL
+            AND advertising_storage_consent IS NULL
+            AND consent_policy_version IS NULL AND collection_policy_version IS NULL
+            AND NOT advertising_export_eligible
+            AND touch_occurred_at IS NULL
+        )
+        OR (
+            NOT is_direct
+            AND touch_event_id IS NOT NULL AND anonymous_id IS NOT NULL AND session_id IS NOT NULL
+            AND landing_path IS NOT NULL
+            AND advertising_storage_consent IS NOT NULL
+            AND consent_policy_version IS NOT NULL AND collection_policy_version IS NOT NULL
+            AND touch_occurred_at IS NOT NULL
+        )
+    ),
+    CONSTRAINT attribution_results_export_eligibility_check CHECK (
+        NOT advertising_export_eligible OR advertising_storage_consent
+    )
+);
+
+CREATE INDEX attribution_results_order_idx
+    ON analytics.attribution_results (
+        merchant_account_id, store_id, order_id, model_version, attribution_model
+    );
+
+CREATE INDEX attribution_results_destination_idx
+    ON analytics.attribution_results (
+        merchant_account_id, store_id, attributed_at, id
+    ) WHERE advertising_export_eligible;
 
 CREATE TABLE sales.order_fulfillment_transitions (
     id                       UUID                           NOT NULL PRIMARY KEY,
@@ -3428,6 +3568,32 @@ AS $$
       FROM analytics.behavior_event_processing AS job;
 $$;
 
+CREATE FUNCTION analytics.attribution_metrics()
+RETURNS TABLE (
+    pending BIGINT,
+    processing BIGINT,
+    dead_letter BIGINT,
+    oldest_pending_seconds DOUBLE PRECISION
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT count(*) FILTER (WHERE job.processing_status = 'pending'),
+           count(*) FILTER (WHERE job.processing_status = 'processing'),
+           count(*) FILTER (WHERE job.processing_status = 'dead_letter'),
+           COALESCE(
+               extract(
+                   epoch FROM CURRENT_TIMESTAMP -
+                       (min(job.available_at)
+                            FILTER (WHERE job.processing_status = 'pending'))
+               ),
+               0
+           )::DOUBLE PRECISION
+      FROM analytics.attribution_jobs AS job;
+$$;
+
 CREATE FUNCTION analytics.retention_metrics()
 RETURNS TABLE (
     expired_behavior_events BIGINT,
@@ -3526,6 +3692,7 @@ $$;
 CREATE FUNCTION analytics.purge_expired_data(batch_size INTEGER, purged_at TIMESTAMPTZ)
 RETURNS TABLE (
     behavior_events_deleted BIGINT,
+    attribution_results_deleted BIGINT,
     sessions_deleted BIGINT,
     identity_links_deleted BIGINT
 )
@@ -3553,6 +3720,10 @@ AS $$
          ORDER BY event.retention_expires_at, event.id
          FOR UPDATE SKIP LOCKED
          LIMIT greatest(least(batch_size, 1000), 1)
+    ), expired_attributions AS (
+        SELECT count(*) AS deleted_count
+          FROM analytics.attribution_results AS result
+          INNER JOIN expired_events ON expired_events.id = result.touch_event_id
     ), deleted_events AS (
         DELETE FROM analytics.behavior_events AS event
          USING expired_events
@@ -3572,6 +3743,7 @@ AS $$
         RETURNING 1
     )
     SELECT (SELECT count(*) FROM deleted_events),
+           (SELECT deleted_count FROM expired_attributions),
            (SELECT count(*) FROM deleted_sessions),
            (SELECT count(*) FROM deleted_links);
 $$;
@@ -3580,6 +3752,7 @@ CREATE FUNCTION analytics.process_erasure_requests(batch_size INTEGER, processed
 RETURNS TABLE (
     requests_completed BIGINT,
     behavior_events_deleted BIGINT,
+    attribution_results_deleted BIGINT,
     sessions_deleted BIGINT,
     identity_links_deleted BIGINT
 )
@@ -3592,10 +3765,12 @@ DECLARE
     request_row RECORD;
     target_anonymous_ids UUID[];
     request_behavior_events BIGINT;
+    request_attribution_results BIGINT;
     request_sessions BIGINT;
     request_identity_links BIGINT;
     total_requests BIGINT := 0;
     total_behavior_events BIGINT := 0;
+    total_attribution_results BIGINT := 0;
     total_sessions BIGINT := 0;
     total_identity_links BIGINT := 0;
 BEGIN
@@ -3624,6 +3799,13 @@ BEGIN
                  AND link.customer_id = request_row.customer_id
           ) AS target;
 
+        SELECT count(*)
+          INTO request_attribution_results
+          FROM analytics.attribution_results AS result
+         WHERE result.merchant_account_id = request_row.merchant_account_id
+           AND result.store_id = request_row.store_id
+           AND result.anonymous_id = ANY(target_anonymous_ids);
+
         DELETE FROM analytics.behavior_events AS event
          WHERE event.merchant_account_id = request_row.merchant_account_id
            AND event.store_id = request_row.store_id
@@ -3651,6 +3833,7 @@ BEGIN
         UPDATE analytics.erasure_requests AS request
            SET status = 'completed',
                behavior_events_deleted = request_behavior_events,
+               attribution_results_deleted = request_attribution_results,
                sessions_deleted = request_sessions,
                identity_links_deleted = request_identity_links,
                completed_at = processed_at,
@@ -3660,12 +3843,14 @@ BEGIN
 
         total_requests := total_requests + 1;
         total_behavior_events := total_behavior_events + request_behavior_events;
+        total_attribution_results := total_attribution_results + request_attribution_results;
         total_sessions := total_sessions + request_sessions;
         total_identity_links := total_identity_links + request_identity_links;
     END LOOP;
 
     RETURN QUERY SELECT total_requests,
                         total_behavior_events,
+                        total_attribution_results,
                         total_sessions,
                         total_identity_links;
 END;
@@ -3763,6 +3948,8 @@ ALTER TABLE analytics.behavior_event_processing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.erasure_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.commerce_facts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.attribution_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.attribution_results ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -4498,6 +4685,26 @@ CREATE POLICY merchant_account_isolation ON analytics.commerce_facts
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON analytics.attribution_jobs
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.attribution_results
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
 CREATE FUNCTION payments.resolve_provider_account(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
@@ -4839,6 +5046,109 @@ AS $$
      WHERE event.id = claimable.id
     RETURNING event.id, event.merchant_account_id, event.store_id,
               event.event_type, event.payload, event.attempts, event.created_at;
+$$;
+
+CREATE FUNCTION analytics.claim_attribution_jobs(
+    worker_id UUID,
+    batch_size INTEGER,
+    claimed_at TIMESTAMPTZ,
+    stale_before TIMESTAMPTZ
+)
+RETURNS TABLE (
+    commerce_fact_id UUID,
+    merchant_account_id UUID,
+    store_id UUID,
+    model_version SMALLINT,
+    attempts INTEGER
+)
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH expired AS (
+        UPDATE analytics.attribution_jobs AS job
+           SET processing_status = 'dead_letter',
+               locked_by = NULL,
+               locked_at = NULL,
+               last_error = COALESCE(job.last_error, 'worker lease expired after final attempt'),
+               updated_at = claimed_at
+         WHERE job.processing_status = 'processing'
+           AND job.locked_at <= stale_before
+           AND job.attempts >= 8
+        RETURNING job.commerce_fact_id
+    ), claimable AS (
+        SELECT job.merchant_account_id,
+               job.store_id,
+               job.commerce_fact_id,
+               job.model_version
+          FROM analytics.attribution_jobs AS job
+         WHERE (
+                 (job.processing_status = 'pending' AND job.available_at <= claimed_at)
+                 OR (job.processing_status = 'processing' AND job.locked_at <= stale_before)
+               )
+           AND job.attempts < 8
+         ORDER BY job.available_at, job.created_at, job.commerce_fact_id
+         FOR UPDATE OF job SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
+    )
+    UPDATE analytics.attribution_jobs AS job
+       SET processing_status = 'processing',
+           attempts = job.attempts + 1,
+           locked_by = worker_id,
+           locked_at = claimed_at,
+           updated_at = claimed_at
+      FROM claimable
+     WHERE job.merchant_account_id = claimable.merchant_account_id
+       AND job.store_id = claimable.store_id
+       AND job.commerce_fact_id = claimable.commerce_fact_id
+       AND job.model_version = claimable.model_version
+    RETURNING job.commerce_fact_id, job.merchant_account_id, job.store_id,
+              job.model_version, job.attempts;
+$$;
+
+CREATE FUNCTION analytics.rebuild_store_attribution(
+    requested_merchant_account_id UUID,
+    requested_store_id UUID,
+    requested_model_version SMALLINT,
+    requested_at TIMESTAMPTZ
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE rebuilt BIGINT;
+BEGIN
+    IF requested_merchant_account_id <>
+       nullif(current_setting('app.merchant_account_id', true), '')::uuid THEN
+        RETURN 0;
+    END IF;
+    IF requested_model_version <= 0 THEN
+        RETURN 0;
+    END IF;
+
+    DELETE FROM analytics.attribution_results AS result
+     WHERE result.merchant_account_id = requested_merchant_account_id
+       AND result.store_id = requested_store_id
+       AND result.model_version = requested_model_version;
+
+    UPDATE analytics.attribution_jobs AS job
+       SET processing_status = 'pending',
+           attempts = 0,
+           available_at = requested_at,
+           locked_by = NULL,
+           locked_at = NULL,
+           processed_at = NULL,
+           last_error = NULL,
+           updated_at = requested_at
+     WHERE job.merchant_account_id = requested_merchant_account_id
+       AND job.store_id = requested_store_id
+       AND job.model_version = requested_model_version;
+    GET DIAGNOSTICS rebuilt = ROW_COUNT;
+    RETURN rebuilt;
+END;
 $$;
 
 CREATE FUNCTION sales.claim_expired_checkouts(
@@ -5476,6 +5786,12 @@ REVOKE ALL ON FUNCTION integration.claim_fulfillment_events(
 REVOKE ALL ON FUNCTION analytics.claim_commerce_fact_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.claim_attribution_jobs(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.rebuild_store_attribution(
+    UUID, UUID, SMALLINT, TIMESTAMPTZ
+) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -5512,6 +5828,7 @@ REVOKE ALL ON FUNCTION notification.email_delivery_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_tracking_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION fulfillment.shipping_cancellation_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.sessionization_metrics() FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.attribution_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.retention_metrics() FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
@@ -5574,6 +5891,14 @@ GRANT EXECUTE ON FUNCTION analytics.claim_commerce_fact_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
     TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.claim_attribution_jobs(
+    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+)
+    TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.rebuild_store_attribution(
+    UUID, UUID, SMALLINT, TIMESTAMPTZ
+)
+    TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION sales.claim_expired_checkouts(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 )
@@ -5613,6 +5938,7 @@ GRANT EXECUTE ON FUNCTION notification.email_delivery_metrics() TO chaos_runtime
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_tracking_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION fulfillment.shipping_cancellation_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.sessionization_metrics() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION analytics.attribution_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.retention_metrics() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER)
     TO chaos_runtime;

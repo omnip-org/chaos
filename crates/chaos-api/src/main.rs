@@ -99,11 +99,24 @@ async fn analytics_worker_loop(
                 tracing::warn!(%worker_id, %error, "analytics commerce fact batch failed");
             }
         }
+        match workers.run_attribution_batch(worker_id, now, 100).await {
+            Ok(processed) => {
+                ::metrics::counter!("chaos_analytics_attribution_jobs_claimed_total")
+                    .increment(processed as u64);
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics attribution batch failed");
+            }
+        }
         if now >= next_retention_at {
             match workers.run_retention_batch(now, 1000).await {
                 Ok(result) => {
                     ::metrics::counter!("chaos_analytics_retention_behavior_events_deleted_total")
                         .increment(result.behavior_events_deleted);
+                    ::metrics::counter!(
+                        "chaos_analytics_retention_attribution_results_deleted_total"
+                    )
+                    .increment(result.attribution_results_deleted);
                     ::metrics::counter!("chaos_analytics_retention_sessions_deleted_total")
                         .increment(result.sessions_deleted);
                     ::metrics::counter!("chaos_analytics_retention_identity_links_deleted_total")
@@ -123,6 +136,10 @@ async fn analytics_worker_loop(
                         .increment(result.requests_completed);
                     ::metrics::counter!("chaos_analytics_erasure_behavior_events_deleted_total")
                         .increment(result.behavior_events_deleted);
+                    ::metrics::counter!(
+                        "chaos_analytics_erasure_attribution_results_deleted_total"
+                    )
+                    .increment(result.attribution_results_deleted);
                     ::metrics::counter!("chaos_analytics_erasure_sessions_deleted_total")
                         .increment(result.sessions_deleted);
                     ::metrics::counter!("chaos_analytics_erasure_identity_links_deleted_total")

@@ -64,6 +64,7 @@ pub trait AnalyticsEventRepository: Send + Sync {
         actor: &MachineActor,
         events: &[BrowserEvent],
         collection_policy_version: &str,
+        advertising_exports_enabled: bool,
         received_at: OffsetDateTime,
         retention_expires_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError>;
@@ -112,6 +113,39 @@ pub struct AnalyticsCommerceFactJob {
     pub occurred_at: OffsetDateTime,
 }
 
+pub struct AnalyticsAttributionJob {
+    pub commerce_fact_id: Uuid,
+    pub merchant_account_id: Uuid,
+    pub store_id: StoreId,
+    pub model_version: u16,
+    pub attempts: u32,
+}
+
+#[async_trait]
+pub trait AnalyticsAttributionQueue: Send + Sync {
+    async fn claim_attribution(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsAttributionJob>, ApplicationError>;
+
+    async fn attribute_order(
+        &self,
+        job: &AnalyticsAttributionJob,
+        attributed_at: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
+    async fn finish_attribution(
+        &self,
+        worker_id: Uuid,
+        job: &AnalyticsAttributionJob,
+        result: Result<(), String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+}
+
 #[async_trait]
 pub trait AnalyticsCommerceFactQueue: Send + Sync {
     async fn claim_commerce_facts(
@@ -126,6 +160,8 @@ pub trait AnalyticsCommerceFactQueue: Send + Sync {
         &self,
         job: &AnalyticsCommerceFactJob,
         ingested_at: OffsetDateTime,
+        attribution_model_version: u16,
+        attribution_available_at: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 
     async fn finish_commerce_fact(
@@ -140,6 +176,7 @@ pub trait AnalyticsCommerceFactQueue: Send + Sync {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnalyticsRetentionPurgeResult {
     pub behavior_events_deleted: u64,
+    pub attribution_results_deleted: u64,
     pub sessions_deleted: u64,
     pub identity_links_deleted: u64,
 }
@@ -176,6 +213,7 @@ pub struct AnalyticsErasureRequest {
     pub status: AnalyticsErasureStatus,
     pub requested_by: UserId,
     pub behavior_events_deleted: u64,
+    pub attribution_results_deleted: u64,
     pub sessions_deleted: u64,
     pub identity_links_deleted: u64,
     pub requested_at: OffsetDateTime,
@@ -186,6 +224,7 @@ pub struct AnalyticsErasureRequest {
 pub struct AnalyticsErasureBatchResult {
     pub requests_completed: u64,
     pub behavior_events_deleted: u64,
+    pub attribution_results_deleted: u64,
     pub sessions_deleted: u64,
     pub identity_links_deleted: u64,
 }

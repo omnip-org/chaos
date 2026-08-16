@@ -12,16 +12,19 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue, AnalyticsErasureRequest,
-        AnalyticsErasureSelector, AnalyticsEventRepository, AnalyticsIdentityLink,
-        AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsSessionizationQueue,
-        CustomerActor, IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
+        AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue,
+        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsEventRepository,
+        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
+        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
+        StoreAnalyticsPolicy,
     },
 };
 
 const MAX_BATCH_SIZE: usize = 20;
 const MAX_PAST_SKEW: Duration = Duration::hours(24);
 const MAX_FUTURE_SKEW: Duration = Duration::minutes(5);
+const ATTRIBUTION_MODEL_VERSION: u16 = 1;
+const ATTRIBUTION_LATE_ARRIVAL_WINDOW: Duration = Duration::minutes(5);
 
 pub struct CollectBrowserEventsInput {
     pub actor: MachineActor,
@@ -48,6 +51,7 @@ pub struct AnalyticsWorkers {
     sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
     privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
     commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
+    attribution_queue: Arc<dyn AnalyticsAttributionQueue>,
 }
 
 pub struct LinkAnalyticsIdentityInput {
@@ -213,11 +217,13 @@ impl AnalyticsWorkers {
         sessionization_queue: Arc<dyn AnalyticsSessionizationQueue>,
         privacy_repository: Arc<dyn AnalyticsPrivacyRepository>,
         commerce_fact_queue: Arc<dyn AnalyticsCommerceFactQueue>,
+        attribution_queue: Arc<dyn AnalyticsAttributionQueue>,
     ) -> Self {
         Self {
             sessionization_queue,
             privacy_repository,
             commerce_fact_queue,
+            attribution_queue,
         }
     }
 
@@ -277,11 +283,39 @@ impl AnalyticsWorkers {
         for job in &jobs {
             let result = self
                 .commerce_fact_queue
-                .ingest_commerce_fact(job, now)
+                .ingest_commerce_fact(
+                    job,
+                    now,
+                    ATTRIBUTION_MODEL_VERSION,
+                    now + ATTRIBUTION_LATE_ARRIVAL_WINDOW,
+                )
                 .await
                 .map_err(|error| error.to_string());
             self.commerce_fact_queue
                 .finish_commerce_fact(worker_id, job.id, result, now)
+                .await?;
+        }
+        Ok(jobs.len())
+    }
+
+    pub async fn run_attribution_batch(
+        &self,
+        worker_id: uuid::Uuid,
+        now: OffsetDateTime,
+        limit: u16,
+    ) -> Result<usize, ApplicationError> {
+        let jobs = self
+            .attribution_queue
+            .claim_attribution(worker_id, limit, now, now - Duration::minutes(1))
+            .await?;
+        for job in &jobs {
+            let result = self
+                .attribution_queue
+                .attribute_order(job, now)
+                .await
+                .map_err(|error| error.to_string());
+            self.attribution_queue
+                .finish_attribution(worker_id, job, result, now)
                 .await?;
         }
         Ok(jobs.len())
@@ -374,6 +408,7 @@ impl AnalyticsCollection {
                     &input.actor,
                     &eligible,
                     &policy.policy_version,
+                    policy.policy.advertising_exports_enabled(),
                     input.received_at,
                     input.received_at
                         + Duration::days(i64::from(policy.policy.raw_event_retention_days())),
@@ -469,6 +504,7 @@ mod tests {
             _actor: &MachineActor,
             events: &[BrowserEvent],
             _collection_policy_version: &str,
+            _advertising_exports_enabled: bool,
             _received_at: OffsetDateTime,
             _retention_expires_at: OffsetDateTime,
         ) -> Result<usize, ApplicationError> {

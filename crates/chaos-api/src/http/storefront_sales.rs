@@ -761,8 +761,8 @@ mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use chaos_application::analytics::AnalyticsCollection;
     use chaos_application::ports::{
-        AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision, AnalyticsSessionizationQueue,
-        ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
+        AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision,
+        AnalyticsSessionizationQueue, ApiKeyMaterialGenerator, GeneratedApiKeyMaterial,
     };
     use chaos_application::{
         ApplicationError,
@@ -1959,10 +1959,10 @@ mod tests {
             "INSERT INTO analytics.behavior_events \
              (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
               schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
-              advertising_storage_consent, consent_policy_version, collection_policy_version, \
+              advertising_storage_consent, advertising_export_eligible, consent_policy_version, collection_policy_version, \
               properties, landing_path, occurred_at, received_at, retention_expires_at) \
              VALUES (uuidv7(),uuidv7(),$1,$2,$3,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
-                     true,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
+                     true,false,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
                      '/',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days') \
              RETURNING id",
         )
@@ -3168,6 +3168,101 @@ mod tests {
         assert_eq!(checkout["data"]["contact"]["email"], "guest@example.com");
         assert_eq!(checkout["data"]["shipping_address"]["country_code"], "US");
         assert_eq!(checkout["data"]["customer_id"], customer_id);
+
+        let attribution_policy = app
+            .clone()
+            .oneshot(request(
+                Method::PUT,
+                &analytics_policy_uri,
+                Some("enable-analytics-attribution-exports"),
+                Some(json!({
+                    "behavior_collection_enabled": true,
+                    "advertising_exports_enabled": true,
+                    "identity_linking_enabled": true,
+                    "raw_event_retention_days": 7
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(attribution_policy.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(attribution_policy).await["data"]["policy_version"],
+            "store-v4"
+        );
+
+        let attribution_anonymous_id = Uuid::now_v7();
+        let attribution_session_id = Uuid::now_v7();
+        let first_touch_event_id = Uuid::now_v7();
+        let last_touch_event_id = Uuid::now_v7();
+        let checkout_touch = app
+            .clone()
+            .oneshot(store_request(
+                Method::POST,
+                "/store/v1/analytics/events",
+                Some(full_secret),
+                None,
+                Some(json!({
+                    "events": [
+                        {
+                            "event_id": first_touch_event_id,
+                            "event_name": "page_viewed",
+                            "schema_version": 1,
+                            "occurred_at": format_time(test_clock.now() - time::Duration::minutes(2)),
+                            "anonymous_id": attribution_anonymous_id,
+                            "session_id": attribution_session_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": true,
+                                "policy_version": "cmp-attribution-v1"
+                            },
+                            "properties": {
+                                "path": "/landing",
+                                "campaign_source": "first-source",
+                                "campaign_medium": "paid-social"
+                            }
+                        },
+                        {
+                            "event_id": last_touch_event_id,
+                            "event_name": "page_viewed",
+                            "schema_version": 1,
+                            "occurred_at": format_time(test_clock.now() - time::Duration::minutes(1)),
+                            "anonymous_id": attribution_anonymous_id,
+                            "session_id": attribution_session_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": true,
+                                "policy_version": "cmp-attribution-v1"
+                            },
+                            "properties": {
+                                "path": "/checkout",
+                                "campaign_source": "last-source",
+                                "campaign_medium": "email"
+                            }
+                        },
+                        {
+                            "event_id": Uuid::now_v7(),
+                            "event_name": "checkout_started",
+                            "schema_version": 1,
+                            "occurred_at": format_time(test_clock.now()),
+                            "anonymous_id": attribution_anonymous_id,
+                            "session_id": attribution_session_id,
+                            "consent": {
+                                "analytics_storage": true,
+                                "advertising_storage": true,
+                                "policy_version": "cmp-attribution-v1"
+                            },
+                            "properties": {
+                                "cart_id": cart_id,
+                                "checkout_id": checkout_id
+                            }
+                        }
+                    ]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(checkout_touch.status(), StatusCode::OK);
+        assert_eq!(response_json(checkout_touch).await["data"]["stored"], 3);
 
         let replay = app
             .clone()
@@ -4503,6 +4598,205 @@ mod tests {
                 .filter(|fact| fact.1.is_some())
                 .all(|fact| fact.1.unwrap() >= 0 && fact.2.as_deref() == Some("USD"))
         );
+        assert_eq!(
+            analytics_workers
+                .run_attribution_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::minutes(4),
+                    10,
+                )
+                .await
+                .unwrap(),
+            0
+        );
+        let abandoned_attribution_worker = Uuid::now_v7();
+        let abandoned_attribution_jobs = analytics_repository
+            .claim_attribution(
+                abandoned_attribution_worker,
+                10,
+                test_clock.now() + time::Duration::minutes(6),
+                test_clock.now() + time::Duration::minutes(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(abandoned_attribution_jobs.len(), 1);
+        assert_eq!(
+            analytics_workers
+                .run_attribution_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::minutes(7),
+                    10,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        let stale_attribution_result = analytics_repository
+            .finish_attribution(
+                abandoned_attribution_worker,
+                &abandoned_attribution_jobs[0],
+                Ok(()),
+                test_clock.now() + time::Duration::minutes(7),
+            )
+            .await;
+        assert!(matches!(
+            stale_attribution_result,
+            Err(ApplicationError::Conflict { .. })
+        ));
+        type AttributionResultRow = (
+            String,
+            bool,
+            Option<String>,
+            bool,
+            i16,
+            Option<String>,
+            Option<String>,
+        );
+        let attribution_results: Vec<AttributionResultRow> = sqlx::query_as(
+            "SELECT attribution_model::text, is_direct, campaign_source, \
+                        advertising_export_eligible, model_version, consent_policy_version, \
+                        collection_policy_version \
+                   FROM analytics.attribution_results \
+                  WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 \
+                  ORDER BY attribution_model",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(order_id).unwrap())
+        .fetch_all(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(attribution_results.len(), 2);
+        assert_eq!(attribution_results[0].0, "first_touch");
+        assert!(!attribution_results[0].1);
+        assert_eq!(attribution_results[0].2.as_deref(), Some("first-source"));
+        assert!(attribution_results[0].3);
+        assert_eq!(attribution_results[0].4, 1);
+        assert_eq!(
+            attribution_results[0].5.as_deref(),
+            Some("cmp-attribution-v1")
+        );
+        assert_eq!(attribution_results[0].6.as_deref(), Some("store-v4"));
+        assert_eq!(attribution_results[1].0, "last_touch");
+        assert_eq!(attribution_results[1].2.as_deref(), Some("last-source"));
+        assert!(attribution_results[1].3);
+
+        let mut attribution_rebuild = runtime_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *attribution_rebuild)
+            .await
+            .unwrap();
+        let rebuilt: i64 =
+            sqlx::query_scalar("SELECT analytics.rebuild_store_attribution($1,$2,1::smallint,$3)")
+                .bind(account_id.as_uuid())
+                .bind(store_id.as_uuid())
+                .bind(test_clock.now() + time::Duration::minutes(8))
+                .fetch_one(&mut *attribution_rebuild)
+                .await
+                .unwrap();
+        assert_eq!(rebuilt, 1);
+        attribution_rebuild.commit().await.unwrap();
+        assert_eq!(
+            analytics_workers
+                .run_attribution_batch(
+                    Uuid::now_v7(),
+                    test_clock.now() + time::Duration::minutes(8),
+                    10,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        let rebuilt_result_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.attribution_results \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(order_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(rebuilt_result_count, 2);
+        let mut attribution_rls = runtime_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *attribution_rls)
+            .await
+            .unwrap();
+        let visible_attribution_results: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.attribution_results")
+                .fetch_one(&mut *attribution_rls)
+                .await
+                .unwrap();
+        assert_eq!(visible_attribution_results, 2);
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(isolated_account_id.as_uuid().to_string())
+            .execute(&mut *attribution_rls)
+            .await
+            .unwrap();
+        let isolated_attribution_results: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.attribution_results")
+                .fetch_one(&mut *attribution_rls)
+                .await
+                .unwrap();
+        assert_eq!(isolated_attribution_results, 0);
+        attribution_rls.rollback().await.unwrap();
+        let attribution_erasure = app
+            .clone()
+            .oneshot(request(
+                Method::POST,
+                &erasure_uri,
+                Some("erase-attribution-subject"),
+                Some(json!({"anonymous_id": attribution_anonymous_id})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(attribution_erasure.status(), StatusCode::ACCEPTED);
+        let attribution_erasure_id = response_json(attribution_erasure).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            analytics_workers
+                .run_erasure_batch(test_clock.now() + time::Duration::minutes(9), 10)
+                .await
+                .unwrap()
+                .requests_completed,
+            1
+        );
+        let completed_attribution_erasure = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!("{erasure_uri}/{attribution_erasure_id}"),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(completed_attribution_erasure.status(), StatusCode::OK);
+        let completed_attribution_erasure = response_json(completed_attribution_erasure).await;
+        assert_eq!(
+            completed_attribution_erasure["data"]["behavior_events_deleted"],
+            3
+        );
+        assert_eq!(
+            completed_attribution_erasure["data"]["attribution_results_deleted"],
+            2
+        );
+        let erased_attribution_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM analytics.attribution_results \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+        )
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(Uuid::parse_str(order_id).unwrap())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(erased_attribution_count, 0);
         let replay_fact_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM analytics.commerce_facts WHERE merchant_account_id = $1 \
              AND store_id = $2 AND fact_name = 'payment_captured'",

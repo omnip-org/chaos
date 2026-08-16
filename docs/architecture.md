@@ -81,7 +81,7 @@ Suggested implementation order:
 8. payment: provider accounts, Payment Attempts, captures, Refunds, and webhook inboxes;
 9. customer: Customer profiles and saved addresses currently live within Sales because association is part of checkout ownership; segmentation remains a future boundary that may justify extraction;
 10. notifications: semantic, versioned delivery requests; a recoverable email worker; Store-isolated suppression and delivery status; Resend production delivery and signed webhooks; and SMTP development delivery;
-11. analytics: behavior events, consent evidence, immutable Store policies, consent-aware Customer identity links, data-subject erasure audit, sessions, and future attribution, aggregates, and conversion exports behind the same boundary.
+11. analytics: behavior events, consent evidence, immutable Store policies, consent-aware Customer identity links, data-subject erasure audit, sessions, versioned attribution, and future aggregates and conversion exports behind the same boundary.
 
 The Cargo workspace enforces dependency direction with separate packages:
 

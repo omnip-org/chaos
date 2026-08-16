@@ -3,12 +3,13 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsErasureBatchResult,
-        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
-        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
-        AnalyticsPrivacyRepository, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
-        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
-        ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
+        AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCommerceFactJob,
+        AnalyticsCommerceFactQueue, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
+        AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventRepository,
+        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
+        AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
+        CustomerActor, IdempotencyRequest, MachineActor, ResolvedAnalyticsPolicy,
+        StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
@@ -94,6 +95,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
         actor: &MachineActor,
         events: &[BrowserEvent],
         collection_policy_version: &str,
+        advertising_exports_enabled: bool,
         received_at: OffsetDateTime,
         retention_expires_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError> {
@@ -124,18 +126,18 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
 
         let mut stored = 0;
         for event in events {
-            let (landing_path, referrer_domain, campaign_source, campaign_medium, campaign_name) =
-                attribution_columns(event.properties());
+            let attribution = attribution_columns(event.properties());
             let inserted = sqlx::query_scalar::<_, uuid::Uuid>(
                 "INSERT INTO analytics.behavior_events \
                  (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
                   schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
-                  advertising_storage_consent, consent_policy_version, \
+                  advertising_storage_consent, advertising_export_eligible, consent_policy_version, \
                   collection_policy_version, properties, landing_path, referrer_domain, \
-                  campaign_source, campaign_medium, campaign_name, occurred_at, received_at, \
+                  campaign_source, campaign_medium, campaign_name, cart_id, checkout_id, \
+                  occurred_at, received_at, \
                   retention_expires_at) \
                  VALUES (uuidv7(),$1,$2,$3,$4,$5::analytics.browser_event_name,$6, \
-                         'browser',$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) \
+                         'browser',$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) \
                  ON CONFLICT (merchant_account_id, store_id, event_id) DO NOTHING \
                  RETURNING id",
             )
@@ -148,14 +150,17 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             .bind(event.anonymous_id())
             .bind(event.session_id())
             .bind(event.consent().advertising_storage())
+            .bind(event.consent().advertising_storage() && advertising_exports_enabled)
             .bind(event.consent().policy_version())
             .bind(collection_policy_version)
             .bind(properties(event.properties()))
-            .bind(landing_path)
-            .bind(referrer_domain)
-            .bind(campaign_source)
-            .bind(campaign_medium)
-            .bind(campaign_name)
+            .bind(attribution.landing_path)
+            .bind(attribution.referrer_domain)
+            .bind(attribution.campaign_source)
+            .bind(attribution.campaign_medium)
+            .bind(attribution.campaign_name)
+            .bind(attribution.cart_id)
+            .bind(attribution.checkout_id)
             .bind(event.occurred_at())
             .bind(received_at)
             .bind(retention_expires_at)
@@ -217,6 +222,7 @@ struct ErasureRequestRow {
     status: String,
     requested_by: Uuid,
     behavior_events_deleted: i64,
+    attribution_results_deleted: i64,
     sessions_deleted: i64,
     identity_links_deleted: i64,
     requested_at: OffsetDateTime,
@@ -602,7 +608,7 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<AnalyticsErasureBatchResult, ApplicationError> {
-        let row: (i64, i64, i64, i64) =
+        let row: (i64, i64, i64, i64, i64) =
             sqlx::query_as("SELECT * FROM analytics.process_erasure_requests($1,$2)")
                 .bind(i32::from(limit))
                 .bind(now)
@@ -612,8 +618,9 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         Ok(AnalyticsErasureBatchResult {
             requests_completed: u64::try_from(row.0).map_err(conversion_error)?,
             behavior_events_deleted: u64::try_from(row.1).map_err(conversion_error)?,
-            sessions_deleted: u64::try_from(row.2).map_err(conversion_error)?,
-            identity_links_deleted: u64::try_from(row.3).map_err(conversion_error)?,
+            attribution_results_deleted: u64::try_from(row.2).map_err(conversion_error)?,
+            sessions_deleted: u64::try_from(row.3).map_err(conversion_error)?,
+            identity_links_deleted: u64::try_from(row.4).map_err(conversion_error)?,
         })
     }
 }
@@ -764,7 +771,12 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<AnalyticsRetentionPurgeResult, ApplicationError> {
-        let (behavior_events_deleted, sessions_deleted, identity_links_deleted): (i64, i64, i64) =
+        let (
+            behavior_events_deleted,
+            attribution_results_deleted,
+            sessions_deleted,
+            identity_links_deleted,
+        ): (i64, i64, i64, i64) =
             sqlx::query_as("SELECT * FROM analytics.purge_expired_data($1,$2)")
                 .bind(i32::from(limit))
                 .bind(now)
@@ -773,6 +785,8 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
                 .map_err(database_error)?;
         Ok(AnalyticsRetentionPurgeResult {
             behavior_events_deleted: u64::try_from(behavior_events_deleted)
+                .map_err(conversion_error)?,
+            attribution_results_deleted: u64::try_from(attribution_results_deleted)
                 .map_err(conversion_error)?,
             sessions_deleted: u64::try_from(sessions_deleted).map_err(conversion_error)?,
             identity_links_deleted: u64::try_from(identity_links_deleted)
@@ -820,6 +834,8 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         &self,
         job: &AnalyticsCommerceFactJob,
         ingested_at: OffsetDateTime,
+        attribution_model_version: u16,
+        attribution_available_at: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
@@ -981,6 +997,23 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 return Err(corrupt_commerce_fact_event());
             }
         }
+        if job.event_type == "analytics.order.created" {
+            sqlx::query(
+                "INSERT INTO analytics.attribution_jobs \
+                 (commerce_fact_id, merchant_account_id, store_id, model_version, available_at) \
+                 VALUES ($1,$2,$3,$4,$5) \
+                 ON CONFLICT (merchant_account_id, store_id, commerce_fact_id, model_version) \
+                 DO NOTHING",
+            )
+            .bind(job.id)
+            .bind(job.merchant_account_id)
+            .bind(job.store_id.as_uuid())
+            .bind(i16::try_from(attribution_model_version).map_err(conversion_error)?)
+            .bind(attribution_available_at)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         transaction.commit().await.map_err(database_error)
     }
 
@@ -1014,6 +1047,217 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 message: "the Analytics commerce fact lease is no longer owned by this worker",
             })
         }
+    }
+}
+
+#[async_trait]
+impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
+    async fn claim_attribution(
+        &self,
+        worker_id: Uuid,
+        limit: u16,
+        now: OffsetDateTime,
+        stale_before: OffsetDateTime,
+    ) -> Result<Vec<AnalyticsAttributionJob>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, i16, i32)>(
+            "SELECT commerce_fact_id, merchant_account_id, store_id, model_version, attempts \
+             FROM analytics.claim_attribution_jobs($1,$2,$3,$4)",
+        )
+        .bind(worker_id)
+        .bind(i32::from(limit.clamp(1, 100)))
+        .bind(now)
+        .bind(stale_before)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AnalyticsAttributionJob {
+                    commerce_fact_id: row.0,
+                    merchant_account_id: row.1,
+                    store_id: StoreId::from_uuid(row.2),
+                    model_version: u16::try_from(row.3).map_err(conversion_error)?,
+                    attempts: u32::try_from(row.4).map_err(conversion_error)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn attribute_order(
+        &self,
+        job: &AnalyticsAttributionJob,
+        attributed_at: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        let affected = sqlx::query(
+            "WITH order_context AS ( \
+                 SELECT fact.id AS commerce_fact_id, fact.merchant_account_id, fact.store_id, \
+                        fact.sales_channel_id, fact.order_id, fact.customer_id, fact.occurred_at, \
+                        orders.checkout_id, checkout.cart_id \
+                   FROM analytics.commerce_facts AS fact \
+                   INNER JOIN sales.orders AS orders \
+                     ON orders.merchant_account_id = fact.merchant_account_id \
+                    AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
+                   INNER JOIN sales.checkouts AS checkout \
+                     ON checkout.merchant_account_id = orders.merchant_account_id \
+                    AND checkout.store_id = orders.store_id AND checkout.id = orders.checkout_id \
+                  WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 AND fact.id = $3 \
+                    AND fact.fact_name = 'order_created' \
+             ), anchor AS ( \
+                 SELECT event.anonymous_id, event.session_id, event.occurred_at \
+                   FROM analytics.behavior_events AS event \
+                   INNER JOIN order_context AS context \
+                     ON context.merchant_account_id = event.merchant_account_id \
+                    AND context.store_id = event.store_id \
+                    AND context.sales_channel_id = event.sales_channel_id \
+                  WHERE event.event_name = 'checkout_started' \
+                    AND (event.checkout_id = context.checkout_id OR event.cart_id = context.cart_id) \
+                    AND event.occurred_at <= context.occurred_at + INTERVAL '5 minutes' \
+                  ORDER BY (event.checkout_id = context.checkout_id) DESC, \
+                           event.occurred_at DESC, event.id DESC LIMIT 1 \
+             ), touches AS ( \
+                 SELECT event.*, \
+                        row_number() OVER (ORDER BY event.occurred_at, event.id) AS first_rank, \
+                        row_number() OVER (ORDER BY event.occurred_at DESC, event.id DESC) AS last_rank \
+                   FROM analytics.behavior_events AS event \
+                   INNER JOIN order_context AS context \
+                     ON context.merchant_account_id = event.merchant_account_id \
+                    AND context.store_id = event.store_id \
+                    AND context.sales_channel_id = event.sales_channel_id \
+                   INNER JOIN anchor \
+                     ON anchor.anonymous_id = event.anonymous_id \
+                    AND anchor.session_id = event.session_id \
+                  WHERE event.event_name = 'page_viewed' \
+                    AND event.occurred_at <= anchor.occurred_at \
+             ), watermark AS ( \
+                 SELECT max(event.received_at) AS received_at \
+                   FROM analytics.behavior_events AS event \
+                   INNER JOIN order_context AS context \
+                     ON context.merchant_account_id = event.merchant_account_id \
+                    AND context.store_id = event.store_id \
+                    AND context.sales_channel_id = event.sales_channel_id \
+                   INNER JOIN anchor \
+                     ON anchor.anonymous_id = event.anonymous_id \
+                    AND anchor.session_id = event.session_id \
+                  WHERE event.occurred_at <= context.occurred_at + INTERVAL '5 minutes' \
+             ), models AS ( \
+                 SELECT 'first_touch'::analytics.attribution_model AS attribution_model, \
+                        touch.* FROM touches AS touch WHERE touch.first_rank = 1 \
+                 UNION ALL \
+                 SELECT 'last_touch'::analytics.attribution_model AS attribution_model, \
+                        touch.* FROM touches AS touch WHERE touch.last_rank = 1 \
+             ), requested_models AS ( \
+                 SELECT requested.model_name, model.* \
+                   FROM (VALUES \
+                       ('first_touch'::analytics.attribution_model), \
+                       ('last_touch'::analytics.attribution_model) \
+                   ) AS requested(model_name) \
+                   LEFT JOIN models AS model \
+                     ON model.attribution_model = requested.model_name \
+             ) \
+             INSERT INTO analytics.attribution_results \
+             (id, merchant_account_id, store_id, sales_channel_id, commerce_fact_id, order_id, \
+              customer_id, checkout_id, cart_id, attribution_model, model_version, is_direct, \
+              touch_event_id, anonymous_id, session_id, landing_path, referrer_domain, \
+              campaign_source, campaign_medium, campaign_name, advertising_storage_consent, \
+              consent_policy_version, collection_policy_version, advertising_export_eligible, \
+              touch_occurred_at, input_event_watermark, attributed_at) \
+             SELECT uuidv7(), context.merchant_account_id, context.store_id, \
+                    context.sales_channel_id, context.commerce_fact_id, context.order_id, \
+                    context.customer_id, context.checkout_id, context.cart_id, \
+                    requested.model_name, $4, requested.id IS NULL, requested.id, \
+                    requested.anonymous_id, requested.session_id, requested.landing_path, \
+                    requested.referrer_domain, requested.campaign_source, \
+                    requested.campaign_medium, requested.campaign_name, \
+                    requested.advertising_storage_consent, requested.consent_policy_version, \
+                    requested.collection_policy_version, \
+                    COALESCE(requested.advertising_export_eligible, false), \
+                    requested.occurred_at, watermark.received_at, $5 \
+               FROM order_context AS context CROSS JOIN requested_models AS requested \
+               LEFT JOIN watermark ON true \
+             ON CONFLICT (merchant_account_id, store_id, commerce_fact_id, \
+                          attribution_model, model_version) DO UPDATE \
+                 SET is_direct = EXCLUDED.is_direct, touch_event_id = EXCLUDED.touch_event_id, \
+                     anonymous_id = EXCLUDED.anonymous_id, session_id = EXCLUDED.session_id, \
+                     landing_path = EXCLUDED.landing_path, \
+                     referrer_domain = EXCLUDED.referrer_domain, \
+                     campaign_source = EXCLUDED.campaign_source, \
+                     campaign_medium = EXCLUDED.campaign_medium, \
+                     campaign_name = EXCLUDED.campaign_name, \
+                     advertising_storage_consent = EXCLUDED.advertising_storage_consent, \
+                     consent_policy_version = EXCLUDED.consent_policy_version, \
+                     collection_policy_version = EXCLUDED.collection_policy_version, \
+                     advertising_export_eligible = EXCLUDED.advertising_export_eligible, \
+                     touch_occurred_at = EXCLUDED.touch_occurred_at, \
+                     input_event_watermark = EXCLUDED.input_event_watermark, \
+                     attributed_at = EXCLUDED.attributed_at",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(job.commerce_fact_id)
+        .bind(i16::try_from(job.model_version).map_err(conversion_error)?)
+        .bind(attributed_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if affected.rows_affected() != 2 {
+            return Err(corrupt_attribution_job());
+        }
+        transaction.commit().await.map_err(database_error)
+    }
+
+    async fn finish_attribution(
+        &self,
+        worker_id: Uuid,
+        job: &AnalyticsAttributionJob,
+        result: Result<(), String>,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let (status, processed_at, error, available_at) = match result {
+            Ok(()) => ("processed", Some(now), None, now),
+            Err(error) if job.attempts >= 8 => {
+                ("dead_letter", None, Some(bounded_error(error)), now)
+            }
+            Err(error) => {
+                let delay_seconds = 1_i64 << job.attempts.min(8);
+                (
+                    "pending",
+                    None,
+                    Some(bounded_error(error)),
+                    now + time::Duration::seconds(delay_seconds),
+                )
+            }
+        };
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        let finished = sqlx::query(
+            "UPDATE analytics.attribution_jobs SET processing_status = $6::integration.queue_status, \
+                    available_at = $7, locked_by = NULL, locked_at = NULL, processed_at = $8, \
+                    last_error = $9, updated_at = $10 \
+              WHERE merchant_account_id = $1 AND store_id = $2 AND commerce_fact_id = $3 \
+                AND model_version = $4 AND processing_status = 'processing' AND locked_by = $5",
+        )
+        .bind(job.merchant_account_id)
+        .bind(job.store_id.as_uuid())
+        .bind(job.commerce_fact_id)
+        .bind(i16::try_from(job.model_version).map_err(conversion_error)?)
+        .bind(worker_id)
+        .bind(status)
+        .bind(available_at)
+        .bind(processed_at)
+        .bind(error)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if finished.rows_affected() != 1 {
+            return Err(ApplicationError::Conflict {
+                code: "analytics_attribution_lease_lost",
+                message: "the Analytics attribution lease is no longer owned by this worker",
+            });
+        }
+        transaction.commit().await.map_err(database_error)
     }
 }
 
@@ -1232,6 +1476,12 @@ fn corrupt_sessionization_event() -> ApplicationError {
     ))
 }
 
+fn corrupt_attribution_job() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "the Analytics attribution queue references an invalid Order fact"
+    ))
+}
+
 fn stale_sessionization_lease() -> ApplicationError {
     ApplicationError::Conflict {
         code: "analytics_sessionization_lease_lost",
@@ -1337,7 +1587,7 @@ async fn load_erasure_request(
 ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError> {
     let row = sqlx::query_as::<_, ErasureRequestRow>(
         "SELECT id, store_id, anonymous_id, customer_id, status::text, requested_by, \
-                behavior_events_deleted, sessions_deleted, identity_links_deleted, \
+                behavior_events_deleted, attribution_results_deleted, sessions_deleted, identity_links_deleted, \
                 requested_at, completed_at \
          FROM analytics.erasure_requests \
          WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
@@ -1371,6 +1621,8 @@ fn erasure_request_item(
         status,
         requested_by: UserId::from_uuid(row.requested_by),
         behavior_events_deleted: u64::try_from(row.behavior_events_deleted)
+            .map_err(conversion_error)?,
+        attribution_results_deleted: u64::try_from(row.attribution_results_deleted)
             .map_err(conversion_error)?,
         sessions_deleted: u64::try_from(row.sessions_deleted).map_err(conversion_error)?,
         identity_links_deleted: u64::try_from(row.identity_links_deleted)
@@ -1694,13 +1946,15 @@ fn properties(value: &BrowserEventProperties) -> Value {
     }
 }
 
-type AttributionColumns<'a> = (
-    Option<&'a str>,
-    Option<&'a str>,
-    Option<&'a str>,
-    Option<&'a str>,
-    Option<&'a str>,
-);
+struct AttributionColumns<'a> {
+    landing_path: Option<&'a str>,
+    referrer_domain: Option<&'a str>,
+    campaign_source: Option<&'a str>,
+    campaign_medium: Option<&'a str>,
+    campaign_name: Option<&'a str>,
+    cart_id: Option<Uuid>,
+    checkout_id: Option<Uuid>,
+}
 
 fn attribution_columns(properties: &BrowserEventProperties) -> AttributionColumns<'_> {
     if let BrowserEventProperties::PageViewed {
@@ -1712,15 +1966,49 @@ fn attribution_columns(properties: &BrowserEventProperties) -> AttributionColumn
         ..
     } = properties
     {
-        (
-            Some(path),
-            referrer_domain.as_deref(),
-            campaign_source.as_deref(),
-            campaign_medium.as_deref(),
-            campaign_name.as_deref(),
-        )
+        AttributionColumns {
+            landing_path: Some(path),
+            referrer_domain: referrer_domain.as_deref(),
+            campaign_source: campaign_source.as_deref(),
+            campaign_medium: campaign_medium.as_deref(),
+            campaign_name: campaign_name.as_deref(),
+            cart_id: None,
+            checkout_id: None,
+        }
+    } else if let BrowserEventProperties::CartLineAdded { cart_id, .. } = properties {
+        AttributionColumns {
+            landing_path: None,
+            referrer_domain: None,
+            campaign_source: None,
+            campaign_medium: None,
+            campaign_name: None,
+            cart_id: Some(cart_id.as_uuid()),
+            checkout_id: None,
+        }
+    } else if let BrowserEventProperties::CheckoutStarted {
+        cart_id,
+        checkout_id,
+    } = properties
+    {
+        AttributionColumns {
+            landing_path: None,
+            referrer_domain: None,
+            campaign_source: None,
+            campaign_medium: None,
+            campaign_name: None,
+            cart_id: Some(cart_id.as_uuid()),
+            checkout_id: checkout_id.map(|id| id.as_uuid()),
+        }
     } else {
-        (None, None, None, None, None)
+        AttributionColumns {
+            landing_path: None,
+            referrer_domain: None,
+            campaign_source: None,
+            campaign_medium: None,
+            campaign_name: None,
+            cart_id: None,
+            checkout_id: None,
+        }
     }
 }
 
