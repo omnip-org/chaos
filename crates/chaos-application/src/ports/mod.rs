@@ -4,6 +4,7 @@ mod catalog;
 mod catalog_management;
 mod catalog_read;
 mod clock;
+mod collection;
 mod customer;
 mod fulfillment;
 mod inventory;
@@ -49,6 +50,10 @@ pub use catalog_read::{
     CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,
 };
 pub use clock::Clock;
+pub use collection::{
+    CollectionDetail, CollectionListItem, CollectionProductItem, CollectionPublicationRecord,
+    CollectionRepository, CreateCollectionRecord, StorefrontCollectionItem,
+};
 pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
     CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,

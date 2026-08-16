@@ -126,6 +126,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
         query: Option<&str>,
+        collection_handle: Option<&str>,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCatalogProduct>, ApplicationError> {
@@ -158,8 +159,57 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                    AND channel.status = 'active' \
                    AND product.status = 'active' \
                    AND ($5::text IS NULL OR search_document.document @@ websearch_to_tsquery('simple', $5)) \
-                   AND ($4::uuid IS NULL OR product.id > $4) \
-                 ORDER BY product.id ASC \
+                   AND ($6::text IS NULL OR EXISTS ( \
+                       SELECT 1 FROM catalog.collections AS collection \
+                       INNER JOIN catalog.collection_products AS member \
+                         ON member.merchant_account_id = collection.merchant_account_id \
+                        AND member.store_id = collection.store_id \
+                        AND member.collection_id = collection.id \
+                        AND member.product_id = product.id \
+                       INNER JOIN catalog.collection_publications AS collection_publication \
+                         ON collection_publication.merchant_account_id = collection.merchant_account_id \
+                        AND collection_publication.store_id = collection.store_id \
+                        AND collection_publication.collection_id = collection.id \
+                        AND collection_publication.sales_channel_id = channel.id \
+                       WHERE collection.merchant_account_id = product.merchant_account_id \
+                         AND collection.store_id = product.store_id \
+                         AND collection.status = 'active' AND collection.handle = $6)) \
+                   AND ( \
+                       $4::uuid IS NULL \
+                       OR ($6::text IS NULL AND product.id > $4) \
+                       OR ($6::text IS NOT NULL AND ( \
+                           SELECT member.position \
+                           FROM catalog.collections AS collection \
+                           INNER JOIN catalog.collection_products AS member \
+                             ON member.merchant_account_id = collection.merchant_account_id \
+                            AND member.store_id = collection.store_id \
+                            AND member.collection_id = collection.id \
+                           WHERE collection.merchant_account_id = product.merchant_account_id \
+                             AND collection.store_id = product.store_id \
+                             AND collection.handle = $6 AND member.product_id = product.id \
+                       ) > ( \
+                           SELECT anchor.position \
+                           FROM catalog.collections AS collection \
+                           INNER JOIN catalog.collection_products AS anchor \
+                             ON anchor.merchant_account_id = collection.merchant_account_id \
+                            AND anchor.store_id = collection.store_id \
+                            AND anchor.collection_id = collection.id \
+                           WHERE collection.merchant_account_id = product.merchant_account_id \
+                             AND collection.store_id = product.store_id \
+                             AND collection.handle = $6 AND anchor.product_id = $4 \
+                       )) \
+                   ) \
+                 ORDER BY CASE WHEN $6::text IS NOT NULL THEN ( \
+                     SELECT member.position \
+                     FROM catalog.collections AS collection \
+                     INNER JOIN catalog.collection_products AS member \
+                       ON member.merchant_account_id = collection.merchant_account_id \
+                      AND member.store_id = collection.store_id \
+                      AND member.collection_id = collection.id \
+                     WHERE collection.merchant_account_id = product.merchant_account_id \
+                       AND collection.store_id = product.store_id \
+                       AND collection.handle = $6 AND member.product_id = product.id \
+                 ) END ASC, product.id ASC \
                  LIMIT 100",
             )
             .bind(actor.merchant_account_id.as_uuid())
@@ -167,6 +217,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
             .bind(scan_after.map(ProductId::as_uuid))
             .bind(query)
+            .bind(collection_handle)
             .fetch_all(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -489,7 +540,7 @@ mod tests {
         );
         let repository = PostgresStorefrontCatalogRepository::new(runtime_pool);
         let products = repository
-            .list_products(&actor, None, None, None, 20)
+            .list_products(&actor, None, None, None, None, 20)
             .await
             .unwrap();
         assert_eq!(products.len(), 1);
@@ -497,14 +548,14 @@ mod tests {
         assert_eq!(products[0].variants.len(), 1);
         assert_eq!(products[0].variants[0].amount_minor, 2500);
         let searched = repository
-            .list_products(&actor, None, Some("visible"), None, 20)
+            .list_products(&actor, None, Some("visible"), None, None, 20)
             .await
             .unwrap();
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].id, visible_product_id);
         assert!(
             repository
-                .list_products(&actor, None, Some("missing"), None, 20)
+                .list_products(&actor, None, Some("missing"), None, None, 20)
                 .await
                 .unwrap()
                 .is_empty()

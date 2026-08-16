@@ -78,6 +78,16 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
 );
 CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
+CREATE TYPE catalog.collection_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE catalog.collection_event_kind AS ENUM (
+    'created',
+    'updated',
+    'activated',
+    'archived',
+    'products_replaced',
+    'published',
+    'unpublished'
+);
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
 CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
@@ -676,6 +686,110 @@ CREATE INDEX product_publications_channel_product_idx
         store_id,
         sales_channel_id,
         product_id
+    );
+
+CREATE TABLE catalog.collections (
+    id                   UUID                       NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                       NOT NULL,
+    store_id             UUID                       NOT NULL,
+    handle               extensions.citext          NOT NULL,
+    title                TEXT                       NOT NULL,
+    description          TEXT                       NOT NULL DEFAULT '',
+    status               catalog.collection_status  NOT NULL DEFAULT 'draft',
+    created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, handle),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT collections_handle_format_check CHECK (
+        handle::text ~ '^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$'
+    ),
+    CONSTRAINT collections_title_length_check CHECK (
+        length(trim(title)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT collections_description_length_check CHECK (
+        length(description) <= 100000
+    )
+);
+
+CREATE INDEX collections_store_status_created_idx
+    ON catalog.collections (
+        merchant_account_id, store_id, status, created_at DESC, id DESC
+    );
+
+CREATE TABLE catalog.collection_products (
+    merchant_account_id  UUID        NOT NULL,
+    store_id             UUID        NOT NULL,
+    collection_id        UUID        NOT NULL,
+    product_id           UUID        NOT NULL,
+    position             INTEGER     NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, store_id, collection_id, product_id),
+    UNIQUE (merchant_account_id, store_id, collection_id, position),
+    FOREIGN KEY (merchant_account_id, store_id, collection_id)
+        REFERENCES catalog.collections(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT collection_products_position_check CHECK (position BETWEEN 0 AND 999)
+);
+
+CREATE INDEX collection_products_product_idx
+    ON catalog.collection_products (merchant_account_id, store_id, product_id, collection_id);
+
+CREATE TABLE catalog.collection_publications (
+    merchant_account_id  UUID        NOT NULL,
+    store_id             UUID        NOT NULL,
+    collection_id        UUID        NOT NULL,
+    sales_channel_id     UUID        NOT NULL,
+    published_at         TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, collection_id, sales_channel_id),
+    FOREIGN KEY (merchant_account_id, store_id, collection_id)
+        REFERENCES catalog.collections(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX collection_publications_channel_collection_idx
+    ON catalog.collection_publications (
+        merchant_account_id, store_id, sales_channel_id, collection_id
+    );
+
+CREATE TABLE catalog.collection_events (
+    id                   UUID                           NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                           NOT NULL,
+    store_id             UUID                           NOT NULL,
+    collection_id        UUID                           NOT NULL,
+    event_kind           catalog.collection_event_kind  NOT NULL,
+    actor_user_id        UUID                           NOT NULL,
+    sales_channel_id     UUID,
+    product_count        INTEGER,
+    occurred_at          TIMESTAMPTZ                    NOT NULL,
+
+    FOREIGN KEY (merchant_account_id, store_id, collection_id)
+        REFERENCES catalog.collections(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    CONSTRAINT collection_events_product_count_check CHECK (
+        product_count IS NULL OR product_count BETWEEN 0 AND 1000
+    ),
+    CONSTRAINT collection_events_shape_check CHECK (
+        (event_kind = 'products_replaced' AND product_count IS NOT NULL
+            AND sales_channel_id IS NULL)
+        OR (event_kind IN ('published', 'unpublished') AND sales_channel_id IS NOT NULL
+            AND product_count IS NULL)
+        OR (event_kind IN ('created', 'updated', 'activated', 'archived')
+            AND sales_channel_id IS NULL AND product_count IS NULL)
+    )
+);
+
+CREATE INDEX collection_events_collection_occurred_idx
+    ON catalog.collection_events (
+        merchant_account_id, store_id, collection_id, occurred_at, id
     );
 
 CREATE TABLE pricing.price_lists (
@@ -4151,6 +4265,10 @@ ALTER TABLE catalog.product_option_values ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.variant_selected_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.product_publications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collection_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collection_publications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog.collection_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
@@ -4390,6 +4508,46 @@ CREATE POLICY merchant_account_isolation ON catalog.variant_selected_options
     );
 
 CREATE POLICY merchant_account_isolation ON catalog.product_publications
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collections
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collection_products
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collection_publications
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON catalog.collection_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -6402,6 +6560,8 @@ REVOKE UPDATE, DELETE ON analytics.erasure_requests FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
 REVOKE DELETE ON merchant.store_domains FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON merchant.store_domain_events FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
+REVOKE DELETE ON catalog.collections FROM chaos_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

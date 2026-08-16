@@ -32,6 +32,7 @@
         "parameters": [
           { "$ref": "#/components/parameters/Currency" },
           { "name": "q", "in": "query", "description": "Store-isolated full-text search", "schema": { "type": "string", "minLength": 1, "maxLength": 200 } },
+          { "name": "collection", "in": "query", "description": "Active Collection handle published to the current Sales Channel. Results preserve manual Collection order.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } },
           { "$ref": "#/components/parameters/Cursor" },
           { "$ref": "#/components/parameters/Limit" }
         ],
@@ -76,6 +77,37 @@
               }
             }
           },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/collections": {
+      "get": {
+        "operationId": "listStorefrontCollections",
+        "tags": ["Catalog"],
+        "summary": "List active Collections published to the current Sales Channel",
+        "security": [{ "publishableKey": ["catalog:read"] }],
+        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }],
+        "responses": {
+          "200": { "description": "Storefront Collection page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionCollectionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
+    },
+    "/collections/{handle}": {
+      "get": {
+        "operationId": "getStorefrontCollection",
+        "tags": ["Catalog"],
+        "summary": "Get an active Collection published to the current Sales Channel",
+        "security": [{ "publishableKey": ["catalog:read"] }],
+        "parameters": [{ "name": "handle", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } }],
+        "responses": {
+          "200": { "description": "Storefront Collection", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" },
@@ -1244,6 +1276,20 @@
           "meta": { "$ref": "#/components/schemas/Meta" }
         }
       },
+      "Collection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "handle", "title", "description", "product_count"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "description": { "type": "string", "maxLength": 100000 },
+          "product_count": { "type": "integer", "minimum": 0, "maximum": 1000 }
+        }
+      },
+      "CollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Collection" } } },
+      "CollectionCollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Collection" } }, "meta": { "$ref": "#/components/schemas/Meta" } } },
       "ErrorDetail": {
         "type": "object",
         "additionalProperties": false,

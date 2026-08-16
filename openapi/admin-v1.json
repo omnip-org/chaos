@@ -1581,6 +1581,30 @@
         }
       }
     },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections": {
+      "get": {
+        "operationId": "listCollections", "tags": ["Catalog"], "summary": "List Collections", "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }],
+        "responses": { "200": { "description": "Collection page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionCollectionEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "operationId": "createCollection", "tags": ["Catalog"], "summary": "Create a draft Collection", "security": [{ "bearerSession": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionContent" } } } },
+        "responses": { "201": { "$ref": "#/components/responses/IdentifierCreated" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } }
+      }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}": {
+      "get": { "operationId": "getCollection", "tags": ["Catalog"], "summary": "Get a Collection with ordered products and publications", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }], "responses": { "200": { "description": "Collection", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionDetailEnvelope" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } },
+      "put": { "operationId": "updateCollection", "tags": ["Catalog"], "summary": "Update a non-archived Collection", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionContent" } } } }, "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } } }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/activate": { "post": { "operationId": "activateCollection", "tags": ["Catalog"], "summary": "Activate a draft Collection", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } } } },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/archive": { "post": { "operationId": "archiveCollection", "tags": ["Catalog"], "summary": "Archive a Collection permanently", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } } },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/products": { "put": { "operationId": "replaceCollectionProducts", "tags": ["Catalog"], "summary": "Replace the complete manually ordered Product membership", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReplaceCollectionProducts" } } } }, "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" }, "422": { "$ref": "#/components/responses/ValidationFailed" } } } },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/publications/{sales_channel_id}": {
+      "put": { "operationId": "publishCollection", "tags": ["Catalog"], "summary": "Publish an active Collection to a Sales Channel", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/SalesChannelId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" }, "409": { "$ref": "#/components/responses/Conflict" } } },
+      "delete": { "operationId": "unpublishCollection", "tags": ["Catalog"], "summary": "Remove Collection publication from a Sales Channel", "security": [{ "bearerSession": [] }], "parameters": [{ "$ref": "#/components/parameters/MerchantAccountId" }, { "$ref": "#/components/parameters/StoreId" }, { "$ref": "#/components/parameters/CollectionId" }, { "$ref": "#/components/parameters/SalesChannelId" }, { "$ref": "#/components/parameters/IdempotencyKey" }], "responses": { "200": { "$ref": "#/components/responses/IdentifierOk" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "403": { "$ref": "#/components/responses/Forbidden" }, "404": { "$ref": "#/components/responses/NotFound" } } }
+    },
     "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-reports/daily": {
       "get": {
         "operationId": "listStoreDailyAnalyticsReports",
@@ -1629,6 +1653,12 @@
       },
       "ProductId": {
         "name": "product_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "CollectionId": {
+        "name": "collection_id",
         "in": "path",
         "required": true,
         "schema": { "type": "string", "format": "uuid" }
@@ -1729,6 +1759,14 @@
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentifierResponse" } } }
       },
       "ResourceMutated": {
+        "description": "Resource mutation completed",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentifierResponse" } } }
+      },
+      "IdentifierCreated": {
+        "description": "Resource created",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentifierResponse" } } }
+      },
+      "IdentifierOk": {
         "description": "Resource mutation completed",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentifierResponse" } } }
       }
@@ -2825,6 +2863,50 @@
           "meta": { "$ref": "#/components/schemas/ResponseMeta" }
         }
       },
+      "CollectionContent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "title"],
+        "properties": {
+          "handle": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "description": { "type": "string", "maxLength": 100000, "default": "" }
+        }
+      },
+      "ReplaceCollectionProducts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["product_ids"],
+        "properties": { "product_ids": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "type": "string", "format": "uuid" } } }
+      },
+      "CollectionSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "handle", "title", "status", "product_count", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "handle": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string", "enum": ["draft", "active", "archived"] },
+          "product_count": { "type": "integer", "minimum": 0, "maximum": 1000 },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CollectionProduct": { "type": "object", "additionalProperties": false, "required": ["product_id", "position"], "properties": { "product_id": { "type": "string", "format": "uuid" }, "position": { "type": "integer", "minimum": 0, "maximum": 999 } } },
+      "CollectionDetail": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "handle", "title", "description", "status", "products", "published_sales_channel_ids", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "handle": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["draft", "active", "archived"] },
+          "products": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/components/schemas/CollectionProduct" } },
+          "published_sales_channel_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "format": "uuid" } },
+          "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CollectionCollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/CollectionSummary" } }, "meta": { "$ref": "#/components/schemas/ResponseMeta" } } },
+      "CollectionDetailEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/CollectionDetail" } } },
       "ApiKeyCollectionEnvelope": {
         "type": "object",
         "required": ["data", "meta"],

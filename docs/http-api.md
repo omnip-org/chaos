@@ -144,6 +144,8 @@ Draft Products may omit Options and Variants while content is being authored. Pr
 
 Every Product write requires `Idempotency-Key`. Owners, administrators, developers, and managers may mutate Catalog data; support members remain read-only.
 
+Collections are administered beneath `/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections`. The collection and detail resources support cursor reads, idempotent creation and content updates, terminal activation and archive actions, atomic ordered Product replacement, and explicit Sales Channel publication. Storefront `GET /store/v1/collections` and `GET /store/v1/collections/{handle}` return only active Collections published to the authenticated key's Channel. `GET /store/v1/products?collection={handle}` preserves manual Collection order and still requires every returned Product, Variant, price, Store, Channel, and Product publication to be independently active and visible.
+
 ## Pricing
 
 `POST /admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists` creates a Price List and its Variant prices atomically. The request requires `Idempotency-Key`. A Price List fixes one enabled Store currency, tax-inclusive behavior, and an optional RFC 3339 activation window. Each Variant appears at most once in a list and every amount is a non-negative integer in minor currency units.

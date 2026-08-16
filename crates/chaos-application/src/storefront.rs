@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use chaos_domain::{CurrencyCode, FieldViolation, catalog::ProductId, merchant::ApiKeyClass};
+use chaos_domain::{
+    CurrencyCode, FieldViolation,
+    catalog::{CollectionHandle, ProductId},
+    merchant::ApiKeyClass,
+};
 
 use crate::{
     ApplicationError,
@@ -40,15 +44,26 @@ impl StorefrontCatalog {
         actor: &MachineActor,
         currency: Option<&str>,
         query: Option<&str>,
+        collection: Option<&str>,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<StorefrontProductPage, ApplicationError> {
         Self::context(actor)?;
         let currency = parse_currency(currency)?;
+        let collection = collection
+            .map(|value| CollectionHandle::parse(value.to_owned()))
+            .transpose()?;
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
-            .list_products(actor, currency, query, after, limit + 1)
+            .list_products(
+                actor,
+                currency,
+                query,
+                collection.as_ref().map(CollectionHandle::as_str),
+                after,
+                limit + 1,
+            )
             .await?;
         let has_more = items.len() > usize::from(limit);
         if has_more {
@@ -113,6 +128,7 @@ mod tests {
             _actor: &MachineActor,
             _currency: Option<CurrencyCode>,
             _query: Option<&str>,
+            _collection_handle: Option<&str>,
             _after: Option<ProductId>,
             _limit: u16,
         ) -> Result<Vec<StorefrontCatalogProduct>, ApplicationError> {
@@ -155,7 +171,7 @@ mod tests {
     async fn secret_keys_cannot_cross_the_storefront_authentication_boundary() {
         let catalog = StorefrontCatalog::new(Arc::new(EmptyRepository));
         let result = catalog
-            .list_products(&actor(ApiKeyClass::Secret), None, None, None, 20)
+            .list_products(&actor(ApiKeyClass::Secret), None, None, None, None, 20)
             .await;
         assert!(matches!(result, Err(ApplicationError::Forbidden)));
     }

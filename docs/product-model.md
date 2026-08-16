@@ -63,6 +63,10 @@ The actual sellable unit of a Product. A Variant may have a Store-unique SKU and
 
 The explicit relationship that makes an active Product visible through a Sales Channel. Publication does not override inactive Store, Channel, Product, or Variant state.
 
+### Collection
+
+A Store-owned curated Product group with canonical content, a terminal lifecycle, atomic manual ordering, independent Sales Channel publication, and immutable audit events. Storefront visibility is the intersection of Collection publication and every Product's own lifecycle and publication.
+
 ### PriceList
 
 A Store-owned pricing context with one enabled currency, tax semantics, an optional activation window, and explicit Product Variant prices. A Price List is independent from Product content and Sales Channel publication. The same Variant may have different authoritative prices in different Price Lists.

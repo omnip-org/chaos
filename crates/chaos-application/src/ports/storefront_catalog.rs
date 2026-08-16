@@ -32,6 +32,7 @@ pub trait StorefrontCatalogRepository: Send + Sync {
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
         query: Option<&str>,
+        collection_handle: Option<&str>,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCatalogProduct>, ApplicationError>;

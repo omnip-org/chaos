@@ -73,7 +73,7 @@ Suggested implementation order:
 
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
 2. merchant: merchant accounts, memberships, roles, API keys, Stores, Channels, verified Domains, and public domain-context resolution;
-3. catalog: products, variants, options, and publication; collections and media are reserved;
+3. catalog: products, variants, options, channel publication, and manually ordered channel-published collections; media is reserved;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;
 6. sales: Store Customers, saved addresses, carts, line items, Checkout, Orders, and immutable contact/address snapshots;

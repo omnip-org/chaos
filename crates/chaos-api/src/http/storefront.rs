@@ -19,6 +19,7 @@ pub(super) fn routes() -> Router<ApiState> {
 struct CatalogQuery {
     currency: Option<String>,
     q: Option<String>,
+    collection: Option<String>,
     cursor: Option<String>,
     limit: Option<u16>,
 }
@@ -77,6 +78,7 @@ async fn list_products(
             &actor,
             query.currency.as_deref(),
             query.q.as_deref(),
+            query.collection.as_deref(),
             after,
             limit,
         )

@@ -2,6 +2,7 @@ mod analytics;
 mod api_key;
 mod auth;
 mod catalog;
+mod collection;
 mod customer;
 mod error;
 mod extract;
@@ -26,7 +27,10 @@ use chaos_application::{
         AnalyticsAdministration, AnalyticsCollection, AnalyticsDestinations, AnalyticsPrivacy,
         AnalyticsReporting, AnalyticsWorkers,
     },
-    catalog::{CatalogManagement, CatalogQueries, CreateProduct},
+    catalog::{
+        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
+        StorefrontCollections,
+    },
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
         ShippingProviderAdministration,
@@ -60,16 +64,16 @@ use chaos_infrastructure::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
         PostgresAnalyticsReportingRepository, PostgresApiKeyRepository,
         PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
-        PostgresFulfillmentRepository, PostgresInventoryRepository,
-        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
-        PostgresOrderManagementRepository, PostgresPaymentRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreDomainRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
-        SecureApiKeyMaterialGenerator,
+        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
+        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
+        PostgresInventoryRepository, PostgresMerchantProvisioningUnitOfWork,
+        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
+        PostgresPaymentRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository, PostgresSearchIndexer,
+        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreDomainRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
     shopper::HmacShopperCredentialCodec,
     state::AppState,
@@ -108,6 +112,8 @@ pub struct ApiState {
     pub create_product: Arc<CreateProduct>,
     pub catalog_queries: Arc<CatalogQueries>,
     pub catalog_management: Arc<CatalogManagement>,
+    pub collection_administration: Arc<CollectionAdministration>,
+    pub storefront_collections: Arc<StorefrontCollections>,
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
     pub tax_management: Arc<TaxManagement>,
@@ -196,6 +202,12 @@ impl ApiState {
         let catalog_management = CatalogManagement::new(Arc::new(
             PostgresCatalogManagementUnitOfWork::new(infrastructure.runtime_pool()),
         ));
+        let collection_repository = Arc::new(PostgresCollectionRepository::new(
+            infrastructure.runtime_pool(),
+        ));
+        let collection_administration =
+            CollectionAdministration::new(collection_repository.clone());
+        let storefront_collections = StorefrontCollections::new(collection_repository);
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
@@ -387,6 +399,8 @@ impl ApiState {
             create_product: Arc::new(create_product),
             catalog_queries: Arc::new(catalog_queries),
             catalog_management: Arc::new(catalog_management),
+            collection_administration: Arc::new(collection_administration),
+            storefront_collections: Arc::new(storefront_collections),
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
             tax_management: Arc::new(tax_management),
@@ -435,9 +449,11 @@ pub fn router(state: ApiState) -> Router {
         .merge(payment::routes())
         .merge(notification::routes())
         .nest("/admin/v1", catalog::routes())
+        .nest("/admin/v1", collection::admin_routes())
         .nest("/admin/v1", pricing::routes())
         .nest("/admin/v1", api_key::routes())
         .nest("/store/v1", storefront::routes())
+        .nest("/store/v1", collection::storefront_routes())
         .nest("/store/v1", store_admin::domain_resolution_routes())
         .nest("/store/v1", analytics::storefront_routes())
         .nest("/store/v1", storefront_sales::routes())

@@ -64,6 +64,17 @@ mod tests {
             serde_json::json!([{ "publishableKey": ["catalog:read"] }])
         );
         assert_eq!(
+            specification["paths"]["/collections"]["get"]["security"],
+            serde_json::json!([{ "publishableKey": ["catalog:read"] }])
+        );
+        assert!(
+            specification["paths"]["/products"]["get"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|parameter| parameter["name"] == "collection")
+        );
+        assert_eq!(
             specification["paths"]["/carts"]["post"]["security"],
             serde_json::json!([{ "publishableKey": ["carts:write"] }])
         );
@@ -168,6 +179,37 @@ mod tests {
             }
         }
         visit(&specification, &specification);
+    }
+
+    #[test]
+    fn collection_contract_preserves_lifecycle_ordering_and_publication_boundaries() {
+        let admin = specification();
+        let base =
+            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections";
+        assert_eq!(
+            admin["paths"][base]["post"]["operationId"],
+            "createCollection"
+        );
+        assert_eq!(
+            admin["components"]["schemas"]["ReplaceCollectionProducts"]["properties"]["product_ids"]
+                ["maxItems"],
+            1000
+        );
+        assert_eq!(
+            admin["components"]["schemas"]["CollectionDetail"]["properties"]["products"]["items"]["$ref"],
+            "#/components/schemas/CollectionProduct"
+        );
+
+        let store: Value = serde_json::from_str(STORE_V1).unwrap();
+        assert_eq!(
+            store["components"]["schemas"]["Collection"]["properties"]["product_count"]["maximum"],
+            1000
+        );
+        assert!(
+            store["components"]["schemas"]["Collection"]["properties"]
+                .get("status")
+                .is_none()
+        );
     }
 
     #[test]
