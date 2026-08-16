@@ -17,7 +17,7 @@ anyhow = "1.0"
 async-trait = "0.1.91"
 aws-sdk-s3 = { version = "1.141.0", default-features = false, features = ["default-https-client", "rt-tokio", "rustls"] }
 axum = "0.8.9"
-base64 = "0.22.1"
+base64 = "0.23.1"
 email_address = "0.2.9"
 lettre = { version = "0.11.22", default-features = false, features = ["builder", "pool", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
 language-tags = "0.3.2"
