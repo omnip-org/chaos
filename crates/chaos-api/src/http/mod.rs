@@ -606,7 +606,7 @@ mod tests {
             "text/plain; version=0.0.4; charset=utf-8"
         );
 
-        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains("chaos_http_requests_total"));
         assert!(body.contains("method=\"GET\""));
