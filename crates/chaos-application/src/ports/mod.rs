@@ -24,12 +24,13 @@ mod tax;
 
 pub use analytics::{
     AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter,
-    AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsErasureBatchResult,
-    AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
-    AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
-    AnalyticsPrivacyRepository, AnalyticsRateLimitDecision, AnalyticsRetentionPurgeResult,
-    AnalyticsSessionizationJob, AnalyticsSessionizationQueue, ResolvedAnalyticsPolicy,
-    StoreAnalyticsPolicy,
+    AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsDailyReports,
+    AnalyticsErasureBatchResult, AnalyticsErasureRequest, AnalyticsErasureSelector,
+    AnalyticsErasureStatus, AnalyticsEventRepository, AnalyticsIdentityLink,
+    AnalyticsPolicyRepository, AnalyticsPrivacyRepository, AnalyticsRateLimitDecision,
+    AnalyticsReportingRepository, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
+    AnalyticsSessionizationQueue, DailyAttributionReport, DailyBehaviorReport, DailyCommerceReport,
+    ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
 };
 pub use api_key::{
     ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,

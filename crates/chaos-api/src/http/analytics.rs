@@ -11,8 +11,8 @@ use chaos_application::{
         RequestAnalyticsErasureInput, UpdateAnalyticsPolicyInput,
     },
     ports::{
-        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
-        AnalyticsIdentityLink, IdempotencyRequest, StoreAnalyticsPolicy,
+        AnalyticsDailyReports, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsErasureStatus, AnalyticsIdentityLink, IdempotencyRequest, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
@@ -27,8 +27,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    AnalyticsCustomer, AnalyticsMachine, ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse,
-    ApiState, MerchantContext, merchant::idempotency_key, response::parse_api_time,
+    AnalyticsCustomer, AnalyticsMachine, ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery,
+    ApiResponse, ApiState, MerchantContext, merchant::idempotency_key, response::parse_api_time,
 };
 
 pub(super) fn storefront_routes() -> Router<ApiState> {
@@ -52,6 +52,10 @@ pub(super) fn admin_routes() -> Router<ApiState> {
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests/{request_id}",
             get(get_erasure_request),
         )
+        .route(
+            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-reports/daily",
+            get(list_daily_reports),
+        )
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
@@ -66,6 +70,70 @@ struct ErasurePath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     request_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DailyReportsQuery {
+    from: String,
+    to: String,
+}
+
+#[derive(Serialize)]
+struct DailyBehaviorReportData {
+    sales_channel_id: Uuid,
+    report_date: String,
+    sessions: u64,
+    events: u64,
+    page_views: u64,
+    product_views: u64,
+    searches: u64,
+    cart_line_additions: u64,
+    checkouts_started: u64,
+    active_engagement_milliseconds: u64,
+    refreshed_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct DailyCommerceReportData {
+    sales_channel_id: Uuid,
+    report_date: String,
+    currency: String,
+    orders_created: u64,
+    order_amount_minor: u64,
+    payments_captured: u64,
+    captured_amount_minor: u64,
+    refunds_succeeded: u64,
+    refunded_amount_minor: u64,
+    fulfillments_shipped: u64,
+    returns_completed: u64,
+    refreshed_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct DailyAttributionReportData {
+    sales_channel_id: Uuid,
+    report_date: String,
+    attribution_model: String,
+    model_version: u16,
+    is_direct: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    campaign_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    campaign_medium: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    campaign_name: Option<String>,
+    attributed_orders: u64,
+    attributed_amount_minor: u64,
+    currency: String,
+    refreshed_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct AnalyticsDailyReportsData {
+    behavior: Vec<DailyBehaviorReportData>,
+    commerce: Vec<DailyCommerceReportData>,
+    attribution: Vec<DailyAttributionReportData>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -208,6 +276,26 @@ async fn get_erasure_request(
     Ok(ApiResponse::ok(erasure_request_data(item)))
 }
 
+async fn list_daily_reports(
+    State(state): State<ApiState>,
+    MerchantContext(actor): MerchantContext,
+    ApiPath(path): ApiPath<StorePath>,
+    ApiQuery(query): ApiQuery<DailyReportsQuery>,
+) -> Result<ApiResponse<AnalyticsDailyReportsData>, ApiError> {
+    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
+    let format = time::format_description::parse_borrowed::<3>("[year]-[month]-[day]")
+        .expect("the Analytics report date format is valid");
+    let from = time::Date::parse(&query.from, &format)
+        .map_err(|_| invalid_value("from", "must be an ISO 8601 calendar date"))?;
+    let to = time::Date::parse(&query.to, &format)
+        .map_err(|_| invalid_value("to", "must be an ISO 8601 calendar date"))?;
+    let reports = state
+        .analytics_reporting
+        .list_daily_reports(actor, StoreId::from_uuid(path.store_id), from, to)
+        .await?;
+    Ok(ApiResponse::ok(daily_reports_data(reports)))
+}
+
 async fn get_policy(
     State(state): State<ApiState>,
     MerchantContext(actor): MerchantContext,
@@ -300,6 +388,64 @@ fn erasure_request_data(item: AnalyticsErasureRequest) -> ErasureRequestData {
         identity_links_deleted: item.identity_links_deleted,
         requested_at: item.requested_at.into(),
         completed_at: item.completed_at.map(Into::into),
+    }
+}
+
+fn daily_reports_data(reports: AnalyticsDailyReports) -> AnalyticsDailyReportsData {
+    AnalyticsDailyReportsData {
+        behavior: reports
+            .behavior
+            .into_iter()
+            .map(|item| DailyBehaviorReportData {
+                sales_channel_id: item.sales_channel_id.as_uuid(),
+                report_date: item.report_date.to_string(),
+                sessions: item.sessions,
+                events: item.events,
+                page_views: item.page_views,
+                product_views: item.product_views,
+                searches: item.searches,
+                cart_line_additions: item.cart_line_additions,
+                checkouts_started: item.checkouts_started,
+                active_engagement_milliseconds: item.active_engagement_milliseconds,
+                refreshed_at: item.refreshed_at.into(),
+            })
+            .collect(),
+        commerce: reports
+            .commerce
+            .into_iter()
+            .map(|item| DailyCommerceReportData {
+                sales_channel_id: item.sales_channel_id.as_uuid(),
+                report_date: item.report_date.to_string(),
+                currency: item.currency,
+                orders_created: item.orders_created,
+                order_amount_minor: item.order_amount_minor,
+                payments_captured: item.payments_captured,
+                captured_amount_minor: item.captured_amount_minor,
+                refunds_succeeded: item.refunds_succeeded,
+                refunded_amount_minor: item.refunded_amount_minor,
+                fulfillments_shipped: item.fulfillments_shipped,
+                returns_completed: item.returns_completed,
+                refreshed_at: item.refreshed_at.into(),
+            })
+            .collect(),
+        attribution: reports
+            .attribution
+            .into_iter()
+            .map(|item| DailyAttributionReportData {
+                sales_channel_id: item.sales_channel_id.as_uuid(),
+                report_date: item.report_date.to_string(),
+                attribution_model: item.attribution_model,
+                model_version: item.model_version,
+                is_direct: item.is_direct,
+                campaign_source: item.campaign_source,
+                campaign_medium: item.campaign_medium,
+                campaign_name: item.campaign_name,
+                attributed_orders: item.attributed_orders,
+                attributed_amount_minor: item.attributed_amount_minor,
+                currency: item.currency,
+                refreshed_at: item.refreshed_at.into(),
+            })
+            .collect(),
     }
 }
 

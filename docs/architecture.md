@@ -150,6 +150,8 @@ Docker Compose runs blue and green API instances behind Caddy. A deployment repl
 
 Application instances never own sessions, WebAuthn ceremonies, carts, or job ownership in local memory. Schedulers and workers use database claiming, leases, or leader election to prevent duplicate work across instances. Analytics workers build session projections continuously and run bounded retention deletion once per minute; Store policy changes may shorten existing expiry but never extend it. Database migrations remain backward compatible for at least one release window so old and new versions can coexist briefly.
 
+Analytics reporting uses typed daily read models rather than querying raw behavior or commerce aggregates on request. Its query adapter owns a separate, low-capacity PostgreSQL pool configured read-only with short statement and lock timeouts. This isolates HTTP reporting concurrency from the OLTP pool while preserving the same runtime role, merchant context, RLS, and Store predicates. Read-model refreshes run only in asynchronous Analytics workers after canonical processing; they never extend a commerce transaction.
+
 The platform emits structured logs, optional OpenTelemetry traces, and Prometheus metrics for bounded HTTP routes, database pool pressure, dependency health, checkout conversion, payment failures, inventory reservation conflicts, queue lag, and analytics sessionization health. The Compose gateway blocks public access to `/metrics`; collectors scrape instances on the internal service network.
 
 ## 10. Delivery roadmap

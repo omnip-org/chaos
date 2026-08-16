@@ -863,6 +863,8 @@ pub(crate) mod tests {
             database_control_plane_url: database_url.into(),
             database_max_connections: 4,
             database_control_plane_max_connections: 1,
+            database_analytics_max_connections: 1,
+            database_analytics_statement_timeout: Duration::from_secs(2),
             database_acquire_timeout: Duration::from_secs(2),
             database_runtime_role: Some("chaos_runtime".into()),
             database_control_plane_role: None,

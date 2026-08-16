@@ -4,12 +4,13 @@ use chaos_application::{
     merchant::MerchantActor,
     ports::{
         AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCommerceFactJob,
-        AnalyticsCommerceFactQueue, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
-        AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventRepository,
-        AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
-        AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob, AnalyticsSessionizationQueue,
-        CustomerActor, IdempotencyRequest, MachineActor, ResolvedAnalyticsPolicy,
-        StoreAnalyticsPolicy,
+        AnalyticsCommerceFactQueue, AnalyticsDailyReports, AnalyticsErasureBatchResult,
+        AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsErasureStatus,
+        AnalyticsEventRepository, AnalyticsIdentityLink, AnalyticsPolicyRepository,
+        AnalyticsPrivacyRepository, AnalyticsReportingRepository, AnalyticsRetentionPurgeResult,
+        AnalyticsSessionizationJob, AnalyticsSessionizationQueue, CustomerActor,
+        DailyAttributionReport, DailyBehaviorReport, DailyCommerceReport, IdempotencyRequest,
+        MachineActor, ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
     },
 };
 use chaos_domain::{
@@ -35,6 +36,168 @@ const REQUEST_ERASURE_OPERATION: &str = "analytics_erasure_requests.create.v1";
 #[derive(Clone)]
 pub struct PostgresAnalyticsEventRepository {
     pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct PostgresAnalyticsReportingRepository {
+    pool: PgPool,
+}
+
+impl PostgresAnalyticsReportingRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[derive(FromRow)]
+struct DailyBehaviorReportRow {
+    sales_channel_id: Uuid,
+    report_date: time::Date,
+    sessions: i64,
+    events: i64,
+    page_views: i64,
+    product_views: i64,
+    searches: i64,
+    cart_line_additions: i64,
+    checkouts_started: i64,
+    active_engagement_milliseconds: i64,
+    refreshed_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct DailyCommerceReportRow {
+    sales_channel_id: Uuid,
+    report_date: time::Date,
+    currency: String,
+    orders_created: i64,
+    order_amount_minor: i64,
+    payments_captured: i64,
+    captured_amount_minor: i64,
+    refunds_succeeded: i64,
+    refunded_amount_minor: i64,
+    fulfillments_shipped: i64,
+    returns_completed: i64,
+    refreshed_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct DailyAttributionReportRow {
+    sales_channel_id: Uuid,
+    report_date: time::Date,
+    attribution_model: String,
+    model_version: i16,
+    is_direct: bool,
+    campaign_source: String,
+    campaign_medium: String,
+    campaign_name: String,
+    attributed_orders: i64,
+    attributed_amount_minor: i64,
+    currency: String,
+    refreshed_at: OffsetDateTime,
+}
+
+#[async_trait]
+impl AnalyticsReportingRepository for PostgresAnalyticsReportingRepository {
+    async fn list_daily_reports(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        from: time::Date,
+        to: time::Date,
+    ) -> Result<Option<AnalyticsDailyReports>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_merchant_context(
+            &mut transaction,
+            actor.merchant_account_id().as_uuid(),
+            Some(actor.user_id().as_uuid()),
+        )
+        .await?;
+        let store_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
+             WHERE merchant_account_id = $1 AND id = $2)",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !store_exists {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(None);
+        }
+        let behavior = sqlx::query_as::<_, DailyBehaviorReportRow>(
+            "SELECT sales_channel_id, report_date, sessions, events, page_views, product_views, \
+                    searches, cart_line_additions, checkouts_started, \
+                    active_engagement_milliseconds, refreshed_at \
+             FROM analytics.daily_behavior_reports \
+             WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND report_date BETWEEN $3 AND $4 \
+             ORDER BY report_date, sales_channel_id LIMIT 5001",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let commerce = sqlx::query_as::<_, DailyCommerceReportRow>(
+            "SELECT sales_channel_id, report_date, currency::text AS currency, orders_created, \
+                    order_amount_minor, payments_captured, captured_amount_minor, \
+                    refunds_succeeded, refunded_amount_minor, fulfillments_shipped, \
+                    returns_completed, refreshed_at \
+             FROM analytics.daily_commerce_reports \
+             WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND report_date BETWEEN $3 AND $4 \
+             ORDER BY report_date, sales_channel_id, currency LIMIT 5001",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let attribution = sqlx::query_as::<_, DailyAttributionReportRow>(
+            "SELECT sales_channel_id, report_date, attribution_model::text, model_version, \
+                    is_direct, campaign_source, campaign_medium, campaign_name, \
+                    attributed_orders, attributed_amount_minor, currency::text AS currency, \
+                    refreshed_at \
+             FROM analytics.daily_attribution_reports \
+             WHERE merchant_account_id = $1 AND store_id = $2 \
+               AND report_date BETWEEN $3 AND $4 \
+             ORDER BY report_date, attribution_model, model_version, sales_channel_id, \
+                      campaign_source, campaign_medium, campaign_name, currency LIMIT 5001",
+        )
+        .bind(actor.merchant_account_id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(from)
+        .bind(to)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if behavior.len() > 5000 || commerce.len() > 5000 || attribution.len() > 5000 {
+            return Err(ApplicationError::Conflict {
+                code: "analytics_report_too_large",
+                message: "the requested Analytics report exceeds the bounded response size",
+            });
+        }
+        transaction.commit().await.map_err(database_error)?;
+        Ok(Some(AnalyticsDailyReports {
+            behavior: behavior
+                .into_iter()
+                .map(behavior_report)
+                .collect::<Result<_, _>>()?,
+            commerce: commerce
+                .into_iter()
+                .map(commerce_report)
+                .collect::<Result<_, _>>()?,
+            attribution: attribution
+                .into_iter()
+                .map(attribution_report)
+                .collect::<Result<_, _>>()?,
+        }))
+    }
 }
 
 impl PostgresAnalyticsEventRepository {
@@ -717,6 +880,27 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
         match result {
             Ok(contribution) => {
                 apply_session_contribution(&mut transaction, job, contribution, now).await?;
+                refresh_behavior_report(
+                    &mut transaction,
+                    job.merchant_account_id,
+                    job.store_id,
+                    job.sales_channel_id,
+                    job.occurred_at.date(),
+                    now,
+                )
+                .await?;
+                let prior_date = (job.occurred_at - time::Duration::minutes(30)).date();
+                if prior_date != job.occurred_at.date() {
+                    refresh_behavior_report(
+                        &mut transaction,
+                        job.merchant_account_id,
+                        job.store_id,
+                        job.sales_channel_id,
+                        prior_date,
+                        now,
+                    )
+                    .await?;
+                }
                 let updated = sqlx::query(
                     "UPDATE analytics.behavior_event_processing \
                      SET processing_status = 'processed', processed_at = $5, \
@@ -1014,6 +1198,14 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
             .await
             .map_err(database_error)?;
         }
+        refresh_commerce_report(
+            &mut transaction,
+            job.merchant_account_id,
+            job.store_id,
+            job.occurred_at.date(),
+            ingested_at,
+        )
+        .await?;
         transaction.commit().await.map_err(database_error)
     }
 
@@ -1204,6 +1396,14 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
         if affected.rows_affected() != 2 {
             return Err(corrupt_attribution_job());
         }
+        refresh_attribution_report(
+            &mut transaction,
+            job.merchant_account_id,
+            job.store_id,
+            job.commerce_fact_id,
+            attributed_at,
+        )
+        .await?;
         transaction.commit().await.map_err(database_error)
     }
 
@@ -2012,8 +2212,221 @@ fn attribution_columns(properties: &BrowserEventProperties) -> AttributionColumn
     }
 }
 
+async fn refresh_behavior_report(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    sales_channel_id: SalesChannelId,
+    report_date: time::Date,
+    refreshed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "DELETE FROM analytics.daily_behavior_reports \
+         WHERE merchant_account_id = $1 AND store_id = $2 \
+           AND sales_channel_id = $3 AND report_date = $4",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(sales_channel_id.as_uuid())
+    .bind(report_date)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO analytics.daily_behavior_reports \
+         (merchant_account_id, store_id, sales_channel_id, report_date, sessions, events, \
+          page_views, product_views, searches, cart_line_additions, checkouts_started, \
+          active_engagement_milliseconds, refreshed_at) \
+         SELECT $1,$2,$3,$4,count(*),sum(event_count),sum(page_view_count), \
+                sum(product_view_count),sum(search_count),sum(cart_line_added_count), \
+                sum(checkout_started_count),sum(active_engagement_milliseconds),$5 \
+           FROM analytics.sessions \
+          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
+            AND (started_at AT TIME ZONE 'UTC')::date = $4 \
+         HAVING count(*) > 0",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(sales_channel_id.as_uuid())
+    .bind(report_date)
+    .bind(refreshed_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn refresh_commerce_report(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    report_date: time::Date,
+    refreshed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "DELETE FROM analytics.daily_commerce_reports \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND report_date = $3",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(report_date)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO analytics.daily_commerce_reports \
+         (merchant_account_id, store_id, sales_channel_id, report_date, currency, \
+          orders_created, order_amount_minor, payments_captured, captured_amount_minor, \
+          refunds_succeeded, refunded_amount_minor, fulfillments_shipped, returns_completed, \
+          refreshed_at) \
+         SELECT fact.merchant_account_id, fact.store_id, fact.sales_channel_id, $3, \
+                orders.currency, \
+                count(*) FILTER (WHERE fact.fact_name = 'order_created'), \
+                coalesce(sum(fact.amount_minor) FILTER (WHERE fact.fact_name = 'order_created'),0), \
+                count(*) FILTER (WHERE fact.fact_name = 'payment_captured'), \
+                coalesce(sum(fact.amount_minor) FILTER (WHERE fact.fact_name = 'payment_captured'),0), \
+                count(*) FILTER (WHERE fact.fact_name = 'refund_succeeded'), \
+                coalesce(sum(fact.amount_minor) FILTER (WHERE fact.fact_name = 'refund_succeeded'),0), \
+                count(*) FILTER (WHERE fact.fact_name = 'fulfillment_shipped'), \
+                count(*) FILTER (WHERE fact.fact_name = 'return_completed'), $4 \
+           FROM analytics.commerce_facts AS fact \
+           INNER JOIN sales.orders AS orders \
+             ON orders.merchant_account_id = fact.merchant_account_id \
+            AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
+          WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 \
+            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $3 \
+          GROUP BY fact.merchant_account_id, fact.store_id, fact.sales_channel_id, orders.currency",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(report_date)
+    .bind(refreshed_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn refresh_attribution_report(
+    transaction: &mut Transaction<'_, Postgres>,
+    merchant_account_id: Uuid,
+    store_id: StoreId,
+    commerce_fact_id: Uuid,
+    refreshed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    let report_date: time::Date = sqlx::query_scalar(
+        "SELECT (occurred_at AT TIME ZONE 'UTC')::date FROM analytics.commerce_facts \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(commerce_fact_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "DELETE FROM analytics.daily_attribution_reports \
+         WHERE merchant_account_id = $1 AND store_id = $2 AND report_date = $3",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(report_date)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO analytics.daily_attribution_reports \
+         (merchant_account_id, store_id, sales_channel_id, report_date, attribution_model, \
+          model_version, is_direct, campaign_source, campaign_medium, campaign_name, \
+          attributed_orders, attributed_amount_minor, currency, refreshed_at) \
+         SELECT result.merchant_account_id, result.store_id, result.sales_channel_id, $3, \
+                result.attribution_model, result.model_version, result.is_direct, \
+                coalesce(result.campaign_source,''), coalesce(result.campaign_medium,''), \
+                coalesce(result.campaign_name,''), count(*), sum(fact.amount_minor), \
+                fact.currency, $4 \
+           FROM analytics.attribution_results AS result \
+           INNER JOIN analytics.commerce_facts AS fact \
+             ON fact.merchant_account_id = result.merchant_account_id \
+            AND fact.store_id = result.store_id AND fact.id = result.commerce_fact_id \
+          WHERE result.merchant_account_id = $1 AND result.store_id = $2 \
+            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $3 \
+          GROUP BY result.merchant_account_id, result.store_id, result.sales_channel_id, \
+                   result.attribution_model, result.model_version, result.is_direct, \
+                   coalesce(result.campaign_source,''), coalesce(result.campaign_medium,''), \
+                   coalesce(result.campaign_name,''), fact.currency",
+    )
+    .bind(merchant_account_id)
+    .bind(store_id.as_uuid())
+    .bind(report_date)
+    .bind(refreshed_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
 fn database_error(error: sqlx::Error) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
+}
+
+fn behavior_report(row: DailyBehaviorReportRow) -> Result<DailyBehaviorReport, ApplicationError> {
+    Ok(DailyBehaviorReport {
+        sales_channel_id: SalesChannelId::from_uuid(row.sales_channel_id),
+        report_date: row.report_date,
+        sessions: u64::try_from(row.sessions).map_err(conversion_error)?,
+        events: u64::try_from(row.events).map_err(conversion_error)?,
+        page_views: u64::try_from(row.page_views).map_err(conversion_error)?,
+        product_views: u64::try_from(row.product_views).map_err(conversion_error)?,
+        searches: u64::try_from(row.searches).map_err(conversion_error)?,
+        cart_line_additions: u64::try_from(row.cart_line_additions).map_err(conversion_error)?,
+        checkouts_started: u64::try_from(row.checkouts_started).map_err(conversion_error)?,
+        active_engagement_milliseconds: u64::try_from(row.active_engagement_milliseconds)
+            .map_err(conversion_error)?,
+        refreshed_at: row.refreshed_at,
+    })
+}
+
+fn commerce_report(row: DailyCommerceReportRow) -> Result<DailyCommerceReport, ApplicationError> {
+    Ok(DailyCommerceReport {
+        sales_channel_id: SalesChannelId::from_uuid(row.sales_channel_id),
+        report_date: row.report_date,
+        currency: row.currency,
+        orders_created: u64::try_from(row.orders_created).map_err(conversion_error)?,
+        order_amount_minor: u64::try_from(row.order_amount_minor).map_err(conversion_error)?,
+        payments_captured: u64::try_from(row.payments_captured).map_err(conversion_error)?,
+        captured_amount_minor: u64::try_from(row.captured_amount_minor)
+            .map_err(conversion_error)?,
+        refunds_succeeded: u64::try_from(row.refunds_succeeded).map_err(conversion_error)?,
+        refunded_amount_minor: u64::try_from(row.refunded_amount_minor)
+            .map_err(conversion_error)?,
+        fulfillments_shipped: u64::try_from(row.fulfillments_shipped).map_err(conversion_error)?,
+        returns_completed: u64::try_from(row.returns_completed).map_err(conversion_error)?,
+        refreshed_at: row.refreshed_at,
+    })
+}
+
+fn attribution_report(
+    row: DailyAttributionReportRow,
+) -> Result<DailyAttributionReport, ApplicationError> {
+    Ok(DailyAttributionReport {
+        sales_channel_id: SalesChannelId::from_uuid(row.sales_channel_id),
+        report_date: row.report_date,
+        attribution_model: row.attribution_model,
+        model_version: u16::try_from(row.model_version).map_err(conversion_error)?,
+        is_direct: row.is_direct,
+        campaign_source: nonempty(row.campaign_source),
+        campaign_medium: nonempty(row.campaign_medium),
+        campaign_name: nonempty(row.campaign_name),
+        attributed_orders: u64::try_from(row.attributed_orders).map_err(conversion_error)?,
+        attributed_amount_minor: u64::try_from(row.attributed_amount_minor)
+            .map_err(conversion_error)?,
+        currency: row.currency,
+        refreshed_at: row.refreshed_at,
+    })
+}
+
+fn nonempty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn conversion_error(error: impl std::error::Error + Send + Sync + 'static) -> ApplicationError {

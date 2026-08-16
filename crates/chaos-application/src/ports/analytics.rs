@@ -89,6 +89,71 @@ pub trait AnalyticsPolicyRepository: Send + Sync {
     ) -> Result<StoreAnalyticsPolicy, ApplicationError>;
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DailyBehaviorReport {
+    pub sales_channel_id: SalesChannelId,
+    pub report_date: time::Date,
+    pub sessions: u64,
+    pub events: u64,
+    pub page_views: u64,
+    pub product_views: u64,
+    pub searches: u64,
+    pub cart_line_additions: u64,
+    pub checkouts_started: u64,
+    pub active_engagement_milliseconds: u64,
+    pub refreshed_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DailyCommerceReport {
+    pub sales_channel_id: SalesChannelId,
+    pub report_date: time::Date,
+    pub currency: String,
+    pub orders_created: u64,
+    pub order_amount_minor: u64,
+    pub payments_captured: u64,
+    pub captured_amount_minor: u64,
+    pub refunds_succeeded: u64,
+    pub refunded_amount_minor: u64,
+    pub fulfillments_shipped: u64,
+    pub returns_completed: u64,
+    pub refreshed_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DailyAttributionReport {
+    pub sales_channel_id: SalesChannelId,
+    pub report_date: time::Date,
+    pub attribution_model: String,
+    pub model_version: u16,
+    pub is_direct: bool,
+    pub campaign_source: Option<String>,
+    pub campaign_medium: Option<String>,
+    pub campaign_name: Option<String>,
+    pub attributed_orders: u64,
+    pub attributed_amount_minor: u64,
+    pub currency: String,
+    pub refreshed_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsDailyReports {
+    pub behavior: Vec<DailyBehaviorReport>,
+    pub commerce: Vec<DailyCommerceReport>,
+    pub attribution: Vec<DailyAttributionReport>,
+}
+
+#[async_trait]
+pub trait AnalyticsReportingRepository: Send + Sync {
+    async fn list_daily_reports(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        from: time::Date,
+        to: time::Date,
+    ) -> Result<Option<AnalyticsDailyReports>, ApplicationError>;
+}
+
 pub struct AnalyticsSessionizationJob {
     pub behavior_event_id: Uuid,
     pub merchant_account_id: Uuid,

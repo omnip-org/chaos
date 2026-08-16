@@ -3217,6 +3217,113 @@ CREATE INDEX attribution_results_destination_idx
         merchant_account_id, store_id, attributed_at, id
     ) WHERE advertising_export_eligible;
 
+CREATE TABLE analytics.daily_behavior_reports (
+    merchant_account_id             UUID        NOT NULL,
+    store_id                        UUID        NOT NULL,
+    sales_channel_id                UUID        NOT NULL,
+    report_date                     DATE        NOT NULL,
+    sessions                        BIGINT      NOT NULL,
+    events                          BIGINT      NOT NULL,
+    page_views                      BIGINT      NOT NULL,
+    product_views                   BIGINT      NOT NULL,
+    searches                        BIGINT      NOT NULL,
+    cart_line_additions             BIGINT      NOT NULL,
+    checkouts_started               BIGINT      NOT NULL,
+    active_engagement_milliseconds  BIGINT      NOT NULL,
+    refreshed_at                    TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, sales_channel_id, report_date),
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT daily_behavior_reports_counts_check CHECK (
+        sessions >= 0 AND events >= 0 AND page_views >= 0 AND product_views >= 0
+        AND searches >= 0 AND cart_line_additions >= 0 AND checkouts_started >= 0
+        AND active_engagement_milliseconds >= 0
+    )
+);
+
+CREATE INDEX daily_behavior_reports_store_date_idx
+    ON analytics.daily_behavior_reports (
+        merchant_account_id, store_id, report_date DESC, sales_channel_id
+    );
+
+CREATE TABLE analytics.daily_commerce_reports (
+    merchant_account_id       UUID        NOT NULL,
+    store_id                  UUID        NOT NULL,
+    sales_channel_id          UUID        NOT NULL,
+    report_date               DATE        NOT NULL,
+    currency                  CHAR(3)     NOT NULL,
+    orders_created            BIGINT      NOT NULL,
+    order_amount_minor        BIGINT      NOT NULL,
+    payments_captured         BIGINT      NOT NULL,
+    captured_amount_minor     BIGINT      NOT NULL,
+    refunds_succeeded         BIGINT      NOT NULL,
+    refunded_amount_minor     BIGINT      NOT NULL,
+    fulfillments_shipped      BIGINT      NOT NULL,
+    returns_completed         BIGINT      NOT NULL,
+    refreshed_at              TIMESTAMPTZ NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, sales_channel_id, report_date, currency),
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT daily_commerce_reports_currency_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT daily_commerce_reports_counts_check CHECK (
+        orders_created >= 0 AND order_amount_minor >= 0
+        AND payments_captured >= 0 AND captured_amount_minor >= 0
+        AND refunds_succeeded >= 0 AND refunded_amount_minor >= 0
+        AND fulfillments_shipped >= 0 AND returns_completed >= 0
+    )
+);
+
+CREATE INDEX daily_commerce_reports_store_date_idx
+    ON analytics.daily_commerce_reports (
+        merchant_account_id, store_id, report_date DESC, sales_channel_id, currency
+    );
+
+CREATE TABLE analytics.daily_attribution_reports (
+    merchant_account_id  UUID                         NOT NULL,
+    store_id             UUID                         NOT NULL,
+    sales_channel_id     UUID                         NOT NULL,
+    report_date          DATE                         NOT NULL,
+    attribution_model    analytics.attribution_model  NOT NULL,
+    model_version        SMALLINT                     NOT NULL,
+    is_direct            BOOLEAN                      NOT NULL,
+    campaign_source      TEXT                         NOT NULL DEFAULT '',
+    campaign_medium      TEXT                         NOT NULL DEFAULT '',
+    campaign_name        TEXT                         NOT NULL DEFAULT '',
+    attributed_orders    BIGINT                       NOT NULL,
+    attributed_amount_minor BIGINT                    NOT NULL,
+    currency             CHAR(3)                      NOT NULL,
+    refreshed_at         TIMESTAMPTZ                  NOT NULL,
+
+    PRIMARY KEY (
+        merchant_account_id, store_id, sales_channel_id, report_date,
+        attribution_model, model_version, is_direct,
+        campaign_source, campaign_medium, campaign_name, currency
+    ),
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    CONSTRAINT daily_attribution_reports_model_version_check CHECK (model_version > 0),
+    CONSTRAINT daily_attribution_reports_campaign_check CHECK (
+        length(campaign_source) <= 100
+        AND length(campaign_medium) <= 100
+        AND length(campaign_name) <= 200
+        AND (NOT is_direct OR (
+            campaign_source = '' AND campaign_medium = '' AND campaign_name = ''
+        ))
+    ),
+    CONSTRAINT daily_attribution_reports_currency_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT daily_attribution_reports_counts_check CHECK (
+        attributed_orders >= 0 AND attributed_amount_minor >= 0
+    )
+);
+
+CREATE INDEX daily_attribution_reports_store_date_idx
+    ON analytics.daily_attribution_reports (
+        merchant_account_id, store_id, report_date DESC,
+        attribution_model, model_version, sales_channel_id
+    );
+
 CREATE TABLE sales.order_fulfillment_transitions (
     id                       UUID                           NOT NULL PRIMARY KEY,
     merchant_account_id      UUID                           NOT NULL,
@@ -3950,6 +4057,9 @@ ALTER TABLE analytics.erasure_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.commerce_facts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.attribution_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.attribution_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.daily_behavior_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.daily_commerce_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analytics.daily_attribution_reports ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
     USING (
@@ -4696,6 +4806,36 @@ CREATE POLICY merchant_account_isolation ON analytics.attribution_jobs
     );
 
 CREATE POLICY merchant_account_isolation ON analytics.attribution_results
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.daily_behavior_reports
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.daily_commerce_reports
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON analytics.daily_attribution_reports
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid

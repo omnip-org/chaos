@@ -22,7 +22,10 @@ mod storefront_sales;
 
 use axum::Router;
 use chaos_application::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsWorkers},
+    analytics::{
+        AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsReporting,
+        AnalyticsWorkers,
+    },
     catalog::{CatalogManagement, CatalogQueries, CreateProduct},
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -50,7 +53,8 @@ use chaos_infrastructure::{
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     passwordless::PasswordlessAuth,
     repositories::{
-        HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository, PostgresApiKeyRepository,
+        HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
+        PostgresAnalyticsReportingRepository, PostgresApiKeyRepository,
         PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
         PostgresCatalogReadRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
         PostgresFulfillmentRepository, PostgresInventoryRepository,
@@ -105,6 +109,7 @@ pub struct ApiState {
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
+    pub analytics_reporting: Arc<AnalyticsReporting>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -209,6 +214,9 @@ impl ApiState {
         );
         let analytics_administration = AnalyticsAdministration::new(analytics_repository.clone());
         let analytics_privacy = AnalyticsPrivacy::new(analytics_repository.clone());
+        let analytics_reporting = AnalyticsReporting::new(Arc::new(
+            PostgresAnalyticsReportingRepository::new(infrastructure.analytics_pool()),
+        ));
         let analytics_workers = AnalyticsWorkers::new(
             analytics_repository.clone(),
             analytics_repository.clone(),
@@ -353,6 +361,7 @@ impl ApiState {
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
             analytics_privacy: Arc::new(analytics_privacy),
+            analytics_reporting: Arc::new(analytics_reporting),
             analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
@@ -424,6 +433,8 @@ mod tests {
             database_control_plane_url: "postgres://localhost/chaos".into(),
             database_max_connections: 1,
             database_control_plane_max_connections: 1,
+            database_analytics_max_connections: 1,
+            database_analytics_statement_timeout: Duration::from_millis(10),
             database_acquire_timeout: Duration::from_millis(10),
             database_runtime_role: None,
             database_control_plane_role: None,

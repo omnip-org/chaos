@@ -1350,6 +1350,7 @@ mod tests {
         let mut state = test_state(&database_url, user_id);
         let test_clock = state.clock.clone();
         let runtime_pool = state.infrastructure.runtime_pool();
+        let reporting_pool = state.infrastructure.analytics_pool();
         let analytics_workers = state.analytics_workers.clone();
         let analytics_repository = PostgresAnalyticsEventRepository::new(runtime_pool.clone());
         state.analytics_collection = Arc::new(AnalyticsCollection::new(
@@ -4680,6 +4681,97 @@ mod tests {
         assert_eq!(attribution_results[1].0, "last_touch");
         assert_eq!(attribution_results[1].2.as_deref(), Some("last-source"));
         assert!(attribution_results[1].3);
+
+        let report_date = test_clock.now().date().to_string();
+        let daily_reports = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}",
+                    account_id.as_uuid(),
+                    store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(daily_reports.status(), StatusCode::OK);
+        let daily_reports = response_json(daily_reports).await;
+        assert_eq!(daily_reports["data"]["commerce"][0]["orders_created"], 1);
+        assert_eq!(daily_reports["data"]["commerce"][0]["payments_captured"], 1);
+        assert_eq!(
+            daily_reports["data"]["attribution"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(daily_reports["data"]["attribution"][0]["model_version"], 1);
+        let unbounded_daily_reports = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from=2025-01-01&to=2025-04-03",
+                    account_id.as_uuid(),
+                    store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            unbounded_daily_reports.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let cross_account_daily_reports = app
+            .clone()
+            .oneshot(request(
+                Method::GET,
+                &format!(
+                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}",
+                    isolated_account_id.as_uuid(),
+                    isolated_store_id.as_uuid()
+                ),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(cross_account_daily_reports.status(), StatusCode::FORBIDDEN);
+        let mut reporting_rls = reporting_pool.begin().await.unwrap();
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(account_id.as_uuid().to_string())
+            .execute(&mut *reporting_rls)
+            .await
+            .unwrap();
+        let visible_daily_commerce: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.daily_commerce_reports")
+                .fetch_one(&mut *reporting_rls)
+                .await
+                .unwrap();
+        assert!(visible_daily_commerce > 0);
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(isolated_account_id.as_uuid().to_string())
+            .execute(&mut *reporting_rls)
+            .await
+            .unwrap();
+        let isolated_daily_commerce: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM analytics.daily_commerce_reports")
+                .fetch_one(&mut *reporting_rls)
+                .await
+                .unwrap();
+        assert_eq!(isolated_daily_commerce, 0);
+        reporting_rls.rollback().await.unwrap();
+        assert!(
+            sqlx::query("UPDATE analytics.daily_commerce_reports SET orders_created = 0")
+                .execute(&reporting_pool)
+                .await
+                .is_err()
+        );
 
         let mut attribution_rebuild = runtime_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")

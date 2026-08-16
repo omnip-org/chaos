@@ -11,6 +11,8 @@ pub struct Settings {
     pub database_control_plane_url: String,
     pub database_max_connections: u32,
     pub database_control_plane_max_connections: u32,
+    pub database_analytics_max_connections: u32,
+    pub database_analytics_statement_timeout: Duration,
     pub database_acquire_timeout: Duration,
     pub database_runtime_role: Option<String>,
     pub database_control_plane_role: Option<String>,
@@ -47,6 +49,14 @@ impl Settings {
                 "DATABASE_CONTROL_PLANE_MAX_CONNECTIONS",
                 "5",
             )?,
+            database_analytics_max_connections: parse_or(
+                "DATABASE_ANALYTICS_MAX_CONNECTIONS",
+                "3",
+            )?,
+            database_analytics_statement_timeout: Duration::from_millis(parse_or(
+                "DATABASE_ANALYTICS_STATEMENT_TIMEOUT_MS",
+                "2000",
+            )?),
             database_acquire_timeout: Duration::from_millis(parse_or(
                 "DATABASE_ACQUIRE_TIMEOUT_MS",
                 "2000",

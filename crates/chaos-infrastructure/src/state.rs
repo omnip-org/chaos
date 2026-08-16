@@ -11,6 +11,7 @@ use chaos_domain::merchant::MerchantAccountId;
 pub struct AppState {
     postgres: PgPool,
     control_plane_postgres: PgPool,
+    analytics_postgres: PgPool,
     redis: RedisClient,
     pub dependency_timeout: Duration,
 }
@@ -37,6 +38,38 @@ impl AppState {
             .connect_lazy(&settings.database_url)
             .context("invalid DATABASE_URL")?;
         let redis = RedisClient::open(settings.redis_url.as_str()).context("invalid REDIS_URL")?;
+        let analytics_runtime_role = settings.database_runtime_role.clone();
+        let analytics_statement_timeout = settings.database_analytics_statement_timeout;
+        let analytics_postgres = PgPoolOptions::new()
+            .max_connections(settings.database_analytics_max_connections)
+            .acquire_timeout(settings.database_acquire_timeout)
+            .after_connect(move |connection, _metadata| {
+                let runtime_role = analytics_runtime_role.clone();
+                Box::pin(async move {
+                    if let Some(role) = runtime_role {
+                        let statement = format!("SET ROLE {role}");
+                        sqlx::query(sqlx::AssertSqlSafe(statement))
+                            .execute(&mut *connection)
+                            .await?;
+                    }
+                    sqlx::query("SET default_transaction_read_only = on")
+                        .execute(&mut *connection)
+                        .await?;
+                    sqlx::query("SET lock_timeout = '100ms'")
+                        .execute(&mut *connection)
+                        .await?;
+                    let timeout = format!(
+                        "SET statement_timeout = '{}ms'",
+                        analytics_statement_timeout.as_millis()
+                    );
+                    sqlx::query(sqlx::AssertSqlSafe(timeout))
+                        .execute(&mut *connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect_lazy(&settings.database_url)
+            .context("invalid analytics DATABASE_URL")?;
         let control_plane_role = settings.database_control_plane_role.clone();
         let control_plane_postgres = PgPoolOptions::new()
             .max_connections(settings.database_control_plane_max_connections)
@@ -60,6 +93,7 @@ impl AppState {
         Ok(Self {
             postgres,
             control_plane_postgres,
+            analytics_postgres,
             redis,
             dependency_timeout: settings.dependency_timeout,
         })
@@ -75,6 +109,10 @@ impl AppState {
 
     pub fn redis_client(&self) -> RedisClient {
         self.redis.clone()
+    }
+
+    pub fn analytics_pool(&self) -> PgPool {
+        self.analytics_postgres.clone()
     }
 
     pub async fn begin_merchant_account_transaction(
@@ -109,8 +147,15 @@ impl AppState {
                 .context("control-plane PostgreSQL readiness check failed")?;
             Ok::<_, anyhow::Error>(())
         };
+        let analytics_postgres = async {
+            sqlx::query("SELECT 1")
+                .execute(&self.analytics_postgres)
+                .await
+                .context("Analytics PostgreSQL readiness check failed")?;
+            Ok::<_, anyhow::Error>(())
+        };
 
-        tokio::try_join!(postgres, control_plane_postgres, redis)?;
+        tokio::try_join!(postgres, control_plane_postgres, analytics_postgres, redis)?;
         Ok(())
     }
 }

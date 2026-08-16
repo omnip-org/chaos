@@ -15,8 +15,8 @@ use crate::{
         AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue,
         AnalyticsErasureRequest, AnalyticsErasureSelector, AnalyticsEventRepository,
         AnalyticsIdentityLink, AnalyticsPolicyRepository, AnalyticsPrivacyRepository,
-        AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
-        StoreAnalyticsPolicy,
+        AnalyticsReportingRepository, AnalyticsSessionizationQueue, CustomerActor,
+        IdempotencyRequest, MachineActor, StoreAnalyticsPolicy,
     },
 };
 
@@ -165,6 +165,45 @@ pub struct UpdateAnalyticsPolicyInput {
 
 pub struct AnalyticsAdministration {
     repository: Arc<dyn AnalyticsPolicyRepository>,
+}
+
+pub struct AnalyticsReporting {
+    repository: Arc<dyn AnalyticsReportingRepository>,
+}
+
+impl AnalyticsReporting {
+    pub fn new(repository: Arc<dyn AnalyticsReportingRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn list_daily_reports(
+        &self,
+        actor: MerchantActor,
+        store_id: StoreId,
+        from: time::Date,
+        to: time::Date,
+    ) -> Result<crate::ports::AnalyticsDailyReports, ApplicationError> {
+        match actor.role() {
+            MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager => {}
+            MerchantRole::Developer | MerchantRole::Support => {
+                return Err(ApplicationError::Forbidden);
+            }
+        }
+        let days = (to - from).whole_days();
+        if !(0..=91).contains(&days) {
+            return Err(validation(
+                "date_range",
+                "must be ordered and contain at most 92 calendar days",
+            ));
+        }
+        self.repository
+            .list_daily_reports(actor, store_id, from, to)
+            .await?
+            .ok_or(ApplicationError::NotFound {
+                resource: "store",
+                id: store_id.as_uuid().to_string(),
+            })
+    }
 }
 
 impl AnalyticsAdministration {

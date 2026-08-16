@@ -1467,6 +1467,30 @@
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
+    },
+    "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-reports/daily": {
+      "get": {
+        "operationId": "listStoreDailyAnalyticsReports",
+        "tags": ["Analytics"],
+        "summary": "List bounded daily Analytics read models",
+        "description": "Reads precomputed behavior, commerce, and attribution rows through a small read-only connection pool with database statement and lock timeouts.",
+        "security": [{ "bearerSession": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/MerchantAccountId" },
+          { "$ref": "#/components/parameters/StoreId" },
+          { "name": "from", "in": "query", "required": true, "schema": { "type": "string", "format": "date" } },
+          { "name": "to", "in": "query", "required": true, "schema": { "type": "string", "format": "date" } }
+        ],
+        "responses": {
+          "200": { "description": "Daily Analytics reports", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsDailyReportsEnvelope" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "422": { "$ref": "#/components/responses/ValidationFailed" }
+        }
+      }
     }
   },
   "components": {
@@ -2236,6 +2260,53 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/AnalyticsErasureRequest" } }
+      },
+      "DailyBehaviorReport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sales_channel_id", "report_date", "sessions", "events", "page_views", "product_views", "searches", "cart_line_additions", "checkouts_started", "active_engagement_milliseconds", "refreshed_at"],
+        "properties": {
+          "sales_channel_id": { "type": "string", "format": "uuid" }, "report_date": { "type": "string", "format": "date" },
+          "sessions": { "type": "integer", "format": "int64", "minimum": 0 }, "events": { "type": "integer", "format": "int64", "minimum": 0 },
+          "page_views": { "type": "integer", "format": "int64", "minimum": 0 }, "product_views": { "type": "integer", "format": "int64", "minimum": 0 },
+          "searches": { "type": "integer", "format": "int64", "minimum": 0 }, "cart_line_additions": { "type": "integer", "format": "int64", "minimum": 0 },
+          "checkouts_started": { "type": "integer", "format": "int64", "minimum": 0 }, "active_engagement_milliseconds": { "type": "integer", "format": "int64", "minimum": 0 },
+          "refreshed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DailyCommerceReport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sales_channel_id", "report_date", "currency", "orders_created", "order_amount_minor", "payments_captured", "captured_amount_minor", "refunds_succeeded", "refunded_amount_minor", "fulfillments_shipped", "returns_completed", "refreshed_at"],
+        "properties": {
+          "sales_channel_id": { "type": "string", "format": "uuid" }, "report_date": { "type": "string", "format": "date" }, "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "orders_created": { "type": "integer", "format": "int64", "minimum": 0 }, "order_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "payments_captured": { "type": "integer", "format": "int64", "minimum": 0 }, "captured_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "refunds_succeeded": { "type": "integer", "format": "int64", "minimum": 0 }, "refunded_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "fulfillments_shipped": { "type": "integer", "format": "int64", "minimum": 0 }, "returns_completed": { "type": "integer", "format": "int64", "minimum": 0 },
+          "refreshed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "DailyAttributionReport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sales_channel_id", "report_date", "attribution_model", "model_version", "is_direct", "attributed_orders", "attributed_amount_minor", "currency", "refreshed_at"],
+        "properties": {
+          "sales_channel_id": { "type": "string", "format": "uuid" }, "report_date": { "type": "string", "format": "date" },
+          "attribution_model": { "type": "string", "enum": ["first_touch", "last_touch"] }, "model_version": { "type": "integer", "minimum": 1 }, "is_direct": { "type": "boolean" },
+          "campaign_source": { "type": "string", "maxLength": 100 }, "campaign_medium": { "type": "string", "maxLength": 100 }, "campaign_name": { "type": "string", "maxLength": 200 },
+          "attributed_orders": { "type": "integer", "format": "int64", "minimum": 0 }, "attributed_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "refreshed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AnalyticsDailyReports": {
+        "type": "object", "additionalProperties": false, "required": ["behavior", "commerce", "attribution"],
+        "properties": {
+          "behavior": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/components/schemas/DailyBehaviorReport" } },
+          "commerce": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/components/schemas/DailyCommerceReport" } },
+          "attribution": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/components/schemas/DailyAttributionReport" } }
+        }
+      },
+      "AnalyticsDailyReportsEnvelope": {
+        "type": "object", "additionalProperties": false, "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsDailyReports" } }
       },
       "SalesChannel": {
         "type": "object",
