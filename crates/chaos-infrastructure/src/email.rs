@@ -6,7 +6,7 @@ use chaos_application::{
         EmailDelivery, EmailMessage, EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
     },
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},

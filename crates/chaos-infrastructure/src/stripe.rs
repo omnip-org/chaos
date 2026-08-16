@@ -10,7 +10,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::payments::PaymentSecretReference;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{
     Client, StatusCode,
     header::{AUTHORIZATION, HeaderMap, HeaderValue},

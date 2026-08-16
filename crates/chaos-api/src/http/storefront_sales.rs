@@ -804,7 +804,7 @@ mod tests {
         PostgresAnalyticsEventRepository, PostgresFulfillmentRepository, PostgresPaymentRepository,
         PostgresShippingServiceRepository, SandboxPaymentProvider,
     };
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use secrecy::ExposeSecret;
     use serde_json::{Value, json};
     use sha2::Sha256;

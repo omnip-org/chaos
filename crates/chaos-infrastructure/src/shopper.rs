@@ -6,7 +6,7 @@ use chaos_application::{
     ports::{MachineActor, ShopperCredentialCodec},
 };
 use chaos_domain::{merchant::SalesChannelId, sales::ShopperId};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 use uuid::Uuid;
