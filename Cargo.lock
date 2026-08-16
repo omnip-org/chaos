@@ -725,7 +725,7 @@ dependencies = [
  "hickory-resolver",
  "hmac",
  "lettre",
- "rand 0.9.5",
+ "rand 0.10.2",
  "redis",
  "reqwest",
  "rustls 0.23.43",
