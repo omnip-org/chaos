@@ -15,6 +15,7 @@ base64.workspace = true
 chaos-application = { path = "../chaos-application" }
 chaos-domain = { path = "../chaos-domain" }
 chaos-infrastructure = { path = "../chaos-infrastructure" }
+chaos-mcp = { path = "../chaos-mcp" }
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 opentelemetry.workspace = true

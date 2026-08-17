@@ -479,6 +479,18 @@ impl ApiState {
 }
 
 pub fn router(state: ApiState) -> Router {
+    let mcp_router = chaos_mcp::router(chaos_mcp::McpState {
+        api_key_authentication: state.api_key_authentication.clone(),
+        catalog_queries: state.catalog_queries.clone(),
+        create_product: state.create_product.clone(),
+        catalog_management: state.catalog_management.clone(),
+        collection_administration: state.collection_administration.clone(),
+        pricing_management: state.pricing_management.clone(),
+        create_price_list: state.create_price_list.clone(),
+        inventory_management: state.inventory_management.clone(),
+        order_management: state.order_management.clone(),
+        clock: state.clock.clone(),
+    });
     Router::new()
         .nest("/health", health::routes())
         .nest("/metrics", metrics::routes())
@@ -506,6 +518,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/store/v1", customer::routes())
         .nest("/openapi", openapi::routes())
         .with_state(state)
+        .nest("/mcp/v1", mcp_router)
         .layer(axum::middleware::from_fn(metrics::track_http_request))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
