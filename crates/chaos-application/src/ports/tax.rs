@@ -5,9 +5,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 #[derive(Clone)]
 pub struct TaxRuleDetail {
@@ -20,7 +20,7 @@ pub struct TaxRuleDetail {
 pub trait TaxRuleRepository: Send + Sync {
     async fn create_tax_rule(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         rule: &TaxRule,
         idempotency: &IdempotencyRequest,
@@ -28,13 +28,13 @@ pub trait TaxRuleRepository: Send + Sync {
 
     async fn list_tax_rules(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<TaxRuleDetail>, ApplicationError>;
 
     async fn change_tax_rule_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         rule_id: TaxRuleId,
         status: TaxRuleStatus,
