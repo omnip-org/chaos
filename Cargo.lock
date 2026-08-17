@@ -792,10 +792,13 @@ name = "chaos-mcp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "chaos-application",
  "chaos-domain",
  "http 1.5.0",
+ "reqwest",
  "rmcp",
+ "rustls 0.23.43",
  "schemars",
  "secrecy",
  "serde",
