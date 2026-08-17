@@ -1,0 +1,24 @@
+{
+  "product": {
+    "handle": "airfold-carbon-trekking-poles",
+    "title": "AirFold Carbon Trekking Poles",
+    "description": "Carbon-fiber trekking poles that fold small enough to disappear into a daypack, sized and colored for how you actually move.",
+    "skuPrefix": "AIRFOLD",
+    "priceAmountMinor": 9900,
+    "options": [
+      { "name": "Length", "values": ["110 cm", "125 cm", "140 cm"] },
+      { "name": "Color", "values": ["Black", "Graphite", "Forest", "Sand"] }
+    ]
+  },
+  "collection": {
+    "handle": "trekking-poles",
+    "title": "Trekking Poles",
+    "description": "Support for your own pace."
+  },
+  "priceList": {
+    "code": "retail",
+    "name": "Retail",
+    "currency": "USD",
+    "taxInclusive": false
+  }
+}
