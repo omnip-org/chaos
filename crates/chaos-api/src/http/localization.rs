@@ -12,8 +12,8 @@ use chaos_application::{
         UpsertProductTranslationInput,
     },
     ports::{
-        CollectionTranslation, IdempotencyRequest, MediaTranslation, ProductTranslation,
-        StoreLocaleConfiguration,
+        AdminActor, CollectionTranslation, IdempotencyRequest, MediaTranslation,
+        ProductTranslation, StoreLocaleConfiguration,
     },
 };
 use chaos_domain::{
@@ -175,7 +175,7 @@ async fn store_locales(
     Ok(ApiResponse::ok(locale_data(
         state
             .catalog_localization
-            .store_locales(actor, StoreId::from_uuid(path.store_id))
+            .store_locales(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
             .await?,
     )))
 }
@@ -213,7 +213,7 @@ async fn locale_action(
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
     account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = StoreLocaleInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         locale: path.locale,
         idempotency: mutation(&headers, &(path.store_id, action))?,
@@ -238,7 +238,7 @@ async fn get_product_translation(
         state
             .catalog_localization
             .product_translation(
-                actor,
+                AdminActor::Merchant(actor),
                 StoreId::from_uuid(path.store_id),
                 ProductId::from_uuid(path.product_id),
                 &path.locale,
@@ -262,7 +262,7 @@ async fn upsert_product_translation(
     let translation = state
         .catalog_localization
         .upsert_product_translation(UpsertProductTranslationInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             locale: path.locale,
@@ -297,7 +297,7 @@ async fn remove_product_translation(
     state
         .catalog_localization
         .remove_product_translation(TranslationActionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             resource_id: ProductId::from_uuid(path.product_id),
             locale: path.locale,
@@ -318,7 +318,7 @@ async fn get_collection_translation(
         state
             .catalog_localization
             .collection_translation(
-                actor,
+                AdminActor::Merchant(actor),
                 StoreId::from_uuid(path.store_id),
                 CollectionId::from_uuid(path.collection_id),
                 &path.locale,
@@ -341,7 +341,7 @@ async fn upsert_collection_translation(
     let value = state
         .catalog_localization
         .upsert_collection_translation(UpsertCollectionTranslationInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             locale: path.locale,
@@ -367,7 +367,7 @@ async fn remove_collection_translation(
     state
         .catalog_localization
         .remove_collection_translation(TranslationActionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             resource_id: CollectionId::from_uuid(path.collection_id),
             locale: path.locale,
@@ -388,7 +388,7 @@ async fn get_media_translation(
         state
             .catalog_localization
             .media_translation(
-                actor,
+                AdminActor::Merchant(actor),
                 StoreId::from_uuid(path.store_id),
                 ProductId::from_uuid(path.product_id),
                 MediaAssetId::from_uuid(path.media_asset_id),
@@ -418,7 +418,7 @@ async fn upsert_media_translation(
     let value = state
         .catalog_localization
         .upsert_media_translation(UpsertMediaTranslationInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -450,7 +450,7 @@ async fn remove_media_translation(
     state
         .catalog_localization
         .remove_media_translation(MediaTranslationActionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),

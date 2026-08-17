@@ -6,21 +6,20 @@ use chaos_domain::{
         CollectionId, LocalizedAltText, LocalizedContent, LocalizedTitle, MediaAssetId, ProductId,
         ProductVariantId,
     },
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CatalogLocalizationRepository, CollectionTranslation, IdempotencyRequest, MediaTranslation,
-        ProductTranslation, ProductVariantTranslation, StoreLocaleConfiguration,
+        AdminActor, CatalogLocalizationRepository, CollectionTranslation, IdempotencyRequest,
+        MediaTranslation, ProductTranslation, ProductVariantTranslation, StoreLocaleConfiguration,
     },
 };
 
 pub struct StoreLocaleInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub locale: String,
     pub idempotency: IdempotencyRequest,
@@ -33,7 +32,7 @@ pub struct ProductVariantTranslationInput {
 }
 
 pub struct UpsertProductTranslationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub locale: String,
@@ -45,7 +44,7 @@ pub struct UpsertProductTranslationInput {
 }
 
 pub struct TranslationActionInput<T> {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub resource_id: T,
     pub locale: String,
@@ -54,7 +53,7 @@ pub struct TranslationActionInput<T> {
 }
 
 pub struct UpsertCollectionTranslationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub locale: String,
@@ -65,7 +64,7 @@ pub struct UpsertCollectionTranslationInput {
 }
 
 pub struct UpsertMediaTranslationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
@@ -76,7 +75,7 @@ pub struct UpsertMediaTranslationInput {
 }
 
 pub struct MediaTranslationActionInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
@@ -96,7 +95,7 @@ impl CatalogLocalization {
 
     pub async fn store_locales(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
         self.repository
@@ -109,7 +108,7 @@ impl CatalogLocalization {
         &self,
         input: StoreLocaleInput,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        require_locale_administrator(input.actor)?;
+        require_locale_administrator(&input.actor)?;
         self.repository
             .enable_locale(
                 input.actor,
@@ -125,7 +124,7 @@ impl CatalogLocalization {
         &self,
         input: StoreLocaleInput,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        require_locale_administrator(input.actor)?;
+        require_locale_administrator(&input.actor)?;
         self.repository
             .set_default_locale(
                 input.actor,
@@ -141,7 +140,7 @@ impl CatalogLocalization {
         &self,
         input: StoreLocaleInput,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        require_locale_administrator(input.actor)?;
+        require_locale_administrator(&input.actor)?;
         self.repository
             .disable_locale(
                 input.actor,
@@ -155,7 +154,7 @@ impl CatalogLocalization {
 
     pub async fn product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         locale: &str,
@@ -171,7 +170,7 @@ impl CatalogLocalization {
         &self,
         input: UpsertProductTranslationInput,
     ) -> Result<ProductTranslation, ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         let locale = Locale::parse(input.locale)?;
         let mut seen = HashSet::with_capacity(input.variants.len());
         let variants = input
@@ -212,7 +211,7 @@ impl CatalogLocalization {
         &self,
         input: TranslationActionInput<ProductId>,
     ) -> Result<(), ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         self.repository
             .remove_product_translation(
                 input.actor,
@@ -229,7 +228,7 @@ impl CatalogLocalization {
         &self,
         input: UpsertCollectionTranslationInput,
     ) -> Result<CollectionTranslation, ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         let content =
             LocalizedContent::new(Locale::parse(input.locale)?, input.title, input.description)?;
         self.repository
@@ -246,7 +245,7 @@ impl CatalogLocalization {
 
     pub async fn collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         locale: &str,
@@ -262,7 +261,7 @@ impl CatalogLocalization {
         &self,
         input: TranslationActionInput<CollectionId>,
     ) -> Result<(), ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         self.repository
             .remove_collection_translation(
                 input.actor,
@@ -279,7 +278,7 @@ impl CatalogLocalization {
         &self,
         input: UpsertMediaTranslationInput,
     ) -> Result<MediaTranslation, ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         let locale = Locale::parse(input.locale)?;
         let alt_text = LocalizedAltText::new(input.alt_text)?;
         self.repository
@@ -298,7 +297,7 @@ impl CatalogLocalization {
 
     pub async fn media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -315,7 +314,7 @@ impl CatalogLocalization {
         &self,
         input: MediaTranslationActionInput,
     ) -> Result<(), ApplicationError> {
-        require_translation_writer(input.actor)?;
+        require_translation_writer(&input.actor)?;
         self.repository
             .remove_media_translation(
                 input.actor,
@@ -330,28 +329,53 @@ impl CatalogLocalization {
     }
 }
 
-fn require_locale_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_locale_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::StoreAdminWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 
-fn require_translation_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner
-            | MerchantRole::Administrator
-            | MerchantRole::Developer
-            | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_translation_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner
+                    | MerchantRole::Administrator
+                    | MerchantRole::Developer
+                    | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::ProductsWrite)
+                || machine.scopes.contains(&ApiKeyScope::CollectionsWrite)
+                || machine.scopes.contains(&ApiKeyScope::MediaWrite)
+            {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

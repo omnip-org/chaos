@@ -9,9 +9,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct StoreLocaleConfiguration {
     pub default_locale: Locale,
@@ -47,13 +47,13 @@ pub struct MediaTranslation {
 pub trait CatalogLocalizationRepository: Send + Sync {
     async fn store_locales(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Option<StoreLocaleConfiguration>, ApplicationError>;
 
     async fn enable_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
@@ -62,7 +62,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn set_default_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
@@ -71,7 +71,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn disable_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
@@ -80,7 +80,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         locale: &Locale,
@@ -88,7 +88,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn upsert_product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         translation: &ProductTranslation,
@@ -98,7 +98,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn remove_product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         locale: &Locale,
@@ -108,7 +108,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn upsert_collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         content: &LocalizedContent,
@@ -118,7 +118,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         locale: &Locale,
@@ -126,7 +126,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn remove_collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         locale: &Locale,
@@ -137,7 +137,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn upsert_media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -149,7 +149,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
 
     async fn media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -159,7 +159,7 @@ pub trait CatalogLocalizationRepository: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn remove_media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,

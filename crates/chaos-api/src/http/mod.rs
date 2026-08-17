@@ -487,8 +487,17 @@ pub fn router(state: ApiState) -> Router {
         collection_administration: state.collection_administration.clone(),
         pricing_management: state.pricing_management.clone(),
         create_price_list: state.create_price_list.clone(),
+        promotion_management: state.promotion_management.clone(),
+        tax_management: state.tax_management.clone(),
         inventory_management: state.inventory_management.clone(),
         order_management: state.order_management.clone(),
+        fulfillment_management: state.fulfillment_management.clone(),
+        shipping_management: state.shipping_management.clone(),
+        shipping_provider_administration: state.shipping_provider_administration.clone(),
+        store_administration: state.store_administration.clone(),
+        payment_service: state.payment_service.clone(),
+        media_administration: state.media_administration.clone(),
+        catalog_localization: state.catalog_localization.clone(),
         clock: state.clock.clone(),
     });
     Router::new()
