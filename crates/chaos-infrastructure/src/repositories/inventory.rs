@@ -3,8 +3,9 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
-        InventoryReservationTransition, MachineActor, StockAdjustment, StockItemItem,
+        AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
+        InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
+        StockItemItem,
     },
 };
 use chaos_domain::{
@@ -13,7 +14,7 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationId, InventoryLocationStatus, InventoryReservation,
         InventoryReservationId, InventoryReservationStatus, StockBalance, StockItemId,
     },
-    merchant::StoreId,
+    merchant::{MerchantAccountId, StoreId},
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -65,20 +66,35 @@ impl PostgresInventoryRepository {
         set_context(&mut transaction, None, actor.merchant_account_id.as_uuid()).await?;
         Ok(transaction)
     }
+
+    async fn begin_for_admin(
+        &self,
+        actor: &AdminActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        set_context(
+            &mut transaction,
+            Some(actor.audit_user_id().as_uuid()),
+            actor.merchant_account_id().as_uuid(),
+        )
+        .await?;
+        Ok(transaction)
+    }
 }
 
 #[async_trait]
 impl InventoryRepository for PostgresInventoryRepository {
     async fn create_location(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         location: &InventoryLocation,
         request: &IdempotencyRequest,
     ) -> Result<InventoryLocationId, ApplicationError> {
-        let mut transaction = self.begin_for_merchant(actor).await?;
+        let merchant_account_id = actor.merchant_account_id();
+        let mut transaction = self.begin_for_admin(&actor).await?;
         if let Some(snapshot) = reserve_idempotency(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             CREATE_LOCATION_OPERATION,
             request,
         )
@@ -86,14 +102,14 @@ impl InventoryRepository for PostgresInventoryRepository {
         {
             return replay_id(&snapshot).map(InventoryLocationId::from_uuid);
         }
-        require_store(&mut transaction, actor, location.store_id()).await?;
+        require_store(&mut transaction, merchant_account_id, location.store_id()).await?;
         sqlx::query(
             "INSERT INTO inventory.inventory_locations \
              (id, merchant_account_id, store_id, code, name, status) \
              VALUES ($1, $2, $3, $4, $5, 'active')",
         )
         .bind(location.id().as_uuid())
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(location.store_id().as_uuid())
         .bind(location.code().as_str())
         .bind(location.name())
@@ -102,7 +118,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         .map_err(map_location_write_error)?;
         complete_id(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             CREATE_LOCATION_OPERATION,
             request,
             location.id().as_uuid(),
@@ -114,13 +130,14 @@ impl InventoryRepository for PostgresInventoryRepository {
 
     async fn list_locations(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<InventoryLocationId>,
         limit: u16,
     ) -> Result<Option<Vec<InventoryLocationItem>>, ApplicationError> {
-        let mut transaction = self.begin_for_merchant(actor).await?;
-        if !store_exists(&mut transaction, actor, store_id).await? {
+        let merchant_account_id = actor.merchant_account_id();
+        let mut transaction = self.begin_for_admin(&actor).await?;
+        if !store_exists(&mut transaction, merchant_account_id, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, LocationRow>(
@@ -129,7 +146,7 @@ impl InventoryRepository for PostgresInventoryRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 \
                AND ($3::uuid IS NULL OR id > $3) ORDER BY id ASC LIMIT $4",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(InventoryLocationId::as_uuid))
         .bind(i64::from(limit))
@@ -145,14 +162,16 @@ impl InventoryRepository for PostgresInventoryRepository {
 
     async fn adjust_stock(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         adjustment: &StockAdjustment,
         request: &IdempotencyRequest,
     ) -> Result<StockItemItem, ApplicationError> {
-        let mut transaction = self.begin_for_merchant(actor).await?;
+        let merchant_account_id = actor.merchant_account_id();
+        let audit_user_id = actor.audit_user_id();
+        let mut transaction = self.begin_for_admin(&actor).await?;
         if let Some(snapshot) = reserve_idempotency(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             ADJUST_STOCK_OPERATION,
             request,
         )
@@ -160,7 +179,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         {
             return replay_stock(&snapshot);
         }
-        require_store(&mut transaction, actor, adjustment.store_id).await?;
+        require_store(&mut transaction, merchant_account_id, adjustment.store_id).await?;
         sqlx::query(
             "INSERT INTO inventory.stock_items \
              (id, merchant_account_id, store_id, inventory_location_id, product_variant_id) \
@@ -176,7 +195,7 @@ impl InventoryRepository for PostgresInventoryRepository {
              DO NOTHING",
         )
         .bind(Uuid::now_v7())
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(adjustment.store_id.as_uuid())
         .bind(adjustment.inventory_location_id.as_uuid())
         .bind(adjustment.product_variant_id.as_uuid())
@@ -185,7 +204,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         .map_err(database_error)?;
         let locked = lock_stock_by_location_variant(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             adjustment.store_id,
             adjustment.inventory_location_id,
             adjustment.product_variant_id,
@@ -196,7 +215,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         let updated_at = update_stock_balance(&mut transaction, locked.0, balance).await?;
         insert_ledger(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             adjustment.store_id,
             locked.0,
             None,
@@ -205,7 +224,7 @@ impl InventoryRepository for PostgresInventoryRepository {
             0,
             balance,
             Some(&adjustment.note),
-            Some(actor.user_id().as_uuid()),
+            Some(audit_user_id.as_uuid()),
         )
         .await?;
         let item = StockItemItem {
@@ -219,7 +238,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         };
         complete_snapshot(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            merchant_account_id.as_uuid(),
             ADJUST_STOCK_OPERATION,
             request,
             stock_snapshot(&item),
@@ -231,13 +250,14 @@ impl InventoryRepository for PostgresInventoryRepository {
 
     async fn list_stock(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<StockItemId>,
         limit: u16,
     ) -> Result<Option<Vec<StockItemItem>>, ApplicationError> {
-        let mut transaction = self.begin_for_merchant(actor).await?;
-        if !store_exists(&mut transaction, actor, store_id).await? {
+        let merchant_account_id = actor.merchant_account_id();
+        let mut transaction = self.begin_for_admin(&actor).await?;
+        if !store_exists(&mut transaction, merchant_account_id, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, StockRow>(
@@ -246,7 +266,7 @@ impl InventoryRepository for PostgresInventoryRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 \
                AND ($3::uuid IS NULL OR id > $3) ORDER BY id ASC LIMIT $4",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(StockItemId::as_uuid))
         .bind(i64::from(limit))
@@ -417,7 +437,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         limit: u16,
     ) -> Result<u16, ApplicationError> {
         let mut transaction = self.begin_for_merchant(actor).await?;
-        require_store(&mut transaction, actor, store_id).await?;
+        require_store(&mut transaction, actor.merchant_account_id(), store_id).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM inventory.inventory_reservations \
              WHERE merchant_account_id = $1 AND store_id = $2 \
@@ -494,10 +514,10 @@ async fn set_context(
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
-    if store_exists(transaction, actor, store_id).await? {
+    if store_exists(transaction, merchant_account_id, store_id).await? {
         Ok(())
     } else {
         Err(ApplicationError::NotFound {
@@ -509,14 +529,14 @@ async fn require_store(
 
 async fn store_exists(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM merchant.stores \
          WHERE merchant_account_id = $1 AND id = $2)",
     )
-    .bind(actor.merchant_account_id().as_uuid())
+    .bind(merchant_account_id.as_uuid())
     .bind(store_id.as_uuid())
     .fetch_one(&mut **transaction)
     .await
@@ -1136,7 +1156,7 @@ mod tests {
         let location_request = request(format!("location-{suffix}"), 1);
         let location_id = service
             .create_location(CreateInventoryLocationInput {
-                actor,
+                actor: AdminActor::Merchant(actor),
                 store_id,
                 code: "primary".into(),
                 name: "Primary Warehouse".into(),
@@ -1147,7 +1167,7 @@ mod tests {
         let adjustment_key = format!("adjust-{suffix}");
         let stock = service
             .adjust_stock(AdjustStockInput {
-                actor,
+                actor: AdminActor::Merchant(actor),
                 store_id,
                 inventory_location_id: location_id,
                 product_variant_id: variant_id,
@@ -1159,7 +1179,7 @@ mod tests {
             .unwrap();
         let replay = service
             .adjust_stock(AdjustStockInput {
-                actor,
+                actor: AdminActor::Merchant(actor),
                 store_id,
                 inventory_location_id: location_id,
                 product_variant_id: variant_id,
@@ -1173,7 +1193,7 @@ mod tests {
         assert!(
             service
                 .adjust_stock(AdjustStockInput {
-                    actor,
+                    actor: AdminActor::Merchant(actor),
                     store_id,
                     inventory_location_id: location_id,
                     product_variant_id: variant_id,
@@ -1193,6 +1213,7 @@ mod tests {
             class: ApiKeyClass::Secret,
             mode: ApiKeyMode::Test,
             scopes: vec![ApiKeyScope::CheckoutWrite],
+            created_by_user_id: user_id,
         };
         let now = OffsetDateTime::now_utc();
         let first_input = ReserveInventoryInput {
@@ -1225,7 +1246,7 @@ mod tests {
         assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
         let reservation_id = outcomes.into_iter().find_map(Result::ok).unwrap();
         let after_reserve = service
-            .list_stock(actor, store_id, None, 100)
+            .list_stock(AdminActor::Merchant(actor), store_id, None, 100)
             .await
             .unwrap();
         assert_eq!(after_reserve.items[0].reserved_quantity, 7);
@@ -1241,7 +1262,7 @@ mod tests {
             .await
             .unwrap();
         let after_consume = service
-            .list_stock(actor, store_id, None, 100)
+            .list_stock(AdminActor::Merchant(actor), store_id, None, 100)
             .await
             .unwrap();
         assert_eq!(after_consume.items[0].on_hand_quantity, 3);
@@ -1279,13 +1300,13 @@ mod tests {
 
         assert!(
             service
-                .list_stock(other_actor, store_id, None, 100)
+                .list_stock(AdminActor::Merchant(other_actor), store_id, None, 100)
                 .await
                 .is_err()
         );
         assert!(
             service
-                .list_stock(actor, other_store_id, None, 100)
+                .list_stock(AdminActor::Merchant(actor), other_store_id, None, 100)
                 .await
                 .is_err()
         );

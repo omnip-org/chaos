@@ -3,21 +3,21 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     Locale,
     catalog::{CollectionContent, CollectionHandle, CollectionId, CollectionStatus, ProductId},
-    merchant::{MerchantRole, SalesChannelId, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, SalesChannelId, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::{MerchantActor, Page},
+    merchant::Page,
     ports::{
-        CollectionDetail, CollectionPublicationRecord, CollectionRepository,
+        AdminActor, CollectionDetail, CollectionPublicationRecord, CollectionRepository,
         CreateCollectionRecord, IdempotencyRequest, MachineActor, StorefrontCollectionItem,
     },
 };
 
 pub struct CreateCollectionInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub handle: String,
     pub title: String,
@@ -27,7 +27,7 @@ pub struct CreateCollectionInput {
 }
 
 pub struct UpdateCollectionInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub handle: String,
@@ -38,7 +38,7 @@ pub struct UpdateCollectionInput {
 }
 
 pub struct ChangeCollectionStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub idempotency: IdempotencyRequest,
@@ -46,7 +46,7 @@ pub struct ChangeCollectionStatusInput {
 }
 
 pub struct ReplaceCollectionProductsInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub product_ids: Vec<ProductId>,
@@ -55,7 +55,7 @@ pub struct ReplaceCollectionProductsInput {
 }
 
 pub struct CollectionPublicationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub sales_channel_id: SalesChannelId,
@@ -76,7 +76,7 @@ impl CollectionAdministration {
         &self,
         input: CreateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         let content = content(input.handle, input.title, input.description)?;
         self.repository
             .create(
@@ -94,7 +94,7 @@ impl CollectionAdministration {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<CollectionId>,
         limit: u16,
@@ -114,7 +114,7 @@ impl CollectionAdministration {
 
     pub async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
     ) -> Result<CollectionDetail, ApplicationError> {
@@ -128,7 +128,7 @@ impl CollectionAdministration {
         &self,
         input: UpdateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         let content = content(input.handle, input.title, input.description)?;
         self.repository
             .update(
@@ -161,7 +161,7 @@ impl CollectionAdministration {
         input: ChangeCollectionStatusInput,
         status: CollectionStatus,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         self.repository
             .set_status(
                 input.actor,
@@ -178,7 +178,7 @@ impl CollectionAdministration {
         &self,
         input: ReplaceCollectionProductsInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         if input.product_ids.len() > 1_000 {
             return Err(validation(
                 "product_ids",
@@ -220,7 +220,7 @@ impl CollectionAdministration {
         input: CollectionPublicationInput,
         published: bool,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         self.repository
             .set_publication(
                 input.actor,
@@ -298,17 +298,28 @@ fn content(
     )?)
 }
 
-fn require_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner
-            | MerchantRole::Administrator
-            | MerchantRole::Developer
-            | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner
+                    | MerchantRole::Administrator
+                    | MerchantRole::Developer
+                    | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::CollectionsWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

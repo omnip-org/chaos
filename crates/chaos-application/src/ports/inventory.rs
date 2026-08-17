@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{IdempotencyRequest, MachineActor};
+use super::{AdminActor, IdempotencyRequest, MachineActor};
 
 pub struct InventoryLocationItem {
     pub id: InventoryLocationId,
@@ -57,14 +57,14 @@ pub enum InventoryReservationTransition {
 pub trait InventoryRepository: Send + Sync {
     async fn create_location(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         location: &InventoryLocation,
         idempotency: &IdempotencyRequest,
     ) -> Result<InventoryLocationId, ApplicationError>;
 
     async fn list_locations(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<InventoryLocationId>,
         limit: u16,
@@ -72,14 +72,14 @@ pub trait InventoryRepository: Send + Sync {
 
     async fn adjust_stock(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         adjustment: &StockAdjustment,
         idempotency: &IdempotencyRequest,
     ) -> Result<StockItemItem, ApplicationError>;
 
     async fn list_stock(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<StockItemId>,
         limit: u16,

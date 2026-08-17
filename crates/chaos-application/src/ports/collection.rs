@@ -6,9 +6,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::{IdempotencyRequest, MachineActor};
+use super::{AdminActor, IdempotencyRequest, MachineActor};
 
 pub struct CollectionListItem {
     pub id: CollectionId,
@@ -65,14 +65,14 @@ pub struct CollectionPublicationRecord {
 pub trait CollectionRepository: Send + Sync {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CreateCollectionRecord,
         request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError>;
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<CollectionId>,
         limit: u16,
@@ -80,14 +80,14 @@ pub trait CollectionRepository: Send + Sync {
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
     ) -> Result<Option<CollectionDetail>, ApplicationError>;
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         content: &CollectionContent,
@@ -97,7 +97,7 @@ pub trait CollectionRepository: Send + Sync {
 
     async fn set_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         status: CollectionStatus,
@@ -107,7 +107,7 @@ pub trait CollectionRepository: Send + Sync {
 
     async fn replace_products(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         product_ids: &[ProductId],
@@ -117,7 +117,7 @@ pub trait CollectionRepository: Send + Sync {
 
     async fn set_publication(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CollectionPublicationRecord,
         request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError>;

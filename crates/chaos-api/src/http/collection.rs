@@ -10,7 +10,7 @@ use chaos_application::{
         ChangeCollectionStatusInput, CollectionPublicationInput, CreateCollectionInput,
         ReplaceCollectionProductsInput, UpdateCollectionInput,
     },
-    ports::{CollectionDetail, IdempotencyRequest, StorefrontCollectionItem},
+    ports::{AdminActor, CollectionDetail, IdempotencyRequest, StorefrontCollectionItem},
 };
 use chaos_domain::{
     catalog::{CollectionId, ProductId},
@@ -161,7 +161,7 @@ async fn create_collection(
     let id = state
         .collection_administration
         .create(CreateCollectionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             title: body.title,
@@ -189,7 +189,12 @@ async fn list_collections(
         .map(CollectionId::from_uuid);
     let page = state
         .collection_administration
-        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next = page
         .has_more
@@ -225,7 +230,7 @@ async fn get_collection(
     let item = state
         .collection_administration
         .get(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             CollectionId::from_uuid(path.collection_id),
         )
@@ -245,7 +250,7 @@ async fn update_collection(
     let id = state
         .collection_administration
         .update(UpdateCollectionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             handle: body.handle,
@@ -283,7 +288,7 @@ async fn change_status(
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeCollectionStatusInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         collection_id: CollectionId::from_uuid(path.collection_id),
         idempotency: mutation(&headers, &(path.store_id, path.collection_id, active))?,
@@ -309,7 +314,7 @@ async fn replace_products(
     let id = state
         .collection_administration
         .replace_products(ReplaceCollectionProductsInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             product_ids: body
@@ -349,7 +354,7 @@ async fn publication(
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = CollectionPublicationInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         collection_id: CollectionId::from_uuid(path.collection_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),

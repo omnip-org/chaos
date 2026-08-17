@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CollectionDetail, CollectionListItem, CollectionProductItem, CollectionPublicationRecord,
-        CollectionRepository, CreateCollectionRecord, IdempotencyRequest, MachineActor,
-        StorefrontCollectionItem,
+        AdminActor, CollectionDetail, CollectionListItem, CollectionProductItem,
+        CollectionPublicationRecord, CollectionRepository, CreateCollectionRecord,
+        IdempotencyRequest, MachineActor, StorefrontCollectionItem,
     },
 };
 use chaos_domain::{
@@ -40,11 +39,11 @@ impl PostgresCollectionRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -78,22 +77,22 @@ impl PostgresCollectionRepository {
 impl CollectionRepository for PostgresCollectionRepository {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CreateCollectionRecord,
         request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, CREATE, request).await? {
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, CREATE, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
-        require_store(&mut tx, actor, record.store_id).await?;
+        require_store(&mut tx, &actor, record.store_id).await?;
         sqlx::query("INSERT INTO catalog.collections (id, merchant_account_id, store_id, handle, title, description, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$7)")
             .bind(record.id.as_uuid()).bind(actor.merchant_account_id().as_uuid()).bind(record.store_id.as_uuid())
             .bind(record.content.handle().as_str()).bind(record.content.title()).bind(record.content.description()).bind(record.created_at)
             .execute(&mut *tx).await.map_err(map_collection_error)?;
         event(
             &mut tx,
-            actor,
+            &actor,
             record.store_id,
             record.id,
             "created",
@@ -101,20 +100,20 @@ impl CollectionRepository for PostgresCollectionRepository {
             record.created_at,
         )
         .await?;
-        complete(&mut tx, actor, CREATE, request, record.id, 201).await?;
+        complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(record.id)
     }
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Option<Vec<CollectionListItem>>, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if !store_exists(&mut tx, actor, store_id).await? {
+        let mut tx = self.begin(&actor).await?;
+        if !store_exists(&mut tx, &actor, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, (Uuid,String,String,String,i64,OffsetDateTime,OffsetDateTime)>(
@@ -140,11 +139,11 @@ impl CollectionRepository for PostgresCollectionRepository {
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
     ) -> Result<Option<CollectionDetail>, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
+        let mut tx = self.begin(&actor).await?;
         let header = sqlx::query_as::<_, (Uuid,String,String,String,String,OffsetDateTime,OffsetDateTime)>("SELECT id, handle::text, title, description, status::text, created_at, updated_at FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3")
             .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?;
         let Some(row) = header else {
@@ -182,24 +181,24 @@ impl CollectionRepository for PostgresCollectionRepository {
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         content: &CollectionContent,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, UPDATE, request).await? {
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, UPDATE, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
-        require_writable_collection(&mut tx, actor, store_id, collection_id).await?;
+        require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let changed=sqlx::query("UPDATE catalog.collections SET handle=$4,title=$5,description=$6,updated_at=$7 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3")
             .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
         require_changed(changed, collection_id)?;
         event(
             &mut tx,
-            actor,
+            &actor,
             store_id,
             collection_id,
             "updated",
@@ -207,14 +206,14 @@ impl CollectionRepository for PostgresCollectionRepository {
             now,
         )
         .await?;
-        complete(&mut tx, actor, UPDATE, request, collection_id, 200).await?;
+        complete(&mut tx, &actor, UPDATE, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
 
     async fn set_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         status: CollectionStatus,
@@ -226,13 +225,13 @@ impl CollectionRepository for PostgresCollectionRepository {
         } else {
             ARCHIVE
         };
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, operation, request).await? {
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
         let changed=sqlx::query("UPDATE catalog.collections SET status=$4::catalog.collection_status,updated_at=$5 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3 AND (($4='active' AND status='draft') OR ($4='archived' AND status IN ('draft','active')))")
             .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(status.as_str()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
-        if changed == 0 && !collection_exists(&mut tx, actor, store_id, collection_id).await? {
+        if changed == 0 && !collection_exists(&mut tx, &actor, store_id, collection_id).await? {
             return Err(not_found(collection_id));
         }
         if changed == 0 && status == CollectionStatus::Active {
@@ -248,7 +247,7 @@ impl CollectionRepository for PostgresCollectionRepository {
         if changed == 1 {
             event(
                 &mut tx,
-                actor,
+                &actor,
                 store_id,
                 collection_id,
                 if status == CollectionStatus::Active {
@@ -261,25 +260,25 @@ impl CollectionRepository for PostgresCollectionRepository {
             )
             .await?;
         }
-        complete(&mut tx, actor, operation, request, collection_id, 200).await?;
+        complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
 
     async fn replace_products(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         product_ids: &[ProductId],
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, REPLACE_PRODUCTS, request).await? {
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, REPLACE_PRODUCTS, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
-        require_writable_collection(&mut tx, actor, store_id, collection_id).await?;
+        require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let ids: Vec<Uuid> = product_ids.iter().map(|id| id.as_uuid()).collect();
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM catalog.products WHERE merchant_account_id=$1 AND store_id=$2 AND id=ANY($3::uuid[])").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(&ids).fetch_one(&mut *tx).await.map_err(database_error)?;
         if usize::try_from(count).ok() != Some(ids.len()) {
@@ -297,7 +296,7 @@ impl CollectionRepository for PostgresCollectionRepository {
         sqlx::query("UPDATE catalog.collections SET updated_at=$4 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         event(
             &mut tx,
-            actor,
+            &actor,
             store_id,
             collection_id,
             "products_replaced",
@@ -310,7 +309,7 @@ impl CollectionRepository for PostgresCollectionRepository {
         .await?;
         complete(
             &mut tx,
-            actor,
+            &actor,
             REPLACE_PRODUCTS,
             request,
             collection_id,
@@ -323,7 +322,7 @@ impl CollectionRepository for PostgresCollectionRepository {
 
     async fn set_publication(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CollectionPublicationRecord,
         request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError> {
@@ -335,8 +334,8 @@ impl CollectionRepository for PostgresCollectionRepository {
             changed_at: now,
         } = record;
         let operation = if published { PUBLISH } else { UNPUBLISH };
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, operation, request).await? {
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
         let status:String=sqlx::query_scalar("SELECT status::text FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(||not_found(collection_id))?;
@@ -361,7 +360,7 @@ impl CollectionRepository for PostgresCollectionRepository {
         if changed == 1 {
             event(
                 &mut tx,
-                actor,
+                &actor,
                 store_id,
                 collection_id,
                 if published {
@@ -374,7 +373,7 @@ impl CollectionRepository for PostgresCollectionRepository {
             )
             .await?;
         }
-        complete(&mut tx, actor, operation, request, collection_id, 200).await?;
+        complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -471,7 +470,7 @@ fn storefront_item(
 }
 async fn require_store(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<(), ApplicationError> {
     if store_exists(tx, actor, store).await? {
@@ -485,14 +484,14 @@ async fn require_store(
 }
 async fn store_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2 AND status<>'archived')").bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).fetch_one(&mut **tx).await.map_err(database_error)
 }
 async fn collection_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
 ) -> Result<bool, ApplicationError> {
@@ -500,7 +499,7 @@ async fn collection_exists(
 }
 async fn require_writable_collection(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
 ) -> Result<(), ApplicationError> {
@@ -523,7 +522,7 @@ fn require_changed(changed: u64, id: CollectionId) -> Result<(), ApplicationErro
 }
 async fn event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
     kind: &str,
@@ -531,12 +530,12 @@ async fn event(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let (channel, count) = details;
-    sqlx::query("INSERT INTO catalog.collection_events (id,merchant_account_id,store_id,collection_id,event_kind,actor_user_id,sales_channel_id,product_count,occurred_at) VALUES ($1,$2,$3,$4,$5::catalog.collection_event_kind,$6,$7,$8,$9)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.user_id().as_uuid()).bind(channel.map(SalesChannelId::as_uuid)).bind(count).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.collection_events (id,merchant_account_id,store_id,collection_id,event_kind,actor_user_id,sales_channel_id,product_count,occurred_at) VALUES ($1,$2,$3,$4,$5::catalog.collection_event_kind,$6,$7,$8,$9)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(channel.map(SalesChannelId::as_uuid)).bind(count).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -559,7 +558,7 @@ async fn reserve(
 }
 async fn complete(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: CollectionId,

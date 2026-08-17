@@ -7,7 +7,7 @@ use axum::{
 use chaos_application::{
     ApplicationError,
     inventory::{AdjustStockInput, CreateInventoryLocationInput},
-    ports::{IdempotencyRequest, InventoryLocationItem, StockItemItem},
+    ports::{AdminActor, IdempotencyRequest, InventoryLocationItem, StockItemItem},
 };
 use chaos_domain::{
     catalog::ProductVariantId,
@@ -106,7 +106,7 @@ async fn create_location(
     let id = state
         .inventory_management
         .create_location(CreateInventoryLocationInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -132,7 +132,12 @@ async fn list_locations(
         .map(InventoryLocationId::from_uuid);
     let page = state
         .inventory_management
-        .list_locations(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list_locations(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -163,7 +168,12 @@ async fn list_stock(
         .map(StockItemId::from_uuid);
     let page = state
         .inventory_management
-        .list_stock(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list_stock(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -190,7 +200,7 @@ async fn adjust_stock(
     let item = state
         .inventory_management
         .adjust_stock(AdjustStockInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             inventory_location_id: InventoryLocationId::from_uuid(body.inventory_location_id),
             product_variant_id: ProductVariantId::from_uuid(body.product_variant_id),

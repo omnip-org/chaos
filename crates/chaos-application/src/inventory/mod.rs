@@ -15,13 +15,14 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
-        InventoryReservationTransition, MachineActor, StockAdjustment, StockItemItem,
+        AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
+        InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
+        StockItemItem,
     },
 };
 
 pub struct CreateInventoryLocationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -29,7 +30,7 @@ pub struct CreateInventoryLocationInput {
 }
 
 pub struct AdjustStockInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub inventory_location_id: InventoryLocationId,
     pub product_variant_id: ProductVariantId,
@@ -77,7 +78,7 @@ impl InventoryManagement {
         &self,
         input: CreateInventoryLocationInput,
     ) -> Result<InventoryLocationId, ApplicationError> {
-        require_inventory_writer(input.actor)?;
+        require_inventory_writer(&input.actor)?;
         let location = InventoryLocation::create(
             input.actor.merchant_account_id(),
             input.store_id,
@@ -91,7 +92,7 @@ impl InventoryManagement {
 
     pub async fn list_locations(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<InventoryLocationId>,
         limit: u16,
@@ -113,7 +114,7 @@ impl InventoryManagement {
         &self,
         input: AdjustStockInput,
     ) -> Result<StockItemItem, ApplicationError> {
-        require_inventory_writer(input.actor)?;
+        require_inventory_writer(&input.actor)?;
         if input.delta_quantity == 0 {
             return Err(validation("delta_quantity", "must not be zero"));
         }
@@ -137,7 +138,7 @@ impl InventoryManagement {
 
     pub async fn list_stock(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<StockItemId>,
         limit: u16,
@@ -228,20 +229,29 @@ impl InventoryManagement {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<u16, ApplicationError> {
-        require_inventory_writer(actor)?;
+        require_inventory_writer(&AdminActor::Merchant(actor))?;
         self.repository
             .expire_due_reservations(actor, store_id, now, limit.clamp(1, 500))
             .await
     }
 }
 
-fn require_inventory_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    match actor.role() {
-        MerchantRole::Owner
-        | MerchantRole::Administrator
-        | MerchantRole::Developer
-        | MerchantRole::Manager => Ok(()),
-        MerchantRole::Support => Err(ApplicationError::Forbidden),
+fn require_inventory_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => match merchant.role() {
+            MerchantRole::Owner
+            | MerchantRole::Administrator
+            | MerchantRole::Developer
+            | MerchantRole::Manager => Ok(()),
+            MerchantRole::Support => Err(ApplicationError::Forbidden),
+        },
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::InventoryWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 
