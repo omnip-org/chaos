@@ -84,6 +84,14 @@ pub enum ApiKeyScope {
     OrdersRead,
     CustomersWrite,
     McpTools,
+    ProductsRead,
+    ProductsWrite,
+    PricingRead,
+    PricingWrite,
+    InventoryRead,
+    InventoryWrite,
+    CollectionsRead,
+    CollectionsWrite,
 }
 
 impl ApiKeyScope {
@@ -96,6 +104,14 @@ impl ApiKeyScope {
             Self::OrdersRead => "orders:read",
             Self::CustomersWrite => "customers:write",
             Self::McpTools => "mcp:tools",
+            Self::ProductsRead => "products:read",
+            Self::ProductsWrite => "products:write",
+            Self::PricingRead => "pricing:read",
+            Self::PricingWrite => "pricing:write",
+            Self::InventoryRead => "inventory:read",
+            Self::InventoryWrite => "inventory:write",
+            Self::CollectionsRead => "collections:read",
+            Self::CollectionsWrite => "collections:write",
         }
     }
 
@@ -108,10 +124,21 @@ impl ApiKeyScope {
             "orders:read" => Some(Self::OrdersRead),
             "customers:write" => Some(Self::CustomersWrite),
             "mcp:tools" => Some(Self::McpTools),
+            "products:read" => Some(Self::ProductsRead),
+            "products:write" => Some(Self::ProductsWrite),
+            "pricing:read" => Some(Self::PricingRead),
+            "pricing:write" => Some(Self::PricingWrite),
+            "inventory:read" => Some(Self::InventoryRead),
+            "inventory:write" => Some(Self::InventoryWrite),
+            "collections:read" => Some(Self::CollectionsRead),
+            "collections:write" => Some(Self::CollectionsWrite),
             _ => None,
         }
     }
 
+    /// Admin-only scopes (products/pricing/inventory) expose non-public store data
+    /// and mutations, unlike the storefront-facing scopes below — never embeddable
+    /// in a browser-facing Publishable key.
     const fn allowed_for_publishable_key(self) -> bool {
         matches!(
             self,
@@ -228,6 +255,72 @@ mod tests {
 
         assert_eq!(key.class(), ApiKeyClass::Secret);
         assert!(key.scopes().contains(&ApiKeyScope::McpTools));
+    }
+
+    #[test]
+    fn secret_key_can_receive_admin_write_scopes() {
+        let key = ApiKey::issue(
+            MerchantAccountId::new(),
+            StoreId::new(),
+            "Production MCP Admin",
+            ApiKeyClass::Secret,
+            ApiKeyMode::Live,
+            vec![
+                ApiKeyScope::McpTools,
+                ApiKeyScope::ProductsRead,
+                ApiKeyScope::ProductsWrite,
+                ApiKeyScope::PricingRead,
+                ApiKeyScope::PricingWrite,
+                ApiKeyScope::InventoryRead,
+                ApiKeyScope::InventoryWrite,
+                ApiKeyScope::CollectionsRead,
+                ApiKeyScope::CollectionsWrite,
+            ],
+        )
+        .unwrap();
+
+        assert!(key.scopes().contains(&ApiKeyScope::ProductsWrite));
+        assert!(key.scopes().contains(&ApiKeyScope::PricingWrite));
+    }
+
+    #[test]
+    fn publishable_key_rejects_admin_scopes() {
+        for scope in [
+            ApiKeyScope::ProductsRead,
+            ApiKeyScope::ProductsWrite,
+            ApiKeyScope::PricingRead,
+            ApiKeyScope::PricingWrite,
+            ApiKeyScope::InventoryRead,
+            ApiKeyScope::InventoryWrite,
+            ApiKeyScope::CollectionsRead,
+            ApiKeyScope::CollectionsWrite,
+        ] {
+            let result = ApiKey::issue(
+                MerchantAccountId::new(),
+                StoreId::new(),
+                "Private Browser",
+                ApiKeyClass::Publishable,
+                ApiKeyMode::Live,
+                vec![scope],
+            );
+            assert!(matches!(result, Err(DomainError::Validation(_))));
+        }
+    }
+
+    #[test]
+    fn admin_scope_round_trips_through_as_str_and_parse() {
+        for scope in [
+            ApiKeyScope::ProductsRead,
+            ApiKeyScope::ProductsWrite,
+            ApiKeyScope::PricingRead,
+            ApiKeyScope::PricingWrite,
+            ApiKeyScope::InventoryRead,
+            ApiKeyScope::InventoryWrite,
+            ApiKeyScope::CollectionsRead,
+            ApiKeyScope::CollectionsWrite,
+        ] {
+            assert_eq!(ApiKeyScope::parse(scope.as_str()), Some(scope));
+        }
     }
 
     #[test]
