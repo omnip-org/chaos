@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{IdempotencyRequest, ShopperActor};
+use super::{AdminActor, IdempotencyRequest, ShopperActor};
 
 pub struct CartLineItem {
     pub product_id: ProductId,
@@ -255,7 +255,7 @@ pub trait CheckoutExpiryQueue: Send + Sync {
 pub trait OrderManagementRepository: Send + Sync {
     async fn list_orders(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: chaos_domain::merchant::StoreId,
         after: Option<Uuid>,
         limit: u16,
@@ -264,7 +264,7 @@ pub trait OrderManagementRepository: Send + Sync {
 
     async fn get_order(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: chaos_domain::merchant::StoreId,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;

@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{ProductContent, ProductHandle, ProductId, ProductLifecycle},
-    merchant::{MerchantRole, SalesChannelId, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, SalesChannelId, StoreId},
 };
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{CatalogManagementUnitOfWork, IdempotencyRequest},
+    ports::{AdminActor, CatalogManagementUnitOfWork, IdempotencyRequest},
 };
 
 const UPDATE_PRODUCT_OPERATION: &str = "products.update.v1";
@@ -18,7 +17,7 @@ const PUBLISH_PRODUCT_OPERATION: &str = "products.publish.v1";
 const UNPUBLISH_PRODUCT_OPERATION: &str = "products.unpublish.v1";
 
 pub struct UpdateProductInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub handle: String,
@@ -28,14 +27,14 @@ pub struct UpdateProductInput {
 }
 
 pub struct ChangeProductStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct ProductPublicationInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub sales_channel_id: SalesChannelId,
@@ -52,7 +51,7 @@ impl CatalogManagement {
     }
 
     pub async fn update(&self, input: UpdateProductInput) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(input.actor)?;
+        require_catalog_writer(&input.actor)?;
         let content = ProductContent::new(
             ProductHandle::parse(input.handle)?,
             input.title,
@@ -100,7 +99,7 @@ impl CatalogManagement {
         &self,
         input: ProductPublicationInput,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(input.actor)?;
+        require_catalog_writer(&input.actor)?;
         let mut transaction = self
             .unit_of_work
             .begin(input.actor, input.store_id, input.product_id)
@@ -140,7 +139,7 @@ impl CatalogManagement {
         &self,
         input: ProductPublicationInput,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(input.actor)?;
+        require_catalog_writer(&input.actor)?;
         let mut transaction = self
             .unit_of_work
             .begin(input.actor, input.store_id, input.product_id)
@@ -170,7 +169,7 @@ impl CatalogManagement {
         operation: &'static str,
         activate: bool,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(input.actor)?;
+        require_catalog_writer(&input.actor)?;
         let mut transaction = self
             .unit_of_work
             .begin(input.actor, input.store_id, input.product_id)
@@ -210,17 +209,28 @@ async fn complete(
     Ok(product_id)
 }
 
-fn require_catalog_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner
-            | MerchantRole::Administrator
-            | MerchantRole::Developer
-            | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner
+                    | MerchantRole::Administrator
+                    | MerchantRole::Developer
+                    | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::ProductsWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

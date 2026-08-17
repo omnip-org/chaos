@@ -6,14 +6,14 @@ use chaos_domain::{
     pricing::{PriceList, PriceListId},
 };
 
-use super::IdempotencyRequest;
-use crate::{ApplicationError, merchant::MerchantActor};
+use super::{AdminActor, IdempotencyRequest};
+use crate::ApplicationError;
 
 #[async_trait]
 pub trait PricingProvisioningUnitOfWork: Send + Sync {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Box<dyn PricingProvisioningTransaction>, ApplicationError>;
 }

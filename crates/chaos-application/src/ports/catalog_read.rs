@@ -8,7 +8,7 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::{ApplicationError, ports::AdminActor};
 
 pub struct CatalogProductListItem {
     pub id: ProductId,
@@ -68,7 +68,7 @@ pub struct CatalogProductDetail {
 pub trait CatalogReadRepository: Send + Sync {
     async fn list_products(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ProductId>,
         limit: u16,
@@ -76,7 +76,7 @@ pub trait CatalogReadRepository: Send + Sync {
 
     async fn get_product(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Option<CatalogProductDetail>, ApplicationError>;

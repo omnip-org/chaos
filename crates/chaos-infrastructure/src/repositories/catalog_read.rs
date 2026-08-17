@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CatalogProductDetail, CatalogProductListItem, CatalogProductOption,
+        AdminActor, CatalogProductDetail, CatalogProductListItem, CatalogProductOption,
         CatalogProductOptionValue, CatalogProductVariant, CatalogReadRepository,
         CatalogSelectedOption,
     },
@@ -13,7 +12,7 @@ use chaos_domain::{
         ProductId, ProductOptionId, ProductOptionValueId, ProductStatus, ProductVariantId,
         VariantStatus,
     },
-    merchant::StoreId,
+    merchant::{MerchantAccountId, StoreId},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -34,13 +33,14 @@ impl PostgresCatalogReadRepository {
 impl CatalogReadRepository for PostgresCatalogReadRepository {
     async fn list_products(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Option<Vec<CatalogProductListItem>>, ApplicationError> {
+        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin(actor).await?;
-        if !store_exists(&mut transaction, actor, store_id).await? {
+        if !store_exists(&mut transaction, merchant_account_id, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<
@@ -69,7 +69,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
              ORDER BY product.id ASC \
              LIMIT $4",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(ProductId::as_uuid))
         .bind(i64::from(limit))
@@ -103,10 +103,11 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
 
     async fn get_product(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Option<CatalogProductDetail>, ApplicationError> {
+        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin(actor).await?;
         let product = sqlx::query_as::<
             _,
@@ -124,7 +125,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
              FROM catalog.products \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -140,7 +141,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
              ORDER BY position ASC",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -152,7 +153,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
              ORDER BY option_id ASC, position ASC",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -177,7 +178,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
              ORDER BY id ASC",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -203,7 +204,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                AND selection.product_id = $3 \
              ORDER BY selection.variant_id ASC, option.position ASC",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -293,7 +294,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
 impl PostgresCatalogReadRepository {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -301,7 +302,7 @@ impl PostgresCatalogReadRepository {
             .await
             .map_err(unexpected_database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
@@ -316,7 +317,7 @@ impl PostgresCatalogReadRepository {
 
 async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
     sqlx::query_scalar(
@@ -325,7 +326,7 @@ async fn store_exists(
             WHERE merchant_account_id = $1 AND id = $2\
          )",
     )
-    .bind(actor.merchant_account_id().as_uuid())
+    .bind(merchant_account_id.as_uuid())
     .bind(store_id.as_uuid())
     .fetch_one(&mut **transaction)
     .await
@@ -529,7 +530,7 @@ mod tests {
             CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(runtime_pool)));
 
         let first_page = queries
-            .list_products(owner, store_id, None, 1)
+            .list_products(AdminActor::Merchant(owner), store_id, None, 1)
             .await
             .unwrap();
         assert_eq!(first_page.items.len(), 1);
@@ -537,14 +538,19 @@ mod tests {
         assert_eq!(first_page.items[0].id, detail_product_id);
         assert_eq!(first_page.items[0].variant_count, 1);
         let second_page = queries
-            .list_products(owner, store_id, Some(detail_product_id), 1)
+            .list_products(
+                AdminActor::Merchant(owner),
+                store_id,
+                Some(detail_product_id),
+                1,
+            )
             .await
             .unwrap();
         assert_eq!(second_page.items.len(), 1);
         assert!(!second_page.has_more);
 
         let detail = queries
-            .get_product(support, store_id, detail_product_id)
+            .get_product(AdminActor::Merchant(support), store_id, detail_product_id)
             .await
             .unwrap();
         assert_eq!(detail.options.len(), 1);
@@ -554,7 +560,11 @@ mod tests {
         assert_eq!(detail.variants[0].selected_options[0].value, "Blue");
         assert!(matches!(
             queries
-                .get_product(owner, other_store_id, detail_product_id)
+                .get_product(
+                    AdminActor::Merchant(owner),
+                    other_store_id,
+                    detail_product_id
+                )
                 .await,
             Err(ApplicationError::NotFound {
                 resource: "product",
@@ -562,7 +572,9 @@ mod tests {
             })
         ));
         assert!(matches!(
-            queries.list_products(owner, StoreId::new(), None, 10).await,
+            queries
+                .list_products(AdminActor::Merchant(owner), StoreId::new(), None, 10)
+                .await,
             Err(ApplicationError::NotFound {
                 resource: "store",
                 ..

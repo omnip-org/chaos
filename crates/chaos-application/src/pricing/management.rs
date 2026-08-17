@@ -2,16 +2,15 @@ use std::sync::Arc;
 
 use chaos_domain::{
     CurrencyCode,
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     pricing::{PriceList, PriceListCode, PriceListId, PriceListSchedule, PriceListStatus},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, PriceListDetail, PricingManagementTransaction,
+        AdminActor, IdempotencyRequest, PriceListDetail, PricingManagementTransaction,
         PricingManagementUnitOfWork, PricingReadRepository,
     },
 };
@@ -23,7 +22,7 @@ const ACTIVATE_PRICE_LIST_OPERATION: &str = "price_lists.activate.v1";
 const ARCHIVE_PRICE_LIST_OPERATION: &str = "price_lists.archive.v1";
 
 pub struct UpdatePriceListInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub price_list_id: PriceListId,
     pub code: String,
@@ -37,7 +36,7 @@ pub struct UpdatePriceListInput {
 }
 
 pub struct ChangePriceListStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub price_list_id: PriceListId,
     pub idempotency: IdempotencyRequest,
@@ -66,7 +65,7 @@ impl PricingManagement {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<PriceListId>,
         limit: u16,
@@ -86,7 +85,7 @@ impl PricingManagement {
 
     pub async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<PriceListDetail, ApplicationError> {
@@ -100,7 +99,7 @@ impl PricingManagement {
         &self,
         input: UpdatePriceListInput,
     ) -> Result<PriceListId, ApplicationError> {
-        require_pricing_writer(input.actor)?;
+        require_pricing_writer(&input.actor)?;
         let mut replacement = PriceList::create(
             input.actor.merchant_account_id(),
             input.store_id,
@@ -173,7 +172,7 @@ impl PricingManagement {
         &self,
         input: ChangePriceListStatusInput,
     ) -> Result<PriceListId, ApplicationError> {
-        require_pricing_writer(input.actor)?;
+        require_pricing_writer(&input.actor)?;
         let mut transaction = self
             .unit_of_work
             .begin(input.actor, input.store_id, input.price_list_id)
@@ -206,7 +205,7 @@ impl PricingManagement {
         &self,
         input: ChangePriceListStatusInput,
     ) -> Result<PriceListId, ApplicationError> {
-        require_pricing_writer(input.actor)?;
+        require_pricing_writer(&input.actor)?;
         let mut transaction = self
             .unit_of_work
             .begin(input.actor, input.store_id, input.price_list_id)
@@ -244,13 +243,22 @@ async fn complete(
     Ok(price_list_id)
 }
 
-fn require_pricing_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    match actor.role() {
-        MerchantRole::Owner
-        | MerchantRole::Administrator
-        | MerchantRole::Developer
-        | MerchantRole::Manager => Ok(()),
-        MerchantRole::Support => Err(ApplicationError::Forbidden),
+fn require_pricing_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => match merchant.role() {
+            MerchantRole::Owner
+            | MerchantRole::Administrator
+            | MerchantRole::Developer
+            | MerchantRole::Manager => Ok(()),
+            MerchantRole::Support => Err(ApplicationError::Forbidden),
+        },
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

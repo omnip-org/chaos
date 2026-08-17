@@ -3,8 +3,8 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
-        OrderPage, OrderTransitionItem,
+        AdminActor, IdempotencyRequest, OrderDetail, OrderLineItem, OrderListFilter,
+        OrderManagementRepository, OrderPage, OrderTransitionItem,
     },
 };
 use chaos_domain::{
@@ -112,20 +112,38 @@ impl PostgresOrderManagementRepository {
         }
         Ok(transaction)
     }
+
+    async fn begin_for_admin(
+        &self,
+        actor: &AdminActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        sqlx::query("SELECT set_config('app.user_id', $1, true)")
+            .bind(actor.audit_user_id().as_uuid().to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
+            .bind(actor.merchant_account_id().as_uuid().to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        Ok(transaction)
+    }
 }
 
 #[async_trait]
 impl OrderManagementRepository for PostgresOrderManagementRepository {
     async fn list_orders(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
         filter: &OrderListFilter,
     ) -> Result<OrderPage, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT DISTINCT o.id FROM sales.orders o \
              JOIN sales.order_contacts contact ON contact.merchant_account_id = o.merchant_account_id \
@@ -169,18 +187,13 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
 
     async fn get_order(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        let detail = load_order(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            order_id,
-        )
-        .await?;
+        let account_id = actor.merchant_account_id().as_uuid();
+        let mut transaction = self.begin_for_admin(&actor).await?;
+        let detail = load_order(&mut transaction, account_id, store_id, order_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }

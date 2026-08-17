@@ -7,9 +7,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct PriceListReadItem {
     pub id: PriceListId,
@@ -44,7 +44,7 @@ pub struct PriceListMutationSnapshot {
 pub trait PricingReadRepository: Send + Sync {
     async fn list_price_lists(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<PriceListId>,
         limit: u16,
@@ -52,7 +52,7 @@ pub trait PricingReadRepository: Send + Sync {
 
     async fn get_price_list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Option<PriceListDetail>, ApplicationError>;
@@ -62,7 +62,7 @@ pub trait PricingReadRepository: Send + Sync {
 pub trait PricingManagementUnitOfWork: Send + Sync {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Box<dyn PricingManagementTransaction>, ApplicationError>;

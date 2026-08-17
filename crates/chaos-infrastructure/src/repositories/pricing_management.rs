@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, PriceListDetail, PriceListMutationSnapshot, PriceListReadItem,
-        PriceReadItem, PricingManagementTransaction, PricingManagementUnitOfWork,
-        PricingReadRepository,
+        AdminActor, IdempotencyRequest, PriceListDetail, PriceListMutationSnapshot,
+        PriceListReadItem, PriceReadItem, PricingManagementTransaction,
+        PricingManagementUnitOfWork, PricingReadRepository,
     },
 };
 use chaos_domain::{
@@ -33,7 +32,7 @@ impl PostgresPricingManagementRepository {
 
     async fn begin_read(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -70,17 +69,18 @@ type PriceListRow = (
 impl PricingReadRepository for PostgresPricingManagementRepository {
     async fn list_price_lists(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<PriceListId>,
         limit: u16,
     ) -> Result<Option<Vec<PriceListReadItem>>, ApplicationError> {
+        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin_read(actor).await?;
         let store_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM merchant.stores \
              WHERE merchant_account_id = $1 AND id = $2)",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&mut *transaction)
         .await
@@ -104,7 +104,7 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
              GROUP BY price_list.id \
              ORDER BY price_list.id ASC LIMIT $4",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(PriceListId::as_uuid))
         .bind(i64::from(limit))
@@ -120,10 +120,11 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
 
     async fn get_price_list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Option<PriceListDetail>, ApplicationError> {
+        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin_read(actor).await?;
         let row = sqlx::query_as::<_, PriceListRow>(
             "SELECT price_list.id, price_list.code::text, price_list.name, \
@@ -139,7 +140,7 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
                AND price_list.store_id = $2 AND price_list.id = $3 \
              GROUP BY price_list.id",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -153,7 +154,7 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
              WHERE merchant_account_id = $1 AND store_id = $2 AND price_list_id = $3 \
              ORDER BY product_variant_id ASC",
         )
-        .bind(actor.merchant_account_id().as_uuid())
+        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -177,15 +178,16 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
 impl PricingManagementUnitOfWork for PostgresPricingManagementRepository {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Box<dyn PricingManagementTransaction>, ApplicationError> {
+        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, actor).await?;
         Ok(Box::new(PostgresPricingManagementTransaction {
             transaction,
-            merchant_account_id: actor.merchant_account_id(),
+            merchant_account_id,
             store_id,
             price_list_id,
         }))
@@ -431,10 +433,10 @@ fn read_item(row: PriceListRow) -> Result<PriceListReadItem, ApplicationError> {
 
 async fn set_context(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: AdminActor,
 ) -> Result<(), ApplicationError> {
     sqlx::query("SELECT set_config('app.user_id', $1, true)")
-        .bind(actor.user_id().as_uuid().to_string())
+        .bind(actor.audit_user_id().as_uuid().to_string())
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
@@ -502,7 +504,7 @@ mod tests {
 
     use chaos_application::{
         merchant::MerchantQueries,
-        ports::IdempotencyRequest,
+        ports::{AdminActor, IdempotencyRequest},
         pricing::{
             ChangePriceListStatusInput, CreatePriceInput, PricingManagement, UpdatePriceListInput,
         },
@@ -659,19 +661,25 @@ mod tests {
         let repository = Arc::new(PostgresPricingManagementRepository::new(runtime_pool));
         let service = PricingManagement::new(repository.clone(), repository);
 
-        let page = service.list(owner, store_id, None, 20).await.unwrap();
+        let page = service
+            .list(AdminActor::Merchant(owner), store_id, None, 20)
+            .await
+            .unwrap();
         assert_eq!(page.items.len(), 1);
-        let detail = service.get(owner, store_id, price_list_id).await.unwrap();
+        let detail = service
+            .get(AdminActor::Merchant(owner), store_id, price_list_id)
+            .await
+            .unwrap();
         assert_eq!(detail.prices[0].amount_minor, 2500);
         assert!(
             service
-                .get(owner, other_store_id, price_list_id)
+                .get(AdminActor::Merchant(owner), other_store_id, price_list_id)
                 .await
                 .is_err()
         );
 
         let update_input = || UpdatePriceListInput {
-            actor: owner,
+            actor: AdminActor::Merchant(owner),
             store_id,
             price_list_id,
             code: "retail-us".into(),
@@ -691,14 +699,17 @@ mod tests {
         };
         service.update(update_input()).await.unwrap();
         service.update(update_input()).await.unwrap();
-        let updated = service.get(owner, store_id, price_list_id).await.unwrap();
+        let updated = service
+            .get(AdminActor::Merchant(owner), store_id, price_list_id)
+            .await
+            .unwrap();
         assert_eq!(updated.item.code, "retail-us");
         assert!(updated.item.tax_inclusive);
         assert_eq!(updated.prices[0].amount_minor, 3000);
 
         service
             .activate(ChangePriceListStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 price_list_id,
                 idempotency: IdempotencyRequest {
@@ -710,7 +721,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get(owner, store_id, price_list_id)
+                .get(AdminActor::Merchant(owner), store_id, price_list_id)
                 .await
                 .unwrap()
                 .item
@@ -719,7 +730,7 @@ mod tests {
         );
         let forbidden = service
             .archive(ChangePriceListStatusInput {
-                actor: support,
+                actor: AdminActor::Merchant(support),
                 store_id,
                 price_list_id,
                 idempotency: IdempotencyRequest {
@@ -731,7 +742,7 @@ mod tests {
         assert!(matches!(forbidden, Err(ApplicationError::Forbidden)));
         service
             .archive(ChangePriceListStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 price_list_id,
                 idempotency: IdempotencyRequest {
@@ -743,7 +754,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get(owner, store_id, price_list_id)
+                .get(AdminActor::Merchant(owner), store_id, price_list_id)
                 .await
                 .unwrap()
                 .item

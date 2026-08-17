@@ -4,14 +4,14 @@ use chaos_domain::{
     merchant::StoreId,
 };
 
-use super::IdempotencyRequest;
-use crate::{ApplicationError, merchant::MerchantActor};
+use super::{AdminActor, IdempotencyRequest};
+use crate::ApplicationError;
 
 #[async_trait]
 pub trait CatalogProvisioningUnitOfWork: Send + Sync {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Box<dyn CatalogProvisioningTransaction>, ApplicationError>;
 }

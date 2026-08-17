@@ -6,7 +6,7 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    ports::IdempotencyRequest,
+    ports::{AdminActor, IdempotencyRequest},
     pricing::{
         ChangePriceListStatusInput, ChangePromotionStatusInput, ChangeTaxRuleStatusInput,
         CreatePriceInput, CreatePriceListInput, CreatePromotionInput, CreateTaxRuleInput,
@@ -514,7 +514,7 @@ async fn create_price_list(
     let output = state
         .create_price_list
         .execute(CreatePriceListInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -561,7 +561,12 @@ async fn list_price_lists(
         .map(PriceListId::from_uuid);
     let page = state
         .pricing_management
-        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -588,7 +593,7 @@ async fn get_price_list(
     let detail = state
         .pricing_management
         .get(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             PriceListId::from_uuid(path.price_list_id),
         )
@@ -621,7 +626,7 @@ async fn update_price_list(
     let id = state
         .pricing_management
         .update(UpdatePriceListInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             price_list_id: PriceListId::from_uuid(path.price_list_id),
             code: body.code,
@@ -681,7 +686,7 @@ async fn change_status(
         .into(),
     };
     let input = ChangePriceListStatusInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         price_list_id: PriceListId::from_uuid(path.price_list_id),
         idempotency,

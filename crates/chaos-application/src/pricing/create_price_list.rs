@@ -3,15 +3,14 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     pricing::{PriceList, PriceListCode, PriceListId, PriceListSchedule},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, PricingProvisioningUnitOfWork},
+    ports::{AdminActor, IdempotencyRequest, PricingProvisioningUnitOfWork},
 };
 
 pub struct CreatePriceInput {
@@ -20,7 +19,7 @@ pub struct CreatePriceInput {
 }
 
 pub struct CreatePriceListInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -51,15 +50,7 @@ impl CreatePriceList {
         &self,
         input: CreatePriceListInput,
     ) -> Result<CreatePriceListOutput, ApplicationError> {
-        if !matches!(
-            input.actor.role(),
-            MerchantRole::Owner
-                | MerchantRole::Administrator
-                | MerchantRole::Developer
-                | MerchantRole::Manager
-        ) {
-            return Err(ApplicationError::Forbidden);
-        }
+        require_pricing_writer(&input.actor)?;
         let currency = CurrencyCode::parse(&input.currency)?;
         let mut price_list = PriceList::create(
             input.actor.merchant_account_id(),
@@ -109,5 +100,24 @@ impl CreatePriceList {
         Ok(CreatePriceListOutput {
             price_list_id: price_list.id(),
         })
+    }
+}
+
+fn require_pricing_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => match merchant.role() {
+            MerchantRole::Owner
+            | MerchantRole::Administrator
+            | MerchantRole::Developer
+            | MerchantRole::Manager => Ok(()),
+            MerchantRole::Support => Err(ApplicationError::Forbidden),
+        },
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }

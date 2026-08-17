@@ -4,8 +4,8 @@ use chaos_domain::{
     merchant::{SalesChannelId, StoreId},
 };
 
-use super::IdempotencyRequest;
-use crate::{ApplicationError, merchant::MerchantActor};
+use super::{AdminActor, IdempotencyRequest};
+use crate::ApplicationError;
 
 pub struct ProductLifecycleSnapshot {
     pub status: ProductStatus,
@@ -16,7 +16,7 @@ pub struct ProductLifecycleSnapshot {
 pub trait CatalogManagementUnitOfWork: Send + Sync {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Box<dyn CatalogManagementTransaction>, ApplicationError>;

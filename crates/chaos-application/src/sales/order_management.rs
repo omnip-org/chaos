@@ -10,7 +10,8 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, OrderDetail, OrderListFilter, OrderManagementRepository, OrderPage,
+        AdminActor, IdempotencyRequest, OrderDetail, OrderListFilter, OrderManagementRepository,
+        OrderPage,
     },
 };
 
@@ -34,7 +35,7 @@ impl OrderManagement {
 
     pub async fn get_order(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
     ) -> Result<OrderDetail, ApplicationError> {
@@ -46,7 +47,7 @@ impl OrderManagement {
 
     pub async fn list_orders(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<uuid::Uuid>,
         limit: u16,

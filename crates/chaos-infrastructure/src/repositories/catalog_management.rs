@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CatalogManagementTransaction, CatalogManagementUnitOfWork, IdempotencyRequest,
+        AdminActor, CatalogManagementTransaction, CatalogManagementUnitOfWork, IdempotencyRequest,
         ProductLifecycleSnapshot,
     },
 };
@@ -39,13 +38,13 @@ struct PostgresCatalogManagementTransaction {
 impl CatalogManagementUnitOfWork for PostgresCatalogManagementUnitOfWork {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Box<dyn CatalogManagementTransaction>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
@@ -276,7 +275,7 @@ mod tests {
             UpdateProductInput,
         },
         merchant::MerchantQueries,
-        ports::IdempotencyRequest,
+        ports::{AdminActor, IdempotencyRequest},
     };
     use chaos_domain::{catalog::ProductVariantId, identity::UserId, merchant::SalesChannelId};
     use sqlx::postgres::PgPoolOptions;
@@ -425,7 +424,7 @@ mod tests {
         assert!(matches!(
             service
                 .update(UpdateProductInput {
-                    actor: support,
+                    actor: AdminActor::Merchant(support),
                     store_id,
                     product_id,
                     handle: "updated-product".into(),
@@ -439,7 +438,7 @@ mod tests {
         assert!(matches!(
             service
                 .activate(ChangeProductStatusInput {
-                    actor: owner,
+                    actor: AdminActor::Merchant(owner),
                     store_id,
                     product_id: empty_product_id,
                     idempotency: request(format!("empty-{suffix}"), [61; 32]),
@@ -450,7 +449,7 @@ mod tests {
         assert!(matches!(
             service
                 .publish(ProductPublicationInput {
-                    actor: owner,
+                    actor: AdminActor::Merchant(owner),
                     store_id,
                     product_id,
                     sales_channel_id: channel_id,
@@ -463,7 +462,7 @@ mod tests {
         let update_key = format!("update-{suffix}");
         let updated = service
             .update(UpdateProductInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 handle: "updated-product".into(),
@@ -475,7 +474,7 @@ mod tests {
             .unwrap();
         let replay = service
             .update(UpdateProductInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 handle: "updated-product".into(),
@@ -489,7 +488,7 @@ mod tests {
 
         service
             .activate(ChangeProductStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 idempotency: request(format!("activate-{suffix}"), [64; 32]),
@@ -499,7 +498,7 @@ mod tests {
         assert!(matches!(
             service
                 .publish(ProductPublicationInput {
-                    actor: owner,
+                    actor: AdminActor::Merchant(owner),
                     store_id,
                     product_id,
                     sales_channel_id: other_channel_id,
@@ -513,7 +512,7 @@ mod tests {
         ));
         service
             .publish(ProductPublicationInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
@@ -523,7 +522,7 @@ mod tests {
             .unwrap();
         service
             .archive(ChangeProductStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 idempotency: request(format!("archive-{suffix}"), [67; 32]),
@@ -557,7 +556,7 @@ mod tests {
 
         service
             .unpublish(ProductPublicationInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
@@ -594,6 +593,186 @@ mod tests {
             .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
             .bind(vec![owner_id.as_uuid(), support_id.as_uuid()])
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
+    async fn machine_actor_with_products_write_scope_can_activate_and_archive_under_rls() {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let owner_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let runtime_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .after_connect(|connection, _metadata| {
+                Box::pin(async move {
+                    sqlx::query("SET ROLE chaos_runtime")
+                        .execute(&mut *connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await
+            .unwrap();
+        let owner_id = UserId::new();
+        let account_id = MerchantAccountId::new();
+        let store_id = StoreId::new();
+        let product_id = ProductId::new();
+        let variant_id = ProductVariantId::new();
+        let suffix = Uuid::now_v7().simple().to_string();
+
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_id.as_uuid())
+            .bind(format!("catalog-manage-machine-owner-{suffix}@example.com"))
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
+             VALUES ($1, $2, 'Machine Catalog Management Test')",
+        )
+        .bind(account_id.as_uuid())
+        .bind(format!("catalog-manage-machine-{suffix}"))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
+             VALUES ($1, $2, 'manage-machine', 'Managed Store')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO catalog.products \
+             (id, merchant_account_id, store_id, handle, title) \
+             VALUES ($1, $2, $3, 'machine-managed-product', 'Machine Managed Product')",
+        )
+        .bind(product_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO catalog.product_variants \
+             (id, merchant_account_id, store_id, product_id, title, sku) \
+             VALUES ($1, $2, $3, $4, 'Default', 'MACHINE-MANAGED-SKU')",
+        )
+        .bind(variant_id.as_uuid())
+        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+
+        let service = CatalogManagement::new(Arc::new(PostgresCatalogManagementUnitOfWork::new(
+            runtime_pool,
+        )));
+        let request = |key: String, fingerprint| IdempotencyRequest {
+            key,
+            request_fingerprint: fingerprint,
+        };
+        let authorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
+            api_key_id: chaos_domain::merchant::ApiKeyId::new(),
+            merchant_account_id: account_id,
+            store_id,
+            sales_channel_id: None,
+            class: chaos_domain::merchant::ApiKeyClass::Secret,
+            mode: chaos_domain::merchant::ApiKeyMode::Live,
+            scopes: vec![
+                chaos_domain::merchant::ApiKeyScope::McpTools,
+                chaos_domain::merchant::ApiKeyScope::ProductsWrite,
+            ],
+            created_by_user_id: owner_id,
+        });
+        let unauthorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
+            api_key_id: chaos_domain::merchant::ApiKeyId::new(),
+            merchant_account_id: account_id,
+            store_id,
+            sales_channel_id: None,
+            class: chaos_domain::merchant::ApiKeyClass::Secret,
+            mode: chaos_domain::merchant::ApiKeyMode::Live,
+            scopes: vec![chaos_domain::merchant::ApiKeyScope::McpTools],
+            created_by_user_id: owner_id,
+        });
+
+        assert!(matches!(
+            service
+                .activate(ChangeProductStatusInput {
+                    actor: unauthorized_machine,
+                    store_id,
+                    product_id,
+                    idempotency: request(format!("machine-forbidden-{suffix}"), [70; 32]),
+                })
+                .await,
+            Err(ApplicationError::Forbidden)
+        ));
+
+        service
+            .activate(ChangeProductStatusInput {
+                actor: authorized_machine.clone(),
+                store_id,
+                product_id,
+                idempotency: request(format!("machine-activate-{suffix}"), [71; 32]),
+            })
+            .await
+            .unwrap();
+        let status_after_activate: String =
+            sqlx::query_scalar("SELECT status::text FROM catalog.products WHERE id = $1")
+                .bind(product_id.as_uuid())
+                .fetch_one(&owner_pool)
+                .await
+                .unwrap();
+        assert_eq!(status_after_activate, "active");
+
+        service
+            .archive(ChangeProductStatusInput {
+                actor: authorized_machine,
+                store_id,
+                product_id,
+                idempotency: request(format!("machine-archive-{suffix}"), [72; 32]),
+            })
+            .await
+            .unwrap();
+        let status_after_archive: String =
+            sqlx::query_scalar("SELECT status::text FROM catalog.products WHERE id = $1")
+                .bind(product_id.as_uuid())
+                .fetch_one(&owner_pool)
+                .await
+                .unwrap();
+        assert_eq!(status_after_archive, "archived");
+
+        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
+            .bind(account_id.as_uuid())
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "DELETE FROM integration.idempotency_records \
+             WHERE scope = 'merchant_account' AND scope_id = $1",
+        )
+        .bind(account_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
+            .bind(account_id.as_uuid())
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();

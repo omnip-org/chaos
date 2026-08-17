@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, PricingProvisioningTransaction, PricingProvisioningUnitOfWork},
+    ports::{
+        AdminActor, IdempotencyRequest, PricingProvisioningTransaction,
+        PricingProvisioningUnitOfWork,
+    },
 };
 use chaos_domain::{
     CurrencyCode,
@@ -39,12 +41,12 @@ struct PostgresPricingProvisioningTransaction {
 impl PricingProvisioningUnitOfWork for PostgresPricingProvisioningUnitOfWork {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Box<dyn PricingProvisioningTransaction>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
@@ -276,6 +278,7 @@ mod tests {
 
     use chaos_application::{
         merchant::MerchantQueries,
+        ports::AdminActor,
         pricing::{CreatePriceInput, CreatePriceList, CreatePriceListInput},
     };
     use chaos_domain::{catalog::ProductId, identity::UserId};
@@ -444,26 +447,29 @@ mod tests {
             runtime_pool.clone(),
         )));
         let key = format!("price-list-{suffix}");
-        let input =
-            |actor, currency: &str, variant, fingerprint, key: String| CreatePriceListInput {
-                actor,
-                store_id,
-                code: "us-retail".into(),
-                name: "US Retail".into(),
-                currency: currency.into(),
-                tax_inclusive: false,
-                starts_at: None,
-                ends_at: None,
-                activate: true,
-                prices: vec![CreatePriceInput {
-                    product_variant_id: variant,
-                    amount_minor: 2_500,
-                }],
-                idempotency: IdempotencyRequest {
-                    key,
-                    request_fingerprint: fingerprint,
-                },
-            };
+        let input = |actor: chaos_application::merchant::MerchantActor,
+                     currency: &str,
+                     variant,
+                     fingerprint,
+                     key: String| CreatePriceListInput {
+            actor: AdminActor::Merchant(actor),
+            store_id,
+            code: "us-retail".into(),
+            name: "US Retail".into(),
+            currency: currency.into(),
+            tax_inclusive: false,
+            starts_at: None,
+            ends_at: None,
+            activate: true,
+            prices: vec![CreatePriceInput {
+                product_variant_id: variant,
+                amount_minor: 2_500,
+            }],
+            idempotency: IdempotencyRequest {
+                key,
+                request_fingerprint: fingerprint,
+            },
+        };
         assert!(matches!(
             service
                 .execute(input(support, "USD", variant_id, [50; 32], key.clone()))

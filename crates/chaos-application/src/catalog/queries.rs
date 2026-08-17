@@ -4,8 +4,7 @@ use chaos_domain::{catalog::ProductId, merchant::StoreId};
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{CatalogProductDetail, CatalogProductListItem, CatalogReadRepository},
+    ports::{AdminActor, CatalogProductDetail, CatalogProductListItem, CatalogReadRepository},
 };
 
 pub struct ProductPage {
@@ -24,7 +23,7 @@ impl CatalogQueries {
 
     pub async fn list_products(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ProductId>,
         limit: u16,
@@ -47,7 +46,7 @@ impl CatalogQueries {
 
     pub async fn get_product(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<CatalogProductDetail, ApplicationError> {

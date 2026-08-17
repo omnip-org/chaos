@@ -1,6 +1,6 @@
 use axum::{Router, extract::State, http::HeaderMap, routing::get};
 use chaos_application::{
-    ports::{IdempotencyRequest, OrderListFilter},
+    ports::{AdminActor, IdempotencyRequest, OrderListFilter},
     sales::ChangeOrderStatusInput,
 };
 use chaos_domain::{
@@ -98,7 +98,7 @@ async fn list_orders(
     let page = state
         .order_management
         .list_orders(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -134,7 +134,7 @@ async fn get_order(
     let order = state
         .order_management
         .get_order(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             OrderId::from_uuid(path.order_id),
         )

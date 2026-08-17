@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork, IdempotencyRequest},
+    ports::{
+        AdminActor, CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork,
+        IdempotencyRequest,
+    },
 };
 use chaos_domain::{
     catalog::{Product, ProductId},
@@ -37,12 +39,12 @@ struct PostgresCatalogProvisioningTransaction {
 impl CatalogProvisioningUnitOfWork for PostgresCatalogProvisioningUnitOfWork {
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Box<dyn CatalogProvisioningTransaction>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
@@ -265,7 +267,7 @@ mod tests {
             CreateProductSelectedOptionInput, CreateProductVariantInput,
         },
         merchant::MerchantQueries,
-        ports::IdempotencyRequest,
+        ports::{AdminActor, IdempotencyRequest},
     };
     use chaos_domain::{identity::UserId, merchant::StoreId};
     use sqlx::postgres::PgPoolOptions;
@@ -359,44 +361,47 @@ mod tests {
             runtime_pool,
         )));
         let idempotency_key = format!("product-{suffix}");
-        let make_input =
-            |actor, fingerprint, key: String, handle: &str, sku: &str| CreateProductInput {
-                actor,
-                store_id,
-                handle: handle.into(),
-                title: "Classic Shirt".into(),
-                description: "A durable everyday shirt.".into(),
-                options: vec![
-                    CreateProductOptionInput {
-                        name: "Color".into(),
-                        values: vec!["Blue".into(), "Black".into()],
+        let make_input = |actor: chaos_application::merchant::MerchantActor,
+                          fingerprint,
+                          key: String,
+                          handle: &str,
+                          sku: &str| CreateProductInput {
+            actor: AdminActor::Merchant(actor),
+            store_id,
+            handle: handle.into(),
+            title: "Classic Shirt".into(),
+            description: "A durable everyday shirt.".into(),
+            options: vec![
+                CreateProductOptionInput {
+                    name: "Color".into(),
+                    values: vec!["Blue".into(), "Black".into()],
+                },
+                CreateProductOptionInput {
+                    name: "Size".into(),
+                    values: vec!["S".into(), "M".into()],
+                },
+            ],
+            variants: vec![CreateProductVariantInput {
+                title: "Blue / M".into(),
+                sku: Some(sku.into()),
+                requires_shipping: true,
+                track_inventory: true,
+                selected_options: vec![
+                    CreateProductSelectedOptionInput {
+                        option: "Color".into(),
+                        value: "Blue".into(),
                     },
-                    CreateProductOptionInput {
-                        name: "Size".into(),
-                        values: vec!["S".into(), "M".into()],
+                    CreateProductSelectedOptionInput {
+                        option: "Size".into(),
+                        value: "M".into(),
                     },
                 ],
-                variants: vec![CreateProductVariantInput {
-                    title: "Blue / M".into(),
-                    sku: Some(sku.into()),
-                    requires_shipping: true,
-                    track_inventory: true,
-                    selected_options: vec![
-                        CreateProductSelectedOptionInput {
-                            option: "Color".into(),
-                            value: "Blue".into(),
-                        },
-                        CreateProductSelectedOptionInput {
-                            option: "Size".into(),
-                            value: "M".into(),
-                        },
-                    ],
-                }],
-                idempotency: IdempotencyRequest {
-                    key,
-                    request_fingerprint: fingerprint,
-                },
-            };
+            }],
+            idempotency: IdempotencyRequest {
+                key,
+                request_fingerprint: fingerprint,
+            },
+        };
 
         assert!(matches!(
             service

@@ -3,13 +3,12 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     FieldViolation,
     catalog::{Product, ProductHandle, ProductId, ProductOptionValueId, Sku},
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
 };
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{CatalogProvisioningUnitOfWork, IdempotencyRequest},
+    ports::{AdminActor, CatalogProvisioningUnitOfWork, IdempotencyRequest},
 };
 
 pub struct CreateProductOptionInput {
@@ -31,7 +30,7 @@ pub struct CreateProductVariantInput {
 }
 
 pub struct CreateProductInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub handle: String,
     pub title: String,
@@ -59,15 +58,7 @@ impl CreateProduct {
         &self,
         input: CreateProductInput,
     ) -> Result<CreateProductOutput, ApplicationError> {
-        if !matches!(
-            input.actor.role(),
-            MerchantRole::Owner
-                | MerchantRole::Administrator
-                | MerchantRole::Developer
-                | MerchantRole::Manager
-        ) {
-            return Err(ApplicationError::Forbidden);
-        }
+        require_catalog_writer(&input.actor)?;
 
         let product = build_product(&input)?;
         let mut transaction = self.unit_of_work.begin(input.actor, input.store_id).await?;
@@ -157,6 +148,31 @@ fn selection_violation(reason: &'static str) -> ApplicationError {
     }
 }
 
+fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner
+                    | MerchantRole::Administrator
+                    | MerchantRole::Developer
+                    | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::ProductsWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chaos_domain::{
@@ -168,11 +184,11 @@ mod tests {
 
     fn input() -> CreateProductInput {
         CreateProductInput {
-            actor: MerchantActor::new(
+            actor: AdminActor::Merchant(crate::merchant::MerchantActor::new(
                 UserId::new(),
                 MerchantAccountId::new(),
                 MerchantRole::Manager,
-            ),
+            )),
             store_id: StoreId::new(),
             handle: "classic-shirt".into(),
             title: "Classic Shirt".into(),

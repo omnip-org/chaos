@@ -11,7 +11,7 @@ use chaos_application::{
         CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
         UpdateProductInput,
     },
-    ports::IdempotencyRequest,
+    ports::{AdminActor, IdempotencyRequest},
 };
 use chaos_domain::{
     catalog::ProductId,
@@ -218,7 +218,7 @@ async fn create_product(
     let output = state
         .create_product
         .execute(CreateProductInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             title: body.title,
@@ -276,7 +276,12 @@ async fn list_products(
         .map(ProductId::from_uuid);
     let page = state
         .catalog_queries
-        .list_products(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list_products(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -310,7 +315,7 @@ async fn get_product(
     let product = state
         .catalog_queries
         .get_product(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             ProductId::from_uuid(path.product_id),
         )
@@ -388,7 +393,7 @@ async fn update_product(
     let id = state
         .catalog_management
         .update(UpdateProductInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             handle: body.handle,
@@ -432,7 +437,7 @@ async fn change_product_status(
         format!("{}:{}:{action}", path.store_id, path.product_id).into_bytes(),
     )?;
     let input = ChangeProductStatusInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         idempotency: request,
@@ -481,7 +486,7 @@ async fn change_publication(
         .into_bytes(),
     )?;
     let input = ProductPublicationInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
