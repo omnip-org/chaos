@@ -7,7 +7,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    catalog::{Product, ProductId},
+    catalog::{CatalogMetadata, Product, ProductId},
     merchant::{MerchantAccountId, StoreId},
 };
 use serde_json::json;
@@ -122,8 +122,8 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     async fn insert_product(&mut self, product: &Product) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, description, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.product_status)",
+             (id, merchant_account_id, store_id, handle, title, description, status, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.product_status, $8::jsonb)",
         )
         .bind(product.id().as_uuid())
         .bind(product.merchant_account_id().as_uuid())
@@ -132,6 +132,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
         .bind(product.title())
         .bind(product.description())
         .bind(product.status().as_str())
+        .bind(product.metadata().map(CatalogMetadata::as_str))
         .execute(&mut *self.transaction)
         .await
         .map_err(map_catalog_write_error)?;
@@ -174,8 +175,8 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             sqlx::query(
                 "INSERT INTO catalog.product_variants \
                  (id, merchant_account_id, store_id, product_id, title, sku, status, \
-                  requires_shipping, track_inventory) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.variant_status, $8, $9)",
+                  requires_shipping, track_inventory, metadata) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.variant_status, $8, $9, $10::jsonb)",
             )
             .bind(variant.id().as_uuid())
             .bind(product.merchant_account_id().as_uuid())
@@ -186,6 +187,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             .bind(variant.status().as_str())
             .bind(variant.requires_shipping())
             .bind(variant.track_inventory())
+            .bind(variant.metadata().map(CatalogMetadata::as_str))
             .execute(&mut *self.transaction)
             .await
             .map_err(map_catalog_write_error)?;
@@ -396,7 +398,9 @@ mod tests {
                         value: "M".into(),
                     },
                 ],
+                metadata: None,
             }],
+            metadata: None,
             idempotency: IdempotencyRequest {
                 key,
                 request_fingerprint: fingerprint,

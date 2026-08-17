@@ -7,6 +7,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
+    catalog::parse_metadata,
     ports::{AdminActor, CatalogManagementUnitOfWork, IdempotencyRequest},
 };
 
@@ -23,6 +24,7 @@ pub struct UpdateProductInput {
     pub handle: String,
     pub title: String,
     pub description: String,
+    pub metadata: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -56,6 +58,7 @@ impl CatalogManagement {
             ProductHandle::parse(input.handle)?,
             input.title,
             input.description,
+            parse_metadata(input.metadata)?,
         )?;
         let mut transaction = self
             .unit_of_work

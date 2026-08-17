@@ -46,6 +46,8 @@ struct StorefrontVariantData {
     sku: Option<String>,
     requires_shipping: bool,
     price: StorefrontPriceData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -64,6 +66,8 @@ struct StorefrontProductData {
     locale: String,
     variants: Vec<StorefrontVariantData>,
     media: Vec<StorefrontMediaData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -140,6 +144,7 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         locale: product.locale.as_str().into(),
         variants: product.variants.into_iter().map(variant_data).collect(),
         media: product.media.into_iter().map(media_data).collect(),
+        metadata: product.metadata,
     }
 }
 
@@ -166,6 +171,7 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
             currency: variant.currency.as_str().to_owned(),
             tax_inclusive: variant.tax_inclusive,
         },
+        metadata: variant.metadata,
     }
 }
 

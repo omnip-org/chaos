@@ -22,6 +22,7 @@ pub struct CreateCollectionInput {
     pub handle: String,
     pub title: String,
     pub description: String,
+    pub metadata: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
@@ -33,6 +34,7 @@ pub struct UpdateCollectionInput {
     pub handle: String,
     pub title: String,
     pub description: String,
+    pub metadata: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
@@ -77,7 +79,7 @@ impl CollectionAdministration {
         input: CreateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
         require_writer(&input.actor)?;
-        let content = content(input.handle, input.title, input.description)?;
+        let content = content(input.handle, input.title, input.description, input.metadata)?;
         self.repository
             .create(
                 input.actor,
@@ -129,7 +131,7 @@ impl CollectionAdministration {
         input: UpdateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
         require_writer(&input.actor)?;
-        let content = content(input.handle, input.title, input.description)?;
+        let content = content(input.handle, input.title, input.description, input.metadata)?;
         self.repository
             .update(
                 input.actor,
@@ -290,11 +292,13 @@ fn content(
     handle: String,
     title: String,
     description: String,
+    metadata: Option<serde_json::Value>,
 ) -> Result<CollectionContent, ApplicationError> {
     Ok(CollectionContent::new(
         CollectionHandle::parse(handle)?,
         title,
         description,
+        crate::catalog::parse_metadata(metadata)?,
     )?)
 }
 

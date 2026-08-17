@@ -101,6 +101,8 @@ struct CollectionBody {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -136,6 +138,8 @@ struct CollectionDetailData {
     status: &'static str,
     products: Vec<CollectionProductData>,
     published_sales_channel_ids: Vec<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -147,6 +151,8 @@ struct StorefrontCollectionData {
     description: String,
     product_count: u32,
     locale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
 }
 
 async fn create_collection(
@@ -166,6 +172,7 @@ async fn create_collection(
             handle: body.handle,
             title: body.title,
             description: body.description,
+            metadata: body.metadata,
             idempotency: request,
             now: state.clock.now(),
         })
@@ -256,6 +263,7 @@ async fn update_collection(
             handle: body.handle,
             title: body.title,
             description: body.description,
+            metadata: body.metadata,
             idempotency: request,
             now: state.clock.now(),
         })
@@ -440,6 +448,7 @@ fn detail_data(v: CollectionDetail) -> CollectionDetailData {
             .into_iter()
             .map(SalesChannelId::as_uuid)
             .collect(),
+        metadata: v.metadata,
         created_at: v.created_at.into(),
         updated_at: v.updated_at.into(),
     }
@@ -452,6 +461,7 @@ fn storefront_data(v: StorefrontCollectionItem) -> StorefrontCollectionData {
         description: v.description,
         product_count: v.product_count,
         locale: v.locale.as_str().into(),
+        metadata: v.metadata,
     }
 }
 fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {

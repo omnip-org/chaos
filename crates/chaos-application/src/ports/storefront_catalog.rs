@@ -15,6 +15,7 @@ pub struct StorefrontCatalogVariant {
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub tax_inclusive: bool,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub struct StorefrontCatalogProduct {
@@ -25,6 +26,7 @@ pub struct StorefrontCatalogProduct {
     pub locale: Locale,
     pub variants: Vec<StorefrontCatalogVariant>,
     pub media: Vec<StorefrontMediaAsset>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub struct StorefrontMediaAsset {

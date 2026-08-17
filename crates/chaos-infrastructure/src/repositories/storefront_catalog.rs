@@ -55,7 +55,19 @@ impl PostgresStorefrontCatalogRepository {
         currency: Option<CurrencyCode>,
         locale: &ResolvedLocale,
     ) -> Result<Vec<StorefrontCatalogVariant>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<String>, bool, i64, String, bool)>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<String>,
+                bool,
+                i64,
+                String,
+                bool,
+                Option<serde_json::Value>,
+            ),
+        >(
             "WITH selected_price_list AS ( \
                  SELECT price_list.id, price_list.currency::text, price_list.tax_inclusive \
                  FROM pricing.price_lists AS price_list \
@@ -83,7 +95,8 @@ impl PostgresStorefrontCatalogRepository {
                  LIMIT 1 \
              ) \
              SELECT variant.id, variant.title, variant.sku::text, variant.requires_shipping, \
-                    price.amount_minor, selected.currency, selected.tax_inclusive \
+                    price.amount_minor, selected.currency, selected.tax_inclusive, \
+                    variant.metadata \
              FROM catalog.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
              INNER JOIN pricing.prices AS price \
@@ -109,7 +122,16 @@ impl PostgresStorefrontCatalogRepository {
         let translations = variant_translations(transaction, actor, product_id, locale).await?;
         rows.into_iter()
             .map(
-                |(id, title, sku, requires_shipping, amount_minor, currency, tax_inclusive)| {
+                |(
+                    id,
+                    title,
+                    sku,
+                    requires_shipping,
+                    amount_minor,
+                    currency,
+                    tax_inclusive,
+                    metadata,
+                )| {
                     Ok(StorefrontCatalogVariant {
                         id: ProductVariantId::from_uuid(id),
                         title: translations.get(&id).cloned().unwrap_or(title),
@@ -122,6 +144,7 @@ impl PostgresStorefrontCatalogRepository {
                             ))
                         })?,
                         tax_inclusive,
+                        metadata,
                     })
                 },
             )
@@ -189,8 +212,12 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let mut scan_after = after;
         let mut products = Vec::with_capacity(usize::from(limit));
         while products.len() < usize::from(limit) {
-            let rows = sqlx::query_as::<_, (Uuid, String, String, String)>(
-                "SELECT product.id, product.handle::text, product.title, product.description \
+            let rows = sqlx::query_as::<
+                _,
+                (Uuid, String, String, String, Option<serde_json::Value>),
+            >(
+                "SELECT product.id, product.handle::text, product.title, product.description, \
+                        product.metadata \
                  FROM catalog.products AS product \
                  INNER JOIN merchant.stores AS store \
                    ON store.merchant_account_id = product.merchant_account_id \
@@ -280,7 +307,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 break;
             }
             let rows_len = rows.len();
-            for (id, handle, title, description) in rows {
+            for (id, handle, title, description, metadata) in rows {
                 let id = ProductId::from_uuid(id);
                 scan_after = Some(id);
                 let (title, description) = localized_product_content(
@@ -304,6 +331,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         locale: locale.selected.clone(),
                         variants,
                         media,
+                        metadata,
                     });
                     if products.len() == usize::from(limit) {
                         break;
@@ -327,8 +355,9 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
         let locale = resolve_locale(&mut transaction, actor, requested_locale).await?;
-        let row = sqlx::query_as::<_, (Uuid, String, String, String)>(
-            "SELECT product.id, product.handle::text, product.title, product.description \
+        let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
+            "SELECT product.id, product.handle::text, product.title, product.description, \
+                    product.metadata \
              FROM catalog.products AS product \
              INNER JOIN merchant.stores AS store \
                ON store.merchant_account_id = product.merchant_account_id \
@@ -356,7 +385,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let Some((id, handle, title, description)) = row else {
+        let Some((id, handle, title, description, metadata)) = row else {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         };
@@ -378,6 +407,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             locale: locale.selected,
             variants,
             media,
+            metadata,
         }))
     }
 }
