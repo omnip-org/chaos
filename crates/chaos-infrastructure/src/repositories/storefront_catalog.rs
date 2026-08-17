@@ -5,14 +5,14 @@ use chaos_application::{
     ApplicationError,
     ports::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository,
-        StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontProductOption,
-        StorefrontProductOptionValue, StorefrontSelectedOption,
+        StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontProductCollection,
+        StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
     },
 };
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{
-        MediaAssetId, MediaKind, ProductId, ProductOptionId, ProductOptionValueId,
+        CollectionId, MediaAssetId, MediaKind, ProductId, ProductOptionId, ProductOptionValueId,
         ProductVariantId,
     },
 };
@@ -266,6 +266,46 @@ impl PostgresStorefrontCatalogRepository {
             })
             .collect()
     }
+
+    async fn collections(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_id: ProductId,
+    ) -> Result<Vec<StorefrontProductCollection>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT collection.id, collection.handle::text, collection.title \
+             FROM catalog.collection_products AS member \
+             INNER JOIN catalog.collections AS collection \
+               ON collection.merchant_account_id = member.merchant_account_id \
+              AND collection.store_id = member.store_id \
+              AND collection.id = member.collection_id \
+             INNER JOIN catalog.collection_publications AS publication \
+               ON publication.merchant_account_id = collection.merchant_account_id \
+              AND publication.store_id = collection.store_id \
+              AND publication.collection_id = collection.id \
+              AND publication.sales_channel_id = $3 \
+             WHERE member.merchant_account_id = $1 \
+               AND member.store_id = $2 \
+               AND member.product_id = $4 \
+               AND collection.status = 'active' \
+             ORDER BY collection.handle ASC",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, handle, title)| StorefrontProductCollection {
+                id: CollectionId::from_uuid(id),
+                handle,
+                title,
+            })
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -397,6 +437,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 if !variants.is_empty() {
                     let options = Self::options(&mut transaction, actor, id).await?;
                     let media = Self::media(&mut transaction, actor, id, &locale).await?;
+                    let collections = Self::collections(&mut transaction, actor, id).await?;
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
@@ -406,6 +447,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         options,
                         variants,
                         media,
+                        collections,
                         metadata,
                     });
                     if products.len() == usize::from(limit) {
@@ -471,6 +513,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let variants = Self::variants(&mut transaction, actor, id, currency, &locale).await?;
         let options = Self::options(&mut transaction, actor, id).await?;
         let media = Self::media(&mut transaction, actor, id, &locale).await?;
+        let collections = Self::collections(&mut transaction, actor, id).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
             return Ok(None);
@@ -484,6 +527,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             options,
             variants,
             media,
+            collections,
             metadata,
         }))
     }

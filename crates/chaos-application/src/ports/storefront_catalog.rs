@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
-    catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
+    catalog::{CollectionId, ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
     merchant::{ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
 };
 
@@ -40,6 +40,18 @@ pub struct StorefrontCatalogVariant {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// A Collection this Product is a member of, published to the Store's
+/// current Sales Channel — enough for a Storefront client to link back to
+/// the parent Collection (breadcrumb, "shop this collection") without a
+/// second round trip. A Product may belong to more than one Collection;
+/// order is by handle, since collection_products.position is meaningful only
+/// within one Collection's own product listing, not across Collections.
+pub struct StorefrontProductCollection {
+    pub id: CollectionId,
+    pub handle: String,
+    pub title: String,
+}
+
 pub struct StorefrontCatalogProduct {
     pub id: ProductId,
     pub handle: String,
@@ -49,6 +61,7 @@ pub struct StorefrontCatalogProduct {
     pub options: Vec<StorefrontProductOption>,
     pub variants: Vec<StorefrontCatalogVariant>,
     pub media: Vec<StorefrontMediaAsset>,
+    pub collections: Vec<StorefrontProductCollection>,
     pub metadata: Option<serde_json::Value>,
 }
 

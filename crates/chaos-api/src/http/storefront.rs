@@ -1,7 +1,8 @@
 use axum::{Router, extract::State, routing::get};
 use chaos_application::ports::{
     StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
-    StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
+    StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
+    StorefrontSelectedOption,
 };
 use chaos_domain::catalog::ProductId;
 use serde::{Deserialize, Serialize};
@@ -90,8 +91,16 @@ struct StorefrontProductData {
     options: Vec<StorefrontProductOptionData>,
     variants: Vec<StorefrontVariantData>,
     media: Vec<StorefrontMediaData>,
+    collections: Vec<StorefrontProductCollectionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct StorefrontProductCollectionData {
+    id: Uuid,
+    handle: String,
+    title: String,
 }
 
 #[derive(Serialize)]
@@ -169,7 +178,20 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         options: product.options.into_iter().map(option_data).collect(),
         variants: product.variants.into_iter().map(variant_data).collect(),
         media: product.media.into_iter().map(media_data).collect(),
+        collections: product
+            .collections
+            .into_iter()
+            .map(collection_ref_data)
+            .collect(),
         metadata: product.metadata,
+    }
+}
+
+fn collection_ref_data(collection: StorefrontProductCollection) -> StorefrontProductCollectionData {
+    StorefrontProductCollectionData {
+        id: collection.id.as_uuid(),
+        handle: collection.handle,
+        title: collection.title,
     }
 }
 
