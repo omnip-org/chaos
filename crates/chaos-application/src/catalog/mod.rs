@@ -5,6 +5,7 @@ mod management;
 mod media;
 mod metadata;
 mod queries;
+mod reviews;
 
 pub use collections::{
     ChangeCollectionStatusInput, CollectionAdministration, CollectionPublicationInput,
@@ -29,3 +30,7 @@ pub use media::{
 };
 pub(crate) use metadata::parse_metadata;
 pub use queries::{CatalogQueries, ProductPage};
+pub use reviews::{
+    AddReviewReplyInput, ApproveReviewInput, RejectReviewInput, ReviewAdministration,
+    StorefrontReviews, SubmitReviewInput,
+};

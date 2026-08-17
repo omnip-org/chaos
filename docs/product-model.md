@@ -71,6 +71,10 @@ A Store-owned curated Product group with canonical content, a terminal lifecycle
 
 A Store-owned image or video attached to one Product and optionally one of its Variants. Clients upload bytes directly to configured S3-compatible object storage with a short-lived signed request. The server verifies content type, byte count, and SHA-256 metadata before the Asset becomes ready. Only ready, non-archived Media is visible through Storefront Product responses.
 
+### Review
+
+A Product-owned customer review or staff reply. A top-level Review always carries a rating and starts `pending`; it is invisible through the Storefront until an administrator explicitly approves or rejects it, a terminal transition recorded in an immutable event trail. `verified_buyer` is a plain fact an administrator asserts at approval time — never inferred from Order or Customer data. A staff reply carries no rating, always references a top-level Review, and is created already approved.
+
 ### PriceList
 
 A Store-owned pricing context with one enabled currency, tax semantics, an optional activation window, and explicit Product Variant prices. A Price List is independent from Product content and Sales Channel publication. The same Variant may have different authoritative prices in different Price Lists.
@@ -116,6 +120,7 @@ A Store-owned connection to one external payment provider account. Its provider 
 - Fulfillment, Return, search, idempotency, inbox, outbox, RLS, and versioned HTTP contracts.
 - First-party behavior collection, active-engagement sessions, Store Analytics Policy, consent-aware identity links, retention, data-subject erasure, and typed trusted commerce facts.
 - Store-scoped Catalog localization with deterministic Storefront resolution and immutable Cart-to-Order Locale and text snapshots.
+- Moderated Product reviews: unauthenticated Storefront submission, Admin approve/reject/reply, and a manually-asserted `verified_buyer` fact that is never derived from Order data.
 
 ### Next
 

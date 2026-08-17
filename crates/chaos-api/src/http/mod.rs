@@ -20,6 +20,7 @@ mod payment;
 mod pricing;
 mod provider_secret;
 mod response;
+mod review;
 mod store_admin;
 mod storefront;
 mod storefront_sales;
@@ -33,7 +34,8 @@ use chaos_application::{
     },
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
-        CreateProduct, MediaAdministration, StorefrontCollections,
+        CreateProduct, MediaAdministration, ReviewAdministration, StorefrontCollections,
+        StorefrontReviews,
     },
     fulfillment::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
@@ -72,11 +74,11 @@ use chaos_infrastructure::{
         PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPromotionRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreDomainRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
-        SecureApiKeyMaterialGenerator,
+        PostgresPromotionRepository, PostgresReviewRepository, PostgresSearchIndexer,
+        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreDomainRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
@@ -118,6 +120,8 @@ pub struct ApiState {
     pub catalog_management: Arc<CatalogManagement>,
     pub collection_administration: Arc<CollectionAdministration>,
     pub storefront_collections: Arc<StorefrontCollections>,
+    pub review_administration: Arc<ReviewAdministration>,
+    pub storefront_reviews: Arc<StorefrontReviews>,
     pub media_administration: Arc<MediaAdministration>,
     pub catalog_localization: Arc<CatalogLocalization>,
     pub create_price_list: Arc<CreatePriceList>,
@@ -221,6 +225,10 @@ impl ApiState {
         let collection_administration =
             CollectionAdministration::new(collection_repository.clone());
         let storefront_collections = StorefrontCollections::new(collection_repository);
+        let review_repository =
+            Arc::new(PostgresReviewRepository::new(infrastructure.runtime_pool()));
+        let review_administration = ReviewAdministration::new(review_repository.clone());
+        let storefront_reviews = StorefrontReviews::new(review_repository);
         let media_storage: Arc<dyn MediaStorage> =
             if let Some(configuration) = &settings.media_storage {
                 Arc::new(S3MediaStorage::new(S3MediaStorageConfiguration {
@@ -441,6 +449,8 @@ impl ApiState {
             catalog_management: Arc::new(catalog_management),
             collection_administration: Arc::new(collection_administration),
             storefront_collections: Arc::new(storefront_collections),
+            review_administration: Arc::new(review_administration),
+            storefront_reviews: Arc::new(storefront_reviews),
             media_administration: Arc::new(media_administration),
             catalog_localization: Arc::new(catalog_localization),
             create_price_list: Arc::new(create_price_list),
@@ -505,6 +515,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(notification::routes())
         .nest("/admin/v1", catalog::routes())
         .nest("/admin/v1", collection::admin_routes())
+        .nest("/admin/v1", review::admin_routes())
         .nest("/admin/v1", media::routes())
         .nest("/admin/v1", localization::routes())
         .nest("/admin/v1", pricing::routes())
@@ -512,6 +523,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/admin/v1", provider_secret::routes())
         .nest("/store/v1", storefront::routes())
         .nest("/store/v1", collection::storefront_routes())
+        .nest("/store/v1", review::storefront_routes())
         .nest("/store/v1", store_admin::domain_resolution_routes())
         .nest("/store/v1", analytics::storefront_routes())
         .nest("/store/v1", storefront_sales::routes())

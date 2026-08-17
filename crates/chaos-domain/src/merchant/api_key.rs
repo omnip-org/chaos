@@ -92,6 +92,7 @@ pub enum ApiKeyScope {
     InventoryWrite,
     CollectionsRead,
     CollectionsWrite,
+    ReviewsWrite,
 }
 
 impl ApiKeyScope {
@@ -112,6 +113,7 @@ impl ApiKeyScope {
             Self::InventoryWrite => "inventory:write",
             Self::CollectionsRead => "collections:read",
             Self::CollectionsWrite => "collections:write",
+            Self::ReviewsWrite => "reviews:write",
         }
     }
 
@@ -132,6 +134,7 @@ impl ApiKeyScope {
             "inventory:write" => Some(Self::InventoryWrite),
             "collections:read" => Some(Self::CollectionsRead),
             "collections:write" => Some(Self::CollectionsWrite),
+            "reviews:write" => Some(Self::ReviewsWrite),
             _ => None,
         }
     }
@@ -150,6 +153,7 @@ impl ApiKeyScope {
                 | Self::CartsWrite
                 | Self::CheckoutWrite
                 | Self::OrdersRead
+                | Self::ReviewsWrite
         )
     }
 }
@@ -344,11 +348,13 @@ mod tests {
                 ApiKeyScope::CheckoutWrite,
                 ApiKeyScope::AnalyticsWrite,
                 ApiKeyScope::OrdersRead,
+                ApiKeyScope::ReviewsWrite,
             ],
         )
         .unwrap();
         assert!(key.scopes().contains(&ApiKeyScope::CheckoutWrite));
         assert!(key.scopes().contains(&ApiKeyScope::OrdersRead));
+        assert!(key.scopes().contains(&ApiKeyScope::ReviewsWrite));
 
         let result = ApiKey::issue(
             MerchantAccountId::new(),

@@ -3,6 +3,7 @@ mod localization;
 mod media;
 mod metadata;
 mod product;
+mod review;
 
 pub use collection::{CollectionContent, CollectionHandle, CollectionId, CollectionStatus};
 pub use localization::{LocalizedAltText, LocalizedContent, LocalizedTitle};
@@ -13,3 +14,4 @@ pub use product::{
     ProductOptionId, ProductOptionValue, ProductOptionValueId, ProductStatus, ProductVariant,
     ProductVariantId, SelectedOptionValue, Sku, VariantStatus,
 };
+pub use review::{ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent};
