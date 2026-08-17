@@ -138,11 +138,18 @@ impl ApiKeyScope {
 
     /// Admin-only scopes (products/pricing/inventory) expose non-public store data
     /// and mutations, unlike the storefront-facing scopes below — never embeddable
-    /// in a browser-facing Publishable key.
+    /// in a browser-facing Publishable key. `OrdersRead` is deliberately allowed here
+    /// in addition to its existing Secret-key/MCP use: a Store may opt a Publishable
+    /// key into unauthenticated single-Order lookup by ID (see ADR 0022) without that
+    /// widening what a Secret key holding the same scope can already do.
     const fn allowed_for_publishable_key(self) -> bool {
         matches!(
             self,
-            Self::AnalyticsWrite | Self::CatalogRead | Self::CartsWrite | Self::CheckoutWrite
+            Self::AnalyticsWrite
+                | Self::CatalogRead
+                | Self::CartsWrite
+                | Self::CheckoutWrite
+                | Self::OrdersRead
         )
     }
 }
@@ -336,10 +343,12 @@ mod tests {
                 ApiKeyScope::CartsWrite,
                 ApiKeyScope::CheckoutWrite,
                 ApiKeyScope::AnalyticsWrite,
+                ApiKeyScope::OrdersRead,
             ],
         )
         .unwrap();
         assert!(key.scopes().contains(&ApiKeyScope::CheckoutWrite));
+        assert!(key.scopes().contains(&ApiKeyScope::OrdersRead));
 
         let result = ApiKey::issue(
             MerchantAccountId::new(),
@@ -347,7 +356,7 @@ mod tests {
             "Private Browser",
             ApiKeyClass::Publishable,
             ApiKeyMode::Live,
-            vec![ApiKeyScope::OrdersRead],
+            vec![ApiKeyScope::McpTools],
         );
         assert!(matches!(result, Err(DomainError::Validation(_))));
     }

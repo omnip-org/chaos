@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CartShopper,
-    CheckoutShopper, merchant::idempotency_key,
+    CheckoutShopper, OrderLookupMachine, merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -505,12 +505,12 @@ async fn create_order(
 
 async fn get_order(
     State(state): State<ApiState>,
-    CheckoutShopper(actor): CheckoutShopper,
+    OrderLookupMachine(actor): OrderLookupMachine,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     let order = state
         .storefront_sales
-        .get_order(&actor, OrderId::from_uuid(path.order_id))
+        .get_order_by_id(&actor, OrderId::from_uuid(path.order_id))
         .await?;
     Ok(ApiResponse::ok(order_data(order)?))
 }

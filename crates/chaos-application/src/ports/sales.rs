@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{AdminActor, IdempotencyRequest, ShopperActor};
+use super::{AdminActor, IdempotencyRequest, MachineActor, ShopperActor};
 
 pub struct CartLineItem {
     pub product_id: ProductId,
@@ -229,6 +229,12 @@ pub trait StorefrontSalesRepository: Send + Sync {
     async fn get_order(
         &self,
         actor: &ShopperActor,
+        order_id: OrderId,
+    ) -> Result<Option<OrderDetail>, ApplicationError>;
+
+    async fn get_order_by_id(
+        &self,
+        actor: &MachineActor,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 }
