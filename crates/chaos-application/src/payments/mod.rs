@@ -16,7 +16,7 @@ use crate::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
+        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
         PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
         PaymentProviderOnboarding, PaymentProviderReadinessQueue, PaymentRepository,
@@ -32,7 +32,7 @@ pub struct CreatePaymentAttemptInput {
 }
 
 pub struct CreateRefundInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub payment_attempt_id: PaymentAttemptId,
     pub amount_minor: i64,
@@ -313,7 +313,7 @@ impl PaymentService {
         &self,
         input: CreateRefundInput,
     ) -> Result<RefundDetail, ApplicationError> {
-        require_payment_operator(input.actor)?;
+        require_payment_operator(&input.actor)?;
         self.repository
             .create_refund(
                 input.actor,
@@ -493,14 +493,25 @@ fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {
     }
 }
 
-fn require_payment_operator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_payment_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::PaymentsWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

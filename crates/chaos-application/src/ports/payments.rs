@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, merchant::MerchantActor};
 
-use super::{IdempotencyRequest, ShopperActor};
+use super::{AdminActor, IdempotencyRequest, ShopperActor};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentProviderReadinessStatus {
@@ -232,7 +232,7 @@ pub trait PaymentRepository: Send + Sync {
 
     async fn create_refund(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         attempt_id: PaymentAttemptId,
         amount_minor: i64,
