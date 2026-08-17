@@ -5,8 +5,8 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use super::IdempotencyRequest;
-use crate::{ApplicationError, merchant::MerchantActor};
+use super::{AdminActor, IdempotencyRequest};
+use crate::ApplicationError;
 
 pub struct PromotionDetail {
     pub promotion: Promotion,
@@ -18,19 +18,19 @@ pub struct PromotionDetail {
 pub trait PromotionRepository: Send + Sync {
     async fn create_promotion(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         promotion: &Promotion,
         request: &IdempotencyRequest,
     ) -> Result<PromotionDetail, ApplicationError>;
     async fn list_promotions(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<PromotionDetail>, ApplicationError>;
     async fn change_promotion_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         promotion_id: PromotionId,
         status: PromotionStatus,

@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, PromotionDetail, PromotionRepository},
+    ports::{AdminActor, IdempotencyRequest, PromotionDetail, PromotionRepository},
 };
 use chaos_domain::{
     CurrencyCode,
@@ -52,11 +51,11 @@ impl PostgresPromotionRepository {
     }
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -73,16 +72,16 @@ impl PostgresPromotionRepository {
 impl PromotionRepository for PostgresPromotionRepository {
     async fn create_promotion(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         promotion: &Promotion,
         request: &IdempotencyRequest,
     ) -> Result<PromotionDetail, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, CREATE_OPERATION, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, CREATE_OPERATION, request).await? {
             let detail = load(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 PromotionId::from_uuid(id),
             )
@@ -91,7 +90,7 @@ impl PromotionRepository for PostgresPromotionRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(detail);
         }
-        require_store(&mut transaction, actor, store_id).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         sqlx::query("INSERT INTO pricing.promotions \
             (id, merchant_account_id, store_id, handle, name, trigger, redemption_code, value_kind, \
              rate_basis_points, amount_minor, maximum_amount_minor, currency, minimum_subtotal_amount_minor, \
@@ -109,13 +108,13 @@ impl PromotionRepository for PostgresPromotionRepository {
             .execute(&mut *transaction).await.map_err(map_write_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_OPERATION,
             request,
             promotion.id(),
         )
         .await?;
-        let detail = load(&mut transaction, actor, store_id, promotion.id())
+        let detail = load(&mut transaction, &actor, store_id, promotion.id())
             .await?
             .ok_or_else(|| not_found(promotion.id()))?;
         transaction.commit().await.map_err(database_error)?;
@@ -124,11 +123,11 @@ impl PromotionRepository for PostgresPromotionRepository {
 
     async fn list_promotions(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<PromotionDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        require_store(&mut transaction, actor, store_id).await?;
+        let mut transaction = self.begin(&actor).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         let rows = sqlx::query_as::<_, PromotionRow>(
             "SELECT id, handle, name, trigger::text, redemption_code::text, value_kind::text, \
              rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
@@ -147,7 +146,7 @@ impl PromotionRepository for PostgresPromotionRepository {
 
     async fn change_promotion_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         promotion_id: PromotionId,
         status: PromotionStatus,
@@ -157,8 +156,8 @@ impl PromotionRepository for PostgresPromotionRepository {
             PromotionStatus::Active => ACTIVATE_OPERATION,
             PromotionStatus::Archived => ARCHIVE_OPERATION,
         };
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, operation, request)
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, operation, request)
             .await?
             .is_none()
         {
@@ -169,9 +168,9 @@ impl PromotionRepository for PostgresPromotionRepository {
             if result.rows_affected() != 1 {
                 return Err(not_found(promotion_id));
             }
-            complete(&mut transaction, actor, operation, request, promotion_id).await?;
+            complete(&mut transaction, &actor, operation, request, promotion_id).await?;
         }
-        let value = load(&mut transaction, actor, store_id, promotion_id)
+        let value = load(&mut transaction, &actor, store_id, promotion_id)
             .await?
             .ok_or_else(|| not_found(promotion_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -181,7 +180,7 @@ impl PromotionRepository for PostgresPromotionRepository {
 
 async fn load(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     id: PromotionId,
 ) -> Result<Option<PromotionDetail>, ApplicationError> {
@@ -236,7 +235,7 @@ fn detail(row: PromotionRow) -> Result<PromotionDetail, ApplicationError> {
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
@@ -260,7 +259,7 @@ async fn require_store(
 
 async fn reserve(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -283,7 +282,7 @@ async fn reserve(
 
 async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: PromotionId,
