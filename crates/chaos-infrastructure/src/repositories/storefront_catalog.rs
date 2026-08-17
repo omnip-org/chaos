@@ -5,12 +5,16 @@ use chaos_application::{
     ApplicationError,
     ports::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository,
-        StorefrontCatalogVariant, StorefrontMediaAsset,
+        StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontProductOption,
+        StorefrontProductOptionValue, StorefrontSelectedOption,
     },
 };
 use chaos_domain::{
     CurrencyCode, Locale,
-    catalog::{MediaAssetId, MediaKind, ProductId, ProductVariantId},
+    catalog::{
+        MediaAssetId, MediaKind, ProductId, ProductOptionId, ProductOptionValueId,
+        ProductVariantId,
+    },
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -120,6 +124,7 @@ impl PostgresStorefrontCatalogRepository {
         .map_err(database_error)?;
 
         let translations = variant_translations(transaction, actor, product_id, locale).await?;
+        let mut selections = variant_selected_options(transaction, actor, product_id).await?;
         rows.into_iter()
             .map(
                 |(
@@ -144,11 +149,79 @@ impl PostgresStorefrontCatalogRepository {
                             ))
                         })?,
                         tax_inclusive,
+                        selected_options: selections.remove(&id).unwrap_or_default(),
                         metadata,
                     })
                 },
             )
             .collect()
+    }
+
+    async fn options(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_id: ProductId,
+    ) -> Result<Vec<StorefrontProductOption>, ApplicationError> {
+        let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
+            "SELECT id, name::text, position \
+             FROM catalog.product_options \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             ORDER BY position ASC",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
+            "SELECT id, option_id, value::text, position \
+             FROM catalog.product_option_values \
+             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             ORDER BY option_id ASC, position ASC",
+        )
+        .bind(actor.merchant_account_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+
+        let mut options = option_rows
+            .into_iter()
+            .map(|(id, name, position)| {
+                Ok(StorefrontProductOption {
+                    id: ProductOptionId::from_uuid(id),
+                    name,
+                    position: u16::try_from(position).map_err(|_| {
+                        ApplicationError::Unexpected(anyhow::anyhow!(
+                            "database contains a negative Catalog position"
+                        ))
+                    })?,
+                    values: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, ApplicationError>>()?;
+        for (id, option_id, value, position) in value_rows {
+            let option = options
+                .iter_mut()
+                .find(|option| option.id.as_uuid() == option_id)
+                .ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an option value with no parent option"
+                    ))
+                })?;
+            option.values.push(StorefrontProductOptionValue {
+                id: ProductOptionValueId::from_uuid(id),
+                value,
+                position: u16::try_from(position).map_err(|_| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains a negative Catalog position"
+                    ))
+                })?,
+            });
+        }
+        Ok(options)
     }
 
     async fn media(
@@ -322,6 +395,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 let variants =
                     Self::variants(&mut transaction, actor, id, currency, &locale).await?;
                 if !variants.is_empty() {
+                    let options = Self::options(&mut transaction, actor, id).await?;
                     let media = Self::media(&mut transaction, actor, id, &locale).await?;
                     products.push(StorefrontCatalogProduct {
                         id,
@@ -329,6 +403,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         title,
                         description,
                         locale: locale.selected.clone(),
+                        options,
                         variants,
                         media,
                         metadata,
@@ -394,6 +469,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             localized_product_content(&mut transaction, actor, id, &locale, title, description)
                 .await?;
         let variants = Self::variants(&mut transaction, actor, id, currency, &locale).await?;
+        let options = Self::options(&mut transaction, actor, id).await?;
         let media = Self::media(&mut transaction, actor, id, &locale).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
@@ -405,6 +481,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             title,
             description,
             locale: locale.selected,
+            options,
             variants,
             media,
             metadata,
@@ -518,6 +595,43 @@ async fn variant_translations(
     .await
     .map_err(database_error)?;
     Ok(rows.into_iter().map(|(id, title, _)| (id, title)).collect())
+}
+
+async fn variant_selected_options(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    product_id: ProductId,
+) -> Result<HashMap<Uuid, Vec<StorefrontSelectedOption>>, ApplicationError> {
+    let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
+         FROM catalog.variant_selected_options AS selection \
+         INNER JOIN catalog.product_options AS option \
+           ON option.merchant_account_id = selection.merchant_account_id \
+          AND option.store_id = selection.store_id \
+          AND option.product_id = selection.product_id \
+          AND option.id = selection.option_id \
+         WHERE selection.merchant_account_id = $1 \
+           AND selection.store_id = $2 \
+           AND selection.product_id = $3 \
+         ORDER BY selection.variant_id ASC, option.position ASC",
+    )
+    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let mut by_variant: HashMap<Uuid, Vec<StorefrontSelectedOption>> = HashMap::new();
+    for (variant_id, option_id, option_value_id) in rows {
+        by_variant
+            .entry(variant_id)
+            .or_default()
+            .push(StorefrontSelectedOption {
+                option_id: ProductOptionId::from_uuid(option_id),
+                option_value_id: ProductOptionValueId::from_uuid(option_value_id),
+            });
+    }
+    Ok(by_variant)
 }
 
 async fn media_translations(

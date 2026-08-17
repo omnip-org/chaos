@@ -212,6 +212,8 @@ Destination deliveries are created only after attribution records advertising co
 
 The optional `currency` query parameter selects an enabled Store currency and defaults to the Store default currency. Pricing uses one currently active Price List selected deterministically for that currency. Results include only active Stores, Sales Channels, Products, Variants, publications, enabled currencies, active Price Lists, and explicit Variant Prices. Products without at least one currently priced active Variant are omitted and are indistinguishable from unavailable Products on the detail endpoint.
 
+Each Product response includes its full `options` (ordered, each with its ordered `values`) and each Variant's `selected_options` (`option_id` + `option_value_id` pairs) — the same identifiers, not display strings, so a Storefront client resolves the exact Variant matching a customer's full selection instead of parsing it out of `title`. This is the same option/value data the Admin aggregate returns; the Storefront read never exposes a draft or archived Option or Value because both are immutable once a Product has Variants (see `add_option`/`add_option_value` in the Catalog domain).
+
 Storefront responses deliberately omit lifecycle status, drafts, archived records, unpublished Products, pending or archived Media Assets, Media digests, upload credentials, inventory cost, API key metadata, secret material, and merchant-account identifiers. Product responses include ordered ready Media with their server-derived HTTPS URLs. Collection pagination uses the same opaque cursor behavior as the Admin API.
 
 ## Reviews

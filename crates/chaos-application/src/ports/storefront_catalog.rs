@@ -1,11 +1,32 @@
 use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
-    catalog::{ProductId, ProductVariantId},
+    catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
     merchant::{ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
 };
 
 use crate::{ApplicationError, ports::MachineActor};
+
+pub struct StorefrontProductOptionValue {
+    pub id: ProductOptionValueId,
+    pub value: String,
+    pub position: u16,
+}
+
+pub struct StorefrontProductOption {
+    pub id: ProductOptionId,
+    pub name: String,
+    pub position: u16,
+    pub values: Vec<StorefrontProductOptionValue>,
+}
+
+/// A Variant's value for one Product Option — e.g. `{ option: "Color", value: "Forest" }` —
+/// so a Storefront client can resolve the exact Variant matching a customer's full
+/// selection without re-deriving it from `title`, which carries no stable structure.
+pub struct StorefrontSelectedOption {
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+}
 
 pub struct StorefrontCatalogVariant {
     pub id: ProductVariantId,
@@ -15,6 +36,7 @@ pub struct StorefrontCatalogVariant {
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub tax_inclusive: bool,
+    pub selected_options: Vec<StorefrontSelectedOption>,
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -24,6 +46,7 @@ pub struct StorefrontCatalogProduct {
     pub title: String,
     pub description: String,
     pub locale: Locale,
+    pub options: Vec<StorefrontProductOption>,
     pub variants: Vec<StorefrontCatalogVariant>,
     pub media: Vec<StorefrontMediaAsset>,
     pub metadata: Option<serde_json::Value>,

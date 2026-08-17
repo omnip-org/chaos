@@ -131,6 +131,7 @@ pub use store_domain::{
 };
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
-    StorefrontContext, StorefrontMediaAsset,
+    StorefrontContext, StorefrontMediaAsset, StorefrontProductOption, StorefrontProductOptionValue,
+    StorefrontSelectedOption,
 };
 pub use tax::{TaxRuleDetail, TaxRuleRepository};

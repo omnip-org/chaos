@@ -1,6 +1,7 @@
 use axum::{Router, extract::State, routing::get};
 use chaos_application::ports::{
     StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
+    StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
 };
 use chaos_domain::catalog::ProductId;
 use serde::{Deserialize, Serialize};
@@ -46,8 +47,30 @@ struct StorefrontVariantData {
     sku: Option<String>,
     requires_shipping: bool,
     price: StorefrontPriceData,
+    selected_options: Vec<StorefrontSelectedOptionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct StorefrontSelectedOptionData {
+    option_id: Uuid,
+    option_value_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct StorefrontProductOptionValueData {
+    id: Uuid,
+    value: String,
+    position: u16,
+}
+
+#[derive(Serialize)]
+struct StorefrontProductOptionData {
+    id: Uuid,
+    name: String,
+    position: u16,
+    values: Vec<StorefrontProductOptionValueData>,
 }
 
 #[derive(Serialize)]
@@ -64,6 +87,7 @@ struct StorefrontProductData {
     title: String,
     description: String,
     locale: String,
+    options: Vec<StorefrontProductOptionData>,
     variants: Vec<StorefrontVariantData>,
     media: Vec<StorefrontMediaData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,9 +166,38 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         title: product.title,
         description: product.description,
         locale: product.locale.as_str().into(),
+        options: product.options.into_iter().map(option_data).collect(),
         variants: product.variants.into_iter().map(variant_data).collect(),
         media: product.media.into_iter().map(media_data).collect(),
         metadata: product.metadata,
+    }
+}
+
+fn option_data(option: StorefrontProductOption) -> StorefrontProductOptionData {
+    StorefrontProductOptionData {
+        id: option.id.as_uuid(),
+        name: option.name,
+        position: option.position,
+        values: option
+            .values
+            .into_iter()
+            .map(option_value_data)
+            .collect(),
+    }
+}
+
+fn option_value_data(value: StorefrontProductOptionValue) -> StorefrontProductOptionValueData {
+    StorefrontProductOptionValueData {
+        id: value.id.as_uuid(),
+        value: value.value,
+        position: value.position,
+    }
+}
+
+fn selected_option_data(selection: StorefrontSelectedOption) -> StorefrontSelectedOptionData {
+    StorefrontSelectedOptionData {
+        option_id: selection.option_id.as_uuid(),
+        option_value_id: selection.option_value_id.as_uuid(),
     }
 }
 
@@ -171,6 +224,11 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
             currency: variant.currency.as_str().to_owned(),
             tax_inclusive: variant.tax_inclusive,
         },
+        selected_options: variant
+            .selected_options
+            .into_iter()
+            .map(selected_option_data)
+            .collect(),
         metadata: variant.metadata,
     }
 }
