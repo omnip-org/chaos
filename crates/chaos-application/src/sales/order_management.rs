@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     sales::{OrderId, OrderStatus},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
         AdminActor, IdempotencyRequest, OrderDetail, OrderListFilter, OrderManagementRepository,
         OrderPage,
@@ -16,7 +15,7 @@ use crate::{
 };
 
 pub struct ChangeOrderStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub order_id: OrderId,
     pub target_status: OrderStatus,
@@ -62,7 +61,7 @@ impl OrderManagement {
         &self,
         input: ChangeOrderStatusInput,
     ) -> Result<OrderDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         if !matches!(
             input.target_status,
             OrderStatus::Confirmed | OrderStatus::Cancelled
@@ -87,14 +86,25 @@ impl OrderManagement {
     }
 }
 
-fn require_operator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::OrdersWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 
