@@ -8,9 +8,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct StoreAdminItem {
     pub id: StoreId,
@@ -38,13 +38,13 @@ pub struct SalesChannelAdminItem {
 pub trait StoreAdministrationRepository: Send + Sync {
     async fn get_store(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Option<StoreAdminItem>, ApplicationError>;
 
     async fn update_store(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         replacement: &Store,
         request: &IdempotencyRequest,
@@ -52,7 +52,7 @@ pub trait StoreAdministrationRepository: Send + Sync {
 
     async fn change_store_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         status: StoreStatus,
         request: &IdempotencyRequest,
@@ -60,7 +60,7 @@ pub trait StoreAdministrationRepository: Send + Sync {
 
     async fn list_sales_channels(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<SalesChannelId>,
         limit: u16,
@@ -68,21 +68,21 @@ pub trait StoreAdministrationRepository: Send + Sync {
 
     async fn get_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
     ) -> Result<Option<SalesChannelAdminItem>, ApplicationError>;
 
     async fn create_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         channel: &SalesChannel,
         request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError>;
 
     async fn update_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         sales_channel_id: SalesChannelId,
         replacement: &SalesChannel,
         request: &IdempotencyRequest,
@@ -90,7 +90,7 @@ pub trait StoreAdministrationRepository: Send + Sync {
 
     async fn change_sales_channel_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         status: SalesChannelStatus,

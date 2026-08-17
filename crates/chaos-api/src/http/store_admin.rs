@@ -12,7 +12,7 @@ use chaos_application::{
         VerifyStoreDomainInput,
     },
     ports::{
-        IdempotencyRequest, ResolvedStoreDomain, SalesChannelAdminItem, StoreAdminItem,
+        AdminActor, IdempotencyRequest, ResolvedStoreDomain, SalesChannelAdminItem, StoreAdminItem,
         StoreDomainItem,
     },
 };
@@ -194,7 +194,7 @@ async fn get_store(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .store_administration
-        .get_store(actor, StoreId::from_uuid(path.store_id))
+        .get_store(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(store_data(item)?))
 }
@@ -211,7 +211,7 @@ async fn update_store(
     let id = state
         .store_administration
         .update_store(UpdateStoreInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -250,7 +250,7 @@ async fn change_store_status(
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeStoreStatusInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         idempotency: action_request(&headers, path.store_id, None, activate)?,
     };
@@ -278,7 +278,7 @@ async fn list_sales_channels(
         .map(SalesChannelId::from_uuid);
     let page = state
         .store_administration
-        .list_sales_channels(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list_sales_channels(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id), after, limit)
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -302,7 +302,7 @@ async fn get_sales_channel(
     let item = state
         .store_administration
         .get_sales_channel(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             SalesChannelId::from_uuid(path.sales_channel_id),
         )
@@ -322,7 +322,7 @@ async fn create_sales_channel(
     let id = state
         .store_administration
         .create_sales_channel(CreateSalesChannelInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -345,7 +345,7 @@ async fn update_sales_channel(
     let id = state
         .store_administration
         .update_sales_channel(UpdateSalesChannelInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
             code: body.code,
@@ -384,7 +384,7 @@ async fn change_channel_status(
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeSalesChannelStatusInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
         idempotency: action_request(
