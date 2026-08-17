@@ -194,7 +194,10 @@ async fn get_store(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .store_administration
-        .get_store(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+        .get_store(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(store_data(item)?))
 }
@@ -278,7 +281,12 @@ async fn list_sales_channels(
         .map(SalesChannelId::from_uuid);
     let page = state
         .store_administration
-        .list_sales_channels(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id), after, limit)
+        .list_sales_channels(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items

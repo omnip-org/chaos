@@ -111,7 +111,12 @@ impl ChaosMcp {
         };
         let store_id = machine.store_id;
 
-        match self.state.store_administration.get_store(actor, store_id).await {
+        match self
+            .state
+            .store_administration
+            .get_store(actor, store_id)
+            .await
+        {
             Ok(item) => Ok(text_result(store_json(item))),
             Err(error) => Ok(tool_error(error)),
         }
@@ -247,11 +252,11 @@ impl ChaosMcp {
             unreachable!("authenticate_machine always returns AdminActor::Machine")
         };
         let store_id = machine.store_id;
-        let sales_channel_id =
-            match parse_uuid_field(&params.sales_channel_id, "sales_channel_id") {
-                Ok(id) => SalesChannelId::from_uuid(id),
-                Err(result) => return Ok(result),
-            };
+        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
+        {
+            Ok(id) => SalesChannelId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
 
         match self
             .state
@@ -336,11 +341,11 @@ impl ChaosMcp {
             unreachable!("authenticate_machine always returns AdminActor::Machine")
         };
         let store_id = machine.store_id;
-        let sales_channel_id =
-            match parse_uuid_field(&params.sales_channel_id, "sales_channel_id") {
-                Ok(id) => SalesChannelId::from_uuid(id),
-                Err(result) => return Ok(result),
-            };
+        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
+        {
+            Ok(id) => SalesChannelId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -384,8 +389,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ChangeSalesChannelStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change_sales_channel_status(parts, params, false)
-            .await
+        self.change_sales_channel_status(parts, params, false).await
     }
 }
 
@@ -454,11 +458,11 @@ impl ChaosMcp {
             unreachable!("authenticate_machine always returns AdminActor::Machine")
         };
         let store_id = machine.store_id;
-        let sales_channel_id =
-            match parse_uuid_field(&params.sales_channel_id, "sales_channel_id") {
-                Ok(id) => SalesChannelId::from_uuid(id),
-                Err(result) => return Ok(result),
-            };
+        let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
+        {
+            Ok(id) => SalesChannelId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         let input = ChangeSalesChannelStatusInput {

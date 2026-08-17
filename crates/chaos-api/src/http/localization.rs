@@ -175,7 +175,10 @@ async fn store_locales(
     Ok(ApiResponse::ok(locale_data(
         state
             .catalog_localization
-            .store_locales(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+            .store_locales(
+                AdminActor::Merchant(actor),
+                StoreId::from_uuid(path.store_id),
+            )
             .await?,
     )))
 }

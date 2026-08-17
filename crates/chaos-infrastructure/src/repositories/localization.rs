@@ -222,7 +222,8 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
     ) -> Result<Option<ProductTranslation>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result =
-            load_product_translation(&mut transaction, &actor, store_id, product_id, locale).await?;
+            load_product_translation(&mut transaction, &actor, store_id, product_id, locale)
+                .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(result)
     }

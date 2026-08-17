@@ -413,9 +413,7 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Get a single return's details in the Store bound to this API key."
-    )]
+    #[tool(description = "Get a single return's details in the Store bound to this API key.")]
     async fn get_return(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1170,9 +1168,7 @@ fn parse_allocations(
         .collect()
 }
 
-fn parse_return_lines(
-    params: &[ReturnLineParams],
-) -> Result<Vec<ReturnLineInput>, CallToolResult> {
+fn parse_return_lines(params: &[ReturnLineParams]) -> Result<Vec<ReturnLineInput>, CallToolResult> {
     params
         .iter()
         .map(|line| {

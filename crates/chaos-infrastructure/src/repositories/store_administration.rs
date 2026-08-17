@@ -109,7 +109,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut transaction, &actor, UPDATE_STORE_OPERATION, request).await? {
+        if let Some(id) = reserve(&mut transaction, &actor, UPDATE_STORE_OPERATION, request).await?
+        {
             return Ok(StoreId::from_uuid(id));
         }
         let result = sqlx::query(
@@ -581,11 +582,11 @@ mod tests {
     use std::sync::Arc;
 
     use chaos_application::{
-        ports::AdminActor,
         merchant::{
             ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
             MerchantQueries, StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
         },
+        ports::AdminActor,
         ports::IdempotencyRequest,
     };
     use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
@@ -707,7 +708,11 @@ mod tests {
         ));
 
         assert_eq!(
-            service.get_store(AdminActor::Merchant(owner), store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Draft
         );
         service
@@ -722,7 +727,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let updated = service.get_store(AdminActor::Merchant(owner), store_id).await.unwrap();
+        let updated = service
+            .get_store(AdminActor::Merchant(owner), store_id)
+            .await
+            .unwrap();
         assert_eq!(updated.code.as_str(), "admin-store-updated");
         assert_eq!(updated.default_currency.as_str(), "SGD");
         service
@@ -734,7 +742,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            service.get_store(AdminActor::Merchant(owner), store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Active
         );
 
@@ -827,7 +839,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            service.get_store(AdminActor::Merchant(owner), store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Archived
         );
     }

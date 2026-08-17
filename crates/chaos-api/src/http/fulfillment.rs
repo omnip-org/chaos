@@ -382,7 +382,10 @@ async fn list_shipping_services(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let services = state
         .shipping_management
-        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         services.into_iter().map(shipping_service_data).collect(),
@@ -443,7 +446,10 @@ async fn list_shipping_provider_accounts(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let values = state
         .shipping_provider_administration
-        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         values

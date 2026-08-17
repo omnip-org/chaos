@@ -207,8 +207,13 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(detail);
         }
-        require_store_currency(&mut transaction, &actor, store_id, service.rate().currency())
-            .await?;
+        require_store_currency(
+            &mut transaction,
+            &actor,
+            store_id,
+            service.rate().currency(),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
              (id, merchant_account_id, store_id, code, name, amount_minor, currency, \

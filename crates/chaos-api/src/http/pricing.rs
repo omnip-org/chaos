@@ -303,7 +303,10 @@ async fn list_promotions(
     )?;
     let values = state
         .promotion_management
-        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         values.into_iter().map(promotion_data).collect(),
@@ -437,7 +440,10 @@ async fn list_tax_rules(
     )?;
     let rules = state
         .tax_management
-        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         rules.into_iter().map(tax_rule_data).collect(),
