@@ -8,9 +8,12 @@ use chaos_application::{
         GeneratedApiKeyMaterial, IdempotencyRequest, MachineActor,
     },
 };
-use chaos_domain::merchant::{
-    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-    StoreId,
+use chaos_domain::{
+    identity::UserId,
+    merchant::{
+        ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+        StoreId,
+    },
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -292,20 +295,40 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
             return Ok(None);
         };
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
-        let row =
-            sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>, String, String, Vec<String>)>(
-                "SELECT api_key_id, merchant_account_id, store_id, sales_channel_id, \
-                    class, mode, scopes \
+        let row = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                Uuid,
+                Option<Uuid>,
+                String,
+                String,
+                Vec<String>,
+                Uuid,
+            ),
+        >(
+            "SELECT api_key_id, merchant_account_id, store_id, sales_channel_id, \
+                    class, mode, scopes, created_by_user_id \
              FROM merchant.authenticate_api_key($1, $2)",
-            )
-            .bind(key_identifier)
-            .bind(digest.as_slice())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(database_error)?;
+        )
+        .bind(key_identifier)
+        .bind(digest.as_slice())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error)?;
 
         row.map(
-            |(api_key_id, merchant_account_id, store_id, sales_channel_id, class, mode, scopes)| {
+            |(
+                api_key_id,
+                merchant_account_id,
+                store_id,
+                sales_channel_id,
+                class,
+                mode,
+                scopes,
+                created_by_user_id,
+            )| {
                 Ok(MachineActor {
                     api_key_id: ApiKeyId::from_uuid(api_key_id),
                     merchant_account_id: MerchantAccountId::from_uuid(merchant_account_id),
@@ -322,6 +345,7 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
                                 .ok_or_else(|| corrupt_enum("API key scope", &scope))
                         })
                         .collect::<Result<Vec<_>, _>>()?,
+                    created_by_user_id: UserId::from_uuid(created_by_user_id),
                 })
             },
         )

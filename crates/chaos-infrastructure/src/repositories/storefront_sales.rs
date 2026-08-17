@@ -3777,6 +3777,7 @@ mod tests {
             class: ApiKeyClass::Publishable,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CartsWrite, ApiKeyScope::CheckoutWrite],
+            created_by_user_id: user_id,
         };
         let actor = ShopperActor {
             machine,

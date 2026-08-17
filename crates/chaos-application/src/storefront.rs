@@ -126,8 +126,12 @@ fn parse_locale(value: Option<&str>) -> Result<Option<Locale>, ApplicationError>
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use chaos_domain::merchant::{
-        ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId, StoreId,
+    use chaos_domain::{
+        identity::UserId,
+        merchant::{
+            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+            StoreId,
+        },
     };
 
     use super::*;
@@ -169,6 +173,7 @@ mod tests {
             class,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CatalogRead],
+            created_by_user_id: UserId::new(),
         }
     }
 

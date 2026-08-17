@@ -1,7 +1,10 @@
 use async_trait::async_trait;
-use chaos_domain::merchant::{
-    ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-    StoreId,
+use chaos_domain::{
+    identity::UserId,
+    merchant::{
+        ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+        StoreId,
+    },
 };
 use secrecy::SecretString;
 use time::OffsetDateTime;
@@ -48,6 +51,10 @@ pub struct MachineActor {
     pub class: ApiKeyClass,
     pub mode: ApiKeyMode,
     pub scopes: Vec<ApiKeyScope>,
+    /// The human member who created this key. Used as the audit actor for
+    /// mutations that require a real `identity.users` row (e.g. Collection
+    /// events) when this key drives the mutation instead of a person.
+    pub created_by_user_id: UserId,
 }
 
 #[async_trait]

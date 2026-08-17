@@ -1,3 +1,4 @@
+mod actor;
 mod analytics;
 mod api_key;
 mod catalog;
@@ -27,6 +28,7 @@ mod store_domain;
 mod storefront_catalog;
 mod tax;
 
+pub use actor::AdminActor;
 pub use analytics::{
     AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter,
     AnalyticsCommerceFactJob, AnalyticsCommerceFactQueue, AnalyticsDailyReports,

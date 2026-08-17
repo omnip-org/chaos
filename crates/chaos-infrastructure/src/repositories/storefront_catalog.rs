@@ -523,8 +523,12 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use chaos_application::ports::{MachineActor, StorefrontCatalogRepository};
-    use chaos_domain::merchant::{
-        ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId, StoreId,
+    use chaos_domain::{
+        identity::UserId,
+        merchant::{
+            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
+            StoreId,
+        },
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -739,6 +743,7 @@ mod tests {
             class: ApiKeyClass::Publishable,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CatalogRead],
+            created_by_user_id: UserId::new(),
         };
         let indexer = crate::repositories::PostgresSearchIndexer::new(runtime_pool.clone());
         assert!(

@@ -632,6 +632,7 @@ mod tests {
     use async_trait::async_trait;
     use chaos_domain::{
         analytics::{BrowserEventProperties, ConsentSnapshot},
+        identity::UserId,
         merchant::{ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId, StoreId},
     };
     use uuid::Uuid;
@@ -699,6 +700,7 @@ mod tests {
             class: ApiKeyClass::Publishable,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::AnalyticsWrite],
+            created_by_user_id: UserId::new(),
         }
     }
 

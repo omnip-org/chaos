@@ -146,6 +146,7 @@ fn validate_secret(value: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 mod tests {
     use chaos_application::ports::{MachineActor, ShopperCredentialCodec};
     use chaos_domain::{
+        identity::UserId,
         merchant::{
             ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
             StoreId,
@@ -165,6 +166,7 @@ mod tests {
             class: ApiKeyClass::Publishable,
             mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CartsWrite],
+            created_by_user_id: UserId::new(),
         }
     }
 
