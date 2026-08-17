@@ -13,9 +13,10 @@ use chaos_application::{
         TransitionFulfillmentInput, TransitionReturnInput, UpdateShippingProviderAccountInput,
     },
     ports::{
-        FulfillmentAllocationInput, FulfillmentDetail, IdempotencyRequest, ReturnDetail,
-        ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingLabelDetail, ShippingParcel,
-        ShippingProviderAccountDetail, ShippingRateQuoteDetail, ShippingServiceDetail,
+        AdminActor, FulfillmentAllocationInput, FulfillmentDetail, IdempotencyRequest,
+        ReturnDetail, ReturnLineInput, ReturnReceiptInput, ShippingAddress, ShippingLabelDetail,
+        ShippingParcel, ShippingProviderAccountDetail, ShippingRateQuoteDetail,
+        ShippingServiceDetail,
     },
 };
 use chaos_domain::{
@@ -358,7 +359,7 @@ async fn create_shipping_service(
     let detail = state
         .shipping_management
         .create(CreateShippingServiceInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -381,7 +382,7 @@ async fn list_shipping_services(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let services = state
         .shipping_management
-        .list(actor, StoreId::from_uuid(path.store_id))
+        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         services.into_iter().map(shipping_service_data).collect(),
@@ -408,7 +409,7 @@ async fn change_shipping_service_status(
     let detail = state
         .shipping_management
         .change_status(ChangeShippingServiceStatusInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             service_id: ShippingServiceId::from_uuid(path.shipping_service_id),
             status,
@@ -442,7 +443,7 @@ async fn list_shipping_provider_accounts(
     ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let values = state
         .shipping_provider_administration
-        .list(actor, StoreId::from_uuid(path.store_id))
+        .list(AdminActor::Merchant(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         values
@@ -461,7 +462,7 @@ async fn get_shipping_provider_account(
     let value = state
         .shipping_provider_administration
         .get(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             ShippingProviderAccountId::from_uuid(path.provider_account_id),
         )
@@ -481,7 +482,7 @@ async fn create_shipping_provider_account(
     let value = state
         .shipping_provider_administration
         .create(CreateShippingProviderAccountInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             provider: body.provider,
             display_name: body.display_name,
@@ -510,7 +511,7 @@ async fn update_shipping_provider_account(
     let value = state
         .shipping_provider_administration
         .update(UpdateShippingProviderAccountInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             id: ShippingProviderAccountId::from_uuid(path.provider_account_id),
             display_name: body.display_name,
@@ -581,7 +582,7 @@ async fn quote_shipping_rates(
     let rates = state
         .shipping_provider_administration
         .quote_rates(QuoteShippingRatesInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             provider_account_id: ShippingProviderAccountId::from_uuid(body.provider_account_id),
@@ -616,7 +617,7 @@ async fn purchase_shipping_label(
     let label = state
         .shipping_provider_administration
         .purchase_label(PurchaseShippingLabelInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             rate_quote_id: ShippingRateQuoteId::from_uuid(body.rate_quote_id),
@@ -638,7 +639,7 @@ async fn cancel_shipping_label(
     let label = state
         .shipping_provider_administration
         .cancel_label(CancelPurchasedShippingLabelInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             now: state.clock.now(),
@@ -710,7 +711,7 @@ async fn create_fulfillment(
     let detail = state
         .fulfillment_management
         .create_fulfillment(CreateFulfillmentInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             allocations: body
@@ -749,7 +750,7 @@ async fn transition_fulfillment(
     let detail = state
         .fulfillment_management
         .transition_fulfillment(TransitionFulfillmentInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             target_status,
@@ -774,7 +775,7 @@ async fn create_return(
     let detail = state
         .fulfillment_management
         .create_return(CreateReturnInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             lines: body
@@ -801,7 +802,7 @@ async fn get_return(
     let detail = state
         .fulfillment_management
         .get_return(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             ReturnId::from_uuid(path.return_id),
         )
@@ -850,7 +851,7 @@ async fn transition_return(
     let detail = state
         .fulfillment_management
         .transition_return(TransitionReturnInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             return_id: ReturnId::from_uuid(path.return_id),
             target_status,

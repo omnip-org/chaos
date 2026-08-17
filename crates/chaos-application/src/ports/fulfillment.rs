@@ -18,9 +18,9 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct FulfillmentAllocationInput {
     pub product_variant_id: ProductVariantId,
@@ -96,20 +96,20 @@ pub struct ShippingProviderAccountDetail {
 pub trait ShippingProviderAccountRepository: Send + Sync {
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError>;
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         id: ShippingProviderAccountId,
     ) -> Result<Option<ShippingProviderAccountDetail>, ApplicationError>;
 
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         account: &ShippingProviderAccount,
         configuration: &ShippingProviderAccountConfiguration,
@@ -118,7 +118,7 @@ pub trait ShippingProviderAccountRepository: Send + Sync {
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         account: &ShippingProviderAccount,
         configuration: &ShippingProviderAccountConfiguration,
@@ -204,7 +204,7 @@ pub struct ShippingCancellationJob {
 pub trait ShippingOperationRepository: Send + Sync {
     async fn prepare_quote(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         provider_account_id: ShippingProviderAccountId,
@@ -214,7 +214,7 @@ pub trait ShippingOperationRepository: Send + Sync {
 
     async fn complete_quote(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         quote_request_id: ShippingQuoteRequestId,
         rates: Vec<ShippingRateQuote>,
@@ -223,7 +223,7 @@ pub trait ShippingOperationRepository: Send + Sync {
 
     async fn prepare_label_purchase(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         rate_quote_id: ShippingRateQuoteId,
@@ -233,7 +233,7 @@ pub trait ShippingOperationRepository: Send + Sync {
 
     async fn complete_label_purchase(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         label_id: ShippingLabelId,
         label: PurchasedShippingLabel,
@@ -242,7 +242,7 @@ pub trait ShippingOperationRepository: Send + Sync {
 
     async fn prepare_label_cancellation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         idempotency: &IdempotencyRequest,
@@ -251,7 +251,7 @@ pub trait ShippingOperationRepository: Send + Sync {
 
     async fn complete_label_cancellation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         label_id: ShippingLabelId,
         status: ShippingCancellationStatus,
@@ -298,7 +298,7 @@ pub trait ShippingTrackingQueue: Send + Sync {
 pub trait ShippingServiceRepository: Send + Sync {
     async fn create_shipping_service(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         service: &ShippingService,
         idempotency: &IdempotencyRequest,
@@ -306,13 +306,13 @@ pub trait ShippingServiceRepository: Send + Sync {
 
     async fn list_shipping_services(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingServiceDetail>, ApplicationError>;
 
     async fn change_shipping_service_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         service_id: ShippingServiceId,
         status: ShippingServiceStatus,
@@ -324,14 +324,14 @@ pub trait ShippingServiceRepository: Send + Sync {
 pub trait FulfillmentRepository: Send + Sync {
     async fn get_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         return_id: ReturnId,
     ) -> Result<Option<ReturnDetail>, ApplicationError>;
 
     async fn create_fulfillment(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
         allocations: Vec<FulfillmentAllocationInput>,
@@ -341,7 +341,7 @@ pub trait FulfillmentRepository: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn transition_fulfillment(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         target_status: FulfillmentStatus,
@@ -353,7 +353,7 @@ pub trait FulfillmentRepository: Send + Sync {
 
     async fn create_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
         lines: Vec<ReturnLineInput>,
@@ -364,7 +364,7 @@ pub trait FulfillmentRepository: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     async fn transition_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         return_id: ReturnId,
         target_status: ReturnStatus,
