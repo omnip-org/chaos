@@ -421,7 +421,7 @@ mod tests {
                     "name": "Invalid",
                     "class": "publishable",
                     "mode": "test",
-                    "scopes": ["orders:read"]
+                    "scopes": ["orders:write"]
                 })),
             ))
             .await

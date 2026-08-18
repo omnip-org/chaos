@@ -3480,6 +3480,12 @@ mod tests {
             .unwrap();
         assert_eq!(order_replay.status(), StatusCode::CREATED);
         assert_eq!(response_json(order_replay).await["data"]["id"], order_id);
+        // GET /store/v1/orders/{order_id} is the ADR 0022 unauthenticated
+        // single-Order lookup: it is gated on the API key's `orders:read`
+        // scope alone (MachineActor-scoped, not shopper-possession-bound),
+        // so a shopper token is irrelevant here and full_secret (which only
+        // holds analytics:write/carts:write/checkout:write) is correctly
+        // rejected at the scope check before any ownership question arises.
         let unrelated_order = app
             .clone()
             .oneshot(with_shopper_token(
@@ -3494,7 +3500,40 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(unrelated_order.status(), StatusCode::NOT_FOUND);
+        assert_eq!(unrelated_order.status(), StatusCode::FORBIDDEN);
+
+        let orders_read_key =
+            insert_key(&owner_pool, account_id, store_id, user_id, &["orders:read"]).await;
+        let orders_read_secret = orders_read_key.plaintext.expose_secret();
+        let machine_order_lookup = app
+            .clone()
+            .oneshot(store_request(
+                Method::GET,
+                &format!("/store/v1/orders/{order_id}"),
+                Some(orders_read_secret),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(machine_order_lookup.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(machine_order_lookup).await["data"]["id"],
+            order_id
+        );
+
+        let missing_order_lookup = app
+            .clone()
+            .oneshot(store_request(
+                Method::GET,
+                &format!("/store/v1/orders/{}", Uuid::now_v7()),
+                Some(orders_read_secret),
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing_order_lookup.status(), StatusCode::NOT_FOUND);
 
         let mut snapshot_connection = runtime_pool.acquire().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, false)")
@@ -3633,13 +3672,16 @@ mod tests {
         assert_eq!(fetched.status(), StatusCode::OK);
         assert_eq!(response_json(fetched).await["data"]["id"], checkout_id);
 
+        // Uses orders_read_secret, not full_secret: GET /store/v1/orders/{order_id}
+        // is the ADR 0022 Machine-scoped lookup (orders:read), not the
+        // shopper-possession-bound path, so the shopper token here is inert.
         let fetched_order = app
             .clone()
             .oneshot(with_shopper_token(
                 store_request(
                     Method::GET,
                     &format!("/store/v1/orders/{order_id}"),
-                    Some(full_secret),
+                    Some(orders_read_secret),
                     None,
                     None,
                 ),
