@@ -13,7 +13,7 @@ use chaos_application::{
         UpdatePaymentProviderAccountInput,
     },
     ports::{
-        IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction,
+        AdminActor, IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction,
         PaymentProviderAccountDetail, RefundDetail,
     },
 };
@@ -377,7 +377,7 @@ async fn create_refund(
     let refund = state
         .payment_service
         .create_refund(CreateRefundInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             payment_attempt_id: PaymentAttemptId::from_uuid(path.payment_attempt_id),
             amount_minor: body.amount_minor,

@@ -2,19 +2,18 @@ use std::sync::Arc;
 
 use chaos_domain::{
     CurrencyCode,
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     pricing::{Promotion, PromotionId, PromotionStatus, PromotionTrigger, PromotionValue},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, PromotionDetail, PromotionRepository},
+    ports::{AdminActor, IdempotencyRequest, PromotionDetail, PromotionRepository},
 };
 
 pub struct CreatePromotionInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub handle: String,
     pub name: String,
@@ -30,7 +29,7 @@ pub struct CreatePromotionInput {
 }
 
 pub struct ChangePromotionStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub promotion_id: PromotionId,
     pub status: PromotionStatus,
@@ -49,7 +48,7 @@ impl PromotionManagement {
         &self,
         input: CreatePromotionInput,
     ) -> Result<PromotionDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let promotion = Promotion::create(
             input.handle,
             input.name,
@@ -68,17 +67,17 @@ impl PromotionManagement {
     }
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<PromotionDetail>, ApplicationError> {
-        require_operator(actor)?;
+        require_operator(&actor)?;
         self.repository.list_promotions(actor, store_id).await
     }
     pub async fn change_status(
         &self,
         input: ChangePromotionStatusInput,
     ) -> Result<PromotionDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .change_promotion_status(
                 input.actor,
@@ -91,13 +90,24 @@ impl PromotionManagement {
     }
 }
 
-fn require_operator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }

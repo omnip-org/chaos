@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
+        AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem,
+        StoreAdministrationRepository,
     },
 };
 use chaos_domain::{
@@ -40,11 +40,11 @@ impl PostgresStoreAdministrationRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -83,10 +83,10 @@ type ChannelRow = (
 impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
     async fn get_store(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Option<StoreAdminItem>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, StoreRow>(
             "SELECT id, code::text, name, default_region::text, default_currency::text, \
                     status::text, created_at, updated_at \
@@ -103,13 +103,14 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn update_store(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         replacement: &Store,
         request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, UPDATE_STORE_OPERATION, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, UPDATE_STORE_OPERATION, request).await?
+        {
             return Ok(StoreId::from_uuid(id));
         }
         let result = sqlx::query(
@@ -143,7 +144,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .map_err(database_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             UPDATE_STORE_OPERATION,
             request,
             store_id.as_uuid(),
@@ -155,7 +156,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn change_store_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         status: StoreStatus,
         request: &IdempotencyRequest,
@@ -169,8 +170,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
                 )));
             }
         };
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, operation, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
             return Ok(StoreId::from_uuid(id));
         }
         let default_currency = sqlx::query_scalar::<_, String>(
@@ -220,7 +221,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .map_err(database_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             operation,
             request,
             store_id.as_uuid(),
@@ -232,13 +233,13 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn list_sales_channels(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<SalesChannelId>,
         limit: u16,
     ) -> Result<Option<Vec<SalesChannelAdminItem>>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if !store_exists(&mut transaction, actor, store_id).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if !store_exists(&mut transaction, &actor, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
@@ -263,11 +264,11 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn get_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
     ) -> Result<Option<SalesChannelAdminItem>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, kind::text, status::text, is_default, \
                     created_at, updated_at FROM merchant.sales_channels \
@@ -285,17 +286,17 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn create_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         channel: &SalesChannel,
         request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(id) =
-            reserve(&mut transaction, actor, CREATE_CHANNEL_OPERATION, request).await?
+            reserve(&mut transaction, &actor, CREATE_CHANNEL_OPERATION, request).await?
         {
             return Ok(SalesChannelId::from_uuid(id));
         }
-        require_writable_store(&mut transaction, actor, channel.store_id()).await?;
+        require_writable_store(&mut transaction, &actor, channel.store_id()).await?;
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
              (id, merchant_account_id, store_id, code, name, kind, status, is_default) \
@@ -312,7 +313,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .map_err(map_channel_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_CHANNEL_OPERATION,
             request,
             channel.id().as_uuid(),
@@ -324,14 +325,14 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn update_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         sales_channel_id: SalesChannelId,
         replacement: &SalesChannel,
         request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(id) =
-            reserve(&mut transaction, actor, UPDATE_CHANNEL_OPERATION, request).await?
+            reserve(&mut transaction, &actor, UPDATE_CHANNEL_OPERATION, request).await?
         {
             return Ok(SalesChannelId::from_uuid(id));
         }
@@ -354,7 +355,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         complete(
             &mut transaction,
-            actor,
+            &actor,
             UPDATE_CHANNEL_OPERATION,
             request,
             sales_channel_id.as_uuid(),
@@ -366,7 +367,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
     async fn change_sales_channel_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         status: SalesChannelStatus,
@@ -376,8 +377,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             SalesChannelStatus::Active => ACTIVATE_CHANNEL_OPERATION,
             SalesChannelStatus::Archived => ARCHIVE_CHANNEL_OPERATION,
         };
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, operation, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let is_default = sqlx::query_scalar::<_, bool>(
@@ -408,7 +409,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .map_err(database_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             operation,
             request,
             sales_channel_id.as_uuid(),
@@ -421,7 +422,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
 
 async fn reserve(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -448,7 +449,7 @@ async fn reserve(
 
 async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: Uuid,
@@ -466,7 +467,7 @@ async fn complete(
 
 async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
     sqlx::query_scalar(
@@ -482,7 +483,7 @@ async fn store_exists(
 
 async fn require_writable_store(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let writable: bool = sqlx::query_scalar(
@@ -585,6 +586,7 @@ mod tests {
             ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
             MerchantQueries, StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
         },
+        ports::AdminActor,
         ports::IdempotencyRequest,
     };
     use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
@@ -706,12 +708,16 @@ mod tests {
         ));
 
         assert_eq!(
-            service.get_store(owner, store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Draft
         );
         service
             .update_store(UpdateStoreInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 code: "admin-store-updated".into(),
                 name: "Updated Admin Store".into(),
@@ -721,25 +727,32 @@ mod tests {
             })
             .await
             .unwrap();
-        let updated = service.get_store(owner, store_id).await.unwrap();
+        let updated = service
+            .get_store(AdminActor::Merchant(owner), store_id)
+            .await
+            .unwrap();
         assert_eq!(updated.code.as_str(), "admin-store-updated");
         assert_eq!(updated.default_currency.as_str(), "SGD");
         service
             .activate_store(ChangeStoreStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 idempotency: request(format!("activate-store-{suffix}"), 72),
             })
             .await
             .unwrap();
         assert_eq!(
-            service.get_store(owner, store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Active
         );
 
         let channel_id = service
             .create_sales_channel(CreateSalesChannelInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 code: "mobile".into(),
                 name: "Mobile App".into(),
@@ -749,13 +762,13 @@ mod tests {
             .await
             .unwrap();
         let page = service
-            .list_sales_channels(owner, store_id, None, 20)
+            .list_sales_channels(AdminActor::Merchant(owner), store_id, None, 20)
             .await
             .unwrap();
         assert_eq!(page.items.len(), 2);
         service
             .update_sales_channel(UpdateSalesChannelInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 code: "mobile-app".into(),
@@ -767,7 +780,7 @@ mod tests {
             .unwrap();
         service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 idempotency: request(format!("archive-channel-{suffix}"), 75),
@@ -776,7 +789,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get_sales_channel(owner, store_id, channel_id)
+                .get_sales_channel(AdminActor::Merchant(owner), store_id, channel_id)
                 .await
                 .unwrap()
                 .status,
@@ -784,7 +797,7 @@ mod tests {
         );
         service
             .activate_sales_channel(ChangeSalesChannelStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 idempotency: request(format!("activate-channel-{suffix}"), 76),
@@ -793,7 +806,7 @@ mod tests {
             .unwrap();
         let default_archive = service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 sales_channel_id: default_channel_id,
                 idempotency: request(format!("archive-default-{suffix}"), 77),
@@ -805,13 +818,13 @@ mod tests {
         ));
         assert!(
             service
-                .get_sales_channel(owner, other_store_id, channel_id)
+                .get_sales_channel(AdminActor::Merchant(owner), other_store_id, channel_id)
                 .await
                 .is_err()
         );
         let forbidden = service
             .archive_store(ChangeStoreStatusInput {
-                actor: support,
+                actor: AdminActor::Merchant(support),
                 store_id,
                 idempotency: request(format!("support-store-{suffix}"), 78),
             })
@@ -819,14 +832,18 @@ mod tests {
         assert!(matches!(forbidden, Err(ApplicationError::Forbidden)));
         service
             .archive_store(ChangeStoreStatusInput {
-                actor: owner,
+                actor: AdminActor::Merchant(owner),
                 store_id,
                 idempotency: request(format!("archive-store-{suffix}"), 79),
             })
             .await
             .unwrap();
         assert_eq!(
-            service.get_store(owner, store_id).await.unwrap().status,
+            service
+                .get_store(AdminActor::Merchant(owner), store_id)
+                .await
+                .unwrap()
+                .status,
             StoreStatus::Archived
         );
     }

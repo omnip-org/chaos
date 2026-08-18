@@ -82,6 +82,7 @@ pub enum ApiKeyScope {
     CartsWrite,
     CheckoutWrite,
     OrdersRead,
+    OrdersWrite,
     CustomersWrite,
     McpTools,
     ProductsRead,
@@ -93,6 +94,13 @@ pub enum ApiKeyScope {
     CollectionsRead,
     CollectionsWrite,
     ReviewsWrite,
+    FulfillmentRead,
+    FulfillmentWrite,
+    StoreAdminRead,
+    StoreAdminWrite,
+    PaymentsWrite,
+    MediaRead,
+    MediaWrite,
 }
 
 impl ApiKeyScope {
@@ -103,6 +111,7 @@ impl ApiKeyScope {
             Self::CartsWrite => "carts:write",
             Self::CheckoutWrite => "checkout:write",
             Self::OrdersRead => "orders:read",
+            Self::OrdersWrite => "orders:write",
             Self::CustomersWrite => "customers:write",
             Self::McpTools => "mcp:tools",
             Self::ProductsRead => "products:read",
@@ -114,6 +123,13 @@ impl ApiKeyScope {
             Self::CollectionsRead => "collections:read",
             Self::CollectionsWrite => "collections:write",
             Self::ReviewsWrite => "reviews:write",
+            Self::FulfillmentRead => "fulfillment:read",
+            Self::FulfillmentWrite => "fulfillment:write",
+            Self::StoreAdminRead => "store_admin:read",
+            Self::StoreAdminWrite => "store_admin:write",
+            Self::PaymentsWrite => "payments:write",
+            Self::MediaRead => "media:read",
+            Self::MediaWrite => "media:write",
         }
     }
 
@@ -124,6 +140,7 @@ impl ApiKeyScope {
             "carts:write" => Some(Self::CartsWrite),
             "checkout:write" => Some(Self::CheckoutWrite),
             "orders:read" => Some(Self::OrdersRead),
+            "orders:write" => Some(Self::OrdersWrite),
             "customers:write" => Some(Self::CustomersWrite),
             "mcp:tools" => Some(Self::McpTools),
             "products:read" => Some(Self::ProductsRead),
@@ -135,6 +152,13 @@ impl ApiKeyScope {
             "collections:read" => Some(Self::CollectionsRead),
             "collections:write" => Some(Self::CollectionsWrite),
             "reviews:write" => Some(Self::ReviewsWrite),
+            "fulfillment:read" => Some(Self::FulfillmentRead),
+            "fulfillment:write" => Some(Self::FulfillmentWrite),
+            "store_admin:read" => Some(Self::StoreAdminRead),
+            "store_admin:write" => Some(Self::StoreAdminWrite),
+            "payments:write" => Some(Self::PaymentsWrite),
+            "media:read" => Some(Self::MediaRead),
+            "media:write" => Some(Self::MediaWrite),
             _ => None,
         }
     }

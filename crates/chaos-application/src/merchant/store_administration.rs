@@ -3,22 +3,23 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation, RegionCode,
     merchant::{
-        MerchantRole, SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind,
-        SalesChannelStatus, Store, StoreCode, StoreId, StoreStatus,
+        ApiKeyScope, MerchantRole, SalesChannel, SalesChannelCode, SalesChannelId,
+        SalesChannelKind, SalesChannelStatus, Store, StoreCode, StoreId, StoreStatus,
     },
 };
 
 use crate::{
     ApplicationError,
     ports::{
-        IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
+        AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem,
+        StoreAdministrationRepository,
     },
 };
 
-use super::{MerchantActor, Page};
+use super::Page;
 
 pub struct UpdateStoreInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -28,13 +29,13 @@ pub struct UpdateStoreInput {
 }
 
 pub struct ChangeStoreStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateSalesChannelInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -43,7 +44,7 @@ pub struct CreateSalesChannelInput {
 }
 
 pub struct UpdateSalesChannelInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub sales_channel_id: SalesChannelId,
     pub code: String,
@@ -53,7 +54,7 @@ pub struct UpdateSalesChannelInput {
 }
 
 pub struct ChangeSalesChannelStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub sales_channel_id: SalesChannelId,
     pub idempotency: IdempotencyRequest,
@@ -70,7 +71,7 @@ impl StoreAdministration {
 
     pub async fn get_store(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<StoreAdminItem, ApplicationError> {
         self.repository
@@ -80,7 +81,7 @@ impl StoreAdministration {
     }
 
     pub async fn update_store(&self, input: UpdateStoreInput) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         let replacement = Store::create(
             input.actor.merchant_account_id(),
             StoreCode::parse(input.code)?,
@@ -102,7 +103,7 @@ impl StoreAdministration {
         &self,
         input: ChangeStoreStatusInput,
     ) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         self.repository
             .change_store_status(
                 input.actor,
@@ -117,7 +118,7 @@ impl StoreAdministration {
         &self,
         input: ChangeStoreStatusInput,
     ) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         self.repository
             .change_store_status(
                 input.actor,
@@ -130,7 +131,7 @@ impl StoreAdministration {
 
     pub async fn list_sales_channels(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<SalesChannelId>,
         limit: u16,
@@ -150,7 +151,7 @@ impl StoreAdministration {
 
     pub async fn get_sales_channel(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
     ) -> Result<SalesChannelAdminItem, ApplicationError> {
@@ -164,9 +165,9 @@ impl StoreAdministration {
         &self,
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         let channel = channel(
-            input.actor,
+            &input.actor,
             input.store_id,
             input.code,
             input.name,
@@ -181,9 +182,9 @@ impl StoreAdministration {
         &self,
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         let replacement = channel(
-            input.actor,
+            &input.actor,
             input.store_id,
             input.code,
             input.name,
@@ -220,7 +221,7 @@ impl StoreAdministration {
         input: ChangeSalesChannelStatusInput,
         status: SalesChannelStatus,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(input.actor)?;
+        require_store_administrator(&input.actor)?;
         self.repository
             .change_sales_channel_status(
                 input.actor,
@@ -234,7 +235,7 @@ impl StoreAdministration {
 }
 
 fn channel(
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     code: String,
     name: String,
@@ -255,11 +256,20 @@ fn channel(
     )?)
 }
 
-fn require_store_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    match actor.role() {
-        MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
-        MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
-            Err(ApplicationError::Forbidden)
+fn require_store_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => match merchant.role() {
+            MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
+            MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
+                Err(ApplicationError::Forbidden)
+            }
+        },
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::StoreAdminWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
         }
     }
 }

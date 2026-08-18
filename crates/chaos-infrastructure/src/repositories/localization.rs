@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CatalogLocalizationRepository, CollectionTranslation, IdempotencyRequest, MediaTranslation,
-        ProductTranslation, ProductVariantTranslation, StoreLocaleConfiguration,
+        AdminActor, CatalogLocalizationRepository, CollectionTranslation, IdempotencyRequest,
+        MediaTranslation, ProductTranslation, ProductVariantTranslation, StoreLocaleConfiguration,
     },
 };
 use chaos_domain::{
@@ -44,11 +43,11 @@ impl PostgresCatalogLocalizationRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id',$1,true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -65,35 +64,36 @@ impl PostgresCatalogLocalizationRepository {
 impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
     async fn store_locales(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Option<StoreLocaleConfiguration>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        let result = load_store_locales(&mut transaction, actor, store_id).await?;
+        let mut transaction = self.begin(&actor).await?;
+        let result = load_store_locales(&mut transaction, &actor, store_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(result)
     }
 
     async fn enable_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, ENABLE_LOCALE, request).await? {
-            return replay_store_locales(&mut transaction, actor, store_id).await;
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, ENABLE_LOCALE, request).await? {
+            return replay_store_locales(&mut transaction, &actor, store_id).await;
         }
-        require_store(&mut transaction, actor, store_id).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         let inserted = sqlx::query(
             "INSERT INTO merchant.store_locales (merchant_account_id,store_id,locale,created_by_user_id,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
         )
         .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(locale.as_str())
-        .bind(actor.user_id().as_uuid())
+        .bind(audit_user_id)
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -102,7 +102,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         if inserted == 1 {
             locale_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 locale,
                 None,
@@ -111,8 +111,8 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, ENABLE_LOCALE, request).await?;
-        let result = load_store_locales(&mut transaction, actor, store_id)
+        complete(&mut transaction, &actor, ENABLE_LOCALE, request).await?;
+        let result = load_store_locales(&mut transaction, &actor, store_id)
             .await?
             .ok_or_else(|| store_not_found(store_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -121,24 +121,25 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn set_default_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, SET_DEFAULT_LOCALE, request).await? {
-            return replay_store_locales(&mut transaction, actor, store_id).await;
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, SET_DEFAULT_LOCALE, request).await? {
+            return replay_store_locales(&mut transaction, &actor, store_id).await;
         }
-        let previous = lock_default_locale(&mut transaction, actor, store_id).await?;
+        let previous = lock_default_locale(&mut transaction, &actor, store_id).await?;
         let inserted = sqlx::query("INSERT INTO merchant.store_locales (merchant_account_id,store_id,locale,created_by_user_id,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(locale.as_str()).bind(actor.user_id().as_uuid()).bind(now)
+            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(locale.as_str()).bind(audit_user_id).bind(now)
             .execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
         if inserted == 1 {
             locale_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 locale,
                 None,
@@ -153,7 +154,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
                 .execute(&mut *transaction).await.map_err(database_error)?;
             locale_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 locale,
                 Some(&previous),
@@ -162,8 +163,8 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, SET_DEFAULT_LOCALE, request).await?;
-        let result = load_store_locales(&mut transaction, actor, store_id)
+        complete(&mut transaction, &actor, SET_DEFAULT_LOCALE, request).await?;
+        let result = load_store_locales(&mut transaction, &actor, store_id)
             .await?
             .ok_or_else(|| store_not_found(store_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -172,17 +173,17 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn disable_locale(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, DISABLE_LOCALE, request).await? {
-            return replay_store_locales(&mut transaction, actor, store_id).await;
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, DISABLE_LOCALE, request).await? {
+            return replay_store_locales(&mut transaction, &actor, store_id).await;
         }
-        let default = lock_default_locale(&mut transaction, actor, store_id).await?;
+        let default = lock_default_locale(&mut transaction, &actor, store_id).await?;
         if default == locale.as_str() {
             return Err(ApplicationError::Conflict {
                 code: "default_locale_cannot_be_disabled",
@@ -195,7 +196,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         if deleted == 1 {
             locale_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 locale,
                 None,
@@ -204,8 +205,8 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, DISABLE_LOCALE, request).await?;
-        let result = load_store_locales(&mut transaction, actor, store_id)
+        complete(&mut transaction, &actor, DISABLE_LOCALE, request).await?;
+        let result = load_store_locales(&mut transaction, &actor, store_id)
             .await?
             .ok_or_else(|| store_not_found(store_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -214,32 +215,34 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         locale: &Locale,
     ) -> Result<Option<ProductTranslation>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let result =
-            load_product_translation(&mut transaction, actor, store_id, product_id, locale).await?;
+            load_product_translation(&mut transaction, &actor, store_id, product_id, locale)
+                .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(result)
     }
 
     async fn upsert_product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         translation: &ProductTranslation,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<ProductTranslation, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, UPSERT_PRODUCT, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, UPSERT_PRODUCT, request).await? {
             return replay_product_translation(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 product_id,
                 translation.content.locale(),
@@ -248,34 +251,34 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         }
         require_translatable_locale(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             translation.content.locale(),
         )
         .await?;
-        require_product(&mut transaction, actor, store_id, product_id).await?;
+        require_product(&mut transaction, &actor, store_id, product_id).await?;
         require_variants(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             &translation.variants,
         )
         .await?;
         sqlx::query("INSERT INTO catalog.product_translations (merchant_account_id,store_id,product_id,locale,title,description,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT (merchant_account_id,store_id,product_id,locale) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(translation.content.locale().as_str()).bind(translation.content.title()).bind(translation.content.description()).bind(actor.user_id().as_uuid()).bind(now)
+            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(translation.content.locale().as_str()).bind(translation.content.title()).bind(translation.content.description()).bind(audit_user_id).bind(now)
             .execute(&mut *transaction).await.map_err(database_error)?;
         sqlx::query("DELETE FROM catalog.product_variant_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND locale=$4")
             .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(translation.content.locale().as_str())
             .execute(&mut *transaction).await.map_err(database_error)?;
         for variant in &translation.variants {
             sqlx::query("INSERT INTO catalog.product_variant_translations (merchant_account_id,store_id,product_id,product_variant_id,locale,title,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)")
-                .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(variant.product_variant_id.as_uuid()).bind(translation.content.locale().as_str()).bind(variant.title.as_str()).bind(actor.user_id().as_uuid()).bind(now)
+                .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(variant.product_variant_id.as_uuid()).bind(translation.content.locale().as_str()).bind(variant.title.as_str()).bind(audit_user_id).bind(now)
                 .execute(&mut *transaction).await.map_err(database_error)?;
         }
         product_event(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             translation.content.locale(),
@@ -283,10 +286,10 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             now,
         )
         .await?;
-        complete(&mut transaction, actor, UPSERT_PRODUCT, request).await?;
+        complete(&mut transaction, &actor, UPSERT_PRODUCT, request).await?;
         let result = load_product_translation(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             translation.content.locale(),
@@ -299,25 +302,25 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn remove_product_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         locale: &Locale,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, REMOVE_PRODUCT, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, REMOVE_PRODUCT, request).await? {
             return Ok(());
         }
-        require_product(&mut transaction, actor, store_id, product_id).await?;
+        require_product(&mut transaction, &actor, store_id, product_id).await?;
         let deleted = sqlx::query("DELETE FROM catalog.product_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND locale=$4")
             .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(locale.as_str())
             .execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
         if deleted == 1 {
             product_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 product_id,
                 locale,
@@ -326,20 +329,20 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, REMOVE_PRODUCT, request).await?;
+        complete(&mut transaction, &actor, REMOVE_PRODUCT, request).await?;
         transaction.commit().await.map_err(database_error)
     }
 
     async fn collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         locale: &Locale,
     ) -> Result<Option<CollectionTranslation>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let result =
-            load_collection_translation(&mut transaction, actor, store_id, collection_id, locale)
+            load_collection_translation(&mut transaction, &actor, store_id, collection_id, locale)
                 .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(result)
@@ -347,32 +350,33 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn upsert_collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         content: &LocalizedContent,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionTranslation, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, UPSERT_COLLECTION, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, UPSERT_COLLECTION, request).await? {
             return replay_collection_translation(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 collection_id,
                 content.locale(),
             )
             .await;
         }
-        require_translatable_locale(&mut transaction, actor, store_id, content.locale()).await?;
-        require_collection(&mut transaction, actor, store_id, collection_id).await?;
+        require_translatable_locale(&mut transaction, &actor, store_id, content.locale()).await?;
+        require_collection(&mut transaction, &actor, store_id, collection_id).await?;
         sqlx::query("INSERT INTO catalog.collection_translations (merchant_account_id,store_id,collection_id,locale,title,description,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT (merchant_account_id,store_id,collection_id,locale) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.locale().as_str()).bind(content.title()).bind(content.description()).bind(actor.user_id().as_uuid()).bind(now)
+            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.locale().as_str()).bind(content.title()).bind(content.description()).bind(audit_user_id).bind(now)
             .execute(&mut *transaction).await.map_err(database_error)?;
         collection_event(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             collection_id,
             content.locale(),
@@ -380,10 +384,10 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             now,
         )
         .await?;
-        complete(&mut transaction, actor, UPSERT_COLLECTION, request).await?;
+        complete(&mut transaction, &actor, UPSERT_COLLECTION, request).await?;
         let result = load_collection_translation(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             collection_id,
             content.locale(),
@@ -396,23 +400,23 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn remove_collection_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         collection_id: CollectionId,
         locale: &Locale,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, REMOVE_COLLECTION, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, REMOVE_COLLECTION, request).await? {
             return Ok(());
         }
-        require_collection(&mut transaction, actor, store_id, collection_id).await?;
+        require_collection(&mut transaction, &actor, store_id, collection_id).await?;
         let deleted=sqlx::query("DELETE FROM catalog.collection_translations WHERE merchant_account_id=$1 AND store_id=$2 AND collection_id=$3 AND locale=$4").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(locale.as_str()).execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
         if deleted == 1 {
             collection_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 collection_id,
                 locale,
@@ -421,22 +425,22 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, REMOVE_COLLECTION, request).await?;
+        complete(&mut transaction, &actor, REMOVE_COLLECTION, request).await?;
         transaction.commit().await.map_err(database_error)
     }
 
     async fn media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
         locale: &Locale,
     ) -> Result<Option<MediaTranslation>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let result = load_media_translation(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             media_asset_id,
@@ -449,7 +453,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn upsert_media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -458,11 +462,12 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<MediaTranslation, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, UPSERT_MEDIA, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, UPSERT_MEDIA, request).await? {
             return replay_media_translation(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 product_id,
                 media_asset_id,
@@ -470,19 +475,19 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await;
         }
-        require_translatable_locale(&mut transaction, actor, store_id, locale).await?;
+        require_translatable_locale(&mut transaction, &actor, store_id, locale).await?;
         require_media(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             media_asset_id,
         )
         .await?;
-        sqlx::query("INSERT INTO catalog.media_asset_translations (merchant_account_id,store_id,product_id,media_asset_id,locale,alt_text,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT (merchant_account_id,store_id,product_id,media_asset_id,locale) DO UPDATE SET alt_text=EXCLUDED.alt_text,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(media_asset_id.as_uuid()).bind(locale.as_str()).bind(alt_text.as_str()).bind(actor.user_id().as_uuid()).bind(now).execute(&mut *transaction).await.map_err(database_error)?;
+        sqlx::query("INSERT INTO catalog.media_asset_translations (merchant_account_id,store_id,product_id,media_asset_id,locale,alt_text,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT (merchant_account_id,store_id,product_id,media_asset_id,locale) DO UPDATE SET alt_text=EXCLUDED.alt_text,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(media_asset_id.as_uuid()).bind(locale.as_str()).bind(alt_text.as_str()).bind(audit_user_id).bind(now).execute(&mut *transaction).await.map_err(database_error)?;
         media_event(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             media_asset_id,
@@ -491,10 +496,10 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             now,
         )
         .await?;
-        complete(&mut transaction, actor, UPSERT_MEDIA, request).await?;
+        complete(&mut transaction, &actor, UPSERT_MEDIA, request).await?;
         let result = load_media_translation(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             media_asset_id,
@@ -508,7 +513,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
 
     async fn remove_media_translation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -516,13 +521,13 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, REMOVE_MEDIA, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, REMOVE_MEDIA, request).await? {
             return Ok(());
         }
         require_media(
             &mut transaction,
-            actor,
+            &actor,
             store_id,
             product_id,
             media_asset_id,
@@ -532,7 +537,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         if deleted == 1 {
             media_event(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 product_id,
                 media_asset_id,
@@ -542,14 +547,14 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             )
             .await?;
         }
-        complete(&mut transaction, actor, REMOVE_MEDIA, request).await?;
+        complete(&mut transaction, &actor, REMOVE_MEDIA, request).await?;
         transaction.commit().await.map_err(database_error)
     }
 }
 
 async fn load_store_locales(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<Option<StoreLocaleConfiguration>, ApplicationError> {
     let default: Option<String> = sqlx::query_scalar(
@@ -578,7 +583,7 @@ async fn load_store_locales(
 }
 async fn replay_store_locales(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<StoreLocaleConfiguration, ApplicationError> {
     load_store_locales(tx, actor, store)
@@ -587,21 +592,21 @@ async fn replay_store_locales(
 }
 async fn lock_default_locale(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<String, ApplicationError> {
     sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2 FOR UPDATE").bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(||store_not_found(store))
 }
 async fn require_store(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
 ) -> Result<(), ApplicationError> {
     lock_default_locale(tx, actor, store).await.map(|_| ())
 }
 async fn require_translatable_locale(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     locale: &Locale,
 ) -> Result<(), ApplicationError> {
@@ -624,7 +629,7 @@ async fn require_translatable_locale(
 }
 async fn require_product(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     id: ProductId,
 ) -> Result<(), ApplicationError> {
@@ -632,7 +637,7 @@ async fn require_product(
 }
 async fn require_collection(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
 ) -> Result<(), ApplicationError> {
@@ -640,7 +645,7 @@ async fn require_collection(
 }
 async fn require_status(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     table: &str,
     id: Uuid,
@@ -676,7 +681,7 @@ async fn require_status(
 }
 async fn require_media(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     media: MediaAssetId,
@@ -696,7 +701,7 @@ async fn require_media(
 }
 async fn require_variants(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     variants: &[ProductVariantTranslation],
@@ -722,7 +727,7 @@ async fn require_variants(
 }
 async fn load_product_translation(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     locale: &Locale,
@@ -747,7 +752,7 @@ async fn load_product_translation(
 }
 async fn replay_product_translation(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     locale: &Locale,
@@ -758,7 +763,7 @@ async fn replay_product_translation(
 }
 async fn load_collection_translation(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     collection: CollectionId,
     locale: &Locale,
@@ -775,7 +780,7 @@ async fn load_collection_translation(
 }
 async fn replay_collection_translation(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     collection: CollectionId,
     locale: &Locale,
@@ -786,7 +791,7 @@ async fn replay_collection_translation(
 }
 async fn load_media_translation(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     media: MediaAssetId,
@@ -805,7 +810,7 @@ async fn load_media_translation(
 }
 async fn replay_media_translation(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     media: MediaAssetId,
@@ -818,44 +823,44 @@ async fn replay_media_translation(
 
 async fn locale_event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     locale: &Locale,
     previous: Option<&str>,
     kind: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO merchant.store_locale_events (id,merchant_account_id,store_id,locale,previous_locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::merchant.store_locale_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(locale.as_str()).bind(previous).bind(kind).bind(actor.user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO merchant.store_locale_events (id,merchant_account_id,store_id,locale,previous_locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::merchant.store_locale_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(locale.as_str()).bind(previous).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn product_event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     locale: &Locale,
     kind: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO catalog.product_translation_events (id,merchant_account_id,store_id,product_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.translation_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.product_translation_events (id,merchant_account_id,store_id,product_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.translation_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn collection_event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     collection: CollectionId,
     locale: &Locale,
     kind: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO catalog.collection_translation_events (id,merchant_account_id,store_id,collection_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.translation_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(collection.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.collection_translation_events (id,merchant_account_id,store_id,collection_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.translation_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(collection.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
 async fn media_event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     media: MediaAssetId,
@@ -863,12 +868,12 @@ async fn media_event(
     kind: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO catalog.media_translation_events (id,merchant_account_id,store_id,product_id,media_asset_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7::catalog.translation_event_kind,$8,$9)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(media.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.media_translation_events (id,merchant_account_id,store_id,product_id,media_asset_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6,$7::catalog.translation_event_kind,$8,$9)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(media.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<bool, ApplicationError> {
@@ -883,7 +888,7 @@ async fn reserve(
 }
 async fn complete(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<(), ApplicationError> {

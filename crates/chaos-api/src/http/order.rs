@@ -179,7 +179,7 @@ async fn transition(
     let order = state
         .order_management
         .change_status(ChangeOrderStatusInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             target_status,

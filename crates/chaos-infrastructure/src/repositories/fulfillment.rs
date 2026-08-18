@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob, FulfillmentEventQueue,
-        FulfillmentRepository, IdempotencyRequest, ReturnDetail, ReturnLineInput,
-        ReturnReceiptInput,
+        AdminActor, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,
+        FulfillmentEventQueue, FulfillmentRepository, IdempotencyRequest, ReturnDetail,
+        ReturnLineInput, ReturnReceiptInput,
     },
 };
 use chaos_domain::{
@@ -41,11 +40,11 @@ impl PostgresFulfillmentRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         for (key, value) in [
-            ("app.user_id", actor.user_id().as_uuid()),
+            ("app.user_id", actor.audit_user_id().as_uuid()),
             (
                 "app.merchant_account_id",
                 actor.merchant_account_id().as_uuid(),
@@ -79,12 +78,12 @@ impl PostgresFulfillmentRepository {
 impl FulfillmentRepository for PostgresFulfillmentRepository {
     async fn get_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         return_id: ReturnId,
     ) -> Result<Option<ReturnDetail>, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let detail = load_return(&mut transaction, account_id, store_id, return_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
@@ -92,14 +91,14 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
 
     async fn create_fulfillment(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
         allocations: Vec<FulfillmentAllocationInput>,
         request: &IdempotencyRequest,
     ) -> Result<FulfillmentDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(value) = reserve(
             &mut transaction,
             account_id,
@@ -173,7 +172,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
     #[allow(clippy::too_many_arguments)]
     async fn transition_fulfillment(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         target_status: FulfillmentStatus,
@@ -189,7 +188,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             FulfillmentStatus::Cancelled => "fulfillments.cancel.v1",
             FulfillmentStatus::Pending => return Err(invalid_target()),
         };
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(value) = reserve(&mut transaction, account_id, operation, request).await? {
             return replay_fulfillment(value);
         }
@@ -290,7 +289,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
 
     async fn create_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
         lines: Vec<ReturnLineInput>,
@@ -298,7 +297,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         request: &IdempotencyRequest,
     ) -> Result<ReturnDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(value) =
             reserve(&mut transaction, account_id, "returns.create.v1", request).await?
         {
@@ -361,7 +360,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
     #[allow(clippy::too_many_arguments)]
     async fn transition_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         return_id: ReturnId,
         target_status: ReturnStatus,
@@ -370,6 +369,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         request: &IdempotencyRequest,
     ) -> Result<ReturnDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
+        let audit_user_id = actor.audit_user_id().as_uuid();
         let operation = match target_status {
             ReturnStatus::Authorized => "returns.authorize.v1",
             ReturnStatus::Rejected => "returns.reject.v1",
@@ -377,7 +377,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             ReturnStatus::Completed => "returns.complete.v1",
             ReturnStatus::Requested => return Err(invalid_target()),
         };
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(value) = reserve(&mut transaction, account_id, operation, request).await? {
             return replay_return(value);
         }
@@ -408,7 +408,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
                     store_id,
                     return_id,
                     &receipt,
-                    actor.user_id().as_uuid(),
+                    audit_user_id,
                     now,
                 )
                 .await?;

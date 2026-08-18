@@ -13,7 +13,7 @@ use chaos_domain::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
 use super::{AdminActor, IdempotencyRequest, MachineActor, ShopperActor};
 
@@ -277,7 +277,7 @@ pub trait OrderManagementRepository: Send + Sync {
 
     async fn transition_order(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: chaos_domain::merchant::StoreId,
         order_id: OrderId,
         target_status: OrderStatus,

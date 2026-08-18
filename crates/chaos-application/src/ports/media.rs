@@ -7,9 +7,9 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct MediaAssetItem {
     pub id: MediaAssetId,
@@ -88,21 +88,21 @@ pub trait MediaStorage: Send + Sync {
 pub trait MediaAssetRepository: Send + Sync {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CreateMediaAssetRecord,
         request: &IdempotencyRequest,
     ) -> Result<PendingMediaUpload, ApplicationError>;
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Option<Vec<MediaAssetItem>>, ApplicationError>;
 
     async fn pending_upload(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
@@ -110,7 +110,7 @@ pub trait MediaAssetRepository: Send + Sync {
 
     async fn mark_ready(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         mutation: MediaAssetMutation,
         public_url: &str,
         request: &IdempotencyRequest,
@@ -118,7 +118,7 @@ pub trait MediaAssetRepository: Send + Sync {
 
     async fn archive(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         mutation: MediaAssetMutation,
         request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError>;

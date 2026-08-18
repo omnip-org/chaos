@@ -8,7 +8,7 @@ use axum::{
 use chaos_application::{
     ApplicationError,
     catalog::{CreateMediaAssetInput, MediaAssetActionInput, RefreshMediaUploadInput},
-    ports::{IdempotencyRequest, MediaAssetItem, MediaUploadRequest},
+    ports::{AdminActor, IdempotencyRequest, MediaAssetItem, MediaUploadRequest},
 };
 use chaos_domain::{
     catalog::{MediaAssetId, ProductId, ProductVariantId},
@@ -120,7 +120,7 @@ async fn create_media(
     let created = state
         .media_administration
         .create(CreateMediaAssetInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             product_variant_id: body.product_variant_id.map(ProductVariantId::from_uuid),
@@ -149,7 +149,7 @@ async fn list_media(
     let items = state
         .media_administration
         .list(
-            actor,
+            AdminActor::Merchant(actor),
             StoreId::from_uuid(path.store_id),
             ProductId::from_uuid(path.product_id),
         )
@@ -166,7 +166,7 @@ async fn refresh_upload(
     let upload = state
         .media_administration
         .refresh_upload(RefreshMediaUploadInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -201,7 +201,7 @@ async fn action(
 ) -> Result<ApiResponse<MediaData>, ApiError> {
     account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = MediaAssetActionInput {
-        actor,
+        actor: AdminActor::Merchant(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),

@@ -200,11 +200,7 @@ fn option_data(option: StorefrontProductOption) -> StorefrontProductOptionData {
         id: option.id.as_uuid(),
         name: option.name,
         position: option.position,
-        values: option
-            .values
-            .into_iter()
-            .map(option_value_data)
-            .collect(),
+        values: option.values.into_iter().map(option_value_data).collect(),
     }
 }
 

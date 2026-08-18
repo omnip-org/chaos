@@ -5,7 +5,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     ApplicationError,
-    ports::{ProviderSecretKind, ProviderSecretWriter, StoreAdministrationRepository},
+    ports::{AdminActor, ProviderSecretKind, ProviderSecretWriter, StoreAdministrationRepository},
 };
 
 use super::MerchantActor;
@@ -51,7 +51,7 @@ impl ProviderSecretManagement {
             });
         }
         self.stores
-            .get_store(input.actor, input.store_id)
+            .get_store(AdminActor::Merchant(input.actor), input.store_id)
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "store",

@@ -4,7 +4,7 @@ use chaos_application::{
     ApplicationError,
     merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
+        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
         PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
         PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
@@ -243,6 +243,17 @@ impl PostgresPaymentRepository {
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         self.begin_context(
             Some(actor.user_id().as_uuid()),
+            actor.merchant_account_id().as_uuid(),
+        )
+        .await
+    }
+
+    async fn begin_admin(
+        &self,
+        actor: &AdminActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        self.begin_context(
+            Some(actor.audit_user_id().as_uuid()),
             actor.merchant_account_id().as_uuid(),
         )
         .await
@@ -751,14 +762,14 @@ impl PaymentRepository for PostgresPaymentRepository {
 
     async fn create_refund(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         attempt_id: PaymentAttemptId,
         amount_minor: i64,
         request: &IdempotencyRequest,
     ) -> Result<RefundDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin_human(actor).await?;
+        let mut transaction = self.begin_admin(&actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
             &IdempotencyScope::MerchantAccount(account_id),

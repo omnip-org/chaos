@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
         AdminActor, IdempotencyRequest, OrderDetail, OrderLineItem, OrderListFilter,
         OrderManagementRepository, OrderPage, OrderTransitionItem,
@@ -91,28 +90,6 @@ impl PostgresOrderManagementRepository {
         Self { pool }
     }
 
-    async fn begin(
-        &self,
-        actor: MerchantActor,
-    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        for (key, value) in [
-            ("app.user_id", actor.user_id().as_uuid()),
-            (
-                "app.merchant_account_id",
-                actor.merchant_account_id().as_uuid(),
-            ),
-        ] {
-            sqlx::query("SELECT set_config($1, $2, true)")
-                .bind(key)
-                .bind(value.to_string())
-                .execute(&mut *transaction)
-                .await
-                .map_err(database_error)?;
-        }
-        Ok(transaction)
-    }
-
     async fn begin_for_admin(
         &self,
         actor: &AdminActor,
@@ -200,7 +177,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
 
     async fn transition_order(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         order_id: OrderId,
         target_status: OrderStatus,
@@ -213,7 +190,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             OrderStatus::Pending => return Err(invalid_target()),
         };
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin_for_admin(&actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
             &IdempotencyScope::MerchantAccount(account_id),
@@ -292,7 +270,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .bind(transition.from_status.map(OrderStatus::as_str))
         .bind(transition.to_status.as_str())
         .bind(transition.kind.as_str())
-        .bind(actor.user_id().as_uuid())
+        .bind(audit_user_id)
         .bind(now)
         .execute(&mut *transaction)
         .await

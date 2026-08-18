@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        IdempotencyRequest, PreparedShippingLabelCancellation, PreparedShippingLabelPurchase,
-        PreparedShippingQuote, PurchasedShippingLabel, ShippingAddress, ShippingCancellationJob,
-        ShippingCancellationStatus, ShippingLabelDetail, ShippingOperationRepository,
-        ShippingParcel, ShippingProviderAccountConfiguration, ShippingProviderAccountDetail,
-        ShippingProviderAccountRepository, ShippingQuoteCommand, ShippingRateQuote,
-        ShippingRateQuoteDetail, ShippingServiceDetail, ShippingServiceRepository,
-        ShippingTrackingJob, ShippingTrackingQueue, ShippingTrackingSnapshot,
+        AdminActor, IdempotencyRequest, PreparedShippingLabelCancellation,
+        PreparedShippingLabelPurchase, PreparedShippingQuote, PurchasedShippingLabel,
+        ShippingAddress, ShippingCancellationJob, ShippingCancellationStatus, ShippingLabelDetail,
+        ShippingOperationRepository, ShippingParcel, ShippingProviderAccountConfiguration,
+        ShippingProviderAccountDetail, ShippingProviderAccountRepository, ShippingQuoteCommand,
+        ShippingRateQuote, ShippingRateQuoteDetail, ShippingServiceDetail,
+        ShippingServiceRepository, ShippingTrackingJob, ShippingTrackingQueue,
+        ShippingTrackingSnapshot,
     },
 };
 use chaos_domain::{
@@ -168,11 +168,11 @@ impl PostgresShippingServiceRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -189,16 +189,16 @@ impl PostgresShippingServiceRepository {
 impl ShippingServiceRepository for PostgresShippingServiceRepository {
     async fn create_shipping_service(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         service: &ShippingService,
         request: &IdempotencyRequest,
     ) -> Result<ShippingServiceDetail, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, CREATE_OPERATION, request).await? {
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, CREATE_OPERATION, request).await? {
             let detail = load(
                 &mut transaction,
-                actor,
+                &actor,
                 store_id,
                 ShippingServiceId::from_uuid(id),
             )
@@ -207,8 +207,13 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             transaction.commit().await.map_err(database_error)?;
             return Ok(detail);
         }
-        require_store_currency(&mut transaction, actor, store_id, service.rate().currency())
-            .await?;
+        require_store_currency(
+            &mut transaction,
+            &actor,
+            store_id,
+            service.rate().currency(),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
              (id, merchant_account_id, store_id, code, name, amount_minor, currency, \
@@ -244,13 +249,13 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         }
         complete(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_OPERATION,
             request,
             service.id(),
         )
         .await?;
-        let detail = load(&mut transaction, actor, store_id, service.id())
+        let detail = load(&mut transaction, &actor, store_id, service.id())
             .await?
             .ok_or_else(|| service_not_found(service.id()))?;
         transaction.commit().await.map_err(database_error)?;
@@ -259,11 +264,11 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
 
     async fn list_shipping_services(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingServiceDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        require_store(&mut transaction, actor, store_id).await?;
+        let mut transaction = self.begin(&actor).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         let rows = sqlx::query_as::<_, ServiceRow>(
             "SELECT id, code, name, amount_minor, currency::text, estimated_min_days, \
                     estimated_max_days, status::text, created_at, updated_at \
@@ -277,7 +282,7 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         .map_err(database_error)?;
         let mut details = Vec::with_capacity(rows.len());
         for row in rows {
-            details.push(detail(&mut transaction, actor, store_id, row).await?);
+            details.push(detail(&mut transaction, &actor, store_id, row).await?);
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(details)
@@ -285,7 +290,7 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
 
     async fn change_shipping_service_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         service_id: ShippingServiceId,
         status: ShippingServiceStatus,
@@ -295,8 +300,8 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             ShippingServiceStatus::Active => ACTIVATE_OPERATION,
             ShippingServiceStatus::Archived => ARCHIVE_OPERATION,
         };
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, operation, request)
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, operation, request)
             .await?
             .is_none()
         {
@@ -311,9 +316,9 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             if result.rows_affected() != 1 {
                 return Err(service_not_found(service_id));
             }
-            complete(&mut transaction, actor, operation, request, service_id).await?;
+            complete(&mut transaction, &actor, operation, request, service_id).await?;
         }
-        let detail = load(&mut transaction, actor, store_id, service_id)
+        let detail = load(&mut transaction, &actor, store_id, service_id)
             .await?
             .ok_or_else(|| service_not_found(service_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -325,11 +330,11 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
 impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        require_store(&mut transaction, actor, store_id).await?;
+        let mut transaction = self.begin(&actor).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, enabled, \
                     credential_secret_reference IS NOT NULL AS credentials_configured, \
@@ -354,11 +359,11 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         id: ShippingProviderAccountId,
     ) -> Result<Option<ShippingProviderAccountDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let value = load_provider_account(
             &mut transaction,
             actor.merchant_account_id().as_uuid(),
@@ -372,17 +377,18 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
 
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         account: &ShippingProviderAccount,
         configuration: &ShippingProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_PROVIDER_ACCOUNT_OPERATION,
             request,
         )
@@ -425,13 +431,13 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         .bind(&origin.phone)
         .bind(&origin.email)
         .bind(account.enabled())
-        .bind(actor.user_id().as_uuid())
+        .bind(audit_user_id)
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
         complete_provider_account(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_PROVIDER_ACCOUNT_OPERATION,
             request,
             account.id(),
@@ -446,17 +452,17 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         account: &ShippingProviderAccount,
         configuration: &ShippingProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(
             &mut transaction,
-            actor,
+            &actor,
             UPDATE_PROVIDER_ACCOUNT_OPERATION,
             request,
         )
@@ -512,7 +518,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         }
         complete_provider_account(
             &mut transaction,
-            actor,
+            &actor,
             UPDATE_PROVIDER_ACCOUNT_OPERATION,
             request,
             account.id(),
@@ -530,7 +536,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
 impl ShippingOperationRepository for PostgresShippingServiceRepository {
     async fn prepare_quote(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         provider_account_id: ShippingProviderAccountId,
@@ -539,7 +545,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
     ) -> Result<PreparedShippingQuote, ApplicationError> {
         validate_parcel(parcel)?;
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
             "SELECT id, request_fingerprint, state FROM fulfillment.shipping_quote_requests \
              WHERE merchant_account_id = $1 AND store_id = $2 AND idempotency_key = $3 \
@@ -635,7 +641,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
     async fn complete_quote(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         quote_request_id: ShippingQuoteRequestId,
         rates: Vec<ShippingRateQuote>,
@@ -648,7 +654,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
             });
         }
         let account_id = actor.merchant_account_id().as_uuid();
-        let mut transaction = self.begin(actor).await?;
+        let mut transaction = self.begin(&actor).await?;
         let state = sqlx::query_scalar::<_, String>(
             "SELECT state FROM fulfillment.shipping_quote_requests \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
@@ -715,7 +721,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
     async fn prepare_label_purchase(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         rate_quote_id: ShippingRateQuoteId,
@@ -736,7 +742,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
     async fn complete_label_purchase(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         label_id: ShippingLabelId,
         label: PurchasedShippingLabel,
@@ -747,7 +753,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
     async fn prepare_label_cancellation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         fulfillment_id: FulfillmentId,
         request: &IdempotencyRequest,
@@ -758,7 +764,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
     async fn complete_label_cancellation(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         label_id: ShippingLabelId,
         status: ShippingCancellationStatus,
@@ -770,7 +776,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
 
 async fn prepare_label_purchase(
     repository: &PostgresShippingServiceRepository,
-    actor: MerchantActor,
+    actor: AdminActor,
     store_id: StoreId,
     fulfillment_id: FulfillmentId,
     rate_quote_id: ShippingRateQuoteId,
@@ -778,7 +784,7 @@ async fn prepare_label_purchase(
     now: OffsetDateTime,
 ) -> Result<PreparedShippingLabelPurchase, ApplicationError> {
     let account_id = actor.merchant_account_id().as_uuid();
-    let mut transaction = repository.begin(actor).await?;
+    let mut transaction = repository.begin(&actor).await?;
     if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
         "SELECT id, purchase_request_fingerprint, purchase_state \
          FROM fulfillment.shipping_labels \
@@ -888,14 +894,14 @@ async fn load_pending_label(
 
 async fn complete_label_purchase(
     repository: &PostgresShippingServiceRepository,
-    actor: MerchantActor,
+    actor: AdminActor,
     store_id: StoreId,
     label_id: ShippingLabelId,
     label: PurchasedShippingLabel,
     completed_at: OffsetDateTime,
 ) -> Result<ShippingLabelDetail, ApplicationError> {
     let account_id = actor.merchant_account_id().as_uuid();
-    let mut transaction = repository.begin(actor).await?;
+    let mut transaction = repository.begin(&actor).await?;
     let row = sqlx::query_as::<_, (String, Uuid, String)>(
         "SELECT purchase_state, fulfillment_id, provider_shipment_reference \
          FROM fulfillment.shipping_labels \
@@ -998,14 +1004,14 @@ async fn complete_label_purchase(
 
 async fn prepare_label_cancellation(
     repository: &PostgresShippingServiceRepository,
-    actor: MerchantActor,
+    actor: AdminActor,
     store_id: StoreId,
     fulfillment_id: FulfillmentId,
     request: &IdempotencyRequest,
     now: OffsetDateTime,
 ) -> Result<PreparedShippingLabelCancellation, ApplicationError> {
     let account_id = actor.merchant_account_id().as_uuid();
-    let mut transaction = repository.begin(actor).await?;
+    let mut transaction = repository.begin(&actor).await?;
     let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<Vec<u8>>, Option<String>)>(
         "SELECT id, cancellation_idempotency_key, cancellation_request_fingerprint, \
                 cancellation_status \
@@ -1096,14 +1102,14 @@ async fn load_pending_cancellation(
 
 async fn complete_label_cancellation(
     repository: &PostgresShippingServiceRepository,
-    actor: MerchantActor,
+    actor: AdminActor,
     store_id: StoreId,
     label_id: ShippingLabelId,
     status: ShippingCancellationStatus,
     completed_at: OffsetDateTime,
 ) -> Result<ShippingLabelDetail, ApplicationError> {
     let account_id = actor.merchant_account_id().as_uuid();
-    let mut transaction = repository.begin(actor).await?;
+    let mut transaction = repository.begin(&actor).await?;
     let result = sqlx::query(
         "UPDATE fulfillment.shipping_labels SET cancellation_status = $4, \
                 cancellation_reconcile_at = CASE WHEN $4 = 'submitted' \
@@ -1722,7 +1728,7 @@ fn provider_account_detail(
 
 async fn load(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     service_id: ShippingServiceId,
 ) -> Result<Option<ShippingServiceDetail>, ApplicationError> {
@@ -1746,7 +1752,7 @@ async fn load(
 
 async fn detail(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     row: ServiceRow,
 ) -> Result<ShippingServiceDetail, ApplicationError> {
@@ -1782,7 +1788,7 @@ async fn detail(
 
 async fn require_store_currency(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     currency: CurrencyCode,
 ) -> Result<(), ApplicationError> {
@@ -1813,7 +1819,7 @@ async fn require_store_currency(
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
@@ -1836,7 +1842,7 @@ async fn require_store(
 
 async fn reserve(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -1859,7 +1865,7 @@ async fn reserve(
 
 async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: ShippingServiceId,
@@ -1877,7 +1883,7 @@ async fn complete(
 
 async fn complete_provider_account(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: ShippingProviderAccountId,

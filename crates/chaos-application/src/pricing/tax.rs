@@ -1,18 +1,17 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     pricing::{TaxRule, TaxRuleId, TaxRuleStatus},
 };
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, TaxRuleDetail, TaxRuleRepository},
+    ports::{AdminActor, IdempotencyRequest, TaxRuleDetail, TaxRuleRepository},
 };
 
 pub struct CreateTaxRuleInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -22,7 +21,7 @@ pub struct CreateTaxRuleInput {
 }
 
 pub struct ChangeTaxRuleStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub rule_id: TaxRuleId,
     pub status: TaxRuleStatus,
@@ -42,7 +41,7 @@ impl TaxManagement {
         &self,
         input: CreateTaxRuleInput,
     ) -> Result<TaxRuleDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let rule = TaxRule::create(
             input.code,
             input.name,
@@ -56,10 +55,10 @@ impl TaxManagement {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<TaxRuleDetail>, ApplicationError> {
-        require_operator(actor)?;
+        require_operator(&actor)?;
         self.repository.list_tax_rules(actor, store_id).await
     }
 
@@ -67,7 +66,7 @@ impl TaxManagement {
         &self,
         input: ChangeTaxRuleStatusInput,
     ) -> Result<TaxRuleDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .change_tax_rule_status(
                 input.actor,
@@ -80,13 +79,24 @@ impl TaxManagement {
     }
 }
 
-fn require_operator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }

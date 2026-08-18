@@ -2,21 +2,20 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ProductVariantId},
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
 };
 use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
+        AdminActor, CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
         MediaAssetRepository, MediaStorage, MediaUploadRequest,
     },
 };
 
 pub struct CreateMediaAssetInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub product_variant_id: Option<ProductVariantId>,
@@ -30,7 +29,7 @@ pub struct CreateMediaAssetInput {
     pub now: OffsetDateTime,
 }
 pub struct MediaAssetActionInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
@@ -38,7 +37,7 @@ pub struct MediaAssetActionInput {
     pub now: OffsetDateTime,
 }
 pub struct RefreshMediaUploadInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
@@ -65,7 +64,7 @@ impl MediaAdministration {
         &self,
         input: CreateMediaAssetInput,
     ) -> Result<CreatedMediaAsset, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         if input.position > 99 {
             return Err(validation("position", "must be between 0 and 99"));
         }
@@ -107,7 +106,7 @@ impl MediaAdministration {
     }
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Vec<MediaAssetItem>, ApplicationError> {
@@ -120,7 +119,7 @@ impl MediaAdministration {
         &self,
         input: RefreshMediaUploadInput,
     ) -> Result<MediaUploadRequest, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         let pending = self
             .repository
             .pending_upload(
@@ -142,11 +141,11 @@ impl MediaAdministration {
         &self,
         input: MediaAssetActionInput,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         let pending = self
             .repository
             .pending_upload(
-                input.actor,
+                input.actor.clone(),
                 input.store_id,
                 input.product_id,
                 input.media_asset_id,
@@ -191,7 +190,7 @@ impl MediaAdministration {
         &self,
         input: MediaAssetActionInput,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        require_writer(input.actor)?;
+        require_writer(&input.actor)?;
         self.repository
             .archive(
                 input.actor,
@@ -228,17 +227,28 @@ impl MediaAdministration {
     }
 }
 
-fn require_writer(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner
-            | MerchantRole::Administrator
-            | MerchantRole::Developer
-            | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner
+                    | MerchantRole::Administrator
+                    | MerchantRole::Developer
+                    | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::MediaWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 fn validation(field: &'static str, reason: &'static str) -> ApplicationError {

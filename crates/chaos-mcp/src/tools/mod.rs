@@ -1,17 +1,29 @@
 mod collections;
+mod fulfillment;
 mod inventory;
+mod localization;
+mod media;
 mod orders;
+mod payments;
 mod price_lists;
 mod products;
+mod promotions;
+mod store_admin;
+mod tax_rules;
 
 use std::sync::Arc;
 
 use chaos_application::{
-    catalog::{CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct},
+    catalog::{
+        CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
+        CreateProduct, MediaAdministration,
+    },
+    fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     inventory::InventoryManagement,
-    merchant::ApiKeyAuthentication,
+    merchant::{ApiKeyAuthentication, StoreAdministration},
+    payments::PaymentService,
     ports::Clock,
-    pricing::{CreatePriceList, PricingManagement},
+    pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::OrderManagement,
 };
 use rmcp::{handler::server::router::tool::ToolRouter, tool_handler};
@@ -27,8 +39,17 @@ pub struct McpState {
     pub collection_administration: Arc<CollectionAdministration>,
     pub pricing_management: Arc<PricingManagement>,
     pub create_price_list: Arc<CreatePriceList>,
+    pub promotion_management: Arc<PromotionManagement>,
+    pub tax_management: Arc<TaxManagement>,
     pub inventory_management: Arc<InventoryManagement>,
     pub order_management: Arc<OrderManagement>,
+    pub fulfillment_management: Arc<FulfillmentManagement>,
+    pub shipping_management: Arc<ShippingManagement>,
+    pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
+    pub store_administration: Arc<StoreAdministration>,
+    pub payment_service: Arc<PaymentService>,
+    pub media_administration: Arc<MediaAdministration>,
+    pub catalog_localization: Arc<CatalogLocalization>,
     pub clock: Arc<dyn Clock>,
 }
 
@@ -46,7 +67,14 @@ impl ChaosMcp {
                 + Self::price_lists_tool_router()
                 + Self::inventory_tool_router()
                 + Self::orders_tool_router()
-                + Self::collections_tool_router(),
+                + Self::collections_tool_router()
+                + Self::promotions_tool_router()
+                + Self::tax_rules_tool_router()
+                + Self::fulfillment_tool_router()
+                + Self::store_admin_tool_router()
+                + Self::payments_tool_router()
+                + Self::media_tool_router()
+                + Self::localization_tool_router(),
         }
     }
 }

@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
-    ports::{IdempotencyRequest, TaxRuleDetail, TaxRuleRepository},
+    ports::{AdminActor, IdempotencyRequest, TaxRuleDetail, TaxRuleRepository},
 };
 use chaos_domain::{
     merchant::StoreId,
@@ -42,11 +41,11 @@ impl PostgresTaxRuleRepository {
 
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -63,20 +62,20 @@ impl PostgresTaxRuleRepository {
 impl TaxRuleRepository for PostgresTaxRuleRepository {
     async fn create_tax_rule(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         rule: &TaxRule,
         request: &IdempotencyRequest,
     ) -> Result<TaxRuleDetail, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut transaction, actor, CREATE_OPERATION, request).await? {
-            let detail = load(&mut transaction, actor, store_id, TaxRuleId::from_uuid(id))
+        let mut transaction = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut transaction, &actor, CREATE_OPERATION, request).await? {
+            let detail = load(&mut transaction, &actor, store_id, TaxRuleId::from_uuid(id))
                 .await?
                 .ok_or_else(|| rule_not_found(TaxRuleId::from_uuid(id)))?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(detail);
         }
-        require_store(&mut transaction, actor, store_id).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         sqlx::query(
             "INSERT INTO pricing.tax_rules \
              (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points, status) \
@@ -88,13 +87,13 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
         .execute(&mut *transaction).await.map_err(map_write_error)?;
         complete(
             &mut transaction,
-            actor,
+            &actor,
             CREATE_OPERATION,
             request,
             rule.id(),
         )
         .await?;
-        let detail = load(&mut transaction, actor, store_id, rule.id())
+        let detail = load(&mut transaction, &actor, store_id, rule.id())
             .await?
             .ok_or_else(|| rule_not_found(rule.id()))?;
         transaction.commit().await.map_err(database_error)?;
@@ -103,11 +102,11 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
 
     async fn list_tax_rules(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<TaxRuleDetail>, ApplicationError> {
-        let mut transaction = self.begin(actor).await?;
-        require_store(&mut transaction, actor, store_id).await?;
+        let mut transaction = self.begin(&actor).await?;
+        require_store(&mut transaction, &actor, store_id).await?;
         let rows = sqlx::query_as::<_, TaxRuleRow>(
             "SELECT id, code, name, country_code::text, rate_basis_points, status::text, \
                     created_at, updated_at FROM pricing.tax_rules \
@@ -124,7 +123,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
 
     async fn change_tax_rule_status(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         rule_id: TaxRuleId,
         status: TaxRuleStatus,
@@ -134,8 +133,8 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             TaxRuleStatus::Active => ACTIVATE_OPERATION,
             TaxRuleStatus::Archived => ARCHIVE_OPERATION,
         };
-        let mut transaction = self.begin(actor).await?;
-        if reserve(&mut transaction, actor, operation, request)
+        let mut transaction = self.begin(&actor).await?;
+        if reserve(&mut transaction, &actor, operation, request)
             .await?
             .is_none()
         {
@@ -148,9 +147,9 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             if result.rows_affected() != 1 {
                 return Err(rule_not_found(rule_id));
             }
-            complete(&mut transaction, actor, operation, request, rule_id).await?;
+            complete(&mut transaction, &actor, operation, request, rule_id).await?;
         }
-        let detail = load(&mut transaction, actor, store_id, rule_id)
+        let detail = load(&mut transaction, &actor, store_id, rule_id)
             .await?
             .ok_or_else(|| rule_not_found(rule_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -160,7 +159,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
 
 async fn load(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
     rule_id: TaxRuleId,
 ) -> Result<Option<TaxRuleDetail>, ApplicationError> {
@@ -195,7 +194,7 @@ fn tax_rule_detail(row: TaxRuleRow) -> Result<TaxRuleDetail, ApplicationError> {
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
@@ -219,7 +218,7 @@ async fn require_store(
 
 async fn reserve(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -242,7 +241,7 @@ async fn reserve(
 
 async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: TaxRuleId,

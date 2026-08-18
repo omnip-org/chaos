@@ -1,5 +1,11 @@
-use chaos_application::ports::{AdminActor, OrderListFilter};
-use chaos_domain::{merchant::ApiKeyScope, sales::OrderId};
+use chaos_application::{
+    ports::{AdminActor, OrderListFilter},
+    sales::ChangeOrderStatusInput,
+};
+use chaos_domain::{
+    merchant::ApiKeyScope,
+    sales::{OrderId, OrderStatus},
+};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -7,12 +13,15 @@ use rmcp::{
     tool, tool_router,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
 use super::ChaosMcp;
-use crate::error::{text_result, tool_error};
+use crate::{
+    error::{text_result, tool_error},
+    mutation::{idempotency_request, require_confirmation},
+};
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListOrdersParams {
@@ -31,6 +40,16 @@ pub struct ListOrdersParams {
 pub struct GetOrderParams {
     /// The order's UUID.
     pub order_id: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct ChangeOrderStatusParams {
+    /// The order's UUID.
+    pub order_id: String,
+    /// Must be explicitly set to true. This action affects live store data.
+    pub confirm: bool,
+    /// A client-chosen key identifying this exact attempt.
+    pub idempotency_key: String,
 }
 
 #[tool_router(router = orders_tool_router, vis = "pub(super)")]
@@ -139,6 +158,82 @@ impl ChaosMcp {
             .state
             .order_management
             .get_order(actor, store_id, order_id)
+            .await
+        {
+            Ok(detail) => Ok(text_result(order_summary(detail))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Confirm a pending order in the Store bound to this API key. Requires \
+                        confirm: true and an idempotency_key."
+    )]
+    async fn confirm_order(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ChangeOrderStatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change_order_status(parts, params, OrderStatus::Confirmed)
+            .await
+    }
+
+    #[tool(
+        description = "Cancel a pending order in the Store bound to this API key. Requires \
+                        confirm: true and an idempotency_key."
+    )]
+    async fn cancel_order(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ChangeOrderStatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change_order_status(parts, params, OrderStatus::Cancelled)
+            .await
+    }
+}
+
+impl ChaosMcp {
+    async fn change_order_status(
+        &self,
+        parts: http::request::Parts,
+        params: ChangeOrderStatusParams,
+        target_status: OrderStatus,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::auth::authenticate_machine(
+            &self.state.api_key_authentication,
+            &parts,
+            ApiKeyScope::OrdersWrite,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let AdminActor::Machine(machine) = &actor else {
+            unreachable!("authenticate_machine always returns AdminActor::Machine")
+        };
+        let store_id = machine.store_id;
+        let order_id = match parse_uuid_field(&params.order_id, "order_id") {
+            Ok(id) => OrderId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
+        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
+        let now = self.state.clock.now();
+
+        match self
+            .state
+            .order_management
+            .change_status(ChangeOrderStatusInput {
+                actor,
+                store_id,
+                order_id,
+                target_status,
+                now,
+                idempotency,
+            })
             .await
         {
             Ok(detail) => Ok(text_result(order_summary(detail))),

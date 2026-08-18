@@ -274,7 +274,7 @@ async fn create_promotion(
     let detail = state
         .promotion_management
         .create(CreatePromotionInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             name: body.name,
@@ -303,7 +303,10 @@ async fn list_promotions(
     )?;
     let values = state
         .promotion_management
-        .list(actor, StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         values.into_iter().map(promotion_data).collect(),
@@ -336,7 +339,7 @@ async fn change_promotion_status(
     let detail = state
         .promotion_management
         .change_status(ChangePromotionStatusInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             promotion_id: PromotionId::from_uuid(path.promotion_id),
             status,
@@ -414,7 +417,7 @@ async fn create_tax_rule(
     let detail = state
         .tax_management
         .create(CreateTaxRuleInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -437,7 +440,10 @@ async fn list_tax_rules(
     )?;
     let rules = state
         .tax_management
-        .list(actor, StoreId::from_uuid(path.store_id))
+        .list(
+            AdminActor::Merchant(actor),
+            StoreId::from_uuid(path.store_id),
+        )
         .await?;
     Ok(ApiResponse::ok(
         rules.into_iter().map(tax_rule_data).collect(),
@@ -470,7 +476,7 @@ async fn change_tax_rule_status(
     let detail = state
         .tax_management
         .change_status(ChangeTaxRuleStatusInput {
-            actor,
+            actor: AdminActor::Merchant(actor),
             store_id: StoreId::from_uuid(path.store_id),
             rule_id: TaxRuleId::from_uuid(path.tax_rule_id),
             status,

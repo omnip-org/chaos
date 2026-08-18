@@ -6,7 +6,7 @@ use chaos_domain::{
         FulfillmentId, FulfillmentStatus, ReturnId, ReturnStatus, ShippingProviderAccount,
         ShippingProviderAccountId, ShippingRateQuoteId, ShippingSecretReference,
     },
-    merchant::{MerchantRole, StoreId},
+    merchant::{ApiKeyScope, MerchantRole, StoreId},
     pricing::Money,
     sales::OrderId,
 };
@@ -15,9 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail,
+        AdminActor, CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail,
         FulfillmentEventQueue, FulfillmentRepository, IdempotencyRequest,
         PreparedShippingLabelCancellation, PreparedShippingLabelPurchase, PreparedShippingQuote,
         PurchaseShippingLabelCommand, ReconcileShippingLabelCommand, ReturnDetail, ReturnLineInput,
@@ -30,7 +29,7 @@ use crate::{
 use chaos_domain::fulfillment::{ShippingService, ShippingServiceId, ShippingServiceStatus};
 
 pub struct CreateFulfillmentInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub order_id: OrderId,
     pub allocations: Vec<FulfillmentAllocationInput>,
@@ -38,7 +37,7 @@ pub struct CreateFulfillmentInput {
 }
 
 pub struct TransitionFulfillmentInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub target_status: FulfillmentStatus,
@@ -49,7 +48,7 @@ pub struct TransitionFulfillmentInput {
 }
 
 pub struct CreateReturnInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub order_id: OrderId,
     pub lines: Vec<ReturnLineInput>,
@@ -58,7 +57,7 @@ pub struct CreateReturnInput {
 }
 
 pub struct TransitionReturnInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub return_id: ReturnId,
     pub target_status: ReturnStatus,
@@ -187,7 +186,7 @@ impl FulfillmentWorkers {
 }
 
 pub struct CreateShippingServiceInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
@@ -200,7 +199,7 @@ pub struct CreateShippingServiceInput {
 }
 
 pub struct ChangeShippingServiceStatusInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub service_id: ShippingServiceId,
     pub status: ShippingServiceStatus,
@@ -212,7 +211,7 @@ pub struct ShippingManagement {
 }
 
 pub struct CreateShippingProviderAccountInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub provider: String,
     pub display_name: String,
@@ -223,7 +222,7 @@ pub struct CreateShippingProviderAccountInput {
 }
 
 pub struct UpdateShippingProviderAccountInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub id: ShippingProviderAccountId,
     pub display_name: String,
@@ -234,7 +233,7 @@ pub struct UpdateShippingProviderAccountInput {
 }
 
 pub struct QuoteShippingRatesInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub provider_account_id: ShippingProviderAccountId,
@@ -244,7 +243,7 @@ pub struct QuoteShippingRatesInput {
 }
 
 pub struct PurchaseShippingLabelInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub rate_quote_id: ShippingRateQuoteId,
@@ -253,7 +252,7 @@ pub struct PurchaseShippingLabelInput {
 }
 
 pub struct CancelPurchasedShippingLabelInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub now: OffsetDateTime,
@@ -284,20 +283,20 @@ impl ShippingProviderAdministration {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
-        require_provider_administrator(actor)?;
+        require_provider_administrator(&actor)?;
         self.repository.list(actor, store_id).await
     }
 
     pub async fn get(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         id: ShippingProviderAccountId,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-        require_provider_administrator(actor)?;
+        require_provider_administrator(&actor)?;
         self.repository
             .get(actor, store_id, id)
             .await?
@@ -308,7 +307,7 @@ impl ShippingProviderAdministration {
         &self,
         input: CreateShippingProviderAccountInput,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-        require_provider_administrator(input.actor)?;
+        require_provider_administrator(&input.actor)?;
         self.require_supported(&input.provider, input.enabled)?;
         let account =
             ShippingProviderAccount::create(input.provider, input.display_name, input.enabled)?;
@@ -333,10 +332,10 @@ impl ShippingProviderAdministration {
         &self,
         input: UpdateShippingProviderAccountInput,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-        require_provider_administrator(input.actor)?;
+        require_provider_administrator(&input.actor)?;
         let mut detail = self
             .repository
-            .get(input.actor, input.store_id, input.id)
+            .get(input.actor.clone(), input.store_id, input.id)
             .await?
             .ok_or_else(|| shipping_provider_account_not_found(input.id))?;
         self.require_supported(detail.account.provider(), input.enabled)?;
@@ -364,11 +363,11 @@ impl ShippingProviderAdministration {
         &self,
         input: QuoteShippingRatesInput,
     ) -> Result<Vec<ShippingRateQuoteDetail>, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let prepared = self
             .operations
             .prepare_quote(
-                input.actor,
+                input.actor.clone(),
                 input.store_id,
                 input.fulfillment_id,
                 input.provider_account_id,
@@ -404,11 +403,11 @@ impl ShippingProviderAdministration {
         &self,
         input: PurchaseShippingLabelInput,
     ) -> Result<ShippingLabelDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let prepared = self
             .operations
             .prepare_label_purchase(
-                input.actor,
+                input.actor.clone(),
                 input.store_id,
                 input.fulfillment_id,
                 input.rate_quote_id,
@@ -459,11 +458,11 @@ impl ShippingProviderAdministration {
         &self,
         input: CancelPurchasedShippingLabelInput,
     ) -> Result<ShippingLabelDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let prepared = self
             .operations
             .prepare_label_cancellation(
-                input.actor,
+                input.actor.clone(),
                 input.store_id,
                 input.fulfillment_id,
                 &input.idempotency,
@@ -535,7 +534,7 @@ impl ShippingManagement {
         &self,
         input: CreateShippingServiceInput,
     ) -> Result<ShippingServiceDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         let currency = CurrencyCode::parse(&input.currency)?;
         let service = ShippingService::create(
             input.code,
@@ -552,10 +551,10 @@ impl ShippingManagement {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
     ) -> Result<Vec<ShippingServiceDetail>, ApplicationError> {
-        require_operator(actor)?;
+        require_operator(&actor)?;
         self.repository
             .list_shipping_services(actor, store_id)
             .await
@@ -565,7 +564,7 @@ impl ShippingManagement {
         &self,
         input: ChangeShippingServiceStatusInput,
     ) -> Result<ShippingServiceDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .change_shipping_service_status(
                 input.actor,
@@ -585,11 +584,11 @@ impl FulfillmentManagement {
 
     pub async fn get_return(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         return_id: ReturnId,
     ) -> Result<ReturnDetail, ApplicationError> {
-        require_operator(actor)?;
+        require_operator(&actor)?;
         self.repository
             .get_return(actor, store_id, return_id)
             .await?
@@ -603,7 +602,7 @@ impl FulfillmentManagement {
         &self,
         input: CreateFulfillmentInput,
     ) -> Result<FulfillmentDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .create_fulfillment(
                 input.actor,
@@ -619,7 +618,7 @@ impl FulfillmentManagement {
         &self,
         input: TransitionFulfillmentInput,
     ) -> Result<FulfillmentDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .transition_fulfillment(
                 input.actor,
@@ -638,7 +637,7 @@ impl FulfillmentManagement {
         &self,
         input: CreateReturnInput,
     ) -> Result<ReturnDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .create_return(
                 input.actor,
@@ -655,7 +654,7 @@ impl FulfillmentManagement {
         &self,
         input: TransitionReturnInput,
     ) -> Result<ReturnDetail, ApplicationError> {
-        require_operator(input.actor)?;
+        require_operator(&input.actor)?;
         self.repository
             .transition_return(
                 input.actor,
@@ -670,25 +669,47 @@ impl FulfillmentManagement {
     }
 }
 
-fn require_operator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::FulfillmentWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 
-fn require_provider_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator
-    ) {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
+fn require_provider_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Merchant(merchant) => {
+            if matches!(
+                merchant.role(),
+                MerchantRole::Owner | MerchantRole::Administrator
+            ) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::FulfillmentWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 

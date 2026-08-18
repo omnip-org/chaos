@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
+        AdminActor, CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
         MediaAssetRepository, PendingMediaUpload,
     },
 };
@@ -34,11 +33,11 @@ impl PostgresMediaAssetRepository {
     }
     async fn begin(
         &self,
-        actor: MerchantActor,
+        actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.user_id',$1,true)")
-            .bind(actor.user_id().as_uuid().to_string())
+            .bind(actor.audit_user_id().as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -75,15 +74,16 @@ struct MediaRow {
 impl MediaAssetRepository for PostgresMediaAssetRepository {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         record: CreateMediaAssetRecord,
         request: &IdempotencyRequest,
     ) -> Result<PendingMediaUpload, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, CREATE, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, CREATE, request).await? {
             let row = load(
                 &mut tx,
-                actor,
+                &actor,
                 record.store_id,
                 record.product_id,
                 MediaAssetId::from_uuid(id),
@@ -113,10 +113,10 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         }
         let digest = decode_digest(record.descriptor.sha256_hex())?;
         sqlx::query("INSERT INTO catalog.media_assets (id,merchant_account_id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::catalog.media_kind,$10,$11,$12,$13,'pending_upload',$14,$15,$15)")
-            .bind(record.id.as_uuid()).bind(actor.merchant_account_id().as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(actor.user_id().as_uuid()).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
+            .bind(record.id.as_uuid()).bind(actor.merchant_account_id().as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(audit_user_id).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
         event(
             &mut tx,
-            actor,
+            &actor,
             record.store_id,
             record.product_id,
             record.id,
@@ -124,10 +124,10 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
             record.created_at,
         )
         .await?;
-        complete(&mut tx, actor, CREATE, request, record.id, 201).await?;
+        complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         let row = load(
             &mut tx,
-            actor,
+            &actor,
             record.store_id,
             record.product_id,
             record.id,
@@ -140,11 +140,11 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Option<Vec<MediaAssetItem>>, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
+        let mut tx = self.begin(&actor).await?;
         let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM catalog.products WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3)").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(product_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if !exists {
             return Ok(None);
@@ -167,13 +167,13 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
 
     async fn pending_upload(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
         media_asset_id: MediaAssetId,
     ) -> Result<PendingMediaUpload, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        let row = load(&mut tx, actor, store_id, product_id, media_asset_id)
+        let mut tx = self.begin(&actor).await?;
+        let row = load(&mut tx, &actor, store_id, product_id, media_asset_id)
             .await?
             .ok_or_else(|| not_found(media_asset_id))?;
         tx.commit().await.map_err(database_error)?;
@@ -182,16 +182,17 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
 
     async fn mark_ready(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         mutation: MediaAssetMutation,
         public_url: &str,
         request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, COMPLETE, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, COMPLETE, request).await? {
             let row = load(
                 &mut tx,
-                actor,
+                &actor,
                 mutation.store_id,
                 mutation.product_id,
                 MediaAssetId::from_uuid(id),
@@ -201,10 +202,10 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
             tx.commit().await.map_err(database_error)?;
             return item(row);
         }
-        let changed=sqlx::query("UPDATE catalog.media_assets SET status='ready',public_url=$5,ready_by=$6,ready_at=$7,updated_at=$7 WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND id=$4 AND status='pending_upload'").bind(actor.merchant_account_id().as_uuid()).bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(actor.user_id().as_uuid()).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
+        let changed=sqlx::query("UPDATE catalog.media_assets SET status='ready',public_url=$5,ready_by=$6,ready_at=$7,updated_at=$7 WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND id=$4 AND status='pending_upload'").bind(actor.merchant_account_id().as_uuid()).bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         let row = load(
             &mut tx,
-            actor,
+            &actor,
             mutation.store_id,
             mutation.product_id,
             mutation.media_asset_id,
@@ -220,7 +221,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         if changed == 1 {
             event(
                 &mut tx,
-                actor,
+                &actor,
                 mutation.store_id,
                 mutation.product_id,
                 mutation.media_asset_id,
@@ -231,7 +232,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         }
         complete(
             &mut tx,
-            actor,
+            &actor,
             COMPLETE,
             request,
             mutation.media_asset_id,
@@ -244,15 +245,16 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
 
     async fn archive(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         mutation: MediaAssetMutation,
         request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        let mut tx = self.begin(actor).await?;
-        if let Some(id) = reserve(&mut tx, actor, ARCHIVE, request).await? {
+        let audit_user_id = actor.audit_user_id().as_uuid();
+        let mut tx = self.begin(&actor).await?;
+        if let Some(id) = reserve(&mut tx, &actor, ARCHIVE, request).await? {
             let row = load(
                 &mut tx,
-                actor,
+                &actor,
                 mutation.store_id,
                 mutation.product_id,
                 MediaAssetId::from_uuid(id),
@@ -262,10 +264,10 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
             tx.commit().await.map_err(database_error)?;
             return item(row);
         }
-        let changed=sqlx::query("UPDATE catalog.media_assets SET status='archived',archived_by=$5,archived_at=$6,updated_at=$6 WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND id=$4 AND status<>'archived'").bind(actor.merchant_account_id().as_uuid()).bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(actor.user_id().as_uuid()).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
+        let changed=sqlx::query("UPDATE catalog.media_assets SET status='archived',archived_by=$5,archived_at=$6,updated_at=$6 WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND id=$4 AND status<>'archived'").bind(actor.merchant_account_id().as_uuid()).bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         let row = load(
             &mut tx,
-            actor,
+            &actor,
             mutation.store_id,
             mutation.product_id,
             mutation.media_asset_id,
@@ -275,7 +277,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         if changed == 1 {
             event(
                 &mut tx,
-                actor,
+                &actor,
                 mutation.store_id,
                 mutation.product_id,
                 mutation.media_asset_id,
@@ -286,7 +288,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         }
         complete(
             &mut tx,
-            actor,
+            &actor,
             ARCHIVE,
             request,
             mutation.media_asset_id,
@@ -300,7 +302,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
 
 async fn load(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     id: MediaAssetId,
@@ -358,19 +360,19 @@ fn pending(row: MediaRow) -> Result<PendingMediaUpload, ApplicationError> {
 }
 async fn event(
     tx: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     store: StoreId,
     product: ProductId,
     id: MediaAssetId,
     kind: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO catalog.media_events (id,merchant_account_id,store_id,product_id,media_asset_id,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.media_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.media_events (id,merchant_account_id,store_id,product_id,media_asset_id,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::catalog.media_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
@@ -393,7 +395,7 @@ async fn reserve(
 }
 async fn complete(
     tx: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: MediaAssetId,
