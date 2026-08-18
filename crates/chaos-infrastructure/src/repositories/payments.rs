@@ -628,6 +628,8 @@ impl PaymentRepository for PostgresPaymentRepository {
         shopper: &ShopperActor,
         order_id: OrderId,
         provider: &str,
+        success_url: Option<&str>,
+        cancel_url: Option<&str>,
         request: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -715,6 +717,8 @@ impl PaymentRepository for PostgresPaymentRepository {
             provider,
             attempt.amount().amount_minor(),
             currency,
+            success_url,
+            cancel_url,
         )
         .await?;
         let detail = load_attempt(
@@ -846,6 +850,8 @@ impl PaymentRepository for PostgresPaymentRepository {
             &row.5,
             amount_minor,
             currency,
+            None,
+            None,
         )
         .await?;
         let detail = load_refund(&mut transaction, account_id, store_id, id)
@@ -1021,6 +1027,7 @@ impl PaymentRepository for PostgresPaymentRepository {
                 message: "the captured Payment Attempt has no provider reference",
             });
         }
+        let (success_url, cancel_url) = outbox_return_urls(job);
         Ok(ProviderCommand {
             event_type: job.event_type.clone(),
             aggregate_id,
@@ -1033,6 +1040,8 @@ impl PaymentRepository for PostgresPaymentRepository {
                 row.3,
             )?,
             payment_provider_reference: row.4,
+            success_url,
+            cancel_url,
         })
     }
 
@@ -1223,6 +1232,8 @@ async fn insert_outbox(
     provider: &str,
     amount_minor: i64,
     currency: CurrencyCode,
+    success_url: Option<&str>,
+    cancel_url: Option<&str>,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.outbox_events \
@@ -1240,6 +1251,8 @@ async fn insert_outbox(
         "aggregate_id": aggregate_id,
         "amount_minor": amount_minor,
         "currency": currency.as_str(),
+        "success_url": success_url,
+        "cancel_url": cancel_url,
     }))
     .execute(&mut **transaction)
     .await
@@ -1835,6 +1848,16 @@ fn outbox_currency(job: &QueueJob) -> Result<&str, ApplicationError> {
         .get("currency")
         .and_then(Value::as_str)
         .ok_or_else(invalid_outbox_payload)
+}
+
+fn outbox_return_urls(job: &QueueJob) -> (Option<String>, Option<String>) {
+    let field = |name: &str| {
+        job.payload
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    (field("success_url"), field("cancel_url"))
 }
 
 fn invalid_outbox_payload() -> ApplicationError {

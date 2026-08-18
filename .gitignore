@@ -33,3 +33,4 @@ target
 
 # scripts/provision-store is the one npm-managed script in this repo
 node_modules/
+.DS_Store

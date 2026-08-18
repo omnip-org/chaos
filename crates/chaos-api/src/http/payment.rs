@@ -129,6 +129,10 @@ struct UpdateProviderAccountBody {
 #[serde(deny_unknown_fields)]
 struct CreateAttemptBody {
     provider: String,
+    #[serde(default)]
+    success_url: Option<String>,
+    #[serde(default)]
+    cancel_url: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -320,6 +324,7 @@ async fn create_attempt(
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateAttemptBody>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
+    validate_return_urls(&body)?;
     let idempotency = body_request(&headers, "create_payment_attempt", &(path.order_id, &body))?;
     let attempt = state
         .payment_service
@@ -327,10 +332,49 @@ async fn create_attempt(
             actor,
             order_id: OrderId::from_uuid(path.order_id),
             provider: body.provider,
+            success_url: body.success_url,
+            cancel_url: body.cancel_url,
             idempotency,
         })
         .await?;
     Ok(ApiResponse::created(attempt_data(attempt)?))
+}
+
+fn validate_return_urls(body: &CreateAttemptBody) -> Result<(), ApiError> {
+    for (field, value) in [
+        ("success_url", &body.success_url),
+        ("cancel_url", &body.cancel_url),
+    ] {
+        if let Some(url) = value
+            && !url.starts_with("https://")
+        {
+            return Err(invalid_value(field, "must be an https:// URL"));
+        }
+    }
+    let both_or_neither = body.success_url.is_some() == body.cancel_url.is_some();
+    if !both_or_neither {
+        return Err(invalid_value(
+            "success_url",
+            "success_url and cancel_url must both be present or both be absent",
+        ));
+    }
+    if body.provider == "stripe_checkout" && body.success_url.is_none() {
+        return Err(invalid_value(
+            "success_url",
+            "success_url and cancel_url are required for the stripe_checkout provider",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field,
+            reason: reason.into(),
+        }],
+    }
+    .into()
 }
 
 async fn get_attempt(

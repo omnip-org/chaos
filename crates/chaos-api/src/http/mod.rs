@@ -86,7 +86,7 @@ use chaos_infrastructure::{
     store_domain::{
         DnsStoreDomainOwnershipVerifier, SecureStoreDomainVerificationMaterialGenerator,
     },
-    stripe::{StripePaymentProvider, StripeWebhookVerifier},
+    stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider, StripeWebhookVerifier},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::{
@@ -343,14 +343,23 @@ impl ApiState {
             settings.dependency_timeout,
             payment_secrets.clone(),
         )?);
+        let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
+            settings.stripe_api_base_url.clone(),
+            settings.dependency_timeout,
+            payment_secrets.clone(),
+        )?);
         let providers = vec![
             sandbox_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
             stripe_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
+            stripe_checkout_payment_provider.clone()
+                as Arc<dyn chaos_application::ports::PaymentProvider>,
         ];
         let payment_onboarding = vec![
             sandbox_payment_provider
                 as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
             stripe_payment_provider as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
+            stripe_checkout_payment_provider
+                as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
         ];
         let webhook_verifiers = vec![
             Arc::new(HmacPaymentWebhookVerifier::new(

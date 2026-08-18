@@ -126,6 +126,11 @@ pub struct ProviderCommand {
     pub external_account_reference: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub payment_provider_reference: Option<String>,
+    /// Required by adapters that redirect the shopper to a hosted checkout
+    /// page (e.g. Stripe Checkout Sessions); unused by PaymentIntent-style
+    /// adapters.
+    pub success_url: Option<String>,
+    pub cancel_url: Option<String>,
 }
 
 pub struct ProviderCommandResult {
@@ -140,6 +145,10 @@ pub struct ProviderClientActionCommand {
 
 pub struct PaymentClientAction {
     pub provider: String,
+    /// One of `"confirm_payment"` (client_token is a PaymentIntent client
+    /// secret for Stripe.js/Elements confirmation) or
+    /// `"redirect_to_checkout"` (client_token is the hosted Checkout
+    /// Session URL the shopper's browser should navigate to).
     pub kind: &'static str,
     pub public_key: SecretString,
     pub client_token: SecretString,
@@ -221,6 +230,8 @@ pub trait PaymentRepository: Send + Sync {
         actor: &ShopperActor,
         order_id: OrderId,
         provider: &str,
+        success_url: Option<&str>,
+        cancel_url: Option<&str>,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError>;
 

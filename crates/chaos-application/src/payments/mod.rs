@@ -28,6 +28,8 @@ pub struct CreatePaymentAttemptInput {
     pub actor: ShopperActor,
     pub order_id: OrderId,
     pub provider: String,
+    pub success_url: Option<String>,
+    pub cancel_url: Option<String>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -258,6 +260,8 @@ impl PaymentService {
                 &input.actor,
                 input.order_id,
                 &input.provider,
+                input.success_url.as_deref(),
+                input.cancel_url.as_deref(),
                 &input.idempotency,
             )
             .await

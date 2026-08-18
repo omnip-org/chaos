@@ -26,14 +26,16 @@ use uuid::Uuid;
 const STRIPE_API_VERSION: &str = "2026-02-25.clover";
 const WEBHOOK_TOLERANCE_SECONDS: i64 = 300;
 
-pub struct StripePaymentProvider {
+/// HTTP plumbing shared by every Stripe-backed `PaymentProvider` adapter:
+/// credential resolution, URL joining, and authenticated form POST/GET.
+struct StripeHttp {
     client: Client,
     api_base_url: Url,
     secrets: Arc<dyn PaymentSecretResolver>,
 }
 
-impl StripePaymentProvider {
-    pub fn new(
+impl StripeHttp {
+    fn new(
         api_base_url: Url,
         timeout: Duration,
         secrets: Arc<dyn PaymentSecretResolver>,
@@ -96,18 +98,23 @@ impl StripePaymentProvider {
         parse_stripe_response(response).await
     }
 
-    async fn retrieve_payment_intent(
+    /// Retrieves an object by id, validating the id carries `expected_prefix`
+    /// (e.g. `"pi_"` for PaymentIntents, `"cs_"` for Checkout Sessions)
+    /// before making the request.
+    async fn retrieve_object(
         &self,
+        path_prefix: &str,
         credentials: &StripeCredentials,
         connected_account: &str,
         provider_reference: &str,
+        expected_prefix: &str,
     ) -> Result<StripeObject, ApplicationError> {
-        if !valid_stripe_identifier(provider_reference, "pi_") {
+        if !valid_stripe_identifier(provider_reference, expected_prefix) {
             return Err(provider_invalid_response());
         }
         let response = self
             .client
-            .get(self.endpoint(&format!("v1/payment_intents/{provider_reference}"))?)
+            .get(self.endpoint(&format!("{path_prefix}{provider_reference}"))?)
             .headers(stripe_headers(
                 credentials.secret_key.expose_secret(),
                 connected_account,
@@ -117,6 +124,54 @@ impl StripePaymentProvider {
             .await
             .map_err(provider_network_error)?;
         parse_stripe_response(response).await
+    }
+
+    async fn get_account(
+        &self,
+        secret_key: &str,
+        external_account_reference: &str,
+    ) -> Result<StripeAccount, ApplicationError> {
+        let response = self
+            .client
+            .get(self.endpoint(&format!("v1/accounts/{external_account_reference}"))?)
+            .headers(stripe_platform_headers(secret_key)?)
+            .send()
+            .await
+            .map_err(provider_network_error)?;
+        parse_stripe_account_response(response).await
+    }
+}
+
+pub struct StripePaymentProvider {
+    http: StripeHttp,
+}
+
+impl StripePaymentProvider {
+    pub fn new(
+        api_base_url: Url,
+        timeout: Duration,
+        secrets: Arc<dyn PaymentSecretResolver>,
+    ) -> Result<Self, anyhow::Error> {
+        Ok(Self {
+            http: StripeHttp::new(api_base_url, timeout, secrets)?,
+        })
+    }
+
+    async fn retrieve_payment_intent(
+        &self,
+        credentials: &StripeCredentials,
+        connected_account: &str,
+        provider_reference: &str,
+    ) -> Result<StripeObject, ApplicationError> {
+        self.http
+            .retrieve_object(
+                "v1/payment_intents/",
+                credentials,
+                connected_account,
+                provider_reference,
+                "pi_",
+            )
+            .await
     }
 }
 
@@ -131,50 +186,53 @@ impl PaymentProvider for StripePaymentProvider {
         command: ProviderCommand,
     ) -> Result<ProviderCommandResult, ApplicationError> {
         let credentials = self
+            .http
             .credentials(&command.credential_secret_reference)
             .await?;
         let (object, expected_prefix) = if command.event_type == "payment.create_requested" {
-            self.send_form(
-                "v1/payment_intents",
-                &credentials,
-                &command.external_account_reference,
-                &command.idempotency_key,
-                &[
-                    ("amount".into(), command.amount_minor.to_string()),
-                    (
-                        "currency".into(),
-                        command.currency.as_str().to_ascii_lowercase(),
-                    ),
-                    ("automatic_payment_methods[enabled]".into(), "true".into()),
-                    (
-                        "metadata[chaos_payment_attempt_id]".into(),
-                        command.aggregate_id.to_string(),
-                    ),
-                ],
-            )
-            .await
-            .map(|object| (object, "pi_"))?
+            self.http
+                .send_form(
+                    "v1/payment_intents",
+                    &credentials,
+                    &command.external_account_reference,
+                    &command.idempotency_key,
+                    &[
+                        ("amount".into(), command.amount_minor.to_string()),
+                        (
+                            "currency".into(),
+                            command.currency.as_str().to_ascii_lowercase(),
+                        ),
+                        ("automatic_payment_methods[enabled]".into(), "true".into()),
+                        (
+                            "metadata[chaos_payment_attempt_id]".into(),
+                            command.aggregate_id.to_string(),
+                        ),
+                    ],
+                )
+                .await
+                .map(|object| (object, "pi_"))?
         } else if command.event_type == "refund.create_requested" {
             let payment_intent = command
                 .payment_provider_reference
                 .filter(|value| valid_stripe_identifier(value, "pi_"))
                 .ok_or_else(provider_invalid_response)?;
-            self.send_form(
-                "v1/refunds",
-                &credentials,
-                &command.external_account_reference,
-                &command.idempotency_key,
-                &[
-                    ("payment_intent".into(), payment_intent),
-                    ("amount".into(), command.amount_minor.to_string()),
-                    (
-                        "metadata[chaos_refund_id]".into(),
-                        command.aggregate_id.to_string(),
-                    ),
-                ],
-            )
-            .await
-            .map(|object| (object, "re_"))?
+            self.http
+                .send_form(
+                    "v1/refunds",
+                    &credentials,
+                    &command.external_account_reference,
+                    &command.idempotency_key,
+                    &[
+                        ("payment_intent".into(), payment_intent),
+                        ("amount".into(), command.amount_minor.to_string()),
+                        (
+                            "metadata[chaos_refund_id]".into(),
+                            command.aggregate_id.to_string(),
+                        ),
+                    ],
+                )
+                .await
+                .map(|object| (object, "re_"))?
         } else {
             return Err(provider_invalid_response());
         };
@@ -191,6 +249,7 @@ impl PaymentProvider for StripePaymentProvider {
         command: ProviderClientActionCommand,
     ) -> Result<PaymentClientAction, ApplicationError> {
         let credentials = self
+            .http
             .credentials(&command.credential_secret_reference)
             .await?;
         let object = self
@@ -223,72 +282,217 @@ impl PaymentProviderOnboarding for StripePaymentProvider {
         credential_secret_reference: &PaymentSecretReference,
         checked_at: OffsetDateTime,
     ) -> Result<PaymentProviderReadiness, ApplicationError> {
-        if !valid_stripe_identifier(external_account_reference, "acct_") {
-            return Err(provider_invalid_response());
-        }
-        let credentials = self.credentials(credential_secret_reference).await?;
-        let response = self
-            .client
-            .get(self.endpoint(&format!("v1/accounts/{external_account_reference}"))?)
-            .headers(stripe_platform_headers(
-                credentials.secret_key.expose_secret(),
-            )?)
-            .send()
-            .await
-            .map_err(provider_network_error)?;
-        let account = parse_stripe_account_response(response).await?;
-        if account.id != external_account_reference {
-            return Err(provider_invalid_response());
-        }
-
-        let card_payments = account.capabilities.card_payments.as_deref();
-        let fee_payer = account.controller.fees.payer.as_deref();
-        let losses_payer = account.controller.losses.payments.as_deref();
-        let requirements_due =
-            account.requirements.currently_due.len() + account.requirements.past_due.len();
-        let mut blocker_codes = Vec::new();
-        if !account.charges_enabled {
-            blocker_codes.push("charges_disabled".into());
-        }
-        if !account.payouts_enabled {
-            blocker_codes.push("payouts_disabled".into());
-        }
-        if !account.details_submitted {
-            blocker_codes.push("details_incomplete".into());
-        }
-        if card_payments != Some("active") {
-            blocker_codes.push("card_payments_inactive".into());
-        }
-        if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
-            blocker_codes.push("requirements_due".into());
-        }
-        if fee_payer != Some("account") {
-            blocker_codes.push("fee_payer_mismatch".into());
-        }
-        if losses_payer != Some("stripe") {
-            blocker_codes.push("loss_liability_mismatch".into());
-        }
-
-        let ready = blocker_codes.is_empty();
-        let configuration = serde_json::json!({
-            "account_reference": account.id,
-            "ready": ready,
-            "blocker_codes": &blocker_codes,
-            "accepts_payments": account.charges_enabled,
-            "supports_payouts": account.payouts_enabled,
-            "details_submitted": account.details_submitted,
-            "card_payments": card_payments,
-            "fee_payer": fee_payer,
-            "losses_payer": losses_payer,
-            "requirements_due": requirements_due,
-            "disabled_reason": account.requirements.disabled_reason,
-        });
-        Ok(PaymentProviderReadiness {
-            ready,
-            blocker_codes,
-            configuration,
+        stripe_account_readiness(
+            &self.http,
+            external_account_reference,
+            credential_secret_reference,
             checked_at,
+        )
+        .await
+    }
+}
+
+/// Stripe Connect account readiness, shared by every Stripe-backed
+/// `PaymentProviderOnboarding` adapter — checkout-session mode and
+/// PaymentIntent mode operate on the same underlying Connect account.
+async fn stripe_account_readiness(
+    http: &StripeHttp,
+    external_account_reference: &str,
+    credential_secret_reference: &PaymentSecretReference,
+    checked_at: OffsetDateTime,
+) -> Result<PaymentProviderReadiness, ApplicationError> {
+    if !valid_stripe_identifier(external_account_reference, "acct_") {
+        return Err(provider_invalid_response());
+    }
+    let credentials = http.credentials(credential_secret_reference).await?;
+    let account = http
+        .get_account(
+            credentials.secret_key.expose_secret(),
+            external_account_reference,
+        )
+        .await?;
+    if account.id != external_account_reference {
+        return Err(provider_invalid_response());
+    }
+
+    let card_payments = account.capabilities.card_payments.as_deref();
+    let fee_payer = account.controller.fees.payer.as_deref();
+    let losses_payer = account.controller.losses.payments.as_deref();
+    let requirements_due =
+        account.requirements.currently_due.len() + account.requirements.past_due.len();
+    let mut blocker_codes = Vec::new();
+    if !account.charges_enabled {
+        blocker_codes.push("charges_disabled".into());
+    }
+    if !account.payouts_enabled {
+        blocker_codes.push("payouts_disabled".into());
+    }
+    if !account.details_submitted {
+        blocker_codes.push("details_incomplete".into());
+    }
+    if card_payments != Some("active") {
+        blocker_codes.push("card_payments_inactive".into());
+    }
+    if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
+        blocker_codes.push("requirements_due".into());
+    }
+    if fee_payer != Some("account") {
+        blocker_codes.push("fee_payer_mismatch".into());
+    }
+    if losses_payer != Some("stripe") {
+        blocker_codes.push("loss_liability_mismatch".into());
+    }
+
+    let ready = blocker_codes.is_empty();
+    let configuration = serde_json::json!({
+        "account_reference": account.id,
+        "ready": ready,
+        "blocker_codes": &blocker_codes,
+        "accepts_payments": account.charges_enabled,
+        "supports_payouts": account.payouts_enabled,
+        "details_submitted": account.details_submitted,
+        "card_payments": card_payments,
+        "fee_payer": fee_payer,
+        "losses_payer": losses_payer,
+        "requirements_due": requirements_due,
+        "disabled_reason": account.requirements.disabled_reason,
+    });
+    Ok(PaymentProviderReadiness {
+        ready,
+        blocker_codes,
+        configuration,
+        checked_at,
+    })
+}
+
+pub struct StripeCheckoutPaymentProvider {
+    http: StripeHttp,
+}
+
+impl StripeCheckoutPaymentProvider {
+    pub fn new(
+        api_base_url: Url,
+        timeout: Duration,
+        secrets: Arc<dyn PaymentSecretResolver>,
+    ) -> Result<Self, anyhow::Error> {
+        Ok(Self {
+            http: StripeHttp::new(api_base_url, timeout, secrets)?,
         })
+    }
+}
+
+#[async_trait]
+impl PaymentProvider for StripeCheckoutPaymentProvider {
+    fn name(&self) -> &'static str {
+        "stripe_checkout"
+    }
+
+    async fn execute(
+        &self,
+        command: ProviderCommand,
+    ) -> Result<ProviderCommandResult, ApplicationError> {
+        if command.event_type != "payment.create_requested" {
+            return Err(provider_invalid_response());
+        }
+        let credentials = self
+            .http
+            .credentials(&command.credential_secret_reference)
+            .await?;
+        let success_url = command
+            .success_url
+            .as_deref()
+            .ok_or_else(provider_invalid_response)?;
+        let cancel_url = command
+            .cancel_url
+            .as_deref()
+            .ok_or_else(provider_invalid_response)?;
+        let object = self
+            .http
+            .send_form(
+                "v1/checkout/sessions",
+                &credentials,
+                &command.external_account_reference,
+                &command.idempotency_key,
+                &[
+                    ("mode".into(), "payment".into()),
+                    ("success_url".into(), success_url.into()),
+                    ("cancel_url".into(), cancel_url.into()),
+                    ("line_items[0][quantity]".into(), "1".into()),
+                    (
+                        "line_items[0][price_data][currency]".into(),
+                        command.currency.as_str().to_ascii_lowercase(),
+                    ),
+                    (
+                        "line_items[0][price_data][unit_amount]".into(),
+                        command.amount_minor.to_string(),
+                    ),
+                    (
+                        "line_items[0][price_data][product_data][name]".into(),
+                        "Order total".into(),
+                    ),
+                    (
+                        "metadata[chaos_payment_attempt_id]".into(),
+                        command.aggregate_id.to_string(),
+                    ),
+                ],
+            )
+            .await?;
+        if !valid_stripe_identifier(&object.id, "cs_") {
+            return Err(provider_invalid_response());
+        }
+        Ok(ProviderCommandResult {
+            provider_reference: object.id,
+        })
+    }
+
+    async fn client_action(
+        &self,
+        command: ProviderClientActionCommand,
+    ) -> Result<PaymentClientAction, ApplicationError> {
+        let credentials = self
+            .http
+            .credentials(&command.credential_secret_reference)
+            .await?;
+        let object = self
+            .http
+            .retrieve_object(
+                "v1/checkout/sessions/",
+                &credentials,
+                &command.external_account_reference,
+                &command.provider_reference,
+                "cs_",
+            )
+            .await?;
+        let url = object.url.ok_or_else(provider_invalid_response)?;
+        Ok(PaymentClientAction {
+            provider: "stripe_checkout".into(),
+            kind: "redirect_to_checkout",
+            public_key: credentials.publishable_key,
+            client_token: SecretString::from(url),
+            account_reference: command.external_account_reference,
+        })
+    }
+}
+
+#[async_trait]
+impl PaymentProviderOnboarding for StripeCheckoutPaymentProvider {
+    fn name(&self) -> &'static str {
+        "stripe_checkout"
+    }
+
+    async fn check_readiness(
+        &self,
+        external_account_reference: &str,
+        credential_secret_reference: &PaymentSecretReference,
+        checked_at: OffsetDateTime,
+    ) -> Result<PaymentProviderReadiness, ApplicationError> {
+        stripe_account_readiness(
+            &self.http,
+            external_account_reference,
+            credential_secret_reference,
+            checked_at,
+        )
+        .await
     }
 }
 
@@ -403,6 +607,8 @@ struct StripeObject {
     id: String,
     #[serde(default)]
     client_secret: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -478,6 +684,8 @@ struct StripeEventObject {
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
+    payment_status: Option<String>,
+    #[serde(default)]
     metadata: HashMap<String, String>,
     #[serde(default)]
     last_payment_error: Option<StripeFailure>,
@@ -524,6 +732,26 @@ fn map_stripe_event(
         {
             ("refund.failed", "chaos_refund_id", "re_")
         }
+        "checkout.session.completed"
+            if matches!(
+                event.data.object.payment_status.as_deref(),
+                Some("paid" | "no_payment_required")
+            ) =>
+        {
+            ("payment.captured", "chaos_payment_attempt_id", "cs_")
+        }
+        // "checkout.session.completed" with payment_status == "unpaid" means
+        // an async payment method was selected and the checkout form was
+        // submitted, but funds have not settled yet. Wait for the
+        // async_payment_succeeded/failed follow-up event instead of
+        // transitioning state now — falls through to the ignored default.
+        "checkout.session.async_payment_succeeded" => {
+            ("payment.captured", "chaos_payment_attempt_id", "cs_")
+        }
+        "checkout.session.async_payment_failed" => {
+            ("payment.failed", "chaos_payment_attempt_id", "cs_")
+        }
+        "checkout.session.expired" => ("payment.cancelled", "chaos_payment_attempt_id", "cs_"),
         _ => return Err(ignored_webhook()),
     };
     if !valid_stripe_identifier(&event.data.object.id, object_prefix) {
@@ -832,6 +1060,12 @@ mod tests {
                 r#"{"id":"acct_not_ready","charges_enabled":false,"payouts_enabled":false,"details_submitted":false,"capabilities":{"card_payments":"inactive"},"controller":{"fees":{"payer":"application"},"losses":{"payments":"application"}},"requirements":{"currently_due":["business_profile.url"],"past_due":[],"disabled_reason":"requirements.past_due"}}"#
             }
             ("POST", "/v1/refunds") => r#"{"id":"re_created"}"#,
+            ("POST", "/v1/checkout/sessions") => {
+                r#"{"id":"cs_created","url":"https://checkout.stripe.com/c/pay/cs_created"}"#
+            }
+            ("GET", "/v1/checkout/sessions/cs_created") => {
+                r#"{"id":"cs_created","url":"https://checkout.stripe.com/c/pay/cs_created"}"#
+            }
             _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
         };
         Response::builder()
@@ -876,6 +1110,8 @@ mod tests {
                 external_account_reference: "acct_connected".into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
+                success_url: None,
+                cancel_url: None,
             })
             .await
             .unwrap();
@@ -903,6 +1139,8 @@ mod tests {
                 external_account_reference: "acct_connected".into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: Some(created.provider_reference),
+                success_url: None,
+                cancel_url: None,
             })
             .await
             .unwrap();
@@ -959,6 +1197,113 @@ mod tests {
         assert_eq!(requests[3].headers["stripe-version"], STRIPE_API_VERSION);
         drop(requests);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_checkout_adapter_creates_a_session_and_returns_its_redirect_url() {
+        let state = MockState(Arc::new(Mutex::new(Vec::new())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(stripe_mock))
+                    .with_state(state.clone()),
+            )
+            .into_future(),
+        );
+        let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
+        let secrets = Arc::new(StaticSecrets(HashMap::from([(
+            "test://stripe".into(),
+            r#"{"secret_key":"sk_test_secret","publishable_key":"pk_test_public"}"#.into(),
+        )])));
+        let provider = StripeCheckoutPaymentProvider::new(
+            format!("http://{address}/").parse().unwrap(),
+            Duration::from_secs(2),
+            secrets,
+        )
+        .unwrap();
+        assert_eq!(PaymentProvider::name(&provider), "stripe_checkout");
+        let aggregate_id = Uuid::now_v7();
+        let created = provider
+            .execute(ProviderCommand {
+                event_type: "payment.create_requested".into(),
+                aggregate_id,
+                amount_minor: 1234,
+                currency: CurrencyCode::parse("USD").unwrap(),
+                idempotency_key: "checkout-command".into(),
+                external_account_reference: "acct_connected".into(),
+                credential_secret_reference: reference.clone(),
+                payment_provider_reference: None,
+                success_url: Some("https://shop.example.com/success".into()),
+                cancel_url: Some("https://shop.example.com/cancel".into()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.provider_reference, "cs_created");
+        let action = provider
+            .client_action(ProviderClientActionCommand {
+                provider_reference: created.provider_reference.clone(),
+                external_account_reference: "acct_connected".into(),
+                credential_secret_reference: reference.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(action.kind, "redirect_to_checkout");
+        assert_eq!(
+            action.client_token.expose_secret(),
+            "https://checkout.stripe.com/c/pay/cs_created"
+        );
+
+        let requests = state.0.lock().unwrap();
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path, "/v1/checkout/sessions");
+        assert_eq!(requests[0].headers["stripe-account"], "acct_connected");
+        let form: HashMap<_, _> =
+            url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
+        assert_eq!(form["mode"], "payment");
+        assert_eq!(form["success_url"], "https://shop.example.com/success");
+        assert_eq!(form["cancel_url"], "https://shop.example.com/cancel");
+        assert_eq!(form["line_items[0][quantity]"], "1");
+        assert_eq!(form["line_items[0][price_data][currency]"], "usd");
+        assert_eq!(form["line_items[0][price_data][unit_amount]"], "1234");
+        assert_eq!(
+            form["metadata[chaos_payment_attempt_id]"],
+            aggregate_id.to_string()
+        );
+        drop(requests);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_checkout_adapter_rejects_creation_without_return_urls() {
+        let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
+        let secrets = Arc::new(StaticSecrets(HashMap::from([(
+            "test://stripe".into(),
+            r#"{"secret_key":"sk_test_secret","publishable_key":"pk_test_public"}"#.into(),
+        )])));
+        let provider = StripeCheckoutPaymentProvider::new(
+            "http://127.0.0.1:1/".parse().unwrap(),
+            Duration::from_secs(2),
+            secrets,
+        )
+        .unwrap();
+        let result = provider
+            .execute(ProviderCommand {
+                event_type: "payment.create_requested".into(),
+                aggregate_id: Uuid::now_v7(),
+                amount_minor: 1234,
+                currency: CurrencyCode::parse("USD").unwrap(),
+                idempotency_key: "checkout-command".into(),
+                external_account_reference: "acct_connected".into(),
+                credential_secret_reference: reference,
+                payment_provider_reference: None,
+                success_url: None,
+                cancel_url: None,
+            })
+            .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1030,5 +1375,86 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    fn checkout_session_event(
+        event_type: &str,
+        payment_status: Option<&str>,
+        aggregate_id: Uuid,
+    ) -> StripeEventEnvelope {
+        let mut object = serde_json::json!({
+            "id": "cs_created",
+            "metadata": {"chaos_payment_attempt_id": aggregate_id}
+        });
+        if let Some(status) = payment_status {
+            object["payment_status"] = serde_json::Value::String(status.into());
+        }
+        serde_json::from_value(serde_json::json!({
+            "id": "evt_1",
+            "type": event_type,
+            "account": "acct_connected",
+            "data": {"object": object}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn checkout_session_completed_paid_captures_immediately() {
+        let aggregate_id = Uuid::now_v7();
+        let event =
+            checkout_session_event("checkout.session.completed", Some("paid"), aggregate_id);
+        let (event_type, resolved_id, failure_code) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "payment.captured");
+        assert_eq!(resolved_id, aggregate_id);
+        assert_eq!(failure_code, None);
+    }
+
+    #[test]
+    fn checkout_session_completed_no_payment_required_captures_immediately() {
+        let aggregate_id = Uuid::now_v7();
+        let event = checkout_session_event(
+            "checkout.session.completed",
+            Some("no_payment_required"),
+            aggregate_id,
+        );
+        let (event_type, ..) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "payment.captured");
+    }
+
+    #[test]
+    fn checkout_session_completed_unpaid_is_ignored_pending_the_async_follow_up() {
+        let aggregate_id = Uuid::now_v7();
+        let event =
+            checkout_session_event("checkout.session.completed", Some("unpaid"), aggregate_id);
+        assert!(map_stripe_event(&event).is_err());
+    }
+
+    #[test]
+    fn checkout_session_async_payment_succeeded_captures() {
+        let aggregate_id = Uuid::now_v7();
+        let event = checkout_session_event(
+            "checkout.session.async_payment_succeeded",
+            None,
+            aggregate_id,
+        );
+        let (event_type, ..) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "payment.captured");
+    }
+
+    #[test]
+    fn checkout_session_async_payment_failed_fails() {
+        let aggregate_id = Uuid::now_v7();
+        let event =
+            checkout_session_event("checkout.session.async_payment_failed", None, aggregate_id);
+        let (event_type, ..) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "payment.failed");
+    }
+
+    #[test]
+    fn checkout_session_expired_cancels() {
+        let aggregate_id = Uuid::now_v7();
+        let event = checkout_session_event("checkout.session.expired", None, aggregate_id);
+        let (event_type, ..) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "payment.cancelled");
     }
 }

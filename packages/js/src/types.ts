@@ -291,6 +291,10 @@ export interface Customer {
 
 export interface CreatePaymentAttemptRequest {
   provider: string;
+  /** Required for the stripe_checkout provider (must be https://). */
+  success_url?: string;
+  /** Required for the stripe_checkout provider (must be https://). */
+  cancel_url?: string;
 }
 
 export interface PaymentAttempt {
@@ -308,7 +312,13 @@ export interface PaymentAttempt {
 
 export interface PaymentClientAction {
   provider: string;
-  type: "confirm_payment";
+  /**
+   * "confirm_payment": client_token is a PaymentIntent client secret for
+   * Stripe.js/Elements confirmation.
+   * "redirect_to_checkout": client_token is the hosted Stripe Checkout
+   * Session URL — navigate the shopper's browser there.
+   */
+  type: "confirm_payment" | "redirect_to_checkout";
   public_key: string;
   client_token: string;
   account_reference: string;
