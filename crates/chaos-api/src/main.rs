@@ -77,6 +77,36 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+struct PollBackoff {
+    current: std::time::Duration,
+}
+
+impl PollBackoff {
+    const BASE: std::time::Duration = std::time::Duration::from_millis(250);
+    const MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn new() -> Self {
+        Self {
+            current: Self::BASE,
+        }
+    }
+
+    /// Returns how long to sleep before the next poll, then updates state for
+    /// the following call: any processed work resets the interval to the
+    /// base so a busy queue keeps draining at full speed, while an idle poll
+    /// doubles the interval up to `MAX` so an empty queue stops hammering
+    /// Postgres every 250ms.
+    fn observe(&mut self, processed: usize) -> std::time::Duration {
+        let sleep_for = self.current;
+        self.current = if processed > 0 {
+            Self::BASE
+        } else {
+            std::cmp::min(self.current * 2, Self::MAX)
+        };
+        sleep_for
+    }
+}
+
 async fn analytics_worker_loop(
     workers: std::sync::Arc<chaos_application::analytics::AnalyticsWorkers>,
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
@@ -85,33 +115,41 @@ async fn analytics_worker_loop(
     let worker_id = Uuid::now_v7();
     let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
     let mut next_erasure_at = time::OffsetDateTime::UNIX_EPOCH;
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
-        if let Err(error) = workers.run_sessionization_batch(worker_id, now, 100).await {
-            tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
+        let mut processed = 0usize;
+        match workers.run_sessionization_batch(worker_id, now, 100).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
+            }
         }
         match workers.run_commerce_fact_batch(worker_id, now, 100).await {
-            Ok(processed) => {
+            Ok(count) => {
                 ::metrics::counter!("chaos_analytics_commerce_fact_jobs_claimed_total")
-                    .increment(processed as u64);
+                    .increment(count as u64);
+                processed += count;
             }
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "analytics commerce fact batch failed");
             }
         }
         match workers.run_attribution_batch(worker_id, now, 100).await {
-            Ok(processed) => {
+            Ok(count) => {
                 ::metrics::counter!("chaos_analytics_attribution_jobs_claimed_total")
-                    .increment(processed as u64);
+                    .increment(count as u64);
+                processed += count;
             }
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "analytics attribution batch failed");
             }
         }
         match workers.run_export_batch(worker_id, now, 100).await {
-            Ok(processed) => {
+            Ok(count) => {
                 ::metrics::counter!("chaos_analytics_export_jobs_claimed_total")
-                    .increment(processed as u64);
+                    .increment(count as u64);
+                processed += count;
             }
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "analytics export batch failed");
@@ -161,7 +199,7 @@ async fn analytics_worker_loop(
                 }
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
@@ -171,11 +209,16 @@ async fn notification_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = workers.run_batch(worker_id, clock.now(), 50).await {
-            tracing::warn!(%worker_id, %error, "notification delivery batch failed");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let processed = match workers.run_batch(worker_id, clock.now(), 50).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "notification delivery batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
@@ -207,11 +250,16 @@ async fn search_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = indexer.run_batch(worker_id, 100, clock.now()).await {
-            tracing::warn!(%worker_id, %error, "search indexing batch failed");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let processed = match indexer.run_batch(worker_id, 100, clock.now()).await {
+            Ok(count) => count as usize,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "search indexing batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
@@ -221,18 +269,29 @@ async fn payment_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
-        if let Err(error) = workers.run_outbox_batch(worker_id, now, 50).await {
-            tracing::warn!(%worker_id, %error, "payment outbox batch failed");
+        let mut processed = 0usize;
+        match workers.run_outbox_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "payment outbox batch failed");
+            }
         }
-        if let Err(error) = workers.run_webhook_batch(worker_id, now, 50).await {
-            tracing::warn!(%worker_id, %error, "payment webhook batch failed");
+        match workers.run_webhook_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "payment webhook batch failed");
+            }
         }
-        if let Err(error) = workers.run_readiness_batch(worker_id, now, 25).await {
-            tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
+        match workers.run_readiness_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
@@ -242,18 +301,29 @@ async fn fulfillment_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
-        if let Err(error) = workers.run_batch(worker_id, now, 50).await {
-            tracing::warn!(%worker_id, %error, "fulfillment event batch failed");
+        let mut processed = 0usize;
+        match workers.run_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "fulfillment event batch failed");
+            }
         }
-        if let Err(error) = workers.run_tracking_batch(worker_id, now, 25).await {
-            tracing::warn!(%worker_id, %error, "shipping tracking batch failed");
+        match workers.run_tracking_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "shipping tracking batch failed");
+            }
         }
-        if let Err(error) = workers.run_cancellation_batch(worker_id, now, 25).await {
-            tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
+        match workers.run_cancellation_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
@@ -263,11 +333,16 @@ async fn checkout_expiry_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        if let Err(error) = workers.run_batch(worker_id, clock.now(), 100).await {
-            tracing::warn!(%worker_id, %error, "Checkout expiry batch failed");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let processed = match workers.run_batch(worker_id, clock.now(), 100).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "Checkout expiry batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
     }
 }
 
