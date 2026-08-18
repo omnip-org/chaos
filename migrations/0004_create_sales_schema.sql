@@ -2516,3 +2516,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA sales, payments, fulfillment TO chaos_runtime;

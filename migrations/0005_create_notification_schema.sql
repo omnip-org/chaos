@@ -2123,3 +2123,5 @@ REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA notification, analytics TO chaos_runtime;

@@ -1599,3 +1599,5 @@ FOR EACH ROW EXECUTE FUNCTION search.capture_product_change();
 CREATE TRIGGER variants_search_change
 AFTER INSERT OR UPDATE OF title, sku OR DELETE ON catalog.product_variants
 FOR EACH ROW EXECUTE FUNCTION search.capture_variant_change();
+
+GRANT USAGE ON SCHEMA catalog, pricing, inventory, search TO chaos_runtime;

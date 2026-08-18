@@ -95,3 +95,7 @@ BEGIN
     EXECUTE format('GRANT chaos_control_plane TO %I', current_user);
 END
 $$;
+
+GRANT USAGE ON SCHEMA extensions TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA extensions TO chaos_control_plane;

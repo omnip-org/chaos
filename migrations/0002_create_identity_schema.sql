@@ -1130,3 +1130,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA identity TO chaos_control_plane;
+
+GRANT USAGE ON SCHEMA integration, merchant TO chaos_runtime;
