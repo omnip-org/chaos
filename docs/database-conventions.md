@@ -94,7 +94,7 @@ Indexes on merchant-owned tables normally begin with `merchant_account_id`; stor
 
 ## 7. Migration rules
 
-- Migration names use zero-padded sequence numbers and concise English descriptions: `0004_create_identity_schema.sql`.
+- Migration names use zero-padded sequence numbers and concise English descriptions: `0002_create_identity_schema.sql`.
 - Before the first shared or non-disposable environment, bootstrap migrations may be squashed after every disposable database has been recreated.
 - After the first shared or non-disposable environment exists, applied migrations are immutable. Fix forward with a new migration.
 - Production application startup never runs migrations. A separate release job runs them once.

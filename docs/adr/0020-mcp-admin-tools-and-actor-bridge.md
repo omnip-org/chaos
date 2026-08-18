@@ -23,7 +23,7 @@ A machine actor's scopes ARE its authorization — there is no attempt to map a 
 
 ### New scopes
 
-`ApiKeyScope` (`crates/chaos-domain/src/merchant/api_key.rs`) gained `ProductsRead`, `ProductsWrite`, `PricingRead`, `PricingWrite`, `InventoryRead` — all excluded from `allowed_for_publishable_key()`, Secret-key only. They are not aliases for the existing storefront-facing `CatalogRead`: admin reads expose draft/archived data a publishable (browser-embeddable) key must never see. `OrdersRead` (pre-existing) is reused as-is. `ApiKeyScope` is a Postgres native enum (`merchant.api_key_scope`); the new values were added via `migrations/0002_admin_api_key_scopes.sql` (`ALTER TYPE ... ADD VALUE`, one statement per migration file since it cannot share a transaction with a statement that uses the new value).
+`ApiKeyScope` (`crates/chaos-domain/src/merchant/api_key.rs`) gained `ProductsRead`, `ProductsWrite`, `PricingRead`, `PricingWrite`, `InventoryRead` — all excluded from `allowed_for_publishable_key()`, Secret-key only. They are not aliases for the existing storefront-facing `CatalogRead`: admin reads expose draft/archived data a publishable (browser-embeddable) key must never see. `OrdersRead` (pre-existing) is reused as-is. `ApiKeyScope` is a Postgres native enum (`merchant.api_key_scope`), defined in `migrations/0002_create_identity_schema.sql`.
 
 ### Transport and crate placement
 
