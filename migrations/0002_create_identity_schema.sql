@@ -1,93 +1,5 @@
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 
-CREATE TABLE identity.users (
-    id          UUID                    NOT NULL PRIMARY KEY,
-    email       extensions.citext       NOT NULL UNIQUE,
-    status      identity.user_status    NOT NULL DEFAULT 'active',
-    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT users_email_length_check CHECK (
-        length(trim(email::text)) BETWEEN 3 AND 320
-    )
-);
-
-CREATE TABLE identity.magic_link_challenges (
-    id            UUID                 NOT NULL PRIMARY KEY,
-    email         extensions.citext    NOT NULL,
-    token_digest  BYTEA                NOT NULL UNIQUE,
-    expires_at    TIMESTAMPTZ          NOT NULL,
-    consumed_at   TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT magic_link_challenges_token_digest_length_check CHECK (
-        octet_length(token_digest) = 32
-    ),
-    CONSTRAINT magic_link_challenges_expiration_check CHECK (
-        expires_at > created_at
-    )
-);
-
-CREATE INDEX magic_link_challenges_email_created_idx
-    ON identity.magic_link_challenges (email, created_at DESC);
-
-CREATE TABLE identity.sessions (
-    id            UUID           NOT NULL PRIMARY KEY,
-    user_id       UUID           NOT NULL,
-    token_digest  BYTEA          NOT NULL UNIQUE,
-    expires_at    TIMESTAMPTZ    NOT NULL,
-    revoked_at    TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at  TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT sessions_token_digest_length_check CHECK (
-        octet_length(token_digest) = 32
-    ),
-    CONSTRAINT sessions_expiration_check CHECK (
-        expires_at > created_at
-    )
-);
-
-CREATE INDEX sessions_user_expires_idx
-    ON identity.sessions (user_id, expires_at DESC);
-
-CREATE TABLE identity.passkey_credentials (
-    id             UUID           NOT NULL PRIMARY KEY,
-    user_id        UUID           NOT NULL,
-    credential_id  BYTEA          NOT NULL UNIQUE,
-    credential     JSONB          NOT NULL,
-    name           TEXT           NOT NULL,
-    created_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at   TIMESTAMPTZ,
-
-    FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT passkey_credentials_credential_id_length_check CHECK (
-        octet_length(credential_id) BETWEEN 16 AND 1024
-    ),
-    CONSTRAINT passkey_credentials_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 80
-    )
-);
-
-CREATE INDEX passkey_credentials_user_created_idx
-    ON identity.passkey_credentials (user_id, created_at DESC);
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA identity TO chaos_control_plane;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA identity TO chaos_control_plane;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_control_plane;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_control_plane;
-
 CREATE TYPE merchant.merchant_account_status AS ENUM ('active', 'suspended', 'closed');
 
 CREATE TYPE merchant.merchant_role AS ENUM (
@@ -143,6 +55,77 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
     'reviews:write'
 );
 
+CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account', 'shopper');
+
+CREATE TYPE integration.queue_status AS ENUM ('pending', 'processing', 'processed', 'dead_letter');
+
+CREATE TABLE identity.users (
+    id          UUID                    NOT NULL PRIMARY KEY,
+    email       extensions.citext       NOT NULL UNIQUE,
+    status      identity.user_status    NOT NULL DEFAULT 'active',
+    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT users_email_length_check CHECK (
+        length(trim(email::text)) BETWEEN 3 AND 320
+    )
+);
+
+CREATE TABLE identity.magic_link_challenges (
+    id            UUID                 NOT NULL PRIMARY KEY,
+    email         extensions.citext    NOT NULL,
+    token_digest  BYTEA                NOT NULL UNIQUE,
+    expires_at    TIMESTAMPTZ          NOT NULL,
+    consumed_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT magic_link_challenges_token_digest_length_check CHECK (
+        octet_length(token_digest) = 32
+    ),
+    CONSTRAINT magic_link_challenges_expiration_check CHECK (
+        expires_at > created_at
+    )
+);
+
+CREATE TABLE identity.sessions (
+    id            UUID           NOT NULL PRIMARY KEY,
+    user_id       UUID           NOT NULL,
+    token_digest  BYTEA          NOT NULL UNIQUE,
+    expires_at    TIMESTAMPTZ    NOT NULL,
+    revoked_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at  TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+        REFERENCES identity.users(id) ON DELETE CASCADE,
+    CONSTRAINT sessions_token_digest_length_check CHECK (
+        octet_length(token_digest) = 32
+    ),
+    CONSTRAINT sessions_expiration_check CHECK (
+        expires_at > created_at
+    )
+);
+
+CREATE TABLE identity.passkey_credentials (
+    id             UUID           NOT NULL PRIMARY KEY,
+    user_id        UUID           NOT NULL,
+    credential_id  BYTEA          NOT NULL UNIQUE,
+    credential     JSONB          NOT NULL,
+    name           TEXT           NOT NULL,
+    created_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at   TIMESTAMPTZ,
+
+    FOREIGN KEY (user_id)
+        REFERENCES identity.users(id) ON DELETE CASCADE,
+    CONSTRAINT passkey_credentials_credential_id_length_check CHECK (
+        octet_length(credential_id) BETWEEN 16 AND 1024
+    ),
+    CONSTRAINT passkey_credentials_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 80
+    )
+);
+
 CREATE TABLE merchant.merchant_accounts (
     id            UUID                                NOT NULL PRIMARY KEY,
     slug          extensions.citext                   NOT NULL UNIQUE,
@@ -172,9 +155,6 @@ CREATE TABLE merchant.merchant_account_memberships (
     FOREIGN KEY (user_id)
         REFERENCES identity.users(id) ON DELETE CASCADE
 );
-
-CREATE INDEX merchant_account_memberships_user_idx
-    ON merchant.merchant_account_memberships (user_id, merchant_account_id);
 
 CREATE TABLE merchant.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -208,9 +188,6 @@ CREATE TABLE merchant.stores (
         default_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
     )
 );
-
-CREATE INDEX stores_merchant_account_status_idx
-    ON merchant.stores (merchant_account_id, status);
 
 CREATE TABLE merchant.store_locales (
     merchant_account_id UUID        NOT NULL,
@@ -253,32 +230,6 @@ CREATE TABLE merchant.store_locale_events (
     )
 );
 
-CREATE INDEX store_locale_events_store_occurred_idx
-    ON merchant.store_locale_events (merchant_account_id, store_id, occurred_at, id);
-
-CREATE FUNCTION merchant.prevent_default_locale_removal()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM merchant.stores
-        WHERE merchant_account_id = OLD.merchant_account_id
-          AND id = OLD.store_id
-          AND default_locale = OLD.locale
-    ) THEN
-        RAISE EXCEPTION 'the default Store Locale cannot be disabled'
-            USING ERRCODE = '23514';
-    END IF;
-    RETURN OLD;
-END
-$$;
-
-CREATE TRIGGER store_locales_protect_default
-BEFORE DELETE ON merchant.store_locales
-FOR EACH ROW EXECUTE FUNCTION merchant.prevent_default_locale_removal();
-
 CREATE TABLE merchant.sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                              NOT NULL,
@@ -302,13 +253,6 @@ CREATE TABLE merchant.sales_channels (
         length(trim(name)) BETWEEN 1 AND 120
     )
 );
-
-CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
-    ON merchant.sales_channels (merchant_account_id, store_id)
-    WHERE is_default;
-
-CREATE INDEX sales_channels_store_status_idx
-    ON merchant.sales_channels (merchant_account_id, store_id, status);
 
 CREATE TABLE merchant.store_currencies (
     merchant_account_id  UUID       NOT NULL,
@@ -373,9 +317,6 @@ CREATE TABLE merchant.api_keys (
     )
 );
 
-CREATE INDEX api_keys_store_created_idx
-    ON merchant.api_keys (merchant_account_id, store_id, created_at DESC, id DESC);
-
 CREATE TABLE merchant.api_key_scopes (
     merchant_account_id  UUID                      NOT NULL,
     api_key_id           UUID                      NOT NULL,
@@ -385,213 +326,6 @@ CREATE TABLE merchant.api_key_scopes (
     FOREIGN KEY (merchant_account_id, api_key_id)
         REFERENCES merchant.api_keys(merchant_account_id, id) ON DELETE CASCADE
 );
-
-ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.store_locales ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.store_locale_events ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.sales_channels ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts
-    USING (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid)
-    WITH CHECK (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid);
-
-CREATE POLICY merchant_account_directory ON merchant.merchant_accounts
-    FOR SELECT
-    USING (
-        EXISTS (
-            SELECT 1
-            FROM merchant.merchant_account_memberships AS membership
-            WHERE membership.merchant_account_id = merchant_accounts.id
-              AND membership.user_id =
-                    nullif(current_setting('app.user_id', true), '')::uuid
-        )
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.merchant_account_memberships
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_membership_directory ON merchant.merchant_account_memberships
-    FOR SELECT
-    USING (
-        user_id = nullif(current_setting('app.user_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.stores
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.store_locales
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.store_locale_events
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.store_currencies
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.sales_channels
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.api_keys
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE FUNCTION merchant.authenticate_api_key(
-    presented_key_identifier  TEXT,
-    presented_secret_digest  BYTEA
-)
-RETURNS TABLE (
-    api_key_id           UUID,
-    merchant_account_id  UUID,
-    store_id             UUID,
-    sales_channel_id     UUID,
-    class                TEXT,
-    mode                 TEXT,
-    scopes               TEXT[],
-    created_by_user_id   UUID
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT api_key.id,
-           api_key.merchant_account_id,
-           api_key.store_id,
-           sales_channel.id,
-           api_key.class::TEXT,
-           api_key.mode::TEXT,
-           ARRAY(
-               SELECT api_key_scope.scope::TEXT
-               FROM merchant.api_key_scopes AS api_key_scope
-               WHERE api_key_scope.merchant_account_id = api_key.merchant_account_id
-                 AND api_key_scope.api_key_id = api_key.id
-               ORDER BY api_key_scope.scope::TEXT
-           ),
-           api_key.created_by_user_id
-    FROM merchant.api_keys AS api_key
-    INNER JOIN merchant.merchant_accounts AS merchant_account
-        ON merchant_account.id = api_key.merchant_account_id
-    INNER JOIN merchant.stores AS store
-        ON store.merchant_account_id = api_key.merchant_account_id
-       AND store.id = api_key.store_id
-    LEFT JOIN merchant.sales_channels AS sales_channel
-        ON sales_channel.merchant_account_id = api_key.merchant_account_id
-       AND sales_channel.store_id = api_key.store_id
-       AND sales_channel.id = COALESCE(
-           api_key.sales_channel_id,
-           (
-               SELECT default_channel.id
-               FROM merchant.sales_channels AS default_channel
-               WHERE default_channel.merchant_account_id = api_key.merchant_account_id
-                 AND default_channel.store_id = api_key.store_id
-                 AND default_channel.is_default
-               LIMIT 1
-           )
-       )
-    WHERE api_key.key_identifier = presented_key_identifier
-      AND api_key.secret_digest = presented_secret_digest
-      AND api_key.revoked_at IS NULL
-      AND (api_key.expires_at IS NULL OR api_key.expires_at > CURRENT_TIMESTAMP)
-      AND merchant_account.status = 'active'
-      AND (api_key.mode = 'test' OR store.status = 'active');
-$$;
-
-REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
-
-COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
-    'Authenticates a machine credential without exposing stored secret digests';
-
-GRANT EXECUTE
-    ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
-
-REVOKE UPDATE, DELETE ON merchant.store_locale_events FROM chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA merchant TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account', 'shopper');
-
-CREATE TYPE integration.queue_status AS ENUM ('pending', 'processing', 'processed', 'dead_letter');
 
 CREATE TABLE integration.idempotency_records (
     id                   UUID                             NOT NULL PRIMARY KEY,
@@ -657,10 +391,6 @@ CREATE TABLE integration.webhook_inbox (
     )
 );
 
-CREATE INDEX webhook_inbox_claim_idx
-    ON integration.webhook_inbox (status, available_at, created_at, id)
-    WHERE status IN ('pending', 'processing');
-
 CREATE TABLE integration.event_consumer_registry (
     event_type      TEXT PRIMARY KEY,
     consumer_owner  TEXT,
@@ -677,33 +407,6 @@ CREATE TABLE integration.event_consumer_registry (
         length(trim(description)) BETWEEN 1 AND 255
     )
 );
-
-INSERT INTO integration.event_consumer_registry (event_type, consumer_owner, description)
-VALUES
-    ('payment.create_requested', 'payments.provider_dispatch',
-     'Dispatches a Payment Attempt command to its configured provider'),
-    ('refund.create_requested', 'payments.provider_dispatch',
-     'Dispatches a Refund command to its configured provider'),
-    ('search.product.changed', 'search.product_indexer',
-     'Refreshes the Store-isolated Product search document'),
-    ('fulfillment.shipped', 'fulfillment.operations',
-     'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.delivered', 'fulfillment.operations',
-     'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.cancelled', 'fulfillment.operations',
-     'Reconciles Order fulfillment and delivery state'),
-    ('return.completed', 'fulfillment.operations',
-     'Coordinates the immutable Return refund'),
-    ('analytics.order.created', 'analytics.commerce_fact_ingestor',
-     'Ingests an immutable Order creation fact'),
-    ('analytics.payment.captured', 'analytics.commerce_fact_ingestor',
-     'Ingests an immutable Payment capture fact'),
-    ('analytics.refund.succeeded', 'analytics.commerce_fact_ingestor',
-     'Ingests an immutable Refund success fact'),
-    ('analytics.fulfillment.shipped', 'analytics.commerce_fact_ingestor',
-     'Ingests an immutable Fulfillment shipment fact'),
-    ('analytics.return.completed', 'analytics.commerce_fact_ingestor',
-     'Ingests an immutable Return completion fact');
 
 CREATE TABLE integration.outbox_events (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -738,9 +441,121 @@ CREATE TABLE integration.outbox_events (
     )
 );
 
+CREATE INDEX magic_link_challenges_email_created_idx
+    ON identity.magic_link_challenges (email, created_at DESC);
+
+CREATE INDEX sessions_user_expires_idx
+    ON identity.sessions (user_id, expires_at DESC);
+
+CREATE INDEX passkey_credentials_user_created_idx
+    ON identity.passkey_credentials (user_id, created_at DESC);
+
+CREATE INDEX merchant_account_memberships_user_idx
+    ON merchant.merchant_account_memberships (user_id, merchant_account_id);
+
+CREATE INDEX stores_merchant_account_status_idx
+    ON merchant.stores (merchant_account_id, status);
+
+CREATE INDEX store_locale_events_store_occurred_idx
+    ON merchant.store_locale_events (merchant_account_id, store_id, occurred_at, id);
+
+CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
+    ON merchant.sales_channels (merchant_account_id, store_id)
+    WHERE is_default;
+
+CREATE INDEX sales_channels_store_status_idx
+    ON merchant.sales_channels (merchant_account_id, store_id, status);
+
+CREATE INDEX api_keys_store_created_idx
+    ON merchant.api_keys (merchant_account_id, store_id, created_at DESC, id DESC);
+
+CREATE INDEX webhook_inbox_claim_idx
+    ON integration.webhook_inbox (status, available_at, created_at, id)
+    WHERE status IN ('pending', 'processing');
+
 CREATE INDEX outbox_events_claim_idx
     ON integration.outbox_events (status, available_at, created_at, id)
     WHERE status IN ('pending', 'processing');
+
+CREATE FUNCTION merchant.prevent_default_locale_removal()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM merchant.stores
+        WHERE merchant_account_id = OLD.merchant_account_id
+          AND id = OLD.store_id
+          AND default_locale = OLD.locale
+    ) THEN
+        RAISE EXCEPTION 'the default Store Locale cannot be disabled'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE FUNCTION merchant.authenticate_api_key(
+    presented_key_identifier  TEXT,
+    presented_secret_digest  BYTEA
+)
+RETURNS TABLE (
+    api_key_id           UUID,
+    merchant_account_id  UUID,
+    store_id             UUID,
+    sales_channel_id     UUID,
+    class                TEXT,
+    mode                 TEXT,
+    scopes               TEXT[],
+    created_by_user_id   UUID
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT api_key.id,
+           api_key.merchant_account_id,
+           api_key.store_id,
+           sales_channel.id,
+           api_key.class::TEXT,
+           api_key.mode::TEXT,
+           ARRAY(
+               SELECT api_key_scope.scope::TEXT
+               FROM merchant.api_key_scopes AS api_key_scope
+               WHERE api_key_scope.merchant_account_id = api_key.merchant_account_id
+                 AND api_key_scope.api_key_id = api_key.id
+               ORDER BY api_key_scope.scope::TEXT
+           ),
+           api_key.created_by_user_id
+    FROM merchant.api_keys AS api_key
+    INNER JOIN merchant.merchant_accounts AS merchant_account
+        ON merchant_account.id = api_key.merchant_account_id
+    INNER JOIN merchant.stores AS store
+        ON store.merchant_account_id = api_key.merchant_account_id
+       AND store.id = api_key.store_id
+    LEFT JOIN merchant.sales_channels AS sales_channel
+        ON sales_channel.merchant_account_id = api_key.merchant_account_id
+       AND sales_channel.store_id = api_key.store_id
+       AND sales_channel.id = COALESCE(
+           api_key.sales_channel_id,
+           (
+               SELECT default_channel.id
+               FROM merchant.sales_channels AS default_channel
+               WHERE default_channel.merchant_account_id = api_key.merchant_account_id
+                 AND default_channel.store_id = api_key.store_id
+                 AND default_channel.is_default
+               LIMIT 1
+           )
+       )
+    WHERE api_key.key_identifier = presented_key_identifier
+      AND api_key.secret_digest = presented_secret_digest
+      AND api_key.revoked_at IS NULL
+      AND (api_key.expires_at IS NULL OR api_key.expires_at > CURRENT_TIMESTAMP)
+      AND merchant_account.status = 'active'
+      AND (api_key.mode = 'test' OR store.status = 'active');
+$$;
 
 CREATE FUNCTION integration.queue_metrics()
 RETURNS TABLE (pending BIGINT, dead_letter BIGINT, oldest_pending_seconds DOUBLE PRECISION)
@@ -779,54 +594,6 @@ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
      GROUP BY registry.event_type, registry.consumer_owner
      ORDER BY registry.event_type;
 $$;
-
-ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE integration.webhook_inbox ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
-    USING (
-        (scope = 'user' AND scope_id =
-            nullif(current_setting('app.user_id', true), '')::uuid)
-        OR
-        (scope = 'merchant_account' AND scope_id =
-            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
-        OR
-        (scope = 'shopper' AND scope_id =
-            nullif(current_setting('app.shopper_id', true), '')::uuid)
-    )
-    WITH CHECK (
-        (scope = 'user' AND scope_id =
-            nullif(current_setting('app.user_id', true), '')::uuid)
-        OR
-        (scope = 'merchant_account' AND scope_id =
-            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
-        OR
-        (scope = 'shopper' AND scope_id =
-            nullif(current_setting('app.shopper_id', true), '')::uuid)
-    );
-
-CREATE POLICY merchant_account_isolation ON integration.webhook_inbox
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON integration.outbox_events
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
 
 CREATE FUNCTION integration.claim_outbox_events(
     worker_id UUID,
@@ -1063,6 +830,239 @@ AS $$
      WHERE event.id = event_id AND event.status = 'processing' AND event.locked_by = worker_id
     RETURNING true;
 $$;
+
+CREATE TRIGGER store_locales_protect_default
+BEFORE DELETE ON merchant.store_locales
+FOR EACH ROW EXECUTE FUNCTION merchant.prevent_default_locale_removal();
+
+ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.store_locales ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.store_locale_events ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.sales_channels ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE integration.webhook_inbox ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts
+    USING (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+    WITH CHECK (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid);
+
+CREATE POLICY merchant_account_directory ON merchant.merchant_accounts
+    FOR SELECT
+    USING (
+        EXISTS (
+            SELECT 1
+            FROM merchant.merchant_account_memberships AS membership
+            WHERE membership.merchant_account_id = merchant_accounts.id
+              AND membership.user_id =
+                    nullif(current_setting('app.user_id', true), '')::uuid
+        )
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.merchant_account_memberships
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_membership_directory ON merchant.merchant_account_memberships
+    FOR SELECT
+    USING (
+        user_id = nullif(current_setting('app.user_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.stores
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.store_locales
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.store_locale_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.store_currencies
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.sales_channels
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.api_keys
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
+    USING (
+        (scope = 'user' AND scope_id =
+            nullif(current_setting('app.user_id', true), '')::uuid)
+        OR
+        (scope = 'merchant_account' AND scope_id =
+            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        OR
+        (scope = 'shopper' AND scope_id =
+            nullif(current_setting('app.shopper_id', true), '')::uuid)
+    )
+    WITH CHECK (
+        (scope = 'user' AND scope_id =
+            nullif(current_setting('app.user_id', true), '')::uuid)
+        OR
+        (scope = 'merchant_account' AND scope_id =
+            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        OR
+        (scope = 'shopper' AND scope_id =
+            nullif(current_setting('app.shopper_id', true), '')::uuid)
+    );
+
+CREATE POLICY merchant_account_isolation ON integration.webhook_inbox
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+CREATE POLICY merchant_account_isolation ON integration.outbox_events
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+INSERT INTO integration.event_consumer_registry (event_type, consumer_owner, description)
+VALUES
+    ('payment.create_requested', 'payments.provider_dispatch',
+     'Dispatches a Payment Attempt command to its configured provider'),
+    ('refund.create_requested', 'payments.provider_dispatch',
+     'Dispatches a Refund command to its configured provider'),
+    ('search.product.changed', 'search.product_indexer',
+     'Refreshes the Store-isolated Product search document'),
+    ('fulfillment.shipped', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('fulfillment.delivered', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('fulfillment.cancelled', 'fulfillment.operations',
+     'Reconciles Order fulfillment and delivery state'),
+    ('return.completed', 'fulfillment.operations',
+     'Coordinates the immutable Return refund'),
+    ('analytics.order.created', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Order creation fact'),
+    ('analytics.payment.captured', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Payment capture fact'),
+    ('analytics.refund.succeeded', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Refund success fact'),
+    ('analytics.fulfillment.shipped', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Fulfillment shipment fact'),
+    ('analytics.return.completed', 'analytics.commerce_fact_ingestor',
+     'Ingests an immutable Return completion fact');
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA identity TO chaos_control_plane;
+
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA identity TO chaos_control_plane;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_control_plane;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_control_plane;
+
+REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
+
+COMMENT ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) IS
+    'Authenticates a machine credential without exposing stored secret digests';
+
+GRANT EXECUTE
+    ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA merchant TO chaos_runtime;
+
+REVOKE UPDATE, DELETE ON merchant.store_locale_events FROM chaos_runtime;
+
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA merchant TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ

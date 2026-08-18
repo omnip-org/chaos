@@ -22,6 +22,38 @@ CREATE TYPE catalog.media_event_kind AS ENUM ('created', 'ready', 'archived');
 
 CREATE TYPE catalog.translation_event_kind AS ENUM ('upserted', 'removed');
 
+CREATE TYPE catalog.review_status AS ENUM ('pending', 'approved', 'rejected');
+
+CREATE TYPE catalog.review_event_kind AS ENUM ('submitted', 'approved', 'rejected', 'reply_added');
+
+CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
+
+CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
+
+CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
+
+CREATE TYPE pricing.promotion_trigger AS ENUM ('automatic', 'code');
+
+CREATE TYPE pricing.promotion_value_kind AS ENUM ('percentage', 'fixed_amount');
+
+CREATE TYPE inventory.inventory_location_status AS ENUM ('active', 'archived');
+
+CREATE TYPE inventory.inventory_reservation_status AS ENUM (
+    'active',
+    'released',
+    'consumed',
+    'expired'
+);
+
+CREATE TYPE inventory.stock_ledger_kind AS ENUM (
+    'manual_adjustment',
+    'reservation_created',
+    'reservation_released',
+    'reservation_consumed',
+    'reservation_expired',
+    'return_restock'
+);
+
 CREATE TABLE catalog.products (
     id                   UUID                       NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                       NOT NULL,
@@ -51,9 +83,6 @@ CREATE TABLE catalog.products (
         metadata IS NULL OR octet_length(metadata::text) <= 32768
     )
 );
-
-CREATE INDEX products_store_status_created_idx
-    ON catalog.products (merchant_account_id, store_id, status, created_at DESC, id DESC);
 
 CREATE TABLE catalog.product_translations (
     merchant_account_id UUID        NOT NULL,
@@ -161,13 +190,6 @@ CREATE TABLE catalog.product_variants (
     )
 );
 
-CREATE UNIQUE INDEX product_variants_store_sku_key
-    ON catalog.product_variants (merchant_account_id, store_id, sku)
-    WHERE sku IS NOT NULL;
-
-CREATE INDEX product_variants_product_status_idx
-    ON catalog.product_variants (merchant_account_id, store_id, product_id, status);
-
 CREATE TABLE catalog.product_variant_translations (
     merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
@@ -214,11 +236,6 @@ CREATE TABLE catalog.product_translation_events (
     )
 );
 
-CREATE INDEX product_translation_events_product_occurred_idx
-    ON catalog.product_translation_events (
-        merchant_account_id, store_id, product_id, occurred_at, id
-    );
-
 CREATE TABLE catalog.variant_selected_options (
     merchant_account_id  UUID    NOT NULL,
     store_id             UUID    NOT NULL,
@@ -257,14 +274,6 @@ CREATE TABLE catalog.product_publications (
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
 );
 
-CREATE INDEX product_publications_channel_product_idx
-    ON catalog.product_publications (
-        merchant_account_id,
-        store_id,
-        sales_channel_id,
-        product_id
-    );
-
 CREATE TABLE catalog.collections (
     id                   UUID                       NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                       NOT NULL,
@@ -294,11 +303,6 @@ CREATE TABLE catalog.collections (
         metadata IS NULL OR octet_length(metadata::text) <= 32768
     )
 );
-
-CREATE INDEX collections_store_status_created_idx
-    ON catalog.collections (
-        merchant_account_id, store_id, status, created_at DESC, id DESC
-    );
 
 CREATE TABLE catalog.collection_translations (
     merchant_account_id UUID        NOT NULL,
@@ -344,11 +348,6 @@ CREATE TABLE catalog.collection_translation_events (
     )
 );
 
-CREATE INDEX collection_translation_events_collection_occurred_idx
-    ON catalog.collection_translation_events (
-        merchant_account_id, store_id, collection_id, occurred_at, id
-    );
-
 CREATE TABLE catalog.collection_products (
     merchant_account_id  UUID        NOT NULL,
     store_id             UUID        NOT NULL,
@@ -366,9 +365,6 @@ CREATE TABLE catalog.collection_products (
     CONSTRAINT collection_products_position_check CHECK (position BETWEEN 0 AND 999)
 );
 
-CREATE INDEX collection_products_product_idx
-    ON catalog.collection_products (merchant_account_id, store_id, product_id, collection_id);
-
 CREATE TABLE catalog.collection_publications (
     merchant_account_id  UUID        NOT NULL,
     store_id             UUID        NOT NULL,
@@ -382,11 +378,6 @@ CREATE TABLE catalog.collection_publications (
     FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
         REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
 );
-
-CREATE INDEX collection_publications_channel_collection_idx
-    ON catalog.collection_publications (
-        merchant_account_id, store_id, sales_channel_id, collection_id
-    );
 
 CREATE TABLE catalog.collection_events (
     id                   UUID                           NOT NULL PRIMARY KEY,
@@ -416,11 +407,6 @@ CREATE TABLE catalog.collection_events (
             AND sales_channel_id IS NULL AND product_count IS NULL)
     )
 );
-
-CREATE INDEX collection_events_collection_occurred_idx
-    ON catalog.collection_events (
-        merchant_account_id, store_id, collection_id, occurred_at, id
-    );
 
 CREATE TABLE catalog.media_assets (
     id                   UUID                        NOT NULL PRIMARY KEY,
@@ -491,15 +477,6 @@ CREATE TABLE catalog.media_assets (
     )
 );
 
-CREATE UNIQUE INDEX media_assets_product_position_active_idx
-    ON catalog.media_assets (merchant_account_id, store_id, product_id, position)
-    WHERE status <> 'archived';
-
-CREATE INDEX media_assets_product_status_position_idx
-    ON catalog.media_assets (
-        merchant_account_id, store_id, product_id, status, position, id
-    );
-
 CREATE TABLE catalog.media_asset_translations (
     merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
@@ -546,11 +523,6 @@ CREATE TABLE catalog.media_translation_events (
     )
 );
 
-CREATE INDEX media_translation_events_asset_occurred_idx
-    ON catalog.media_translation_events (
-        merchant_account_id, store_id, media_asset_id, occurred_at, id
-    );
-
 CREATE TABLE catalog.media_events (
     id                   UUID                      NOT NULL PRIMARY KEY,
     merchant_account_id  UUID                      NOT NULL,
@@ -568,10 +540,629 @@ CREATE TABLE catalog.media_events (
     FOREIGN KEY (actor_user_id) REFERENCES identity.users(id)
 );
 
+CREATE TABLE catalog.reviews (
+    id                   UUID                     NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                     NOT NULL,
+    store_id             UUID                     NOT NULL,
+    product_id           UUID                     NOT NULL,
+    parent_review_id     UUID,
+    rating               SMALLINT,
+    title                TEXT,
+    content              TEXT                     NOT NULL,
+    author_name          TEXT                     NOT NULL,
+    author_email         extensions.citext,
+    status               catalog.review_status    NOT NULL DEFAULT 'pending',
+    is_staff_reply       BOOLEAN                  NOT NULL DEFAULT false,
+    verified_buyer       BOOLEAN                  NOT NULL DEFAULT false,
+    approved_by_user_id  UUID,
+    approved_at          TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, parent_review_id)
+        REFERENCES catalog.reviews(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (approved_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT reviews_rating_shape_check CHECK (
+        (is_staff_reply AND rating IS NULL AND parent_review_id IS NOT NULL)
+        OR (NOT is_staff_reply AND rating IS NOT NULL AND rating BETWEEN 1 AND 5
+            AND parent_review_id IS NULL)
+    ),
+    CONSTRAINT reviews_content_length_check CHECK (
+        length(content) BETWEEN 1 AND 10000
+    ),
+    CONSTRAINT reviews_title_length_check CHECK (
+        title IS NULL OR length(title) <= 255
+    ),
+    CONSTRAINT reviews_author_name_length_check CHECK (
+        length(trim(author_name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT reviews_approval_shape_check CHECK (
+        (status = 'approved') = (approved_at IS NOT NULL AND approved_by_user_id IS NOT NULL)
+    ),
+    CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (
+        NOT verified_buyer OR status = 'approved'
+    )
+);
+
+CREATE TABLE catalog.review_events (
+    id                   UUID                        NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                        NOT NULL,
+    store_id             UUID                        NOT NULL,
+    review_id            UUID                        NOT NULL,
+    event_kind           catalog.review_event_kind   NOT NULL,
+    actor_user_id        UUID,
+    occurred_at          TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (merchant_account_id, store_id, review_id)
+        REFERENCES catalog.reviews(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
+    CONSTRAINT review_events_actor_shape_check CHECK (
+        (event_kind = 'submitted' AND actor_user_id IS NULL)
+        OR (event_kind IN ('approved', 'rejected', 'reply_added') AND actor_user_id IS NOT NULL)
+    )
+);
+
+CREATE TABLE pricing.price_lists (
+    id                   UUID                         NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                         NOT NULL,
+    store_id             UUID                         NOT NULL,
+    code                 extensions.citext            NOT NULL,
+    name                 TEXT                         NOT NULL,
+    currency             CHAR(3)                      NOT NULL,
+    tax_inclusive        BOOLEAN                      NOT NULL DEFAULT false,
+    status               pricing.price_list_status    NOT NULL DEFAULT 'draft',
+    starts_at            TIMESTAMPTZ,
+    ends_at              TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, code),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, currency)
+        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    CONSTRAINT price_lists_code_format_check CHECK (
+        code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+    ),
+    CONSTRAINT price_lists_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT price_lists_currency_format_check CHECK (
+        currency ~ '^[A-Z]{3}$'
+    ),
+    CONSTRAINT price_lists_validity_window_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at
+    )
+);
+
+CREATE TABLE pricing.prices (
+    id                   UUID         NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID         NOT NULL,
+    store_id             UUID         NOT NULL,
+    price_list_id        UUID         NOT NULL,
+    product_variant_id   UUID         NOT NULL,
+    amount_minor         BIGINT       NOT NULL,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, price_list_id, product_variant_id),
+    FOREIGN KEY (merchant_account_id, store_id, price_list_id)
+        REFERENCES pricing.price_lists(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
+    CONSTRAINT prices_amount_nonnegative_check CHECK (
+        amount_minor >= 0
+    )
+);
+
+CREATE TABLE pricing.tax_rules (
+    id                    UUID                    NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID                    NOT NULL,
+    store_id              UUID                    NOT NULL,
+    code                  TEXT                    NOT NULL,
+    name                  TEXT                    NOT NULL,
+    country_code          CHAR(2)                 NOT NULL,
+    rate_basis_points     INTEGER                 NOT NULL,
+    status                pricing.tax_rule_status NOT NULL DEFAULT 'active',
+    created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, code),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT tax_rules_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT tax_rules_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT tax_rules_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT tax_rules_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
+);
+
+CREATE TABLE pricing.promotions (
+    id                            UUID                         NOT NULL PRIMARY KEY,
+    merchant_account_id           UUID                         NOT NULL,
+    store_id                      UUID                         NOT NULL,
+    handle                        TEXT                         NOT NULL,
+    name                          TEXT                         NOT NULL,
+    trigger                       pricing.promotion_trigger    NOT NULL,
+    redemption_code               extensions.citext,
+    value_kind                    pricing.promotion_value_kind NOT NULL,
+    rate_basis_points             INTEGER,
+    amount_minor                  BIGINT,
+    maximum_amount_minor          BIGINT,
+    currency                      CHAR(3)                      NOT NULL,
+    minimum_subtotal_amount_minor BIGINT                       NOT NULL DEFAULT 0,
+    priority                      SMALLINT                     NOT NULL DEFAULT 100,
+    starts_at                     TIMESTAMPTZ,
+    ends_at                       TIMESTAMPTZ,
+    status                        pricing.promotion_status     NOT NULL DEFAULT 'active',
+    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (merchant_account_id, store_id, handle),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, currency)
+        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    CONSTRAINT promotions_handle_format_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
+    CONSTRAINT promotions_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT promotions_redemption_shape_check CHECK (
+        (trigger = 'automatic' AND redemption_code IS NULL)
+        OR (trigger = 'code' AND redemption_code::text ~ '^[A-Z0-9-]{1,64}$')
+    ),
+    CONSTRAINT promotions_value_shape_check CHECK (
+        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
+            AND amount_minor IS NULL
+            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
+        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
+            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
+    ),
+    CONSTRAINT promotions_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT promotions_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
+    CONSTRAINT promotions_priority_check CHECK (priority BETWEEN 0 AND 32767),
+    CONSTRAINT promotions_schedule_check CHECK (
+        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
+    )
+);
+
+ALTER TABLE pricing.price_lists
+    ADD UNIQUE (merchant_account_id, store_id, id, currency);
+
+CREATE TABLE inventory.inventory_locations (
+    id                   UUID                                    NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                                    NOT NULL,
+    store_id             UUID                                    NOT NULL,
+    code                 extensions.citext                       NOT NULL,
+    name                 TEXT                                    NOT NULL,
+    status               inventory.inventory_location_status     NOT NULL DEFAULT 'active',
+    created_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, code),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    CONSTRAINT inventory_locations_code_format_check CHECK (
+        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
+    ),
+    CONSTRAINT inventory_locations_name_length_check CHECK (
+        length(trim(name)) BETWEEN 1 AND 120
+    )
+);
+
+CREATE TABLE inventory.stock_items (
+    id                    UUID        NOT NULL PRIMARY KEY,
+    merchant_account_id   UUID        NOT NULL,
+    store_id              UUID        NOT NULL,
+    inventory_location_id UUID        NOT NULL,
+    product_variant_id    UUID        NOT NULL,
+    on_hand_quantity      BIGINT      NOT NULL DEFAULT 0,
+    reserved_quantity     BIGINT      NOT NULL DEFAULT 0,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, inventory_location_id, product_variant_id),
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, inventory_location_id)
+        REFERENCES inventory.inventory_locations(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
+    CONSTRAINT stock_items_on_hand_nonnegative_check CHECK (on_hand_quantity >= 0),
+    CONSTRAINT stock_items_reserved_range_check CHECK (
+        reserved_quantity >= 0 AND reserved_quantity <= on_hand_quantity
+    )
+);
+
+CREATE TABLE inventory.inventory_reservations (
+    id                   UUID                                      NOT NULL PRIMARY KEY,
+    merchant_account_id  UUID                                      NOT NULL,
+    store_id             UUID                                      NOT NULL,
+    sales_channel_id     UUID                                      NOT NULL,
+    status               inventory.inventory_reservation_status    NOT NULL DEFAULT 'active',
+    expires_at           TIMESTAMPTZ                               NOT NULL,
+    closed_at            TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id)
+        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
+        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    CONSTRAINT inventory_reservations_expiration_check CHECK (expires_at > created_at),
+    CONSTRAINT inventory_reservations_closure_check CHECK (
+        (status = 'active' AND closed_at IS NULL)
+        OR (status <> 'active' AND closed_at IS NOT NULL)
+    )
+);
+
+CREATE TABLE inventory.inventory_reservation_lines (
+    merchant_account_id  UUID    NOT NULL,
+    store_id             UUID    NOT NULL,
+    reservation_id       UUID    NOT NULL,
+    stock_item_id        UUID    NOT NULL,
+    product_variant_id   UUID    NOT NULL,
+    quantity             BIGINT  NOT NULL,
+
+    PRIMARY KEY (merchant_account_id, store_id, reservation_id, stock_item_id),
+    FOREIGN KEY (merchant_account_id, store_id, reservation_id)
+        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (merchant_account_id, store_id, stock_item_id)
+        REFERENCES inventory.stock_items(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
+        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
+    CONSTRAINT inventory_reservation_lines_quantity_positive_check CHECK (quantity > 0)
+);
+
+CREATE TABLE inventory.stock_ledger_entries (
+    id                           UUID                        NOT NULL PRIMARY KEY,
+    merchant_account_id          UUID                        NOT NULL,
+    store_id                     UUID                        NOT NULL,
+    stock_item_id                UUID                        NOT NULL,
+    reservation_id               UUID,
+    kind                         inventory.stock_ledger_kind NOT NULL,
+    on_hand_delta_quantity       BIGINT                      NOT NULL,
+    reserved_delta_quantity      BIGINT                      NOT NULL,
+    resulting_on_hand_quantity   BIGINT                      NOT NULL,
+    resulting_reserved_quantity  BIGINT                      NOT NULL,
+    note                         TEXT,
+    actor_user_id                UUID,
+    created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, stock_item_id)
+        REFERENCES inventory.stock_items(merchant_account_id, store_id, id),
+    FOREIGN KEY (merchant_account_id, store_id, reservation_id)
+        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
+    FOREIGN KEY (actor_user_id)
+        REFERENCES identity.users(id),
+    CONSTRAINT stock_ledger_entries_resulting_balance_check CHECK (
+        resulting_on_hand_quantity >= 0
+        AND resulting_reserved_quantity >= 0
+        AND resulting_reserved_quantity <= resulting_on_hand_quantity
+    ),
+    CONSTRAINT stock_ledger_entries_note_length_check CHECK (
+        note IS NULL OR length(trim(note)) BETWEEN 1 AND 500
+    ),
+    CONSTRAINT stock_ledger_entries_kind_deltas_check CHECK (
+        (
+            kind IN ('manual_adjustment', 'return_restock')
+            AND reservation_id IS NULL
+            AND (
+                (kind = 'manual_adjustment' AND on_hand_delta_quantity <> 0)
+                OR (kind = 'return_restock' AND on_hand_delta_quantity > 0)
+            )
+            AND reserved_delta_quantity = 0
+        )
+        OR (
+            kind = 'reservation_created'
+            AND reservation_id IS NOT NULL
+            AND on_hand_delta_quantity = 0
+            AND reserved_delta_quantity > 0
+        )
+        OR (
+            kind IN ('reservation_released', 'reservation_expired')
+            AND reservation_id IS NOT NULL
+            AND on_hand_delta_quantity = 0
+            AND reserved_delta_quantity < 0
+        )
+        OR (
+            kind = 'reservation_consumed'
+            AND reservation_id IS NOT NULL
+            AND on_hand_delta_quantity < 0
+            AND reserved_delta_quantity = on_hand_delta_quantity
+        )
+    )
+);
+
+CREATE TABLE search.product_documents (
+    merchant_account_id UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    product_id          UUID        NOT NULL,
+    document            TSVECTOR    NOT NULL,
+    indexed_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (merchant_account_id, store_id, product_id),
+    FOREIGN KEY (merchant_account_id, store_id, product_id)
+        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX products_store_status_created_idx
+    ON catalog.products (merchant_account_id, store_id, status, created_at DESC, id DESC);
+
+CREATE UNIQUE INDEX product_variants_store_sku_key
+    ON catalog.product_variants (merchant_account_id, store_id, sku)
+    WHERE sku IS NOT NULL;
+
+CREATE INDEX product_variants_product_status_idx
+    ON catalog.product_variants (merchant_account_id, store_id, product_id, status);
+
+CREATE INDEX product_translation_events_product_occurred_idx
+    ON catalog.product_translation_events (
+        merchant_account_id, store_id, product_id, occurred_at, id
+    );
+
+CREATE INDEX product_publications_channel_product_idx
+    ON catalog.product_publications (
+        merchant_account_id,
+        store_id,
+        sales_channel_id,
+        product_id
+    );
+
+CREATE INDEX collections_store_status_created_idx
+    ON catalog.collections (
+        merchant_account_id, store_id, status, created_at DESC, id DESC
+    );
+
+CREATE INDEX collection_translation_events_collection_occurred_idx
+    ON catalog.collection_translation_events (
+        merchant_account_id, store_id, collection_id, occurred_at, id
+    );
+
+CREATE INDEX collection_products_product_idx
+    ON catalog.collection_products (merchant_account_id, store_id, product_id, collection_id);
+
+CREATE INDEX collection_publications_channel_collection_idx
+    ON catalog.collection_publications (
+        merchant_account_id, store_id, sales_channel_id, collection_id
+    );
+
+CREATE INDEX collection_events_collection_occurred_idx
+    ON catalog.collection_events (
+        merchant_account_id, store_id, collection_id, occurred_at, id
+    );
+
+CREATE UNIQUE INDEX media_assets_product_position_active_idx
+    ON catalog.media_assets (merchant_account_id, store_id, product_id, position)
+    WHERE status <> 'archived';
+
+CREATE INDEX media_assets_product_status_position_idx
+    ON catalog.media_assets (
+        merchant_account_id, store_id, product_id, status, position, id
+    );
+
+CREATE INDEX media_translation_events_asset_occurred_idx
+    ON catalog.media_translation_events (
+        merchant_account_id, store_id, media_asset_id, occurred_at, id
+    );
+
 CREATE INDEX media_events_asset_occurred_idx
     ON catalog.media_events (
         merchant_account_id, store_id, product_id, media_asset_id, occurred_at, id
     );
+
+CREATE INDEX reviews_product_status_idx
+    ON catalog.reviews (merchant_account_id, store_id, product_id, status, created_at, id);
+
+CREATE INDEX reviews_parent_idx
+    ON catalog.reviews (merchant_account_id, store_id, parent_review_id)
+    WHERE parent_review_id IS NOT NULL;
+
+CREATE INDEX review_events_review_occurred_idx
+    ON catalog.review_events (merchant_account_id, store_id, review_id, occurred_at, id);
+
+CREATE INDEX price_lists_store_activation_idx
+    ON pricing.price_lists (
+        merchant_account_id,
+        store_id,
+        status,
+        currency,
+        starts_at,
+        ends_at
+    );
+
+CREATE INDEX prices_variant_lookup_idx
+    ON pricing.prices (
+        merchant_account_id,
+        store_id,
+        product_variant_id,
+        price_list_id
+    );
+
+CREATE UNIQUE INDEX tax_rules_active_country_key
+    ON pricing.tax_rules (merchant_account_id, store_id, country_code)
+    WHERE status = 'active';
+
+CREATE INDEX tax_rules_store_status_idx
+    ON pricing.tax_rules (merchant_account_id, store_id, status, created_at, id);
+
+CREATE UNIQUE INDEX promotions_active_redemption_code_key
+    ON pricing.promotions (merchant_account_id, store_id, redemption_code)
+    WHERE status = 'active' AND redemption_code IS NOT NULL;
+
+CREATE INDEX promotions_checkout_lookup_idx
+    ON pricing.promotions (
+        merchant_account_id, store_id, currency, status, trigger, priority, id
+    );
+
+CREATE INDEX inventory_locations_store_status_idx
+    ON inventory.inventory_locations (merchant_account_id, store_id, status, created_at, id);
+
+CREATE INDEX stock_items_variant_availability_idx
+    ON inventory.stock_items (
+        merchant_account_id,
+        store_id,
+        product_variant_id,
+        inventory_location_id
+    );
+
+CREATE INDEX inventory_reservations_expiration_idx
+    ON inventory.inventory_reservations (
+        merchant_account_id,
+        store_id,
+        status,
+        expires_at,
+        id
+    );
+
+CREATE INDEX inventory_reservation_lines_stock_item_idx
+    ON inventory.inventory_reservation_lines (
+        merchant_account_id,
+        store_id,
+        stock_item_id,
+        reservation_id
+    );
+
+CREATE INDEX stock_ledger_entries_stock_item_created_idx
+    ON inventory.stock_ledger_entries (
+        merchant_account_id,
+        store_id,
+        stock_item_id,
+        created_at DESC,
+        id DESC
+    );
+
+CREATE INDEX product_documents_search_idx
+    ON search.product_documents USING GIN (document);
+
+CREATE FUNCTION search.refresh_product_document(UUID, UUID, UUID)
+RETURNS VOID LANGUAGE SQL SECURITY DEFINER SET search_path = pg_catalog AS $$
+    INSERT INTO search.product_documents (
+        merchant_account_id, store_id, product_id, document, indexed_at
+    )
+    SELECT product.merchant_account_id, product.store_id, product.id,
+           to_tsvector('simple', concat_ws(
+               ' ', product.handle::text, product.title, product.description,
+               string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
+           )), CURRENT_TIMESTAMP
+      FROM catalog.products AS product
+      LEFT JOIN catalog.product_variants AS variant
+        ON variant.merchant_account_id = product.merchant_account_id
+       AND variant.store_id = product.store_id AND variant.product_id = product.id
+     WHERE product.merchant_account_id = $1 AND product.store_id = $2 AND product.id = $3
+     GROUP BY product.merchant_account_id, product.store_id, product.id
+    ON CONFLICT (merchant_account_id, store_id, product_id) DO UPDATE
+        SET document = EXCLUDED.document, indexed_at = EXCLUDED.indexed_at;
+$$;
+
+CREATE FUNCTION search.capture_product_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    INSERT INTO integration.outbox_events (
+        id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload
+    ) VALUES (
+        uuidv7(), NEW.merchant_account_id, NEW.store_id, 'product', NEW.id,
+        'search.product.changed', jsonb_build_object('product_id', NEW.id)
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION search.capture_variant_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+    account_id UUID;
+    owning_store_id UUID;
+    changed_product_id UUID;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        account_id := OLD.merchant_account_id;
+        owning_store_id := OLD.store_id;
+        changed_product_id := OLD.product_id;
+    ELSE
+        account_id := NEW.merchant_account_id;
+        owning_store_id := NEW.store_id;
+        changed_product_id := NEW.product_id;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM merchant.stores
+         WHERE merchant_account_id = account_id AND id = owning_store_id
+    ) THEN
+        INSERT INTO integration.outbox_events (
+            id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload
+        ) VALUES (
+            uuidv7(), account_id, owning_store_id, 'product', changed_product_id,
+            'search.product.changed', jsonb_build_object('product_id', changed_product_id)
+        );
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION search.rebuild_store_products(UUID, UUID)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE product_id UUID; rebuilt BIGINT := 0;
+BEGIN
+    DELETE FROM search.product_documents WHERE merchant_account_id = $1 AND store_id = $2;
+    FOR product_id IN SELECT id FROM catalog.products
+        WHERE merchant_account_id = $1 AND store_id = $2
+    LOOP
+        PERFORM search.refresh_product_document($1, $2, product_id);
+        rebuilt := rebuilt + 1;
+    END LOOP;
+    RETURN rebuilt;
+END;
+$$;
+
+CREATE FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ)
+RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE event RECORD; processed BIGINT := 0;
+BEGIN
+    FOR event IN
+        SELECT outbox.id, outbox.merchant_account_id, outbox.store_id, outbox.aggregate_id
+          FROM integration.outbox_events AS outbox
+          INNER JOIN integration.event_consumer_registry AS registry
+            ON registry.event_type = outbox.event_type
+           AND registry.consumer_owner = 'search.product_indexer'
+         WHERE outbox.status = 'pending' AND outbox.event_type = 'search.product.changed'
+           AND outbox.available_at <= $3
+         ORDER BY outbox.available_at, outbox.created_at, outbox.id
+         FOR UPDATE OF outbox SKIP LOCKED
+         LIMIT greatest(least($2, 100), 1)
+    LOOP
+        UPDATE integration.outbox_events
+           SET status = 'processing', attempts = attempts + 1,
+               locked_by = $1, locked_at = $3
+         WHERE id = event.id;
+        PERFORM search.refresh_product_document(
+            event.merchant_account_id, event.store_id, event.aggregate_id
+        );
+        UPDATE integration.outbox_events
+           SET status = 'processed', processed_at = $3,
+               locked_by = NULL, locked_at = NULL
+         WHERE id = event.id AND locked_by = $1;
+        processed := processed + 1;
+    END LOOP;
+    RETURN processed;
+END;
+$$;
+
+CREATE TRIGGER products_search_change
+AFTER INSERT OR UPDATE OF handle, title, description ON catalog.products
+FOR EACH ROW EXECUTE FUNCTION search.capture_product_change();
+
+CREATE TRIGGER variants_search_change
+AFTER INSERT OR UPDATE OF title, sku OR DELETE ON catalog.product_variants
+FOR EACH ROW EXECUTE FUNCTION search.capture_variant_change();
 
 ALTER TABLE catalog.products ENABLE ROW LEVEL SECURITY;
 
@@ -610,6 +1201,30 @@ ALTER TABLE catalog.media_asset_translations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE catalog.media_translation_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE catalog.media_events ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE catalog.reviews ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE catalog.review_events ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE pricing.promotions ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE inventory.inventory_locations ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE inventory.stock_items ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE inventory.inventory_reservations ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE inventory.inventory_reservation_lines ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE inventory.stock_ledger_entries ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE search.product_documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY merchant_account_isolation ON catalog.products
     USING (
@@ -801,87 +1416,6 @@ CREATE POLICY merchant_account_isolation ON catalog.media_events
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
-CREATE TYPE catalog.review_status AS ENUM ('pending', 'approved', 'rejected');
-
-CREATE TYPE catalog.review_event_kind AS ENUM ('submitted', 'approved', 'rejected', 'reply_added');
-
-CREATE TABLE catalog.reviews (
-    id                   UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                     NOT NULL,
-    store_id             UUID                     NOT NULL,
-    product_id           UUID                     NOT NULL,
-    parent_review_id     UUID,
-    rating               SMALLINT,
-    title                TEXT,
-    content              TEXT                     NOT NULL,
-    author_name          TEXT                     NOT NULL,
-    author_email         extensions.citext,
-    status               catalog.review_status    NOT NULL DEFAULT 'pending',
-    is_staff_reply       BOOLEAN                  NOT NULL DEFAULT false,
-    verified_buyer       BOOLEAN                  NOT NULL DEFAULT false,
-    approved_by_user_id  UUID,
-    approved_at          TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, product_id)
-        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, parent_review_id)
-        REFERENCES catalog.reviews(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (approved_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT reviews_rating_shape_check CHECK (
-        (is_staff_reply AND rating IS NULL AND parent_review_id IS NOT NULL)
-        OR (NOT is_staff_reply AND rating IS NOT NULL AND rating BETWEEN 1 AND 5
-            AND parent_review_id IS NULL)
-    ),
-    CONSTRAINT reviews_content_length_check CHECK (
-        length(content) BETWEEN 1 AND 10000
-    ),
-    CONSTRAINT reviews_title_length_check CHECK (
-        title IS NULL OR length(title) <= 255
-    ),
-    CONSTRAINT reviews_author_name_length_check CHECK (
-        length(trim(author_name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT reviews_approval_shape_check CHECK (
-        (status = 'approved') = (approved_at IS NOT NULL AND approved_by_user_id IS NOT NULL)
-    ),
-    CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (
-        NOT verified_buyer OR status = 'approved'
-    )
-);
-
-CREATE INDEX reviews_product_status_idx
-    ON catalog.reviews (merchant_account_id, store_id, product_id, status, created_at, id);
-CREATE INDEX reviews_parent_idx
-    ON catalog.reviews (merchant_account_id, store_id, parent_review_id)
-    WHERE parent_review_id IS NOT NULL;
-
-CREATE TABLE catalog.review_events (
-    id                   UUID                        NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                        NOT NULL,
-    store_id             UUID                        NOT NULL,
-    review_id            UUID                        NOT NULL,
-    event_kind           catalog.review_event_kind   NOT NULL,
-    actor_user_id        UUID,
-    occurred_at          TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (merchant_account_id, store_id, review_id)
-        REFERENCES catalog.reviews(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT review_events_actor_shape_check CHECK (
-        (event_kind = 'submitted' AND actor_user_id IS NULL)
-        OR (event_kind IN ('approved', 'rejected', 'reply_added') AND actor_user_id IS NOT NULL)
-    )
-);
-
-CREATE INDEX review_events_review_occurred_idx
-    ON catalog.review_events (merchant_account_id, store_id, review_id, occurred_at, id);
-
-ALTER TABLE catalog.reviews ENABLE ROW LEVEL SECURITY;
-ALTER TABLE catalog.review_events ENABLE ROW LEVEL SECURITY;
-
 CREATE POLICY merchant_account_isolation ON catalog.reviews
     USING (
         merchant_account_id =
@@ -901,215 +1435,6 @@ CREATE POLICY merchant_account_isolation ON catalog.review_events
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA catalog TO chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.collection_translation_events FROM chaos_runtime;
-
-REVOKE DELETE ON catalog.collections FROM chaos_runtime;
-
-REVOKE DELETE ON catalog.media_assets FROM chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.media_events FROM chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.media_translation_events FROM chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.product_translation_events FROM chaos_runtime;
-
-REVOKE DELETE ON catalog.reviews FROM chaos_runtime;
-
-REVOKE UPDATE, DELETE ON catalog.review_events FROM chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA catalog TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
-
-CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
-
-CREATE TYPE pricing.promotion_status AS ENUM ('active', 'archived');
-
-CREATE TYPE pricing.promotion_trigger AS ENUM ('automatic', 'code');
-
-CREATE TYPE pricing.promotion_value_kind AS ENUM ('percentage', 'fixed_amount');
-
-CREATE TABLE pricing.price_lists (
-    id                   UUID                         NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                         NOT NULL,
-    store_id             UUID                         NOT NULL,
-    code                 extensions.citext            NOT NULL,
-    name                 TEXT                         NOT NULL,
-    currency             CHAR(3)                      NOT NULL,
-    tax_inclusive        BOOLEAN                      NOT NULL DEFAULT false,
-    status               pricing.price_list_status    NOT NULL DEFAULT 'draft',
-    starts_at            TIMESTAMPTZ,
-    ends_at              TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, code),
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, currency)
-        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
-    CONSTRAINT price_lists_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
-    ),
-    CONSTRAINT price_lists_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT price_lists_currency_format_check CHECK (
-        currency ~ '^[A-Z]{3}$'
-    ),
-    CONSTRAINT price_lists_validity_window_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at
-    )
-);
-
-CREATE INDEX price_lists_store_activation_idx
-    ON pricing.price_lists (
-        merchant_account_id,
-        store_id,
-        status,
-        currency,
-        starts_at,
-        ends_at
-    );
-
-CREATE TABLE pricing.prices (
-    id                   UUID         NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID         NOT NULL,
-    store_id             UUID         NOT NULL,
-    price_list_id        UUID         NOT NULL,
-    product_variant_id   UUID         NOT NULL,
-    amount_minor         BIGINT       NOT NULL,
-    created_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, price_list_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, price_list_id)
-        REFERENCES pricing.price_lists(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
-        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
-    CONSTRAINT prices_amount_nonnegative_check CHECK (
-        amount_minor >= 0
-    )
-);
-
-CREATE INDEX prices_variant_lookup_idx
-    ON pricing.prices (
-        merchant_account_id,
-        store_id,
-        product_variant_id,
-        price_list_id
-    );
-
-CREATE TABLE pricing.tax_rules (
-    id                    UUID                    NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                    NOT NULL,
-    store_id              UUID                    NOT NULL,
-    code                  TEXT                    NOT NULL,
-    name                  TEXT                    NOT NULL,
-    country_code          CHAR(2)                 NOT NULL,
-    rate_basis_points     INTEGER                 NOT NULL,
-    status                pricing.tax_rule_status NOT NULL DEFAULT 'active',
-    created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, code),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    CONSTRAINT tax_rules_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT tax_rules_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT tax_rules_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT tax_rules_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
-);
-
-CREATE UNIQUE INDEX tax_rules_active_country_key
-    ON pricing.tax_rules (merchant_account_id, store_id, country_code)
-    WHERE status = 'active';
-
-CREATE INDEX tax_rules_store_status_idx
-    ON pricing.tax_rules (merchant_account_id, store_id, status, created_at, id);
-
-CREATE TABLE pricing.promotions (
-    id                            UUID                         NOT NULL PRIMARY KEY,
-    merchant_account_id           UUID                         NOT NULL,
-    store_id                      UUID                         NOT NULL,
-    handle                        TEXT                         NOT NULL,
-    name                          TEXT                         NOT NULL,
-    trigger                       pricing.promotion_trigger    NOT NULL,
-    redemption_code               extensions.citext,
-    value_kind                    pricing.promotion_value_kind NOT NULL,
-    rate_basis_points             INTEGER,
-    amount_minor                  BIGINT,
-    maximum_amount_minor          BIGINT,
-    currency                      CHAR(3)                      NOT NULL,
-    minimum_subtotal_amount_minor BIGINT                       NOT NULL DEFAULT 0,
-    priority                      SMALLINT                     NOT NULL DEFAULT 100,
-    starts_at                     TIMESTAMPTZ,
-    ends_at                       TIMESTAMPTZ,
-    status                        pricing.promotion_status     NOT NULL DEFAULT 'active',
-    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, handle),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, currency)
-        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
-    CONSTRAINT promotions_handle_format_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT promotions_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT promotions_redemption_shape_check CHECK (
-        (trigger = 'automatic' AND redemption_code IS NULL)
-        OR (trigger = 'code' AND redemption_code::text ~ '^[A-Z0-9-]{1,64}$')
-    ),
-    CONSTRAINT promotions_value_shape_check CHECK (
-        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
-            AND amount_minor IS NULL
-            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
-        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
-            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
-    ),
-    CONSTRAINT promotions_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT promotions_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
-    CONSTRAINT promotions_priority_check CHECK (priority BETWEEN 0 AND 32767),
-    CONSTRAINT promotions_schedule_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
-    )
-);
-
-CREATE UNIQUE INDEX promotions_active_redemption_code_key
-    ON pricing.promotions (merchant_account_id, store_id, redemption_code)
-    WHERE status = 'active' AND redemption_code IS NOT NULL;
-
-CREATE INDEX promotions_checkout_lookup_idx
-    ON pricing.promotions (
-        merchant_account_id, store_id, currency, status, trigger, priority, id
-    );
-
-ALTER TABLE pricing.price_lists
-    ADD UNIQUE (merchant_account_id, store_id, id, currency);
-
-ALTER TABLE pricing.price_lists ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE pricing.prices ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE pricing.tax_rules ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE pricing.promotions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY merchant_account_isolation ON pricing.price_lists
     USING (
@@ -1150,231 +1475,6 @@ CREATE POLICY merchant_account_isolation ON pricing.promotions
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA pricing TO chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA pricing TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-CREATE TYPE inventory.inventory_location_status AS ENUM ('active', 'archived');
-
-CREATE TYPE inventory.inventory_reservation_status AS ENUM (
-    'active',
-    'released',
-    'consumed',
-    'expired'
-);
-
-CREATE TYPE inventory.stock_ledger_kind AS ENUM (
-    'manual_adjustment',
-    'reservation_created',
-    'reservation_released',
-    'reservation_consumed',
-    'reservation_expired',
-    'return_restock'
-);
-
-CREATE TABLE inventory.inventory_locations (
-    id                   UUID                                    NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                                    NOT NULL,
-    store_id             UUID                                    NOT NULL,
-    code                 extensions.citext                       NOT NULL,
-    name                 TEXT                                    NOT NULL,
-    status               inventory.inventory_location_status     NOT NULL DEFAULT 'active',
-    created_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, code),
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    CONSTRAINT inventory_locations_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
-    ),
-    CONSTRAINT inventory_locations_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    )
-);
-
-CREATE INDEX inventory_locations_store_status_idx
-    ON inventory.inventory_locations (merchant_account_id, store_id, status, created_at, id);
-
-CREATE TABLE inventory.stock_items (
-    id                    UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID        NOT NULL,
-    store_id              UUID        NOT NULL,
-    inventory_location_id UUID        NOT NULL,
-    product_variant_id    UUID        NOT NULL,
-    on_hand_quantity      BIGINT      NOT NULL DEFAULT 0,
-    reserved_quantity     BIGINT      NOT NULL DEFAULT 0,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, inventory_location_id, product_variant_id),
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, inventory_location_id)
-        REFERENCES inventory.inventory_locations(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
-        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
-    CONSTRAINT stock_items_on_hand_nonnegative_check CHECK (on_hand_quantity >= 0),
-    CONSTRAINT stock_items_reserved_range_check CHECK (
-        reserved_quantity >= 0 AND reserved_quantity <= on_hand_quantity
-    )
-);
-
-CREATE INDEX stock_items_variant_availability_idx
-    ON inventory.stock_items (
-        merchant_account_id,
-        store_id,
-        product_variant_id,
-        inventory_location_id
-    );
-
-CREATE TABLE inventory.inventory_reservations (
-    id                   UUID                                      NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                                      NOT NULL,
-    store_id             UUID                                      NOT NULL,
-    sales_channel_id     UUID                                      NOT NULL,
-    status               inventory.inventory_reservation_status    NOT NULL DEFAULT 'active',
-    expires_at           TIMESTAMPTZ                               NOT NULL,
-    closed_at            TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
-    CONSTRAINT inventory_reservations_expiration_check CHECK (expires_at > created_at),
-    CONSTRAINT inventory_reservations_closure_check CHECK (
-        (status = 'active' AND closed_at IS NULL)
-        OR (status <> 'active' AND closed_at IS NOT NULL)
-    )
-);
-
-CREATE INDEX inventory_reservations_expiration_idx
-    ON inventory.inventory_reservations (
-        merchant_account_id,
-        store_id,
-        status,
-        expires_at,
-        id
-    );
-
-CREATE TABLE inventory.inventory_reservation_lines (
-    merchant_account_id  UUID    NOT NULL,
-    store_id             UUID    NOT NULL,
-    reservation_id       UUID    NOT NULL,
-    stock_item_id        UUID    NOT NULL,
-    product_variant_id   UUID    NOT NULL,
-    quantity             BIGINT  NOT NULL,
-
-    PRIMARY KEY (merchant_account_id, store_id, reservation_id, stock_item_id),
-    FOREIGN KEY (merchant_account_id, store_id, reservation_id)
-        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, stock_item_id)
-        REFERENCES inventory.stock_items(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, product_variant_id)
-        REFERENCES catalog.product_variants(merchant_account_id, store_id, id),
-    CONSTRAINT inventory_reservation_lines_quantity_positive_check CHECK (quantity > 0)
-);
-
-CREATE INDEX inventory_reservation_lines_stock_item_idx
-    ON inventory.inventory_reservation_lines (
-        merchant_account_id,
-        store_id,
-        stock_item_id,
-        reservation_id
-    );
-
-CREATE TABLE inventory.stock_ledger_entries (
-    id                           UUID                        NOT NULL PRIMARY KEY,
-    merchant_account_id          UUID                        NOT NULL,
-    store_id                     UUID                        NOT NULL,
-    stock_item_id                UUID                        NOT NULL,
-    reservation_id               UUID,
-    kind                         inventory.stock_ledger_kind NOT NULL,
-    on_hand_delta_quantity       BIGINT                      NOT NULL,
-    reserved_delta_quantity      BIGINT                      NOT NULL,
-    resulting_on_hand_quantity   BIGINT                      NOT NULL,
-    resulting_reserved_quantity  BIGINT                      NOT NULL,
-    note                         TEXT,
-    actor_user_id                UUID,
-    created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, stock_item_id)
-        REFERENCES inventory.stock_items(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, reservation_id)
-        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
-    FOREIGN KEY (actor_user_id)
-        REFERENCES identity.users(id),
-    CONSTRAINT stock_ledger_entries_resulting_balance_check CHECK (
-        resulting_on_hand_quantity >= 0
-        AND resulting_reserved_quantity >= 0
-        AND resulting_reserved_quantity <= resulting_on_hand_quantity
-    ),
-    CONSTRAINT stock_ledger_entries_note_length_check CHECK (
-        note IS NULL OR length(trim(note)) BETWEEN 1 AND 500
-    ),
-    CONSTRAINT stock_ledger_entries_kind_deltas_check CHECK (
-        (
-            kind IN ('manual_adjustment', 'return_restock')
-            AND reservation_id IS NULL
-            AND (
-                (kind = 'manual_adjustment' AND on_hand_delta_quantity <> 0)
-                OR (kind = 'return_restock' AND on_hand_delta_quantity > 0)
-            )
-            AND reserved_delta_quantity = 0
-        )
-        OR (
-            kind = 'reservation_created'
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity = 0
-            AND reserved_delta_quantity > 0
-        )
-        OR (
-            kind IN ('reservation_released', 'reservation_expired')
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity = 0
-            AND reserved_delta_quantity < 0
-        )
-        OR (
-            kind = 'reservation_consumed'
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity < 0
-            AND reserved_delta_quantity = on_hand_delta_quantity
-        )
-    )
-);
-
-CREATE INDEX stock_ledger_entries_stock_item_created_idx
-    ON inventory.stock_ledger_entries (
-        merchant_account_id,
-        store_id,
-        stock_item_id,
-        created_at DESC,
-        id DESC
-    );
-
-ALTER TABLE inventory.inventory_locations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE inventory.stock_items ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE inventory.inventory_reservations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE inventory.inventory_reservation_lines ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE inventory.stock_ledger_entries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY merchant_account_isolation ON inventory.inventory_locations
     USING (
@@ -1426,6 +1526,58 @@ CREATE POLICY merchant_account_isolation ON inventory.stock_ledger_entries
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
     );
 
+CREATE POLICY merchant_account_isolation ON search.product_documents
+    USING (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    )
+    WITH CHECK (
+        merchant_account_id =
+        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+    );
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA catalog TO chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.collection_translation_events FROM chaos_runtime;
+
+REVOKE DELETE ON catalog.collections FROM chaos_runtime;
+
+REVOKE DELETE ON catalog.media_assets FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.media_events FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.media_translation_events FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.product_translation_events FROM chaos_runtime;
+
+REVOKE DELETE ON catalog.reviews FROM chaos_runtime;
+
+REVOKE UPDATE, DELETE ON catalog.review_events FROM chaos_runtime;
+
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA catalog TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON ALL TABLES IN SCHEMA pricing TO chaos_runtime;
+
+GRANT USAGE, SELECT
+    ON ALL SEQUENCES IN SCHEMA pricing TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA inventory TO chaos_runtime;
 
@@ -1441,148 +1593,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA inventory
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-CREATE TABLE search.product_documents (
-    merchant_account_id UUID        NOT NULL,
-    store_id            UUID        NOT NULL,
-    product_id          UUID        NOT NULL,
-    document            TSVECTOR    NOT NULL,
-    indexed_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (merchant_account_id, store_id, product_id),
-    FOREIGN KEY (merchant_account_id, store_id, product_id)
-        REFERENCES catalog.products(merchant_account_id, store_id, id) ON DELETE CASCADE
-);
-
-CREATE INDEX product_documents_search_idx
-    ON search.product_documents USING GIN (document);
-
-CREATE FUNCTION search.refresh_product_document(UUID, UUID, UUID)
-RETURNS VOID LANGUAGE SQL SECURITY DEFINER SET search_path = pg_catalog AS $$
-    INSERT INTO search.product_documents (
-        merchant_account_id, store_id, product_id, document, indexed_at
-    )
-    SELECT product.merchant_account_id, product.store_id, product.id,
-           to_tsvector('simple', concat_ws(
-               ' ', product.handle::text, product.title, product.description,
-               string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
-           )), CURRENT_TIMESTAMP
-      FROM catalog.products AS product
-      LEFT JOIN catalog.product_variants AS variant
-        ON variant.merchant_account_id = product.merchant_account_id
-       AND variant.store_id = product.store_id AND variant.product_id = product.id
-     WHERE product.merchant_account_id = $1 AND product.store_id = $2 AND product.id = $3
-     GROUP BY product.merchant_account_id, product.store_id, product.id
-    ON CONFLICT (merchant_account_id, store_id, product_id) DO UPDATE
-        SET document = EXCLUDED.document, indexed_at = EXCLUDED.indexed_at;
-$$;
-
-CREATE FUNCTION search.capture_product_change()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-BEGIN
-    INSERT INTO integration.outbox_events (
-        id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload
-    ) VALUES (
-        uuidv7(), NEW.merchant_account_id, NEW.store_id, 'product', NEW.id,
-        'search.product.changed', jsonb_build_object('product_id', NEW.id)
-    );
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION search.capture_variant_change()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE
-    account_id UUID;
-    owning_store_id UUID;
-    changed_product_id UUID;
-BEGIN
-    IF TG_OP = 'DELETE' THEN
-        account_id := OLD.merchant_account_id;
-        owning_store_id := OLD.store_id;
-        changed_product_id := OLD.product_id;
-    ELSE
-        account_id := NEW.merchant_account_id;
-        owning_store_id := NEW.store_id;
-        changed_product_id := NEW.product_id;
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM merchant.stores
-         WHERE merchant_account_id = account_id AND id = owning_store_id
-    ) THEN
-        INSERT INTO integration.outbox_events (
-            id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload
-        ) VALUES (
-            uuidv7(), account_id, owning_store_id, 'product', changed_product_id,
-            'search.product.changed', jsonb_build_object('product_id', changed_product_id)
-        );
-    END IF;
-    IF TG_OP = 'DELETE' THEN
-        RETURN OLD;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION search.rebuild_store_products(UUID, UUID)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE product_id UUID; rebuilt BIGINT := 0;
-BEGIN
-    DELETE FROM search.product_documents WHERE merchant_account_id = $1 AND store_id = $2;
-    FOR product_id IN SELECT id FROM catalog.products
-        WHERE merchant_account_id = $1 AND store_id = $2
-    LOOP
-        PERFORM search.refresh_product_document($1, $2, product_id);
-        rebuilt := rebuilt + 1;
-    END LOOP;
-    RETURN rebuilt;
-END;
-$$;
-
-CREATE FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ)
-RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE event RECORD; processed BIGINT := 0;
-BEGIN
-    FOR event IN
-        SELECT outbox.id, outbox.merchant_account_id, outbox.store_id, outbox.aggregate_id
-          FROM integration.outbox_events AS outbox
-          INNER JOIN integration.event_consumer_registry AS registry
-            ON registry.event_type = outbox.event_type
-           AND registry.consumer_owner = 'search.product_indexer'
-         WHERE outbox.status = 'pending' AND outbox.event_type = 'search.product.changed'
-           AND outbox.available_at <= $3
-         ORDER BY outbox.available_at, outbox.created_at, outbox.id
-         FOR UPDATE OF outbox SKIP LOCKED
-         LIMIT greatest(least($2, 100), 1)
-    LOOP
-        UPDATE integration.outbox_events
-           SET status = 'processing', attempts = attempts + 1,
-               locked_by = $1, locked_at = $3
-         WHERE id = event.id;
-        PERFORM search.refresh_product_document(
-            event.merchant_account_id, event.store_id, event.aggregate_id
-        );
-        UPDATE integration.outbox_events
-           SET status = 'processed', processed_at = $3,
-               locked_by = NULL, locked_at = NULL
-         WHERE id = event.id AND locked_by = $1;
-        processed := processed + 1;
-    END LOOP;
-    RETURN processed;
-END;
-$$;
-
-ALTER TABLE search.product_documents ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY merchant_account_isolation ON search.product_documents
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
 GRANT SELECT ON ALL TABLES IN SCHEMA search TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION search.rebuild_store_products(UUID, UUID) TO chaos_runtime;
@@ -1591,13 +1601,5 @@ GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO c
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA search
     GRANT SELECT ON TABLES TO chaos_runtime;
-
-CREATE TRIGGER products_search_change
-AFTER INSERT OR UPDATE OF handle, title, description ON catalog.products
-FOR EACH ROW EXECUTE FUNCTION search.capture_product_change();
-
-CREATE TRIGGER variants_search_change
-AFTER INSERT OR UPDATE OF title, sku OR DELETE ON catalog.product_variants
-FOR EACH ROW EXECUTE FUNCTION search.capture_variant_change();
 
 GRANT USAGE ON SCHEMA catalog, pricing, inventory, search TO chaos_runtime;
