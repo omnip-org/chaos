@@ -109,6 +109,7 @@ jobs:
         run: npm run build --prefix packages/js
 
       - name: Publish
-        run: npm publish --prefix packages/js
+        working-directory: packages/js
+        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
