@@ -26,6 +26,14 @@ jobs:
         with:
           shared-key: release-verify
 
+      - name: Set up Node.js
+        uses: actions/setup-node@main
+        with:
+          node-version: "22"
+
+      - name: Install storefront SDK dependencies
+        run: npm ci --prefix packages/js
+
       - name: Verify repository
         run: |
           cargo fmt --all --check
