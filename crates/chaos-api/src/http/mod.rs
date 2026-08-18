@@ -639,7 +639,17 @@ mod tests {
             "text/plain; version=0.0.4; charset=utf-8"
         );
 
-        let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
+        // The read limit here is a generous sanity ceiling, not a tight
+        // assertion on payload size: chaos_http_request_duration_seconds is a
+        // 10-bucket histogram, and the process-wide Prometheus registry
+        // (telemetry::init_metrics, a OnceLock) accumulates one label series
+        // per distinct (method, route, status) triple exercised by every test
+        // in this binary, not just this one — so the body only grows as the
+        // test suite does and must not be bounded to a size tied to today's
+        // route/test count.
+        let body = to_bytes(response.into_body(), 8 * 1024 * 1024)
+            .await
+            .unwrap();
         let body = std::str::from_utf8(&body).unwrap();
         assert!(body.contains("chaos_http_requests_total"));
         assert!(body.contains("method=\"GET\""));
