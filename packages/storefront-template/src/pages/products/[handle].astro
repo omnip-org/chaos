@@ -1,0 +1,45 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import AddToCartButton from "../../components/react/AddToCartButton";
+import { createChaosClient } from "../../lib/chaos";
+
+const { handle } = Astro.params;
+if (!handle) return Astro.redirect("/");
+
+const chaos = createChaosClient();
+let product;
+try {
+  ({ data: product } = await chaos.catalog.getProduct(handle));
+} catch {
+  return Astro.redirect("/");
+}
+
+const cover = product.media[0];
+const variant = product.variants[0];
+---
+
+<BaseLayout title={product.title}>
+  <div class="grid gap-8 sm:grid-cols-2">
+    <div class="aspect-square overflow-hidden rounded-lg bg-gray-100">
+      {
+        cover ? (
+          <img src={cover.url} alt={cover.alt_text} class="h-full w-full object-cover" />
+        ) : (
+          <div class="flex h-full w-full items-center justify-center text-gray-400">No image</div>
+        )
+      }
+    </div>
+    <div>
+      <h1 class="text-2xl font-semibold">{product.title}</h1>
+      {
+        variant && (
+          <p class="mt-2 text-lg text-gray-700">
+            {(variant.price.amount_minor / 100).toFixed(2)} {variant.price.currency}
+          </p>
+        )
+      }
+      <p class="mt-4 whitespace-pre-line text-sm text-gray-600">{product.description}</p>
+      {variant && <AddToCartButton client:load productVariantId={variant.id} />}
+    </div>
+  </div>
+</BaseLayout>

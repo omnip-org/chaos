@@ -1,0 +1,23 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const sessionId = Astro.url.searchParams.get("session_id");
+---
+
+<BaseLayout title="Order confirmed">
+  <div class="mx-auto max-w-md text-center">
+    <h1 class="text-2xl font-semibold">Thank you for your order!</h1>
+    <p class="mt-4 text-gray-600">
+      Your payment was successful. A confirmation has been sent to your email.
+    </p>
+    {sessionId && <p class="mt-2 text-xs text-gray-400">Stripe Checkout Session: {sessionId}</p>}
+    <a href="/" class="mt-8 inline-block rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700">
+      Continue shopping
+    </a>
+  </div>
+
+  <script>
+    import { CART_ID_STORAGE_KEY } from "../../lib/cart";
+    localStorage.removeItem(CART_ID_STORAGE_KEY);
+  </script>
+</BaseLayout>

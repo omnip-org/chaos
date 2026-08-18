@@ -62,6 +62,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 npm test --prefix packages/js
+npm run build --prefix packages/storefront-template
 ./scripts/check-language.sh
 ```
 

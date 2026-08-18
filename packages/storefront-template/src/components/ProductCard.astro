@@ -1,0 +1,35 @@
+---
+import type { Product } from "@omnip-org/chaos-js";
+
+interface Props {
+  product: Product;
+}
+
+const { product } = Astro.props;
+const cover = product.media[0];
+const price = product.variants[0]?.price;
+---
+
+<a href={`/products/${product.handle}`} class="group block">
+  <div class="aspect-square overflow-hidden rounded-lg bg-gray-100">
+    {
+      cover ? (
+        <img
+          src={cover.url}
+          alt={cover.alt_text}
+          class="h-full w-full object-cover transition group-hover:scale-105"
+        />
+      ) : (
+        <div class="flex h-full w-full items-center justify-center text-gray-400">No image</div>
+      )
+    }
+  </div>
+  <h2 class="mt-3 text-sm font-medium text-gray-900">{product.title}</h2>
+  {
+    price && (
+      <p class="mt-1 text-sm text-gray-500">
+        {(price.amount_minor / 100).toFixed(2)} {price.currency}
+      </p>
+    )
+  }
+</a>

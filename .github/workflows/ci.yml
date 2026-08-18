@@ -69,6 +69,12 @@ jobs:
       - name: Test storefront SDK
         run: npm test --prefix packages/js
 
+      - name: Install storefront template dependencies
+        run: npm ci --prefix packages/storefront-template
+
+      - name: Typecheck and build storefront template
+        run: npm run build --prefix packages/storefront-template
+
   integration:
     name: Integration
     runs-on: ubuntu-latest

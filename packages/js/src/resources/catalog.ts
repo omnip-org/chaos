@@ -26,8 +26,13 @@ export class CatalogResource {
    * Resolves the active Store and Sales Channel from the request's Host
    * header. Browsers send this automatically for the current origin, so
    * call this with no arguments client-side. Server-side callers (SSR,
-   * edge functions) must construct the client with a `fetch` that sets
-   * Host explicitly, since it cannot be overridden from browser script.
+   * edge functions) generally cannot use this endpoint at all: it only
+   * reads the actual HTTP Host header of the incoming request, and most
+   * fetch implementations (including Node's) silently ignore an
+   * application-set Host header on outbound requests rather than
+   * forwarding it — there is no supported way to drive this endpoint from
+   * a server issuing its own outbound call. A server-rendered storefront
+   * should determine its Store from the publishable key instead.
    */
   resolveDomainContext(): Promise<DataEnvelope<ResolvedStoreDomain>> {
     return this.client.request("/domain-context", { method: "GET" });

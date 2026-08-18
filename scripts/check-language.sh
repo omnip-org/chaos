@@ -11,6 +11,9 @@ if rg --line-number "$cjk_pattern" \
     --glob '*.sql' \
     --glob '*.sh' \
     --glob '*.js' \
+    --glob '*.ts' \
+    --glob '*.tsx' \
+    --glob '*.astro' \
     --glob '*.json' \
     --glob '*.yaml' \
     --glob 'Dockerfile' \
