@@ -72,6 +72,7 @@ services:
 
   gateway:
     image: caddy:2-alpine
+    init: true
     ports:
       - "${HTTP_PORT:-443}:443"
     volumes:
