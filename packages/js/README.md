@@ -1,11 +1,11 @@
-# @chaos-commerce/js
+# @omnip-org/chaos-js
 
 A typed client and first-party analytics collector for the Chaos Commerce
 [Store API](../../openapi/store-v1.json) — the publishable-key-authenticated
 surface meant to be called directly from storefront browsers. One SDK covers
 catalog browsing, cart, checkout, order, customer, and payment flows, plus
-the same consent-aware analytics collector previously shipped as
-`@chaos-commerce/storefront-analytics`.
+the same consent-aware analytics collector previously shipped as the
+standalone `storefront-analytics` package.
 
 ## Install
 
@@ -13,7 +13,7 @@ This package is published to GitHub Packages, not the public npm registry.
 Add a `.npmrc` to the consuming project:
 
 ```
-@chaos-commerce:registry=https://npm.pkg.github.com
+@omnip-org:registry=https://npm.pkg.github.com
 ```
 
 Authenticate with a GitHub PAT that has `read:packages` scope (see
@@ -21,13 +21,13 @@ Authenticate with a GitHub PAT that has `read:packages` scope (see
 setup used elsewhere in this repo), then:
 
 ```sh
-npm install @chaos-commerce/js
+npm install @omnip-org/chaos-js
 ```
 
 ## Usage
 
 ```ts
-import { createStorefrontClient } from "@chaos-commerce/js";
+import { createStorefrontClient } from "@omnip-org/chaos-js";
 
 const chaos = createStorefrontClient({ publishableKey: "pk_live_..." });
 
@@ -89,7 +89,7 @@ Non-2xx responses reject with `ChaosApiError` (`status`, `code`, `message`,
 envelope.
 
 ```ts
-import { ChaosApiError } from "@chaos-commerce/js";
+import { ChaosApiError } from "@omnip-org/chaos-js";
 
 try {
   await chaos.cart.setLine(cart.id, variantId, { quantity: 0 });

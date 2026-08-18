@@ -1,5 +1,5 @@
 {
-  "name": "@chaos-commerce/js",
+  "name": "@omnip-org/chaos-js",
   "version": "0.1.0",
   "description": "Typed client and first-party analytics for Chaos Commerce storefronts, built on the publishable-key-authenticated Store API.",
   "type": "module",
