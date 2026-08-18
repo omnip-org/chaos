@@ -121,7 +121,7 @@ Each bounded context keeps corresponding modules in the domain and application p
 - Successful responses use `{ "data": ..., "meta?": ... }`.
 - Errors use `{ "error": { "code", "message", "details?" } }`.
 - Every request generates or propagates `x-request-id`. Logs are structured tracing events.
-- OpenAPI is the HTTP contract. SDK generation and automated compatibility checks are planned.
+- OpenAPI is the HTTP contract. `@chaos-commerce/js` is a hand-written typed client for the Store API (see `packages/js`); automated generation from the contract and compatibility checks remain planned.
 
 ## 7. Security baseline
 

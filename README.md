@@ -61,7 +61,7 @@ For the production rollout procedure (registry image, zero-downtime `scripts/dep
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-npm test --prefix packages/storefront-analytics
+npm test --prefix packages/js
 ./scripts/check-language.sh
 ```
 

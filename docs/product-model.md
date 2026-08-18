@@ -131,5 +131,5 @@ A Store-owned connection to one external payment provider account. Its provider 
 ### Reserved
 
 - Customer segments, exchanges, and advanced logistics.
-- MCP tools, outbound integration webhooks, generated SDKs, and third-party application workflows.
+- Outbound integration webhooks and third-party application workflows.
 - Advanced experimentation, recommendations, customer scoring, and cross-Store analytics.

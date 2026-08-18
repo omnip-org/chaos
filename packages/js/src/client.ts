@@ -1,0 +1,193 @@
+import { ChaosStorefrontAnalytics, type AnalyticsOptions } from "./analytics.js";
+import { throwForResponse } from "./errors.js";
+import { CartResource } from "./resources/cart.js";
+import { CatalogResource } from "./resources/catalog.js";
+import { CheckoutResource } from "./resources/checkout.js";
+import { CustomerResource } from "./resources/customer.js";
+import { OrdersResource } from "./resources/orders.js";
+import { PaymentsResource } from "./resources/payments.js";
+import { ShopperSessionResource } from "./resources/shopper-session.js";
+import type { ShopperSession } from "./types.js";
+
+const SHOPPER_TOKEN_STORAGE_KEY = "chaos.storefront.shopper_token";
+
+export interface ClientOptions {
+  publishableKey: string;
+  /** Store API origin + prefix, e.g. "https://shop.example.com/store/v1". Defaults to same-origin "/store/v1". */
+  baseUrl?: string;
+  fetch?: typeof fetch;
+  /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
+  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  randomUUID?: () => string;
+  /**
+   * Options forwarded to the bundled analytics collector, minus
+   * publishableKey/fetch/randomUUID (inherited from this client). Pass
+   * `analytics: false` to skip constructing it entirely.
+   */
+  analytics?: Omit<AnalyticsOptions, "publishableKey" | "fetch" | "randomUUID"> | false;
+}
+
+export interface RequestOptions<Query extends object = Record<string, never>> {
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  query?: Query;
+  body?: unknown;
+  /** Attaches the shopper token, acquiring one via createShopperSession() first if none is cached. */
+  requiresShopperToken?: boolean;
+  /** Attaches x-chaos-customer-session if the caller has set one via setCustomerSession(). */
+  requiresCustomerSession?: boolean;
+  idempotencyKey?: string;
+}
+
+export class ChaosStorefrontClient {
+  readonly publishableKey: string;
+  readonly baseUrl: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  readonly randomUUID: () => string;
+  private customerSession: string | null = null;
+  private shopperTokenCache: string | null = null;
+  private pendingShopperSession: Promise<string> | null = null;
+
+  readonly catalog: CatalogResource;
+  readonly shopperSession: ShopperSessionResource;
+  readonly cart: CartResource;
+  readonly checkout: CheckoutResource;
+  readonly orders: OrdersResource;
+  readonly customer: CustomerResource;
+  readonly payments: PaymentsResource;
+  readonly analytics?: ChaosStorefrontAnalytics;
+
+  constructor(options: ClientOptions) {
+    if (!options.publishableKey) {
+      throw new TypeError("publishableKey is required");
+    }
+    this.publishableKey = options.publishableKey;
+    this.baseUrl = (options.baseUrl ?? "/store/v1").replace(/\/+$/, "");
+    this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
+    this.storage = options.storage !== undefined ? options.storage : (globalThis.localStorage ?? null);
+    this.randomUUID = options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+    if (!this.fetchImpl) {
+      throw new TypeError("fetch is required (pass options.fetch in environments without a global fetch)");
+    }
+    if (!this.randomUUID) {
+      throw new TypeError("randomUUID is required (pass options.randomUUID in environments without globalThis.crypto)");
+    }
+    this.shopperTokenCache = this.storage?.getItem(SHOPPER_TOKEN_STORAGE_KEY) ?? null;
+
+    this.catalog = new CatalogResource(this);
+    this.shopperSession = new ShopperSessionResource(this);
+    this.cart = new CartResource(this);
+    this.checkout = new CheckoutResource(this);
+    this.orders = new OrdersResource(this);
+    this.customer = new CustomerResource(this);
+    this.payments = new PaymentsResource(this);
+    if (options.analytics !== false) {
+      this.analytics = new ChaosStorefrontAnalytics({
+        ...options.analytics,
+        publishableKey: this.publishableKey,
+        fetch: this.fetchImpl,
+        randomUUID: this.randomUUID,
+      });
+    }
+  }
+
+  setCustomerSession(token: string | null): void {
+    this.customerSession = token;
+  }
+
+  getShopperToken(): string | null {
+    return this.shopperTokenCache;
+  }
+
+  setShopperToken(token: string | null): void {
+    this.shopperTokenCache = token;
+    if (token) {
+      this.storage?.setItem(SHOPPER_TOKEN_STORAGE_KEY, token);
+    } else {
+      this.storage?.removeItem(SHOPPER_TOKEN_STORAGE_KEY);
+    }
+  }
+
+  private async ensureShopperToken(): Promise<string> {
+    if (this.shopperTokenCache) return this.shopperTokenCache;
+    if (!this.pendingShopperSession) {
+      this.pendingShopperSession = this.createShopperSession().finally(() => {
+        this.pendingShopperSession = null;
+      });
+    }
+    return this.pendingShopperSession;
+  }
+
+  private async createShopperSession(): Promise<string> {
+    const envelope = await this.request<{ data: ShopperSession }>("/shopper-sessions", { method: "POST" });
+    this.setShopperToken(envelope.data.shopper_token);
+    return envelope.data.shopper_token;
+  }
+
+  async request<T, Query extends object = Record<string, never>>(
+    path: string,
+    options: RequestOptions<Query> = {},
+  ): Promise<T> {
+    const method = options.method ?? "GET";
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${this.publishableKey}`,
+    };
+
+    if (options.body !== undefined) {
+      headers["content-type"] = "application/json";
+    }
+    if (options.idempotencyKey) {
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    if (options.requiresShopperToken) {
+      headers["x-chaos-shopper-token"] = await this.ensureShopperToken();
+    }
+    if (options.requiresCustomerSession) {
+      if (!this.customerSession) {
+        throw new TypeError("customer session required: call setCustomerSession() first");
+      }
+      headers["x-chaos-customer-session"] = this.customerSession;
+    }
+
+    const requestUrl = this.buildUrl(path, options.query ?? {});
+
+    const init: RequestInit = { method, headers };
+    if (options.body !== undefined) {
+      init.body = JSON.stringify(options.body);
+    }
+    const response = await this.fetchImpl(requestUrl, init);
+
+    if (!response.ok) {
+      await throwForResponse(response);
+    }
+    if (response.status === 204 || response.headers.get("content-length") === "0") {
+      return undefined as T;
+    }
+    return (await response.json()) as T;
+  }
+
+  private buildUrl(path: string, query: object): string {
+    const origin = globalThis.location?.origin;
+    const isAbsolute = /^https?:\/\//.test(this.baseUrl);
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null) search.set(key, String(value));
+    }
+    const queryString = search.toString();
+
+    if (isAbsolute || origin) {
+      const url = new URL(`${this.baseUrl}${path}`, isAbsolute ? undefined : origin);
+      url.search = queryString;
+      return url.toString();
+    }
+
+    // No absolute baseUrl and no global `location` (e.g. Node/SSR without an
+    // explicit origin): fall back to a path-only URL string, which fetch
+    // implementations resolve against their own base.
+    return queryString ? `${this.baseUrl}${path}?${queryString}` : `${this.baseUrl}${path}`;
+  }
+}
+
+export function createStorefrontClient(options: ClientOptions): ChaosStorefrontClient {
+  return new ChaosStorefrontClient(options);
+}

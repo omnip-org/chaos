@@ -58,8 +58,8 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace --locked
 
-      - name: Test storefront analytics SDK
-        run: npm test --prefix packages/storefront-analytics
+      - name: Test storefront SDK
+        run: npm test --prefix packages/js
 
   integration:
     name: Integration
