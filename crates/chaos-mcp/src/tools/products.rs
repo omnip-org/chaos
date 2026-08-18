@@ -332,6 +332,8 @@ impl ChaosMcp {
                         value: selection.value,
                     })
                     .collect(),
+                // Not yet exposed as an MCP tool parameter; use the Admin HTTP API to set metadata.
+                metadata: None,
             })
             .collect();
 
@@ -346,6 +348,7 @@ impl ChaosMcp {
                 description: params.description,
                 options,
                 variants,
+                metadata: None,
                 idempotency,
             })
             .await
@@ -397,6 +400,7 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
+                metadata: None,
                 idempotency,
             })
             .await

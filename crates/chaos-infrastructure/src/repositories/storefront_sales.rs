@@ -814,6 +814,17 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
+
+    async fn get_order_by_id(
+        &self,
+        actor: &MachineActor,
+        order_id: OrderId,
+    ) -> Result<Option<OrderDetail>, ApplicationError> {
+        let mut transaction = self.begin(actor).await?;
+        let detail = load_order(&mut transaction, actor, order_id).await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(detail)
+    }
 }
 
 #[async_trait]

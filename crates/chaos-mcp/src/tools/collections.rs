@@ -266,6 +266,8 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
+                // Not yet exposed as an MCP tool parameter; use the Admin HTTP API to set metadata.
+                metadata: None,
                 idempotency,
                 now: self.state.clock.now(),
             })
@@ -318,6 +320,7 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
+                metadata: None,
                 idempotency,
                 now: self.state.clock.now(),
             })

@@ -117,11 +117,13 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                 String,
                 String,
                 String,
+                Option<serde_json::Value>,
                 OffsetDateTime,
                 OffsetDateTime,
             ),
         >(
-            "SELECT id, handle::text, title, description, status::text, created_at, updated_at \
+            "SELECT id, handle::text, title, description, status::text, metadata, \
+                    created_at, updated_at \
              FROM catalog.products \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
@@ -131,7 +133,9 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(unexpected_database_error)?;
-        let Some((id, handle, title, description, status, created_at, updated_at)) = product else {
+        let Some((id, handle, title, description, status, metadata, created_at, updated_at)) =
+            product
+        else {
             return Ok(None);
         };
 
@@ -168,12 +172,13 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                 String,
                 bool,
                 bool,
+                Option<serde_json::Value>,
                 OffsetDateTime,
                 OffsetDateTime,
             ),
         >(
             "SELECT id, title, sku::text, status::text, requires_shipping, track_inventory, \
-                    created_at, updated_at \
+                    metadata, created_at, updated_at \
              FROM catalog.product_variants \
              WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
              ORDER BY id ASC",
@@ -247,6 +252,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                     status,
                     requires_shipping,
                     track_inventory,
+                    metadata,
                     created_at,
                     updated_at,
                 )| {
@@ -258,6 +264,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                         requires_shipping,
                         track_inventory,
                         selected_options: Vec::new(),
+                        metadata,
                         created_at,
                         updated_at,
                     })
@@ -285,6 +292,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
             status: parse_product_status(&status)?,
             options,
             variants,
+            metadata,
             created_at,
             updated_at,
         }))

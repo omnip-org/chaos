@@ -53,6 +53,8 @@ pub(super) enum CursorKind {
     StoreDomain = 13,
     Collection = 14,
     StorefrontCollection = 15,
+    Review = 16,
+    StorefrontReview = 17,
 }
 
 #[derive(Deserialize, Serialize)]

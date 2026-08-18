@@ -7,7 +7,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    catalog::{ProductContent, ProductId, ProductStatus},
+    catalog::{CatalogMetadata, ProductContent, ProductId, ProductStatus},
     merchant::{MerchantAccountId, SalesChannelId, StoreId},
 };
 use serde_json::json;
@@ -133,7 +133,8 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     async fn update_content(&mut self, content: &ProductContent) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
             "UPDATE catalog.products \
-             SET handle = $4, title = $5, description = $6, updated_at = CURRENT_TIMESTAMP \
+             SET handle = $4, title = $5, description = $6, metadata = $7::jsonb, \
+                 updated_at = CURRENT_TIMESTAMP \
              WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
         )
         .bind(self.merchant_account_id.as_uuid())
@@ -142,6 +143,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         .bind(content.handle().as_str())
         .bind(content.title())
         .bind(content.description())
+        .bind(content.metadata().map(CatalogMetadata::as_str))
         .execute(&mut *self.transaction)
         .await
         .map_err(map_catalog_write_error)?;
@@ -430,6 +432,7 @@ mod tests {
                     handle: "updated-product".into(),
                     title: "Updated Product".into(),
                     description: "Updated".into(),
+                    metadata: None,
                     idempotency: request(format!("support-{suffix}"), [60; 32]),
                 })
                 .await,
@@ -468,6 +471,7 @@ mod tests {
                 handle: "updated-product".into(),
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
+                metadata: None,
                 idempotency: request(update_key.clone(), [63; 32]),
             })
             .await
@@ -480,6 +484,7 @@ mod tests {
                 handle: "updated-product".into(),
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
+                metadata: None,
                 idempotency: request(update_key, [63; 32]),
             })
             .await

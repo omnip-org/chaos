@@ -18,6 +18,7 @@ mod payments;
 mod pricing_management;
 mod pricing_provisioning;
 mod promotion;
+mod review;
 mod search;
 mod shipping;
 mod store_administration;
@@ -46,6 +47,7 @@ pub use payments::{HmacPaymentWebhookVerifier, PostgresPaymentRepository, Sandbo
 pub use pricing_management::PostgresPricingManagementRepository;
 pub use pricing_provisioning::PostgresPricingProvisioningUnitOfWork;
 pub use promotion::PostgresPromotionRepository;
+pub use review::PostgresReviewRepository;
 pub use search::PostgresSearchIndexer;
 pub use shipping::PostgresShippingServiceRepository;
 pub use store_administration::PostgresStoreAdministrationRepository;

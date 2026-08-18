@@ -48,6 +48,7 @@ pub struct CatalogProductVariant {
     pub requires_shipping: bool,
     pub track_inventory: bool,
     pub selected_options: Vec<CatalogSelectedOption>,
+    pub metadata: Option<serde_json::Value>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -60,6 +61,7 @@ pub struct CatalogProductDetail {
     pub status: ProductStatus,
     pub options: Vec<CatalogProductOption>,
     pub variants: Vec<CatalogProductVariant>,
+    pub metadata: Option<serde_json::Value>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

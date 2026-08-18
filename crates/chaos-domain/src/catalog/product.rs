@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     DomainError, FieldViolation,
+    catalog::CatalogMetadata,
     merchant::{MerchantAccountId, StoreId},
 };
 
@@ -94,6 +95,7 @@ pub struct ProductContent {
     handle: ProductHandle,
     title: String,
     description: String,
+    metadata: Option<CatalogMetadata>,
 }
 
 impl ProductContent {
@@ -101,6 +103,7 @@ impl ProductContent {
         handle: ProductHandle,
         title: impl Into<String>,
         description: impl Into<String>,
+        metadata: Option<CatalogMetadata>,
     ) -> Result<Self, DomainError> {
         let title = title.into();
         let description = description.into();
@@ -115,6 +118,7 @@ impl ProductContent {
             handle,
             title,
             description,
+            metadata,
         })
     }
 
@@ -128,6 +132,10 @@ impl ProductContent {
 
     pub fn description(&self) -> &str {
         &self.description
+    }
+
+    pub fn metadata(&self) -> Option<&CatalogMetadata> {
+        self.metadata.as_ref()
     }
 }
 
@@ -296,6 +304,7 @@ pub struct ProductVariant {
     requires_shipping: bool,
     track_inventory: bool,
     selected_options: Vec<SelectedOptionValue>,
+    metadata: Option<CatalogMetadata>,
 }
 
 impl ProductVariant {
@@ -326,6 +335,10 @@ impl ProductVariant {
     pub fn selected_options(&self) -> &[SelectedOptionValue] {
         &self.selected_options
     }
+
+    pub fn metadata(&self) -> Option<&CatalogMetadata> {
+        self.metadata.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,8 +359,9 @@ impl Product {
         handle: ProductHandle,
         title: impl Into<String>,
         description: impl Into<String>,
+        metadata: Option<CatalogMetadata>,
     ) -> Result<Self, DomainError> {
-        let content = ProductContent::new(handle, title, description)?;
+        let content = ProductContent::new(handle, title, description, metadata)?;
         Ok(Self {
             id: ProductId::new(),
             merchant_account_id,
@@ -435,6 +449,7 @@ impl Product {
         requires_shipping: bool,
         track_inventory: bool,
         selected_value_ids: Vec<ProductOptionValueId>,
+        metadata: Option<CatalogMetadata>,
     ) -> Result<ProductVariantId, DomainError> {
         let title = title.into();
         validate_text("variant_title", &title, 255)?;
@@ -493,6 +508,7 @@ impl Product {
             requires_shipping,
             track_inventory,
             selected_options,
+            metadata,
         });
         Ok(id)
     }
@@ -537,6 +553,10 @@ impl Product {
 
     pub fn description(&self) -> &str {
         self.content.description()
+    }
+
+    pub fn metadata(&self) -> Option<&CatalogMetadata> {
+        self.content.metadata()
     }
 
     pub const fn status(&self) -> ProductStatus {
@@ -584,6 +604,7 @@ mod tests {
             ProductHandle::parse("classic-shirt").unwrap(),
             "Classic Shirt",
             "A durable everyday shirt.",
+            None,
         )
         .unwrap()
     }
@@ -603,6 +624,7 @@ mod tests {
                 true,
                 true,
                 vec![medium, blue],
+                None,
             )
             .unwrap();
 
@@ -618,12 +640,12 @@ mod tests {
         let blue = product.add_option_value(color, "Blue").unwrap();
         let medium = product.add_option_value(size, "M").unwrap();
         product
-            .add_variant("Blue / M", None, true, true, vec![blue, medium])
+            .add_variant("Blue / M", None, true, true, vec![blue, medium], None)
             .unwrap();
 
         assert!(
             product
-                .add_variant("Duplicate", None, true, true, vec![medium, blue])
+                .add_variant("Duplicate", None, true, true, vec![medium, blue], None)
                 .is_err()
         );
     }
@@ -634,7 +656,7 @@ mod tests {
         assert!(product.activate().is_err());
 
         product
-            .add_variant("Default", None, true, true, vec![])
+            .add_variant("Default", None, true, true, vec![], None)
             .unwrap();
         product.activate().unwrap();
         assert_eq!(product.status(), ProductStatus::Active);
@@ -653,12 +675,13 @@ mod tests {
 
     #[test]
     fn product_content_reuses_creation_validation_for_updates() {
-        assert!(ProductContent::new(ProductHandle::parse("valid").unwrap(), "", "").is_err());
+        assert!(ProductContent::new(ProductHandle::parse("valid").unwrap(), "", "", None).is_err());
         assert!(
             ProductContent::new(
                 ProductHandle::parse("valid").unwrap(),
                 "Updated Product",
                 "Updated description",
+                None,
             )
             .is_ok()
         );
@@ -677,7 +700,7 @@ mod tests {
     fn adding_an_option_after_variants_exist_is_rejected() {
         let mut product = product();
         product
-            .add_variant("Default", None, true, true, vec![])
+            .add_variant("Default", None, true, true, vec![], None)
             .unwrap();
 
         assert!(product.add_option("Color").is_err());

@@ -280,6 +280,25 @@ impl StorefrontSales {
                 id: order_id.as_uuid().to_string(),
             })
     }
+
+    /// Reads one Order by ID for a Publishable key holding `orders:read`, without a
+    /// possession-bound shopper credential. The Order UUID is the only credential —
+    /// see ADR 0022 for why this narrow, read-only carve-out from the usual
+    /// possession-bound model (ADR 0009) is safe.
+    pub async fn get_order_by_id(
+        &self,
+        actor: &MachineActor,
+        order_id: OrderId,
+    ) -> Result<crate::ports::OrderDetail, ApplicationError> {
+        require_storefront_scope(actor, ApiKeyScope::OrdersRead)?;
+        self.repository
+            .get_order_by_id(actor, order_id)
+            .await?
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "order",
+                id: order_id.as_uuid().to_string(),
+            })
+    }
 }
 
 fn postal_address(input: PostalAddressInput) -> Result<PostalAddress, ApplicationError> {

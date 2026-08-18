@@ -89,6 +89,8 @@ struct CreateProductBody {
     options: Vec<CreateProductOptionBody>,
     #[serde(default)]
     variants: Vec<CreateProductVariantBody>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -98,6 +100,8 @@ struct UpdateProductBody {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -118,6 +122,8 @@ struct CreateProductVariantBody {
     track_inventory: bool,
     #[serde(default)]
     selected_options: Vec<CreateProductSelectedOptionBody>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -181,6 +187,8 @@ struct ProductVariantData {
     requires_shipping: bool,
     track_inventory: bool,
     selected_options: Vec<SelectedOptionData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -194,6 +202,8 @@ struct ProductDetailData {
     status: &'static str,
     options: Vec<ProductOptionData>,
     variants: Vec<ProductVariantData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -247,8 +257,10 @@ async fn create_product(
                             value: selection.value,
                         })
                         .collect(),
+                    metadata: variant.metadata,
                 })
                 .collect(),
+            metadata: body.metadata,
             idempotency: IdempotencyRequest {
                 key: idempotency_key,
                 request_fingerprint,
@@ -359,6 +371,7 @@ async fn get_product(
                         value: selection.value,
                     })
                     .collect(),
+                metadata: variant.metadata,
                 created_at: variant.created_at.into(),
                 updated_at: variant.updated_at.into(),
             })
@@ -372,6 +385,7 @@ async fn get_product(
         status: product.status.as_str(),
         options,
         variants,
+        metadata: product.metadata,
         created_at: product.created_at.into(),
         updated_at: product.updated_at.into(),
     }))
@@ -399,6 +413,7 @@ async fn update_product(
             handle: body.handle,
             title: body.title,
             description: body.description,
+            metadata: body.metadata,
             idempotency: request,
         })
         .await?;

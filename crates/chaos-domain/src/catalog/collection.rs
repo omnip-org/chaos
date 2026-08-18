@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation};
+use crate::{DomainError, FieldViolation, catalog::CatalogMetadata};
 
 macro_rules! collection_id {
     ($name:ident) => {
@@ -63,6 +63,7 @@ pub struct CollectionContent {
     handle: CollectionHandle,
     title: String,
     description: String,
+    metadata: Option<CatalogMetadata>,
 }
 
 impl CollectionContent {
@@ -70,6 +71,7 @@ impl CollectionContent {
         handle: CollectionHandle,
         title: impl Into<String>,
         description: impl Into<String>,
+        metadata: Option<CatalogMetadata>,
     ) -> Result<Self, DomainError> {
         let title = title.into();
         let description = description.into();
@@ -86,6 +88,7 @@ impl CollectionContent {
             handle,
             title,
             description,
+            metadata,
         })
     }
 
@@ -99,6 +102,10 @@ impl CollectionContent {
 
     pub fn description(&self) -> &str {
         &self.description
+    }
+
+    pub fn metadata(&self) -> Option<&CatalogMetadata> {
+        self.metadata.as_ref()
     }
 }
 
@@ -149,12 +156,18 @@ mod tests {
                 CollectionHandle::parse("summer-sale").unwrap(),
                 "Summer Sale",
                 "Seasonal products",
+                None,
             )
             .is_ok()
         );
         assert!(
-            CollectionContent::new(CollectionHandle::parse("summer-sale").unwrap(), " ", "",)
-                .is_err()
+            CollectionContent::new(
+                CollectionHandle::parse("summer-sale").unwrap(),
+                " ",
+                "",
+                None,
+            )
+            .is_err()
         );
     }
 }

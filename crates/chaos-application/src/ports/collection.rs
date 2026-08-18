@@ -33,6 +33,7 @@ pub struct CollectionDetail {
     pub status: CollectionStatus,
     pub products: Vec<CollectionProductItem>,
     pub published_sales_channel_ids: Vec<SalesChannelId>,
+    pub metadata: Option<serde_json::Value>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -44,6 +45,7 @@ pub struct StorefrontCollectionItem {
     pub description: String,
     pub product_count: u32,
     pub locale: Locale,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub struct CreateCollectionRecord {

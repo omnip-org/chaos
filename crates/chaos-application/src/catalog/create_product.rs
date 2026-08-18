@@ -8,6 +8,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
+    catalog::parse_metadata,
     ports::{AdminActor, CatalogProvisioningUnitOfWork, IdempotencyRequest},
 };
 
@@ -27,6 +28,7 @@ pub struct CreateProductVariantInput {
     pub requires_shipping: bool,
     pub track_inventory: bool,
     pub selected_options: Vec<CreateProductSelectedOptionInput>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub struct CreateProductInput {
@@ -37,6 +39,7 @@ pub struct CreateProductInput {
     pub description: String,
     pub options: Vec<CreateProductOptionInput>,
     pub variants: Vec<CreateProductVariantInput>,
+    pub metadata: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -87,6 +90,7 @@ fn build_product(input: &CreateProductInput) -> Result<Product, ApplicationError
         ProductHandle::parse(input.handle.clone())?,
         input.title.clone(),
         input.description.clone(),
+        parse_metadata(input.metadata.clone())?,
     )?;
 
     for option in &input.options {
@@ -105,6 +109,7 @@ fn build_product(input: &CreateProductInput) -> Result<Product, ApplicationError
             variant.requires_shipping,
             variant.track_inventory,
             selected_value_ids,
+            parse_metadata(variant.metadata.clone())?,
         )?;
     }
     Ok(product)
@@ -218,7 +223,9 @@ mod tests {
                         value: "m".into(),
                     },
                 ],
+                metadata: None,
             }],
+            metadata: None,
             idempotency: IdempotencyRequest {
                 key: "product-test".into(),
                 request_fingerprint: [1; 32],

@@ -93,6 +93,7 @@ pub enum ApiKeyScope {
     InventoryWrite,
     CollectionsRead,
     CollectionsWrite,
+    ReviewsWrite,
     FulfillmentRead,
     FulfillmentWrite,
     StoreAdminRead,
@@ -121,6 +122,7 @@ impl ApiKeyScope {
             Self::InventoryWrite => "inventory:write",
             Self::CollectionsRead => "collections:read",
             Self::CollectionsWrite => "collections:write",
+            Self::ReviewsWrite => "reviews:write",
             Self::FulfillmentRead => "fulfillment:read",
             Self::FulfillmentWrite => "fulfillment:write",
             Self::StoreAdminRead => "store_admin:read",
@@ -149,6 +151,7 @@ impl ApiKeyScope {
             "inventory:write" => Some(Self::InventoryWrite),
             "collections:read" => Some(Self::CollectionsRead),
             "collections:write" => Some(Self::CollectionsWrite),
+            "reviews:write" => Some(Self::ReviewsWrite),
             "fulfillment:read" => Some(Self::FulfillmentRead),
             "fulfillment:write" => Some(Self::FulfillmentWrite),
             "store_admin:read" => Some(Self::StoreAdminRead),
@@ -162,11 +165,19 @@ impl ApiKeyScope {
 
     /// Admin-only scopes (products/pricing/inventory) expose non-public store data
     /// and mutations, unlike the storefront-facing scopes below — never embeddable
-    /// in a browser-facing Publishable key.
+    /// in a browser-facing Publishable key. `OrdersRead` is deliberately allowed here
+    /// in addition to its existing Secret-key/MCP use: a Store may opt a Publishable
+    /// key into unauthenticated single-Order lookup by ID (see ADR 0022) without that
+    /// widening what a Secret key holding the same scope can already do.
     const fn allowed_for_publishable_key(self) -> bool {
         matches!(
             self,
-            Self::AnalyticsWrite | Self::CatalogRead | Self::CartsWrite | Self::CheckoutWrite
+            Self::AnalyticsWrite
+                | Self::CatalogRead
+                | Self::CartsWrite
+                | Self::CheckoutWrite
+                | Self::OrdersRead
+                | Self::ReviewsWrite
         )
     }
 }
@@ -360,10 +371,14 @@ mod tests {
                 ApiKeyScope::CartsWrite,
                 ApiKeyScope::CheckoutWrite,
                 ApiKeyScope::AnalyticsWrite,
+                ApiKeyScope::OrdersRead,
+                ApiKeyScope::ReviewsWrite,
             ],
         )
         .unwrap();
         assert!(key.scopes().contains(&ApiKeyScope::CheckoutWrite));
+        assert!(key.scopes().contains(&ApiKeyScope::OrdersRead));
+        assert!(key.scopes().contains(&ApiKeyScope::ReviewsWrite));
 
         let result = ApiKey::issue(
             MerchantAccountId::new(),
@@ -371,7 +386,7 @@ mod tests {
             "Private Browser",
             ApiKeyClass::Publishable,
             ApiKeyMode::Live,
-            vec![ApiKeyScope::OrdersRead],
+            vec![ApiKeyScope::McpTools],
         );
         assert!(matches!(result, Err(DomainError::Validation(_))));
     }

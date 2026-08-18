@@ -20,6 +20,7 @@ mod pricing;
 mod pricing_management;
 mod promotion;
 mod provider_secret;
+mod review;
 mod sales;
 mod shopper;
 mod store;
@@ -111,6 +112,7 @@ pub use pricing_management::{
 };
 pub use promotion::{PromotionDetail, PromotionRepository};
 pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
+pub use review::{ReviewRepository, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
     CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
@@ -129,6 +131,7 @@ pub use store_domain::{
 };
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
-    StorefrontContext, StorefrontMediaAsset,
+    StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,
+    StorefrontProductOptionValue, StorefrontSelectedOption,
 };
 pub use tax::{TaxRuleDetail, TaxRuleRepository};
