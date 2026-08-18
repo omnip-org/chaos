@@ -7,22 +7,6 @@
   },
   "servers": [{ "url": "/store/v1" }],
   "paths": {
-    "/domain-context": {
-      "get": {
-        "operationId": "resolveStoreDomainContext",
-        "tags": ["Store Context"],
-        "summary": "Resolve a verified active Store and Web Sales Channel from the HTTP Host",
-        "description": "This public bootstrap lookup does not authenticate commerce access. Pending, archived, inactive, and non-Web bindings resolve as not found.",
-        "parameters": [
-          { "name": "Host", "in": "header", "required": true, "schema": { "type": "string", "minLength": 3, "maxLength": 259 } }
-        ],
-        "responses": {
-          "200": { "description": "Resolved Store Domain context", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResolvedStoreDomainEnvelope" } } } },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
     "/products": {
       "get": {
         "operationId": "listStorefrontProducts",
@@ -1268,22 +1252,6 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/PaymentClientAction" } }
-      },
-      "ResolvedStoreDomain": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["store_id", "sales_channel_id", "hostname"],
-        "properties": {
-          "store_id": { "type": "string", "format": "uuid" },
-          "sales_channel_id": { "type": "string", "format": "uuid" },
-          "hostname": { "type": "string", "minLength": 3, "maxLength": 253 }
-        }
-      },
-      "ResolvedStoreDomainEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/ResolvedStoreDomain" } }
       },
       "Page": {
         "type": "object",

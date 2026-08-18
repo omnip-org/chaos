@@ -14,7 +14,6 @@ chaos-application = { path = "../chaos-application" }
 chaos-domain = { path = "../chaos-domain" }
 lettre.workspace = true
 hmac.workspace = true
-hickory-resolver.workspace = true
 rand.workspace = true
 redis.workspace = true
 reqwest.workspace = true

@@ -73,7 +73,7 @@ The pricing domain provides a Money value object with checked arithmetic, same-c
 Suggested implementation order:
 
 1. identity: users, email links, passkeys, and sessions; service accounts are reserved;
-2. merchant: merchant accounts, memberships, roles, API keys, Stores, Channels, verified Domains, and public domain-context resolution;
+2. merchant: merchant accounts, memberships, roles, API keys, Stores, and Channels;
 3. catalog: products, variants, options, channel publication, manually ordered channel-published collections, verified direct-upload media, and typed Store-scoped translations;
 4. pricing: Money, price lists, prices, Store Tax Rules, and Store Promotions;
 5. inventory: locations, stock items, reservations, and adjustments;

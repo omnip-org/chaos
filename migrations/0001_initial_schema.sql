@@ -18,7 +18,7 @@ COMMENT ON SCHEMA identity IS 'Users, credentials, service accounts, and session
 COMMENT ON SCHEMA integration IS
     'Idempotency records, webhooks, outbox delivery, and external mappings';
 COMMENT ON SCHEMA merchant IS
-    'Merchant accounts, memberships, stores, channels, and domains';
+    'Merchant accounts, memberships, stores, and channels';
 COMMENT ON SCHEMA catalog IS
     'Products, variants, options, collections, media, and channel publication';
 COMMENT ON SCHEMA pricing IS
@@ -63,8 +63,6 @@ CREATE TYPE merchant.sales_channel_kind AS ENUM (
     'custom'
 );
 CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
-CREATE TYPE merchant.store_domain_status AS ENUM ('pending', 'verified', 'archived');
-CREATE TYPE merchant.store_domain_event_kind AS ENUM ('created', 'verified', 'archived');
 CREATE TYPE merchant.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
 CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
 CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
@@ -475,74 +473,6 @@ CREATE TABLE merchant.store_currencies (
         currency ~ '^[A-Z]{3}$'
     )
 );
-
-CREATE TABLE merchant.store_domains (
-    id                         UUID                         NOT NULL PRIMARY KEY,
-    merchant_account_id        UUID                         NOT NULL,
-    store_id                   UUID                         NOT NULL,
-    sales_channel_id           UUID                         NOT NULL,
-    hostname                   extensions.citext            NOT NULL,
-    verification_token_digest  BYTEA                        NOT NULL,
-    domain_status              merchant.store_domain_status NOT NULL DEFAULT 'pending',
-    created_by                 UUID                         NOT NULL,
-    verified_by                UUID,
-    archived_by                UUID,
-    verified_at                TIMESTAMPTZ,
-    archived_at                TIMESTAMPTZ,
-    created_at                 TIMESTAMPTZ                  NOT NULL,
-    updated_at                 TIMESTAMPTZ                  NOT NULL,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
-    FOREIGN KEY (created_by) REFERENCES identity.users(id),
-    FOREIGN KEY (verified_by) REFERENCES identity.users(id),
-    FOREIGN KEY (archived_by) REFERENCES identity.users(id),
-    CONSTRAINT store_domains_hostname_format_check CHECK (
-        hostname::text = lower(hostname::text)
-        AND octet_length(hostname::text) BETWEEN 3 AND 253
-        AND hostname::text ~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$'
-    ),
-    CONSTRAINT store_domains_verification_digest_check CHECK (
-        octet_length(verification_token_digest) = 32
-    ),
-    CONSTRAINT store_domains_lifecycle_check CHECK (
-        (domain_status = 'pending' AND verified_by IS NULL AND verified_at IS NULL
-            AND archived_by IS NULL AND archived_at IS NULL)
-        OR (domain_status = 'verified' AND verified_by IS NOT NULL AND verified_at IS NOT NULL
-            AND archived_by IS NULL AND archived_at IS NULL)
-        OR (domain_status = 'archived' AND archived_by IS NOT NULL AND archived_at IS NOT NULL)
-    )
-);
-
-CREATE INDEX store_domains_store_status_idx
-    ON merchant.store_domains (merchant_account_id, store_id, domain_status, id);
-
-CREATE UNIQUE INDEX store_domains_active_hostname_idx
-    ON merchant.store_domains (hostname)
-    WHERE domain_status <> 'archived';
-
-CREATE TABLE merchant.store_domain_events (
-    id                   UUID                             NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                             NOT NULL,
-    store_id             UUID                             NOT NULL,
-    store_domain_id      UUID                             NOT NULL,
-    event_kind           merchant.store_domain_event_kind NOT NULL,
-    actor_user_id        UUID                             NOT NULL,
-    occurred_at          TIMESTAMPTZ                      NOT NULL,
-
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, store_domain_id)
-        REFERENCES merchant.store_domains(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id)
-);
-
-CREATE INDEX store_domain_events_store_domain_idx
-    ON merchant.store_domain_events (
-        merchant_account_id, store_id, store_domain_id, occurred_at, id
-    );
 
 CREATE TABLE merchant.api_keys (
     id                   UUID                      NOT NULL PRIMARY KEY,
@@ -4649,8 +4579,6 @@ ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_locales ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_locale_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.store_currencies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE merchant.store_domains ENABLE ROW LEVEL SECURITY;
-ALTER TABLE merchant.store_domain_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant.api_key_scopes ENABLE ROW LEVEL SECURITY;
@@ -4822,26 +4750,6 @@ CREATE POLICY merchant_account_isolation ON merchant.store_locale_events
     );
 
 CREATE POLICY merchant_account_isolation ON merchant.store_currencies
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.store_domains
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.store_domain_events
     USING (
         merchant_account_id =
         nullif(current_setting('app.merchant_account_id', true), '')::uuid
@@ -6821,42 +6729,7 @@ AS $$
       AND (api_key.mode = 'test' OR store.status = 'active');
 $$;
 
-CREATE FUNCTION merchant.resolve_store_domain(requested_hostname TEXT)
-RETURNS TABLE (
-    merchant_account_id  UUID,
-    store_id             UUID,
-    sales_channel_id     UUID,
-    hostname             TEXT
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT domain.merchant_account_id,
-           domain.store_id,
-           domain.sales_channel_id,
-           domain.hostname::TEXT
-      FROM merchant.store_domains AS domain
-      INNER JOIN merchant.merchant_accounts AS account
-        ON account.id = domain.merchant_account_id
-      INNER JOIN merchant.stores AS store
-        ON store.merchant_account_id = domain.merchant_account_id
-       AND store.id = domain.store_id
-      INNER JOIN merchant.sales_channels AS channel
-        ON channel.merchant_account_id = domain.merchant_account_id
-       AND channel.store_id = domain.store_id
-       AND channel.id = domain.sales_channel_id
-     WHERE domain.hostname = requested_hostname
-       AND domain.domain_status = 'verified'
-       AND account.status = 'active'
-       AND store.status = 'active'
-       AND channel.status = 'active'
-       AND channel.kind = 'web';
-$$;
-
 REVOKE ALL ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) FROM PUBLIC;
-REVOKE ALL ON FUNCTION merchant.resolve_store_domain(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION payments.claim_provider_readiness_checks(
@@ -6960,7 +6833,6 @@ GRANT USAGE ON SCHEMA extensions, integration, merchant, catalog, pricing, inven
     TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION merchant.authenticate_api_key(TEXT, BYTEA) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION merchant.resolve_store_domain(TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
 GRANT EXECUTE
     ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) TO chaos_runtime;
@@ -7072,8 +6944,6 @@ REVOKE UPDATE, DELETE ON analytics.identity_links FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.behavior_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.erasure_requests FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
-REVOKE DELETE ON merchant.store_domains FROM chaos_runtime;
-REVOKE UPDATE, DELETE ON merchant.store_domain_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON merchant.store_locale_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON catalog.collection_events FROM chaos_runtime;
 REVOKE UPDATE, DELETE ON catalog.collection_translation_events FROM chaos_runtime;

@@ -7,17 +7,12 @@ use axum::{
 use chaos_application::{
     ApplicationError,
     merchant::{
-        ArchiveStoreDomainInput, ChangeSalesChannelStatusInput, ChangeStoreStatusInput,
-        CreateSalesChannelInput, CreateStoreDomainInput, UpdateSalesChannelInput, UpdateStoreInput,
-        VerifyStoreDomainInput,
+        ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
+        UpdateSalesChannelInput, UpdateStoreInput,
     },
-    ports::{
-        AdminActor, IdempotencyRequest, ResolvedStoreDomain, SalesChannelAdminItem, StoreAdminItem,
-        StoreDomainItem,
-    },
+    ports::{AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem},
 };
-use chaos_domain::merchant::{MerchantAccountId, SalesChannelId, StoreDomainId, StoreId};
-use secrecy::ExposeSecret;
+use chaos_domain::merchant::{MerchantAccountId, SalesChannelId, StoreId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -57,23 +52,7 @@ pub(super) fn routes() -> Router<ApiState> {
             "/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels/{sales_channel_id}/archive",
             post(archive_sales_channel),
         )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains",
-            get(list_store_domains).post(create_store_domain),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains/{domain_id}/verify",
-            post(verify_store_domain),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/domains/{domain_id}/archive",
-            post(archive_store_domain),
-        )
         .layer(DefaultBodyLimit::max(16 * 1024))
-}
-
-pub(super) fn domain_resolution_routes() -> Router<ApiState> {
-    Router::new().route("/domain-context", get(resolve_store_domain))
 }
 
 #[derive(Deserialize)]
@@ -87,13 +66,6 @@ struct SalesChannelPath {
     merchant_account_id: Uuid,
     store_id: Uuid,
     sales_channel_id: Uuid,
-}
-
-#[derive(Deserialize)]
-struct StoreDomainPath {
-    merchant_account_id: Uuid,
-    store_id: Uuid,
-    domain_id: Uuid,
 }
 
 #[derive(Deserialize)]
@@ -117,13 +89,6 @@ struct SalesChannelBody {
     code: String,
     name: String,
     kind: String,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateStoreDomainBody {
-    hostname: String,
-    sales_channel_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -153,37 +118,6 @@ struct SalesChannelData {
     is_default: bool,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
-}
-
-#[derive(Serialize)]
-struct StoreDomainData {
-    id: Uuid,
-    store_id: Uuid,
-    sales_channel_id: Uuid,
-    hostname: String,
-    domain_status: &'static str,
-    created_by: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verified_at: Option<ApiDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    archived_at: Option<ApiDateTime>,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
-}
-
-#[derive(Serialize)]
-struct StoreDomainCreatedData {
-    #[serde(flatten)]
-    domain: StoreDomainData,
-    verification_record_name: String,
-    verification_record_value: String,
-}
-
-#[derive(Serialize)]
-struct ResolvedStoreDomainData {
-    store_id: Uuid,
-    sales_channel_id: Uuid,
-    hostname: String,
 }
 
 async fn get_store(
@@ -416,118 +350,6 @@ async fn change_channel_status(
     Ok(ApiResponse::ok(MutationData { id: id.as_uuid() }))
 }
 
-async fn create_store_domain(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
-    ApiPath(path): ApiPath<StorePath>,
-    ApiJson(body): ApiJson<CreateStoreDomainBody>,
-) -> Result<ApiResponse<StoreDomainCreatedData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
-    let idempotency = body_request(&headers, path.store_id, None, &body)?;
-    let created = state
-        .store_domain_administration
-        .create(CreateStoreDomainInput {
-            actor,
-            store_id: StoreId::from_uuid(path.store_id),
-            sales_channel_id: SalesChannelId::from_uuid(body.sales_channel_id),
-            hostname: body.hostname,
-            idempotency,
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::created(StoreDomainCreatedData {
-        domain: store_domain_data(created.domain),
-        verification_record_name: created.verification_record_name,
-        verification_record_value: created.verification_record_value.expose_secret().to_owned(),
-    }))
-}
-
-async fn list_store_domains(
-    State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
-    ApiPath(path): ApiPath<StorePath>,
-    ApiQuery(query): ApiQuery<ListQuery>,
-) -> Result<ApiResponse<Vec<StoreDomainData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
-    let limit = page_limit(query.limit)?;
-    let after = query
-        .cursor
-        .as_deref()
-        .map(|cursor| decode_cursor(cursor, CursorKind::StoreDomain))
-        .transpose()?
-        .map(StoreDomainId::from_uuid);
-    let page = state
-        .store_domain_administration
-        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
-        .await?;
-    let next_cursor = page.has_more.then(|| {
-        page.items
-            .last()
-            .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::StoreDomain))
-    });
-    Ok(
-        ApiResponse::ok(page.items.into_iter().map(store_domain_data).collect())
-            .with_meta(page_meta(page.has_more, next_cursor.flatten())),
-    )
-}
-
-async fn verify_store_domain(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
-    ApiPath(path): ApiPath<StoreDomainPath>,
-) -> Result<ApiResponse<StoreDomainData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
-    let item = state
-        .store_domain_administration
-        .verify(VerifyStoreDomainInput {
-            actor,
-            store_id: StoreId::from_uuid(path.store_id),
-            domain_id: StoreDomainId::from_uuid(path.domain_id),
-            idempotency: action_request(&headers, path.store_id, Some(path.domain_id), true)?,
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::ok(store_domain_data(item)))
-}
-
-async fn archive_store_domain(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
-    ApiPath(path): ApiPath<StoreDomainPath>,
-) -> Result<ApiResponse<StoreDomainData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
-    let item = state
-        .store_domain_administration
-        .archive(ArchiveStoreDomainInput {
-            actor,
-            store_id: StoreId::from_uuid(path.store_id),
-            domain_id: StoreDomainId::from_uuid(path.domain_id),
-            idempotency: action_request(&headers, path.store_id, Some(path.domain_id), false)?,
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::ok(store_domain_data(item)))
-}
-
-async fn resolve_store_domain(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-) -> Result<ApiResponse<ResolvedStoreDomainData>, ApiError> {
-    let authority = headers
-        .get(axum::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
-        .ok_or_else(invalid_host)?;
-    let item = state
-        .store_domain_administration
-        .resolve(authority.host().to_ascii_lowercase())
-        .await?;
-    Ok(ApiResponse::ok(resolved_store_domain_data(item)))
-}
-
 fn body_request<T: Serialize>(
     headers: &HeaderMap,
     store_id: Uuid,
@@ -585,39 +407,6 @@ fn channel_data(item: SalesChannelAdminItem) -> Result<SalesChannelData, Applica
     })
 }
 
-fn store_domain_data(item: StoreDomainItem) -> StoreDomainData {
-    StoreDomainData {
-        id: item.id.as_uuid(),
-        store_id: item.store_id.as_uuid(),
-        sales_channel_id: item.sales_channel_id.as_uuid(),
-        hostname: item.hostname.as_str().into(),
-        domain_status: item.domain_status.as_str(),
-        created_by: item.created_by.as_uuid(),
-        verified_at: item.verified_at.map(Into::into),
-        archived_at: item.archived_at.map(Into::into),
-        created_at: item.created_at.into(),
-        updated_at: item.updated_at.into(),
-    }
-}
-
-fn resolved_store_domain_data(item: ResolvedStoreDomain) -> ResolvedStoreDomainData {
-    ResolvedStoreDomainData {
-        store_id: item.store_id.as_uuid(),
-        sales_channel_id: item.sales_channel_id.as_uuid(),
-        hostname: item.hostname.as_str().into(),
-    }
-}
-
-fn invalid_host() -> ApiError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "host",
-            reason: "must be a valid canonical Store hostname".into(),
-        }],
-    }
-    .into()
-}
-
 fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
     if actual.as_uuid() == expected {
         Ok(())
@@ -628,23 +417,8 @@ fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiEr
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use async_trait::async_trait;
     use axum::http::{Method, StatusCode};
-    use chaos_application::{
-        merchant::StoreDomainAdministration,
-        ports::{
-            StoreDomainOwnershipVerifier, StoreDomainVerificationMaterial,
-            StoreDomainVerificationMaterialGenerator,
-        },
-    };
-    use chaos_domain::{identity::UserId, merchant::StoreHostname};
-    use chaos_infrastructure::repositories::PostgresStoreDomainRepository;
-    use secrecy::SecretString;
+    use chaos_domain::identity::UserId;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
@@ -655,32 +429,6 @@ mod tests {
     };
 
     use super::*;
-
-    struct FixedDomainMaterial;
-
-    impl StoreDomainVerificationMaterialGenerator for FixedDomainMaterial {
-        fn generate(&self) -> StoreDomainVerificationMaterial {
-            StoreDomainVerificationMaterial {
-                plaintext_token: SecretString::from("fixed-domain-proof"),
-                token_digest: Sha256::digest(b"fixed-domain-proof").into(),
-            }
-        }
-    }
-
-    struct SwitchDomainVerification(Arc<AtomicBool>);
-
-    #[async_trait]
-    impl StoreDomainOwnershipVerifier for SwitchDomainVerification {
-        async fn verify(
-            &self,
-            _hostname: &StoreHostname,
-            expected_token_digest: &[u8; 32],
-        ) -> Result<bool, ApplicationError> {
-            Ok(self.0.load(Ordering::SeqCst)
-                && *expected_token_digest
-                    == <[u8; 32]>::from(Sha256::digest(b"fixed-domain-proof")))
-        }
-    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
@@ -986,280 +734,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn store_domain_http_requires_verification_and_never_broadens_store_context() {
-        let database_url =
-            std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
-        let owner_pool = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&database_url)
-            .await
-            .unwrap();
-        let owner_id = UserId::new();
-        let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
-        let store_id = StoreId::new();
-        let web_channel_id = SalesChannelId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1,$2)")
-                .bind(id.as_uuid())
-                .bind(format!("domain-{role}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1,$2,'Domain Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("domain-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id,user_id,role) VALUES ($1,$2,$3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO merchant.stores \
-             (id,merchant_account_id,code,name,status) VALUES ($1,$2,'domain','Domain','active')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.sales_channels \
-             (id,merchant_account_id,store_id,code,name,kind,status,is_default) \
-             VALUES ($1,$2,$3,'web','Web','web','active',true)",
-        )
-        .bind(web_channel_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-
-        let mut owner_state = test_state(&database_url, owner_id);
-        let repository = Arc::new(PostgresStoreDomainRepository::new(
-            owner_state.infrastructure.runtime_pool(),
-        ));
-        let verification_visible = Arc::new(AtomicBool::new(false));
-        owner_state.store_domain_administration = Arc::new(StoreDomainAdministration::new(
-            repository,
-            Arc::new(FixedDomainMaterial),
-            Arc::new(SwitchDomainVerification(verification_visible.clone())),
-        ));
-        let app = router(owner_state.clone());
-        let hostname = format!("shop-{suffix}.merchant-commerce.com");
-        let domains_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/domains",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
-        let create_key = format!("create-domain-{suffix}");
-        let create_body = json!({
-            "hostname": hostname,
-            "sales_channel_id": web_channel_id.as_uuid()
-        });
-        let response = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                &domains_uri,
-                Some(&create_key),
-                Some(create_body.clone()),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let created = response_json(response).await;
-        let domain_id = created["data"]["id"].as_str().unwrap();
-        assert_eq!(created["data"]["domain_status"], "pending");
-        assert_eq!(
-            created["data"]["verification_record_value"],
-            "chaos-domain-verification=fixed-domain-proof"
-        );
-
-        let replay = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                &domains_uri,
-                Some(&create_key),
-                Some(create_body),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(replay.status(), StatusCode::CONFLICT);
-
-        let mut resolve_request = request(Method::GET, "/store/v1/domain-context", None, None);
-        resolve_request
-            .headers_mut()
-            .insert(axum::http::header::HOST, hostname.parse().unwrap());
-        assert_eq!(
-            app.clone().oneshot(resolve_request).await.unwrap().status(),
-            StatusCode::NOT_FOUND
-        );
-
-        let domain_uri = format!("{domains_uri}/{domain_id}");
-        let verify_key = format!("verify-domain-{suffix}");
-        let pending = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                &format!("{domain_uri}/verify"),
-                Some(&verify_key),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(pending.status(), StatusCode::CONFLICT);
-        verification_visible.store(true, Ordering::SeqCst);
-        let verified = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                &format!("{domain_uri}/verify"),
-                Some(&verify_key),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(verified.status(), StatusCode::OK);
-        assert_eq!(
-            response_json(verified).await["data"]["domain_status"],
-            "verified"
-        );
-
-        let mut resolve_request = request(Method::GET, "/store/v1/domain-context", None, None);
-        resolve_request
-            .headers_mut()
-            .insert(axum::http::header::HOST, hostname.parse().unwrap());
-        let resolved = app.clone().oneshot(resolve_request).await.unwrap();
-        assert_eq!(resolved.status(), StatusCode::OK);
-        let resolved = response_json(resolved).await;
-        assert_eq!(resolved["data"]["store_id"], store_id.as_uuid().to_string());
-        assert_eq!(
-            resolved["data"]["sales_channel_id"],
-            web_channel_id.as_uuid().to_string()
-        );
-
-        let listed = app
-            .clone()
-            .oneshot(request(Method::GET, &domains_uri, None, None))
-            .await
-            .unwrap();
-        let listed = response_json(listed).await;
-        assert!(listed["data"][0].get("verification_record_value").is_none());
-        assert!(listed["data"][0].get("verification_token_digest").is_none());
-
-        let runtime_pool = owner_state.infrastructure.runtime_pool();
-        let mut isolated = runtime_pool.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id',$1,true)")
-            .bind(Uuid::now_v7().to_string())
-            .execute(&mut *isolated)
-            .await
-            .unwrap();
-        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM merchant.store_domains")
-            .fetch_one(&mut *isolated)
-            .await
-            .unwrap();
-        assert_eq!(visible, 0);
-        isolated.rollback().await.unwrap();
-
-        let audit_events: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM merchant.store_domain_events WHERE store_domain_id = $1",
-        )
-        .bind(Uuid::parse_str(domain_id).unwrap())
-        .fetch_one(&owner_pool)
-        .await
-        .unwrap();
-        assert_eq!(audit_events, 2);
-        let mut immutable = runtime_pool.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id',$1,true)")
-            .bind(account_id.as_uuid().to_string())
-            .execute(&mut *immutable)
-            .await
-            .unwrap();
-        assert!(
-            sqlx::query(
-                "UPDATE merchant.store_domain_events SET event_kind = 'created' \
-                 WHERE store_domain_id = $1",
-            )
-            .bind(Uuid::parse_str(domain_id).unwrap())
-            .execute(&mut *immutable)
-            .await
-            .is_err()
-        );
-        immutable.rollback().await.unwrap();
-
-        let archived = app
-            .clone()
-            .oneshot(request(
-                Method::POST,
-                &format!("{domain_uri}/archive"),
-                Some(&format!("archive-domain-{suffix}")),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(archived.status(), StatusCode::OK);
-        assert_eq!(
-            response_json(archived).await["data"]["domain_status"],
-            "archived"
-        );
-        let mut resolve_request = request(Method::GET, "/store/v1/domain-context", None, None);
-        resolve_request
-            .headers_mut()
-            .insert(axum::http::header::HOST, hostname.parse().unwrap());
-        assert_eq!(
-            app.clone().oneshot(resolve_request).await.unwrap().status(),
-            StatusCode::NOT_FOUND
-        );
-        let mut immutable = runtime_pool.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id',$1,true)")
-            .bind(account_id.as_uuid().to_string())
-            .execute(&mut *immutable)
-            .await
-            .unwrap();
-        assert!(
-            sqlx::query("DELETE FROM merchant.store_domains WHERE id = $1")
-                .bind(Uuid::parse_str(domain_id).unwrap())
-                .execute(&mut *immutable)
-                .await
-                .is_err()
-        );
-        immutable.rollback().await.unwrap();
-
-        let mut support_state = test_state(&database_url, support_id);
-        support_state.store_domain_administration = owner_state.store_domain_administration;
-        let forbidden = router(support_state)
-            .oneshot(request(
-                Method::POST,
-                &domains_uri,
-                Some(&format!("support-domain-{suffix}")),
-                Some(json!({
-                    "hostname": format!("support-{suffix}.merchant-commerce.com"),
-                    "sales_channel_id": web_channel_id.as_uuid()
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
     }
 }

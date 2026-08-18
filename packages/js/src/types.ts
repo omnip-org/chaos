@@ -324,12 +324,6 @@ export interface PaymentClientAction {
   account_reference: string;
 }
 
-export interface ResolvedStoreDomain {
-  store_id: UUID;
-  sales_channel_id: UUID;
-  hostname: string;
-}
-
 // Envelopes — every Store API response wraps its payload in { data } (and
 // { data, meta } for paginated collections).
 export interface DataEnvelope<T> {

@@ -9,7 +9,7 @@ Reserved schema map:
 | Schema | Ownership |
 |---|---|
 | `identity` | Users, credentials, service accounts, and sessions |
-| `merchant` | Merchant accounts, memberships, roles, stores, channels, domains, and Store Locale configuration |
+| `merchant` | Merchant accounts, memberships, roles, stores, channels, and Store Locale configuration |
 | `catalog` | Products, variants, options, collections, media, and typed translations |
 | `pricing` | Money metadata, price lists, prices, promotions, and tax classes |
 | `inventory` | Locations, stock items, reservations, and adjustments |

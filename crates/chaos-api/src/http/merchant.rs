@@ -50,7 +50,6 @@ pub(super) enum CursorKind {
     CustomerOrder = 10,
     AdminOrder = 11,
     PaymentProviderAccount = 12,
-    StoreDomain = 13,
     Collection = 14,
     StorefrontCollection = 15,
     Review = 16,

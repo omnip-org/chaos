@@ -16,10 +16,7 @@ import { createStorefrontClient, type ChaosStorefrontClient } from "@omnip-org/c
  *   the server. Cart/checkout pages that run in the browser omit this and
  *   get the collector as usual.
  *
- * The Store is determined entirely by the publishable key — this template
- * does not resolve a custom domain via the Store API's /domain-context
- * endpoint, since that endpoint only reads the actual HTTP Host header and
- * cannot be driven by an SSR server issuing its own outbound requests.
+ * The Store is determined entirely by the publishable key configured below.
  */
 export function createChaosClient(): ChaosStorefrontClient {
   const baseUrl = import.meta.env.PUBLIC_CHAOS_STORE_API_BASE_URL;

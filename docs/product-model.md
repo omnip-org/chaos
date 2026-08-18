@@ -13,7 +13,6 @@ User
   └─ MerchantAccountMembership
        └─ MerchantAccount
             ├─ Store
-            │    ├─ Domain
             │    ├─ SalesChannel
             │    ├─ Catalog
             │    ├─ PriceLists and Currencies
@@ -41,7 +40,7 @@ The relationship between a user and a merchant account. It carries roles and per
 
 ### Store
 
-An independent online storefront operated by a merchant account. A store owns its domains, sales channels, catalog visibility, currencies, pricing, inventory rules, customers, carts, orders, payment configuration, and fulfillment settings.
+An independent online storefront operated by a merchant account. A store owns its sales channels, catalog visibility, currencies, pricing, inventory rules, customers, carts, orders, payment configuration, and fulfillment settings.
 
 Stores are isolated by default. Sharing products, customers, inventory, or price lists across stores requires an explicit future domain feature rather than an implicit database join.
 

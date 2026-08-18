@@ -67,11 +67,8 @@ PaaS), with `PUBLIC_CHAOS_PUBLISHABLE_KEY` and
 ## What this template intentionally doesn't do
 
 - **Multi-domain/multi-Store resolution.** The Store is determined
-  entirely by which publishable key you configure. The Store API's
-  `/domain-context` endpoint (for Store-owned custom domains) only reads
-  the actual HTTP Host header of an incoming request and has no supported
-  way to be driven by an SSR server issuing its own outbound calls — see
-  the doc comment on `catalog.resolveDomainContext()` in `packages/js`.
+  entirely by which publishable key you configure. This template assumes
+  each Store deploys its own storefront instance with its own key.
 - **Order status on the success page.** Stripe's `success_url` only gets
   Stripe's own `session_id` back (via the `{CHECKOUT_SESSION_ID}`
   placeholder), not the Chaos `order_id`; the success page shows a static

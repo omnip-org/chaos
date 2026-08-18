@@ -11,7 +11,6 @@ pub mod repositories;
 pub mod secret;
 pub mod shopper;
 pub mod state;
-pub mod store_domain;
 pub mod stripe;
 
 pub use analytics_rate_limit::RedisAnalyticsCollectionRateLimiter;
