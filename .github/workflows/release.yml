@@ -24,7 +24,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@master
         with:
-          shared-key: release-verify
+          shared-key: test
 
       - name: Set up Node.js
         uses: actions/setup-node@main
