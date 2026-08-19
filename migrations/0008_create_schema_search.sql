@@ -1,3 +1,8 @@
+CREATE SCHEMA search;
+
+COMMENT ON SCHEMA search IS
+    'Rebuildable Store-isolated read models for storefront discovery';
+
 CREATE TABLE search.product_documents (
     store_id            UUID        NOT NULL,
     product_id          UUID        NOT NULL,
@@ -121,6 +126,14 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER products_search_change
+AFTER INSERT OR UPDATE OF handle, title, description ON catalog.products
+FOR EACH ROW EXECUTE FUNCTION search.capture_product_change();
+
+CREATE TRIGGER variants_search_change
+AFTER INSERT OR UPDATE OF title, sku OR DELETE ON catalog.product_variants
+FOR EACH ROW EXECUTE FUNCTION search.capture_variant_change();
+
 ALTER TABLE search.product_documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON search.product_documents
@@ -141,3 +154,5 @@ GRANT EXECUTE ON FUNCTION search.process_events(UUID, INTEGER, TIMESTAMPTZ) TO c
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA search
     GRANT SELECT ON TABLES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA search TO chaos_runtime;

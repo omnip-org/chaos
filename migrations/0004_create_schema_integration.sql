@@ -1,3 +1,8 @@
+CREATE SCHEMA integration;
+
+COMMENT ON SCHEMA integration IS
+    'Idempotency records, webhooks, outbox delivery, and external mappings';
+
 CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 
 CREATE TYPE integration.queue_status AS ENUM ('pending', 'processing', 'processed', 'dead_letter');
@@ -535,4 +540,4 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA integration, merchant TO chaos_runtime;
+GRANT USAGE ON SCHEMA integration TO chaos_runtime;

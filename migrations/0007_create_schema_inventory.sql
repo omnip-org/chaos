@@ -1,3 +1,8 @@
+CREATE SCHEMA inventory;
+
+COMMENT ON SCHEMA inventory IS
+    'Locations, stock balances, append-only ledger entries, and reservations';
+
 CREATE TYPE inventory.inventory_location_status AS ENUM ('active', 'archived');
 
 CREATE TYPE inventory.inventory_reservation_status AS ENUM (
@@ -262,3 +267,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA inventory
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA inventory
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA inventory TO chaos_runtime;

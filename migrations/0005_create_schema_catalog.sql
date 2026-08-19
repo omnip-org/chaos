@@ -1,3 +1,8 @@
+CREATE SCHEMA catalog;
+
+COMMENT ON SCHEMA catalog IS
+    'Products, variants, options, collections, media, and channel publication';
+
 CREATE TYPE catalog.product_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TYPE catalog.variant_status AS ENUM ('active', 'archived');
@@ -618,14 +623,6 @@ CREATE INDEX reviews_parent_idx
 CREATE INDEX review_events_review_occurred_idx
     ON catalog.review_events (store_id, review_id, occurred_at, id);
 
-CREATE TRIGGER products_search_change
-AFTER INSERT OR UPDATE OF handle, title, description ON catalog.products
-FOR EACH ROW EXECUTE FUNCTION search.capture_product_change();
-
-CREATE TRIGGER variants_search_change
-AFTER INSERT OR UPDATE OF title, sku OR DELETE ON catalog.product_variants
-FOR EACH ROW EXECUTE FUNCTION search.capture_variant_change();
-
 ALTER TABLE catalog.products ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE catalog.product_translations ENABLE ROW LEVEL SECURITY;
@@ -908,4 +905,4 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
 ALTER DEFAULT PRIVILEGES IN SCHEMA catalog
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA catalog, pricing, inventory, search TO chaos_runtime;
+GRANT USAGE ON SCHEMA catalog TO chaos_runtime;

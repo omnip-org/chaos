@@ -1,3 +1,8 @@
+CREATE SCHEMA notification;
+
+COMMENT ON SCHEMA notification IS
+    'Semantic delivery requests, recipient policy, suppression, and delivery status';
+
 CREATE TYPE notification.email_delivery_status AS ENUM (
     'pending',
     'processing',
@@ -472,4 +477,4 @@ REVOKE UPDATE, DELETE
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA notification TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA notification, analytics TO chaos_runtime;
+GRANT USAGE ON SCHEMA notification TO chaos_runtime;

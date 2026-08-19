@@ -1,3 +1,8 @@
+CREATE SCHEMA merchant;
+
+COMMENT ON SCHEMA merchant IS
+    'Merchant accounts, memberships, stores, and channels';
+
 CREATE TYPE merchant.store_role AS ENUM ('owner', 'member');
 
 CREATE TYPE merchant.store_status AS ENUM ('active', 'inactive');
@@ -446,3 +451,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA merchant
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA merchant TO chaos_runtime;

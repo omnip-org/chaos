@@ -1,3 +1,18 @@
+CREATE SCHEMA sales;
+
+COMMENT ON SCHEMA sales IS
+    'Carts, immutable checkout calculations, orders, returns, and exchanges';
+
+CREATE SCHEMA payments;
+
+COMMENT ON SCHEMA payments IS
+    'Provider accounts, payment attempts, captures, and refunds';
+
+CREATE SCHEMA fulfillment;
+
+COMMENT ON SCHEMA fulfillment IS
+    'Partial fulfillments, shipments, tracking, and return logistics';
+
 CREATE TYPE sales.cart_status AS ENUM ('active', 'completed', 'abandoned');
 
 CREATE TYPE sales.checkout_status AS ENUM ('pending', 'completed', 'expired');
@@ -20,17 +35,7 @@ CREATE TYPE sales.order_delivery_status AS ENUM (
     'delivered'
 );
 
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE TYPE fulfillment.shipping_service_status AS ENUM ('active', 'archived');
-
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE TYPE payments.payment_attempt_status AS ENUM (
     'pending',
@@ -41,11 +46,6 @@ CREATE TYPE payments.payment_attempt_status AS ENUM (
 );
 
 CREATE TYPE payments.refund_status AS ENUM ('pending', 'succeeded', 'failed');
-
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE TYPE fulfillment.fulfillment_status AS ENUM (
     'pending',
@@ -63,11 +63,6 @@ CREATE TYPE fulfillment.return_status AS ENUM (
 );
 
 CREATE TYPE fulfillment.return_disposition AS ENUM ('restock', 'discard');
-
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE TABLE sales.customers (
     id                  UUID              NOT NULL PRIMARY KEY,
@@ -110,14 +105,31 @@ CREATE TABLE sales.customer_addresses (
     CONSTRAINT customer_addresses_customer_fkey
         FOREIGN KEY (store_id, customer_id)
         REFERENCES sales.customers(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT customer_addresses_label_length_check CHECK (length(trim(label)) BETWEEN 1 AND 64),
-    CONSTRAINT customer_addresses_full_name_length_check CHECK (length(trim(full_name)) BETWEEN 1 AND 200),
-    CONSTRAINT customer_addresses_company_length_check CHECK (company IS NULL OR length(trim(company)) BETWEEN 1 AND 200),
-    CONSTRAINT customer_addresses_line1_length_check CHECK (length(trim(address_line1)) BETWEEN 1 AND 255),
-    CONSTRAINT customer_addresses_line2_length_check CHECK (address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255),
-    CONSTRAINT customer_addresses_locality_length_check CHECK (length(trim(locality)) BETWEEN 1 AND 100),
-    CONSTRAINT customer_addresses_area_length_check CHECK (administrative_area IS NULL OR length(trim(administrative_area)) BETWEEN 1 AND 100),
-    CONSTRAINT customer_addresses_postal_code_length_check CHECK (postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32),
+    CONSTRAINT customer_addresses_label_length_check CHECK (
+        length(trim(label)) BETWEEN 1 AND 64
+    ),
+    CONSTRAINT customer_addresses_full_name_length_check CHECK (
+        length(trim(full_name)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT customer_addresses_company_length_check CHECK (
+        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
+    ),
+    CONSTRAINT customer_addresses_line1_length_check CHECK (
+        length(trim(address_line1)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT customer_addresses_line2_length_check CHECK (
+        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT customer_addresses_locality_length_check CHECK (
+        length(trim(locality)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT customer_addresses_area_length_check CHECK (
+        administrative_area IS NULL
+        OR length(trim(administrative_area)) BETWEEN 1 AND 100
+    ),
+    CONSTRAINT customer_addresses_postal_code_length_check CHECK (
+        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
+    ),
     CONSTRAINT customer_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
@@ -701,11 +713,6 @@ CREATE TABLE sales.order_fulfillment_transitions (
     FOREIGN KEY (source_event_id) REFERENCES integration.outbox_events(id)
 );
 
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE TABLE fulfillment.shipping_services (
     id                         UUID                                NOT NULL PRIMARY KEY,
     store_id                   UUID                                NOT NULL,
@@ -830,11 +837,6 @@ CREATE TABLE fulfillment.shipping_service_regions (
     CONSTRAINT shipping_service_regions_country_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE TABLE sales.checkout_shipping_selections (
     store_id            UUID        NOT NULL,
     checkout_id         UUID        NOT NULL,
@@ -886,11 +888,6 @@ CREATE TABLE sales.order_shipping_selections (
         AND estimated_max_days BETWEEN estimated_min_days AND 365
     )
 );
-
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE TABLE payments.provider_accounts (
     id                         UUID        NOT NULL PRIMARY KEY,
@@ -1087,11 +1084,6 @@ CREATE TABLE payments.refunds (
         OR (status <> 'failed' AND failure_code IS NULL)
     )
 );
-
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE TABLE fulfillment.fulfillments (
     id                   UUID                           NOT NULL PRIMARY KEY,
@@ -1406,11 +1398,6 @@ CREATE TABLE fulfillment.return_lines (
     )
 );
 
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE INDEX customers_store_created_idx
     ON sales.customers (store_id, created_at DESC, id DESC);
 
@@ -1468,11 +1455,6 @@ CREATE INDEX order_fulfillment_transitions_order_idx
         id
     );
 
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE INDEX provider_accounts_store_created_idx
     ON payments.provider_accounts (store_id, created_at DESC, id DESC);
 
@@ -1493,11 +1475,6 @@ CREATE INDEX refunds_attempt_created_idx
         created_at DESC,
         id DESC
     );
-
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE INDEX shipping_services_quote_idx
     ON fulfillment.shipping_services (store_id,
@@ -1566,11 +1543,6 @@ CREATE INDEX return_lines_variant_idx
         return_id
     );
 
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE FUNCTION sales.claim_expired_checkouts(
     worker_id UUID,
     batch_size INTEGER,
@@ -1608,11 +1580,6 @@ AS $$
     RETURNING checkout.id, checkout.store_id,
               checkout.inventory_reservation_id;
 $$;
-
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE FUNCTION payments.provider_readiness_metrics()
 RETURNS TABLE (
@@ -1811,11 +1778,6 @@ AS $$
     RETURNING true;
 $$;
 
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE FUNCTION fulfillment.shipping_tracking_metrics()
 RETURNS TABLE (
     due BIGINT,
@@ -1978,11 +1940,6 @@ AS $$
               account.credential_secret_reference, label.cancellation_attempts;
 $$;
 
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 ALTER TABLE sales.customers ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE sales.customer_addresses ENABLE ROW LEVEL SECURITY;
@@ -2025,21 +1982,11 @@ ALTER TABLE sales.checkout_shipping_selections ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE sales.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 ALTER TABLE payments.provider_accounts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE payments.payment_attempts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE payments.refunds ENABLE ROW LEVEL SECURITY;
-
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 ALTER TABLE fulfillment.fulfillments ENABLE ROW LEVEL SECURITY;
 
@@ -2060,11 +2007,6 @@ ALTER TABLE fulfillment.shipping_labels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fulfillment.returns ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE fulfillment.return_lines ENABLE ROW LEVEL SECURITY;
-
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE POLICY store_isolation ON sales.carts
     USING (
@@ -2276,11 +2218,6 @@ CREATE POLICY store_isolation ON sales.order_shipping_selections
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 CREATE POLICY store_isolation ON payments.provider_accounts
     USING (
         store_id =
@@ -2310,11 +2247,6 @@ CREATE POLICY store_isolation ON payments.refunds
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
     );
-
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 CREATE POLICY store_isolation ON fulfillment.fulfillments
     USING (
@@ -2416,11 +2348,6 @@ CREATE POLICY store_isolation ON fulfillment.return_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 COMMENT ON INDEX sales.checkouts_expiry_claim_idx IS
     'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
 
@@ -2468,11 +2395,6 @@ REVOKE UPDATE, DELETE
 REVOKE UPDATE, DELETE
     ON sales.order_shipping_selections FROM chaos_runtime;
 
--- ============================================================================
--- SCHEMA: payments
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 REVOKE ALL ON FUNCTION payments.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION payments.resolve_provider_webhook_secret_references(TEXT, TEXT) FROM PUBLIC;
@@ -2516,11 +2438,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA payments
 ALTER DEFAULT PRIVILEGES IN SCHEMA payments
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
--- ============================================================================
--- SCHEMA: fulfillment
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
-
 REVOKE ALL ON FUNCTION fulfillment.claim_shipping_tracking(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
@@ -2556,10 +2473,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA fulfillment
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
--- ============================================================================
--- SCHEMA: sales
--- Dependency-preserving section; statement order retained from the original migration.
--- ============================================================================
 
 GRANT USAGE ON SCHEMA sales, payments, fulfillment TO chaos_runtime;

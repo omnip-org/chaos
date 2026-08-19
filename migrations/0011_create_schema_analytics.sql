@@ -1,3 +1,8 @@
+CREATE SCHEMA analytics;
+
+COMMENT ON SCHEMA analytics IS
+    'Canonical behavior events, consent evidence, attribution, and analytical delivery state';
+
 CREATE TYPE analytics.event_source AS ENUM ('browser', 'server');
 
 CREATE TYPE analytics.browser_event_name AS ENUM (
@@ -1581,3 +1586,5 @@ REVOKE UPDATE, DELETE ON analytics.commerce_facts FROM chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA analytics TO chaos_runtime;

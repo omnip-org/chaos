@@ -1,3 +1,8 @@
+CREATE SCHEMA pricing;
+
+COMMENT ON SCHEMA pricing IS
+    'Price lists, currency-specific prices, promotions, and tax classes';
+
 CREATE TYPE pricing.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TYPE pricing.tax_rule_status AS ENUM ('active', 'archived');
@@ -219,3 +224,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA pricing
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA pricing TO chaos_runtime;

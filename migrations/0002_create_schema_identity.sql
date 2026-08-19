@@ -1,3 +1,8 @@
+CREATE SCHEMA identity;
+
+COMMENT ON SCHEMA identity IS
+    'Users, credentials, service accounts, and sessions';
+
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 
 CREATE TABLE identity.users (
