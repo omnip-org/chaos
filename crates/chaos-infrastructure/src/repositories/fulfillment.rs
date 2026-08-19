@@ -138,8 +138,8 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         for line in fulfillment.allocations() {
             sqlx::query(
                 "INSERT INTO fulfillment.fulfillment_lines \
-                 (merchant_account_id, store_id, fulfillment_id, product_variant_id, quantity) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                 (store_id, fulfillment_id, product_variant_id, quantity) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(store_id.as_uuid())
             .bind(fulfillment.id().as_uuid())
@@ -234,8 +234,8 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, 'fulfillment', $4, $5, $6)",
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'fulfillment', $3, $4, $5)",
         )
         .bind(Uuid::now_v7())
         .bind(store_id.as_uuid())
@@ -252,8 +252,8 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         if target_status == FulfillmentStatus::Shipped {
             sqlx::query(
                 "INSERT INTO integration.outbox_events \
-                 (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-                 VALUES ($1, $2, $3, 'fulfillment', $4, 'analytics.fulfillment.shipped', $5)",
+                 (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+                 VALUES ($1, $2, 'fulfillment', $3, 'analytics.fulfillment.shipped', $4)",
             )
             .bind(Uuid::now_v7())
             .bind(store_id.as_uuid())
@@ -304,8 +304,8 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         let returned = Return::create(order_id);
         sqlx::query(
             "INSERT INTO fulfillment.returns \
-             (id, merchant_account_id, store_id, order_id, refund_amount_minor, currency, \
-              requested_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (id, store_id, order_id, refund_amount_minor, currency, \
+              requested_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(returned.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -319,8 +319,8 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         for line in &refund_lines {
             sqlx::query(
                 "INSERT INTO fulfillment.return_lines \
-                 (merchant_account_id, store_id, return_id, product_variant_id, quantity, \
-                  refund_amount_minor) VALUES ($1, $2, $3, $4, $5, $6)",
+                 (store_id, return_id, product_variant_id, quantity, \
+                  refund_amount_minor) VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(store_id.as_uuid())
             .bind(returned.id().as_uuid())
@@ -808,12 +808,10 @@ async fn validate_fulfillment_quantities(
                     FILTER (WHERE fulfillment_record.status <> 'cancelled'), 0)::bigint \
              FROM sales.order_lines AS order_line \
              LEFT JOIN fulfillment.fulfillments AS fulfillment_record \
-               ON fulfillment_record.merchant_account_id = order_line.merchant_account_id \
-              AND fulfillment_record.store_id = order_line.store_id \
+               ON fulfillment_record.store_id = order_line.store_id \
               AND fulfillment_record.order_id = $2 \
              LEFT JOIN fulfillment.fulfillment_lines AS fulfillment_line \
-               ON fulfillment_line.merchant_account_id = fulfillment_record.merchant_account_id \
-              AND fulfillment_line.store_id = fulfillment_record.store_id \
+               ON fulfillment_line.store_id = fulfillment_record.store_id \
               AND fulfillment_line.fulfillment_id = fulfillment_record.id \
               AND fulfillment_line.product_variant_id = order_line.product_variant_id \
              WHERE order_line.store_id = $1 \
@@ -853,8 +851,7 @@ async fn validate_return_quantities(
             "SELECT COALESCE(sum(fulfillment_line.quantity), 0)::bigint \
              FROM fulfillment.fulfillment_lines AS fulfillment_line \
              INNER JOIN fulfillment.fulfillments AS fulfillment_record \
-               ON fulfillment_record.merchant_account_id = fulfillment_line.merchant_account_id \
-              AND fulfillment_record.store_id = fulfillment_line.store_id \
+               ON fulfillment_record.store_id = fulfillment_line.store_id \
               AND fulfillment_record.id = fulfillment_line.fulfillment_id \
              WHERE fulfillment_record.store_id = $1 \
                AND fulfillment_record.order_id = $2 AND fulfillment_record.status = 'delivered' \
@@ -870,8 +867,7 @@ async fn validate_return_quantities(
             "SELECT COALESCE(sum(return_line.quantity), 0)::bigint \
              FROM fulfillment.return_lines AS return_line \
              INNER JOIN fulfillment.returns AS return_record \
-               ON return_record.merchant_account_id = return_line.merchant_account_id \
-              AND return_record.store_id = return_line.store_id AND return_record.id = return_line.return_id \
+               ON return_record.store_id = return_line.store_id AND return_record.id = return_line.return_id \
              WHERE return_record.store_id = $1 \
                AND return_record.order_id = $2 AND return_record.status <> 'rejected' \
                AND return_line.product_variant_id = $3",
@@ -938,8 +934,7 @@ async fn allocate_return_refund(
                     COALESCE(sum(return_line.refund_amount_minor), 0)::bigint \
              FROM fulfillment.return_lines AS return_line \
              INNER JOIN fulfillment.returns AS return_record \
-               ON return_record.merchant_account_id = return_line.merchant_account_id \
-              AND return_record.store_id = return_line.store_id \
+               ON return_record.store_id = return_line.store_id \
               AND return_record.id = return_line.return_id \
              WHERE return_record.store_id = $1 \
                AND return_record.order_id = $2 AND return_record.status <> 'rejected' \
@@ -1107,8 +1102,8 @@ async fn restock_return_line(
             let id = Uuid::now_v7();
             sqlx::query(
                 "INSERT INTO inventory.stock_items \
-                 (id, merchant_account_id, store_id, inventory_location_id, product_variant_id) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                 (id, store_id, inventory_location_id, product_variant_id) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(id)
             .bind(store_id.as_uuid())
@@ -1132,10 +1127,10 @@ async fn restock_return_line(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO inventory.stock_ledger_entries \
-         (id, merchant_account_id, store_id, stock_item_id, kind, on_hand_delta_quantity, \
+         (id, store_id, stock_item_id, kind, on_hand_delta_quantity, \
           reserved_delta_quantity, resulting_on_hand_quantity, resulting_reserved_quantity, \
           note, actor_user_id, created_at) \
-         VALUES ($1, $2, $3, $4, 'return_restock', $5, 0, $6, $7, $8, $9, $10)",
+         VALUES ($1, $2, $3, 'return_restock', $4, 0, $5, $6, $7, $8, $9)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
@@ -1298,8 +1293,8 @@ async fn insert_return_outbox(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.outbox_events \
-         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, $3, 'return', $4, 'return.completed', $5)",
+         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         VALUES ($1, $2, 'return', $3, 'return.completed', $4)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
@@ -1313,8 +1308,8 @@ async fn insert_return_outbox(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO integration.outbox_events \
-         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, $3, 'return', $4, 'analytics.return.completed', $5)",
+         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         VALUES ($1, $2, 'return', $3, 'analytics.return.completed', $4)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
@@ -1550,6 +1545,7 @@ fn unexpected_conversion(
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {
+    eprintln!("DEBUG FULFILLMENT SQL ERROR: {error}");
     match &error {
         sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
             ApplicationError::Unavailable {

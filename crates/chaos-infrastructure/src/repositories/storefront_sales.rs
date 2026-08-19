@@ -256,6 +256,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .bind(cart.id().as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(shopper_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(shopper_id.as_uuid())
+        .bind(channel_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
         .bind(currency.as_str())
@@ -702,11 +705,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
              FROM sales.checkouts WHERE store_id = $4 \
                AND sales_channel_id = $5 AND id = $6",
         )
+        .bind(order.id().as_uuid())
+        .bind(now)
+        .bind(now)
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(checkout_id.as_uuid())
-        .bind(order.id().as_uuid())
-        .bind(now)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -723,10 +727,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
              FROM sales.checkout_lines WHERE store_id = $3 \
                AND checkout_id = $4 ORDER BY position",
         )
-        .bind(actor.store_id.as_uuid())
-        .bind(checkout_id.as_uuid())
         .bind(order.id().as_uuid())
         .bind(now)
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -764,10 +768,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
              WHERE store_id = $3 AND sales_channel_id = $4 \
                AND id = $5 AND status = 'pending'",
         )
+        .bind(now)
+        .bind(now)
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(checkout_id.as_uuid())
-        .bind(now)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -908,10 +913,11 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
              WHERE store_id = $3 AND id = $4 \
                AND expiry_locked_by = $5 AND status = 'pending'",
         )
+        .bind(now)
+        .bind(now)
         .bind(job.store_id)
         .bind(job.id.as_uuid())
         .bind(worker_id)
-        .bind(now)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -946,8 +952,8 @@ async fn select_price_list(
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
          ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
     )
-    .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
     .bind(currency.map(|value| value.as_str().to_owned()))
     .fetch_optional(&mut **transaction)
     .await
@@ -1054,12 +1060,16 @@ async fn resolve_variant(
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP)",
     )
-    .bind(actor.store_id.as_uuid())
-    .bind(channel_id.as_uuid())
-    .bind(price_list_id.as_uuid())
-    .bind(variant_id.as_uuid())
     .bind(translations.0.as_deref())
     .bind(translations.1.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(translations.1.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(channel_id.as_uuid())
+    .bind(price_list_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(variant_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)
@@ -1085,7 +1095,6 @@ async fn insert_or_replace_line(
              unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
              tax_inclusive = EXCLUDED.tax_inclusive, updated_at = CURRENT_TIMESTAMP",
     )
-    .bind(actor.store_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
     .bind(line.product_id().as_uuid())
@@ -1262,10 +1271,10 @@ async fn refresh_cart_lines(
          WHERE cart_line.store_id = $3 \
            AND cart_line.cart_id = $4 ORDER BY variant.id ASC",
     )
-    .bind(actor.store_id.as_uuid())
-    .bind(cart_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(price_list_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(cart_id.as_uuid())
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1305,6 +1314,7 @@ async fn require_price_list_active(
     .bind(actor.store_id.as_uuid())
     .bind(price_list_id.as_uuid())
     .bind(currency.as_str())
+    .bind(now)
     .bind(now)
     .fetch_one(&mut **transaction)
     .await
@@ -1370,8 +1380,8 @@ async fn reserve_inventory(
                 "UPDATE inventory.stock_items SET reserved_quantity = $1, \
                         updated_at = CURRENT_TIMESTAMP WHERE id = $2",
             )
-            .bind(stock_item_id)
             .bind(balance.reserved())
+            .bind(stock_item_id)
             .execute(&mut **transaction)
             .await
             .map_err(database_error)?;
@@ -1436,6 +1446,9 @@ async fn insert_checkout(
     .bind(actor.store_id.as_uuid())
     .bind(checkout.cart_id().as_uuid())
     .bind(shopper_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(shopper_id.as_uuid())
+    .bind(channel_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(checkout.price_list_id().as_uuid())
     .bind(
@@ -1673,9 +1686,9 @@ async fn copy_checkout_identity_to_order(
          FROM sales.checkout_contacts \
          WHERE store_id = $2 AND checkout_id = $3",
     )
+    .bind(order_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
-    .bind(order_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1688,9 +1701,9 @@ async fn copy_checkout_identity_to_order(
          FROM sales.checkout_addresses \
          WHERE store_id = $2 AND checkout_id = $3",
     )
+    .bind(order_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
-    .bind(order_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1715,9 +1728,9 @@ async fn copy_checkout_shipping_to_order(
          FROM sales.checkout_shipping_selections \
          WHERE store_id = $2 AND checkout_id = $3",
     )
+    .bind(order_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
-    .bind(order_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1738,9 +1751,9 @@ async fn copy_checkout_tax_to_order(
                 country_code, rate_basis_points FROM sales.checkout_tax_calculations \
          WHERE store_id = $2 AND checkout_id = $3",
     )
+    .bind(order_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
-    .bind(order_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -3367,6 +3380,7 @@ fn corrupt_sales_state() -> ApplicationError {
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {
+    eprintln!("DEBUG SQL ERROR: {error}");
     match &error {
         sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
             ApplicationError::Unavailable {

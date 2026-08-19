@@ -563,7 +563,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
              (id, store_id, fulfillment_id, provider_account_id, \
               idempotency_key, request_fingerprint, length_millimetres, width_millimetres, \
               height_millimetres, weight_grams) \
-             VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9) \
              ON CONFLICT (store_id, idempotency_key) DO NOTHING RETURNING id",
         )
         .bind(store_id.as_uuid())
@@ -656,7 +656,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
                  (id, store_id, quote_request_id, \
                   provider_shipment_reference, provider_rate_reference, carrier, service, \
                   amount_minor, currency, estimated_delivery_days, guaranteed, expires_at) \
-                 VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+                 VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
             )
             .bind(store_id.as_uuid())
             .bind(quote_request_id.as_uuid())
@@ -683,9 +683,10 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
              SET state = 'completed', expires_at = $1, updated_at = $2 \
              WHERE store_id = $3 AND id = $4",
         )
+        .bind(expires_at)
+        .bind(completed_at)
         .bind(store_id.as_uuid())
         .bind(quote_request_id.as_uuid())
-        .bind(expires_at)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -794,25 +795,28 @@ async fn prepare_label_purchase(
          (id, store_id, fulfillment_id, provider_account_id, rate_quote_id, \
           purchase_idempotency_key, purchase_request_fingerprint, \
           provider_shipment_reference, provider_rate_reference) \
-         SELECT $1, $2, $3, $4, request.provider_account_id, rate.id, $5, $6, \
+         SELECT $1, $2, $3, request.provider_account_id, rate.id, $4, $5, \
                 rate.provider_shipment_reference, rate.provider_rate_reference \
          FROM fulfillment.shipping_rate_quotes AS rate \
          INNER JOIN fulfillment.shipping_quote_requests AS request \
             ON request.store_id = rate.store_id AND request.id = rate.quote_request_id \
          INNER JOIN fulfillment.fulfillments AS fulfillment \
-            ON fulfillment.store_id = rate.store_id AND fulfillment.id = $7 \
+            ON fulfillment.store_id = rate.store_id AND fulfillment.id = $6 \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
             ON account.store_id = request.store_id AND account.id = request.provider_account_id \
-         WHERE rate.store_id = $8 AND rate.id = $9 \
-           AND request.fulfillment_id = $10 AND rate.expires_at > $11 \
+         WHERE rate.store_id = $7 AND rate.id = $8 \
+           AND request.fulfillment_id = $9 AND rate.expires_at > $10 \
            AND fulfillment.status = 'pending' AND account.enabled",
     )
     .bind(label_id.as_uuid())
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
-    .bind(rate_quote_id.as_uuid())
     .bind(&request.key)
     .bind(request.request_fingerprint.as_slice())
+    .bind(fulfillment_id.as_uuid())
+    .bind(store_id.as_uuid())
+    .bind(rate_quote_id.as_uuid())
+    .bind(fulfillment_id.as_uuid())
     .bind(now)
     .execute(&mut *transaction)
     .await
@@ -892,12 +896,12 @@ async fn complete_label_purchase(
         });
     }
     sqlx::query(
-        "UPDATE fulfillment.shipping_labels SET purchase_state = 'purchased', carrier = $1, \
-                tracking_number = $2, provider_tracker_reference = $3, label_url = $4, \
-                label_media_type = $5, purchased_at = $6, \
-                next_tracking_refresh_at = CASE WHEN $7::text IS NULL THEN NULL ELSE $8 END, \
-                updated_at = $9 \
-         WHERE store_id = $10 AND id = $11",
+        "UPDATE fulfillment.shipping_labels SET purchase_state = 'purchased', carrier = $3, \
+                tracking_number = $4, provider_tracker_reference = $5, label_url = $6, \
+                label_media_type = $7, purchased_at = $8, \
+                next_tracking_refresh_at = CASE WHEN $5::text IS NULL THEN NULL ELSE $8 END, \
+                updated_at = $8 \
+         WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
@@ -912,15 +916,15 @@ async fn complete_label_purchase(
     .map_err(database_error)?;
     let order_id = sqlx::query_scalar::<_, Uuid>(
         "UPDATE fulfillment.fulfillments SET status = 'shipped', carrier = $1, \
-                tracking_number = $2, shipped_at = $3, updated_at = $4 \
-         WHERE store_id = $5 AND id = $6 AND status = 'pending' \
+                tracking_number = $2, shipped_at = $3, updated_at = $3 \
+         WHERE store_id = $4 AND id = $5 AND status = 'pending' \
          RETURNING order_id",
     )
-    .bind(store_id.as_uuid())
-    .bind(row.1)
     .bind(&label.carrier)
     .bind(&label.tracking_number)
     .bind(completed_at)
+    .bind(store_id.as_uuid())
+    .bind(row.1)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?
@@ -931,7 +935,7 @@ async fn complete_label_purchase(
     sqlx::query(
         "INSERT INTO integration.outbox_events \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES (uuidv7(), $1, $2, 'fulfillment', $3, 'fulfillment.shipped', $4)",
+         VALUES (uuidv7(), $1, 'fulfillment', $2, 'fulfillment.shipped', $3)",
     )
     .bind(store_id.as_uuid())
     .bind(row.1)
@@ -946,7 +950,7 @@ async fn complete_label_purchase(
     sqlx::query(
         "INSERT INTO integration.outbox_events \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, $3, 'fulfillment', $4, 'analytics.fulfillment.shipped', $5)",
+         VALUES ($1, $2, 'fulfillment', $3, 'analytics.fulfillment.shipped', $4)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
@@ -1011,11 +1015,12 @@ async fn prepare_label_cancellation(
                  cancellation_status = 'submitted', cancellation_requested_at = $3, updated_at = $4 \
              WHERE store_id = $5 AND id = $6",
         )
-        .bind(store_id.as_uuid())
-        .bind(label_id.as_uuid())
         .bind(&request.key)
         .bind(request.request_fingerprint.as_slice())
         .bind(now)
+        .bind(now)
+        .bind(store_id.as_uuid())
+        .bind(label_id.as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(map_label_write_error)?;
@@ -1071,10 +1076,12 @@ async fn complete_label_cancellation(
          WHERE store_id = $5 AND id = $6 \
            AND cancellation_idempotency_key IS NOT NULL",
     )
-    .bind(store_id.as_uuid())
-    .bind(label_id.as_uuid())
+    .bind(cancellation_status_text(status))
     .bind(cancellation_status_text(status))
     .bind(completed_at)
+    .bind(completed_at)
+    .bind(store_id.as_uuid())
+    .bind(label_id.as_uuid())
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
@@ -1196,6 +1203,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(job.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -1215,14 +1223,16 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                      WHERE store_id = $8 AND id = $9 \
                        AND tracking_locked_by = $10",
                 )
-                .bind(job.store_id.as_uuid())
-                .bind(job.label_id.as_uuid())
-                .bind(worker_id)
                 .bind(tracking_status_text(snapshot.status))
                 .bind(snapshot.status_detail)
                 .bind(snapshot.estimated_delivery_at)
                 .bind(snapshot.observed_at)
                 .bind(terminal)
+                .bind(now)
+                .bind(now)
+                .bind(job.store_id.as_uuid())
+                .bind(job.label_id.as_uuid())
+                .bind(worker_id)
                 .execute(&mut *transaction)
                 .await
                 .map_err(database_error)?;
@@ -1236,9 +1246,10 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                          WHERE store_id = $3 AND id = $4 \
                            AND status = 'shipped' RETURNING order_id",
                     )
+                    .bind(snapshot.observed_at)
+                    .bind(now)
                     .bind(job.store_id.as_uuid())
                     .bind(job.fulfillment_id.as_uuid())
-                    .bind(snapshot.observed_at)
                     .fetch_optional(&mut *transaction)
                     .await
                     .map_err(database_error)?;
@@ -1247,8 +1258,8 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                             "INSERT INTO integration.outbox_events \
                              (id, store_id, aggregate_type, aggregate_id, \
                               event_type, payload) \
-                             VALUES (uuidv7(), $1, $2, 'fulfillment', $3, \
-                                     'fulfillment.delivered', $4)",
+                             VALUES (uuidv7(), $1, 'fulfillment', $2, \
+                                     'fulfillment.delivered', $3)",
                         )
                         .bind(job.store_id.as_uuid())
                         .bind(job.fulfillment_id.as_uuid())
@@ -1336,6 +1347,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(job.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -1349,11 +1361,13 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                  WHERE store_id = $5 AND id = $6 \
                    AND cancellation_locked_by = $7",
             )
+            .bind(cancellation_status_text(status))
+            .bind(cancellation_status_text(status))
+            .bind(now)
+            .bind(now)
             .bind(job.store_id.as_uuid())
             .bind(job.label_id.as_uuid())
             .bind(worker_id)
-            .bind(cancellation_status_text(status))
-            .bind(now)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?,
@@ -1367,11 +1381,12 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                  WHERE store_id = $4 AND id = $5 \
                    AND cancellation_locked_by = $6",
             )
+            .bind(now)
+            .bind(bounded_error(error))
+            .bind(now)
             .bind(job.store_id.as_uuid())
             .bind(job.label_id.as_uuid())
             .bind(worker_id)
-            .bind(now)
-            .bind(bounded_error(error))
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?,
@@ -1415,9 +1430,9 @@ async fn load_quote_context(
            AND fulfillment.id = $3 AND fulfillment.status = 'pending' \
            AND account.enabled AND address.postal_code IS NOT NULL",
     )
+    .bind(provider_account_id.as_uuid())
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
-    .bind(provider_account_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?
