@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ProductVariantId},
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId},
 };
 use time::{Duration, OffsetDateTime};
 
@@ -229,19 +229,7 @@ impl MediaAdministration {
 
 fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner
-                    | MerchantRole::Administrator
-                    | MerchantRole::Developer
-                    | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::MediaWrite) {
                 Ok(())

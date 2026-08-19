@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use chaos_domain::{
     identity::UserId,
-    merchant::{MerchantAccountId, MerchantRole, StoreId},
+    merchant::{StoreId, StoreRole},
 };
 
 use crate::{
     ApplicationError,
-    ports::{MerchantAccountListItem, MerchantReadRepository, StoreListItem},
+    ports::{MerchantReadRepository, StoreListItem},
 };
 
 pub struct Page<T> {
@@ -16,21 +16,17 @@ pub struct Page<T> {
 }
 
 #[derive(Clone, Copy)]
-pub struct MerchantActor {
+pub struct StoreActor {
     user_id: UserId,
-    merchant_account_id: MerchantAccountId,
-    role: MerchantRole,
+    store_id: StoreId,
+    role: StoreRole,
 }
 
-impl MerchantActor {
-    pub(crate) const fn new(
-        user_id: UserId,
-        merchant_account_id: MerchantAccountId,
-        role: MerchantRole,
-    ) -> Self {
+impl StoreActor {
+    pub(crate) const fn new(user_id: UserId, store_id: StoreId, role: StoreRole) -> Self {
         Self {
             user_id,
-            merchant_account_id,
+            store_id,
             role,
         }
     }
@@ -39,11 +35,11 @@ impl MerchantActor {
         self.user_id
     }
 
-    pub const fn merchant_account_id(self) -> MerchantAccountId {
-        self.merchant_account_id
+    pub const fn store_id(self) -> StoreId {
+        self.store_id
     }
 
-    pub const fn role(self) -> MerchantRole {
+    pub const fn role(self) -> StoreRole {
         self.role
     }
 }
@@ -57,47 +53,29 @@ impl MerchantQueries {
         Self { repository }
     }
 
-    pub async fn list_merchant_accounts(
-        &self,
-        user_id: UserId,
-        after: Option<MerchantAccountId>,
-        limit: u16,
-    ) -> Result<Page<MerchantAccountListItem>, ApplicationError> {
-        let limit = limit.clamp(1, 100);
-        let mut items = self
-            .repository
-            .list_merchant_accounts(user_id, after, limit + 1)
-            .await?;
-        let has_more = items.len() > usize::from(limit);
-        if has_more {
-            items.pop();
-        }
-        Ok(Page { items, has_more })
-    }
-
     pub async fn authorize(
         &self,
         user_id: UserId,
-        merchant_account_id: MerchantAccountId,
-    ) -> Result<MerchantActor, ApplicationError> {
+        store_id: StoreId,
+    ) -> Result<StoreActor, ApplicationError> {
         let role = self
             .repository
-            .membership_role(user_id, merchant_account_id)
+            .membership_role(user_id, store_id)
             .await?
             .ok_or(ApplicationError::Forbidden)?;
-        Ok(MerchantActor::new(user_id, merchant_account_id, role))
+        Ok(StoreActor::new(user_id, store_id, role))
     }
 
     pub async fn list_stores(
         &self,
-        actor: MerchantActor,
+        user_id: UserId,
         after: Option<StoreId>,
         limit: u16,
     ) -> Result<Page<StoreListItem>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
-            .list_stores(actor.user_id, actor.merchant_account_id, after, limit + 1)
+            .list_stores(user_id, after, limit + 1)
             .await?;
         let has_more = items.len() > usize::from(limit);
         if has_more {

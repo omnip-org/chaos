@@ -11,7 +11,6 @@ mod fulfillment;
 mod inventory;
 mod localization;
 mod media;
-mod merchant;
 mod merchant_query;
 mod notification;
 mod passwordless;
@@ -86,10 +85,7 @@ pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
 };
-pub use merchant::{
-    IdempotencyRequest, MerchantProvisioningTransaction, MerchantProvisioningUnitOfWork,
-};
-pub use merchant_query::{MerchantAccountListItem, MerchantReadRepository, StoreListItem};
+pub use merchant_query::{MerchantReadRepository, StoreListItem};
 pub use notification::{
     EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
     EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
@@ -118,7 +114,7 @@ pub use sales::{
     OrderPage, OrderTransitionItem, StorefrontSalesRepository,
 };
 pub use shopper::{CustomerActor, ShopperActor, ShopperCredentialCodec};
-pub use store::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
+pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
 };

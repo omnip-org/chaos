@@ -175,8 +175,7 @@ mod tests {
     #[test]
     fn collection_contract_preserves_lifecycle_ordering_and_publication_boundaries() {
         let admin = specification();
-        let base =
-            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections";
+        let base = "/admin/v1/stores/{store_id}/collections";
         assert_eq!(
             admin["paths"][base]["post"]["operationId"],
             "createCollection"
@@ -206,8 +205,9 @@ mod tests {
     #[test]
     fn localization_contract_covers_admin_authoring_and_storefront_snapshots() {
         let admin = specification();
-        let locales = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales";
-        let product_translation = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/translations/{locale}";
+        let locales = "/admin/v1/stores/{store_id}/locales";
+        let product_translation =
+            "/admin/v1/stores/{store_id}/products/{product_id}/translations/{locale}";
         assert_eq!(
             admin["paths"][locales]["get"]["operationId"],
             "getStoreLocales"
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn media_contract_keeps_upload_credentials_sensitive_and_storefront_ready_only() {
         let admin = specification();
-        let base = "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media";
+        let base = "/admin/v1/stores/{store_id}/products/{product_id}/media";
         assert_eq!(
             admin["paths"][base]["post"]["operationId"],
             "createProductMedia"
@@ -374,7 +374,6 @@ mod tests {
         let schemas = specification["components"]["schemas"].as_object().unwrap();
 
         assert!(schemas.contains_key("ErrorEnvelope"));
-        assert!(schemas.contains_key("MerchantAccountCollectionEnvelope"));
         assert!(schemas.contains_key("StoreCollectionEnvelope"));
         assert!(schemas.contains_key("StoreEnvelope"));
         assert!(schemas.contains_key("SalesChannelCollectionEnvelope"));
@@ -444,8 +443,8 @@ mod tests {
             &specification["components"]["schemas"]["CreateProviderSecret"]["properties"]["value"];
         let reference = &specification["components"]["schemas"]["ProviderSecretCreated"]["properties"]
             ["secret_reference"];
-        let response = &specification["paths"]["/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/provider-secrets"]
-            ["post"]["responses"]["201"];
+        let response = &specification["paths"]["/admin/v1/stores/{store_id}/provider-secrets"]["post"]
+            ["responses"]["201"];
 
         assert_eq!(request["writeOnly"], true);
         assert_eq!(request["x-sensitive"], true);
@@ -471,8 +470,8 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            specification["paths"]["/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations"]
-                ["put"]["parameters"][0]["$ref"],
+            specification["paths"]["/admin/v1/stores/{store_id}/analytics-destinations"]["put"]["parameters"]
+                [0]["$ref"],
             "#/components/parameters/IdempotencyKey"
         );
     }

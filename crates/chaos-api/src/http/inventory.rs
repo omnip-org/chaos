@@ -12,29 +12,26 @@ use chaos_application::{
 use chaos_domain::{
     catalog::ProductVariantId,
     inventory::{InventoryLocationId, StockItemId},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-locations",
+            "/stores/{store_id}/inventory-locations",
             get(list_locations).post(create_location),
         )
+        .route("/stores/{store_id}/inventory-items", get(list_stock))
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-items",
-            get(list_stock),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/inventory-adjustments",
+            "/stores/{store_id}/inventory-adjustments",
             post(adjust_stock),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -42,7 +39,6 @@ pub(super) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
@@ -97,16 +93,15 @@ struct StockItemData {
 async fn create_location(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateLocationBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, path.store_id, &body)?;
     let id = state
         .inventory_management
         .create_location(CreateInventoryLocationInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -118,11 +113,10 @@ async fn create_location(
 
 async fn list_locations(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<LocationData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -133,7 +127,7 @@ async fn list_locations(
     let page = state
         .inventory_management
         .list_locations(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -154,11 +148,10 @@ async fn list_locations(
 
 async fn list_stock(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<StockItemData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -169,7 +162,7 @@ async fn list_stock(
     let page = state
         .inventory_management
         .list_stock(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -191,16 +184,15 @@ async fn list_stock(
 async fn adjust_stock(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<AdjustStockBody>,
 ) -> Result<ApiResponse<StockItemData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, path.store_id, &body)?;
     let item = state
         .inventory_management
         .adjust_stock(AdjustStockInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             inventory_location_id: InventoryLocationId::from_uuid(body.inventory_location_id),
             product_variant_id: ProductVariantId::from_uuid(body.product_variant_id),
@@ -250,14 +242,6 @@ fn stock_data(item: StockItemItem) -> Result<StockItemData, ApplicationError> {
     })
 }
 
-fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == expected {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -267,7 +251,7 @@ mod tests {
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
-        merchant::{MerchantAccountId, StoreId},
+        merchant::StoreId,
     };
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
@@ -293,9 +277,8 @@ mod tests {
         let owner_id = UserId::new();
         let support_id = UserId::new();
         let outsider_id = UserId::new();
-        let account_id = MerchantAccountId::new();
-        let other_account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
+        let other_store_id = StoreId::new();
         let product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string();
@@ -312,27 +295,26 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for (id, slug) in [
-            (account_id, format!("inventory-http-{suffix}")),
-            (other_account_id, format!("inventory-http-other-{suffix}")),
+        for (id, code) in [
+            (store_id, format!("inv-{}", &suffix[12..28])),
+            (other_store_id, format!("invo-{}", &suffix[12..28])),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-                 VALUES ($1, $2, 'Inventory HTTP Test')",
-            )
+                    "INSERT INTO merchant.stores (id, code, name, status) VALUES ($1, $2, 'Inventory HTTP Test', 'active')",
+                 )
             .bind(id.as_uuid())
-            .bind(slug)
+            .bind(code)
             .execute(&owner_pool)
             .await
             .unwrap();
         }
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+        for (id, role) in [(owner_id, "owner"), (support_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
@@ -340,43 +322,28 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'inventory-http', 'Inventory HTTP', 'active')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, status) \
-             VALUES ($1, $2, $3, 'inventory-http-product', 'Inventory Product', 'active')",
+             (id, store_id, handle, title, status) \
+             VALUES ($1, $2, 'inventory-http-product', 'Inventory Product', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, status, track_inventory) \
-             VALUES ($1, $2, $3, $4, 'Default', 'active', true)",
+             (id, store_id, product_id, title, status, track_inventory) \
+             VALUES ($1, $2, $3, 'Default', 'active', true)",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
 
-        let base_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let base_uri = format!("/admin/v1/stores/{}", store_id.as_uuid());
         let locations_uri = format!("{base_uri}/inventory-locations");
         let adjustments_uri = format!("{base_uri}/inventory-adjustments");
         let items_uri = format!("{base_uri}/inventory-items");
@@ -510,36 +477,28 @@ mod tests {
                 Method::POST,
                 &locations_uri,
                 Some(&format!("support-location-{suffix}")),
-                Some(json!({ "code": "support", "name": "Forbidden" })),
+                Some(json!({ "code": "support", "name": "Allowed" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let response = router(owner_state.clone())
+            .oneshot(request(
+                Method::GET,
+                &format!("/admin/v1/stores/{}/inventory-items", Uuid::now_v7()),
+                None,
+                None,
             ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-        let response = router(owner_state.clone())
-            .oneshot(request(
-                Method::GET,
-                &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/inventory-items",
-                    account_id.as_uuid(),
-                    Uuid::now_v7()
-                ),
-                None,
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
         let outsider_state = test_state(&database_url, outsider_id);
         let response = router(outsider_state)
             .oneshot(request(
                 Method::GET,
-                &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/inventory-items",
-                    other_account_id.as_uuid(),
-                    store_id.as_uuid()
-                ),
+                &format!("/admin/v1/stores/{}/inventory-items", store_id.as_uuid()),
                 None,
                 None,
             ))

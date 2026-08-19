@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chaos_domain::{
-    merchant::{ApiKeyClass, ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyClass, ApiKeyScope, StoreId, StoreRole},
     payments::{
         PaymentAttemptId, PaymentProviderAccount, PaymentProviderAccountId, PaymentSecretReference,
     },
@@ -14,7 +14,7 @@ const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
@@ -42,7 +42,7 @@ pub struct CreateRefundInput {
 }
 
 pub struct CreatePaymentProviderAccountInput {
-    pub actor: MerchantActor,
+    pub actor: StoreActor,
     pub store_id: StoreId,
     pub provider: String,
     pub display_name: String,
@@ -55,7 +55,7 @@ pub struct CreatePaymentProviderAccountInput {
 }
 
 pub struct UpdatePaymentProviderAccountInput {
-    pub actor: MerchantActor,
+    pub actor: StoreActor,
     pub store_id: StoreId,
     pub id: PaymentProviderAccountId,
     pub display_name: String,
@@ -87,7 +87,7 @@ impl PaymentProviderAdministration {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
@@ -97,7 +97,7 @@ impl PaymentProviderAdministration {
 
     pub async fn get(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         id: PaymentProviderAccountId,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
@@ -499,16 +499,7 @@ fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {
 
 fn require_payment_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::PaymentsWrite) {
                 Ok(())
@@ -519,11 +510,8 @@ fn require_payment_operator(actor: &AdminActor) -> Result<(), ApplicationError> 
     }
 }
 
-fn require_provider_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    if matches!(
-        actor.role(),
-        MerchantRole::Owner | MerchantRole::Administrator
-    ) {
+fn require_provider_administrator(actor: StoreActor) -> Result<(), ApplicationError> {
+    if actor.role() == StoreRole::Owner {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

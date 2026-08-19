@@ -4,13 +4,13 @@ use std::sync::Arc;
 use chaos_domain::{
     FieldViolation,
     analytics::{AnalyticsPolicy, BrowserEvent, ConsentSnapshot, SessionEventContribution},
-    merchant::{ApiKeyClass, ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyClass, ApiKeyScope, StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{
         AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue,
         AnalyticsDestination, AnalyticsDestinationAccount, AnalyticsDestinationConfiguration,
@@ -67,7 +67,7 @@ pub struct LinkAnalyticsIdentityInput {
 }
 
 pub struct RequestAnalyticsErasureInput {
-    pub actor: MerchantActor,
+    pub actor: StoreActor,
     pub store_id: StoreId,
     pub selector: AnalyticsErasureSelector,
     pub idempotency: IdempotencyRequest,
@@ -142,7 +142,7 @@ impl AnalyticsPrivacy {
 
     pub async fn get_erasure_request(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         request_id: uuid::Uuid,
     ) -> Result<AnalyticsErasureRequest, ApplicationError> {
@@ -157,7 +157,7 @@ impl AnalyticsPrivacy {
 }
 
 pub struct UpdateAnalyticsPolicyInput {
-    pub actor: MerchantActor,
+    pub actor: StoreActor,
     pub store_id: StoreId,
     pub behavior_collection_enabled: bool,
     pub advertising_exports_enabled: bool,
@@ -186,7 +186,7 @@ impl AnalyticsDestinations {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
     ) -> Result<Vec<AnalyticsDestinationAccount>, ApplicationError> {
         require_destination_administrator(actor)?;
@@ -198,7 +198,7 @@ impl AnalyticsDestinations {
 
     pub async fn configure(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         configuration: AnalyticsDestinationConfiguration,
         request: IdempotencyRequest,
@@ -219,17 +219,11 @@ impl AnalyticsReporting {
 
     pub async fn list_daily_reports(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         from: time::Date,
         to: time::Date,
     ) -> Result<crate::ports::AnalyticsDailyReports, ApplicationError> {
-        match actor.role() {
-            MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager => {}
-            MerchantRole::Developer | MerchantRole::Support => {
-                return Err(ApplicationError::Forbidden);
-            }
-        }
         let days = (to - from).whole_days();
         if !(0..=91).contains(&days) {
             return Err(validation(
@@ -254,7 +248,7 @@ impl AnalyticsAdministration {
 
     pub async fn get_policy(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         now: OffsetDateTime,
     ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
@@ -268,11 +262,8 @@ impl AnalyticsAdministration {
         &self,
         input: UpdateAnalyticsPolicyInput,
     ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
-        match input.actor.role() {
-            MerchantRole::Owner | MerchantRole::Administrator => {}
-            MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
-                return Err(ApplicationError::Forbidden);
-            }
+        if input.actor.role() != StoreRole::Owner {
+            return Err(ApplicationError::Forbidden);
         }
         let policy = AnalyticsPolicy::new(
             input.behavior_collection_enabled,
@@ -487,7 +478,6 @@ impl AnalyticsCollection {
         let decision = self
             .rate_limiter
             .consume(
-                input.actor.merchant_account_id.as_uuid(),
                 input.actor.store_id,
                 sales_channel_id,
                 &anonymous_event_counts,
@@ -554,21 +544,18 @@ fn store_not_found(store_id: StoreId) -> ApplicationError {
     }
 }
 
-fn require_privacy_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
-    match actor.role() {
-        MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
-        MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
-            Err(ApplicationError::Forbidden)
-        }
+fn require_privacy_administrator(actor: StoreActor) -> Result<(), ApplicationError> {
+    if actor.role() == StoreRole::Owner {
+        Ok(())
+    } else {
+        Err(ApplicationError::Forbidden)
     }
 }
 
-fn require_destination_administrator(actor: MerchantActor) -> Result<(), ApplicationError> {
+fn require_destination_administrator(actor: StoreActor) -> Result<(), ApplicationError> {
     match actor.role() {
-        MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
-        MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
-            Err(ApplicationError::Forbidden)
-        }
+        StoreRole::Owner => Ok(()),
+        StoreRole::Member => Err(ApplicationError::Forbidden),
     }
 }
 
@@ -633,7 +620,7 @@ mod tests {
     use chaos_domain::{
         analytics::{BrowserEventProperties, ConsentSnapshot},
         identity::UserId,
-        merchant::{ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId, StoreId},
+        merchant::{ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
     };
     use uuid::Uuid;
 
@@ -648,7 +635,6 @@ mod tests {
     impl AnalyticsCollectionRateLimiter for RateLimiter {
         async fn consume(
             &self,
-            _merchant_account_id: Uuid,
             _store_id: StoreId,
             _sales_channel_id: SalesChannelId,
             _anonymous_event_counts: &[(Uuid, u16)],
@@ -694,11 +680,9 @@ mod tests {
     fn actor() -> MachineActor {
         MachineActor {
             api_key_id: ApiKeyId::new(),
-            merchant_account_id: MerchantAccountId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
             class: ApiKeyClass::Publishable,
-            mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::AnalyticsWrite],
             created_by_user_id: UserId::new(),
         }

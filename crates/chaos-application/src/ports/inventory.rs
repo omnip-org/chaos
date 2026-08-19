@@ -9,7 +9,7 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::{ApplicationError, merchant::StoreActor};
 
 use super::{AdminActor, IdempotencyRequest, MachineActor};
 
@@ -103,7 +103,7 @@ pub trait InventoryRepository: Send + Sync {
 
     async fn expire_due_reservations(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         now: OffsetDateTime,
         limit: u16,

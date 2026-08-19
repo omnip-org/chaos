@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chaos_domain::merchant::{MerchantRole, StoreId};
+use chaos_domain::merchant::{ApiKeyScope, StoreId, StoreRole};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
@@ -8,10 +8,8 @@ use crate::{
     ports::{AdminActor, ProviderSecretKind, ProviderSecretWriter, StoreAdministrationRepository},
 };
 
-use super::MerchantActor;
-
 pub struct CreateProviderSecretInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub kind: ProviderSecretKind,
     pub value: SecretString,
@@ -34,12 +32,7 @@ impl ProviderSecretManagement {
         &self,
         input: CreateProviderSecretInput,
     ) -> Result<String, ApplicationError> {
-        if !matches!(
-            input.actor.role(),
-            MerchantRole::Owner | MerchantRole::Administrator
-        ) {
-            return Err(ApplicationError::Forbidden);
-        }
+        require_provider_secret_writer(&input.actor)?;
         let value = input.value.expose_secret();
         if value.trim().is_empty() || value.len() > 16 * 1024 || value.chars().any(char::is_control)
         {
@@ -51,7 +44,7 @@ impl ProviderSecretManagement {
             });
         }
         self.stores
-            .get_store(AdminActor::Merchant(input.actor), input.store_id)
+            .get_store(input.actor.clone(), input.store_id)
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "store",
@@ -59,12 +52,30 @@ impl ProviderSecretManagement {
             })?;
         self.writer
             .create(
-                input.actor.merchant_account_id(),
                 input.store_id,
-                input.actor.user_id(),
+                input.actor.audit_user_id(),
                 input.kind,
                 &input.value,
             )
             .await
+    }
+}
+
+fn require_provider_secret_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Store(store_actor) => {
+            if matches!(store_actor.role(), StoreRole::Owner) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&ApiKeyScope::ProviderSecretsWrite) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }

@@ -2,8 +2,6 @@ use uuid::Uuid;
 
 use crate::{CurrencyCode, DomainError, FieldViolation, RegionCode};
 
-use super::MerchantAccountId;
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StoreId(Uuid);
 
@@ -56,25 +54,22 @@ impl StoreCode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreStatus {
-    Draft,
     Active,
-    Archived,
+    Inactive,
 }
 
 impl StoreStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Draft => "draft",
             Self::Active => "active",
-            Self::Archived => "archived",
+            Self::Inactive => "inactive",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "draft" => Some(Self::Draft),
             "active" => Some(Self::Active),
-            "archived" => Some(Self::Archived),
+            "inactive" => Some(Self::Inactive),
             _ => None,
         }
     }
@@ -83,7 +78,6 @@ impl StoreStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Store {
     id: StoreId,
-    merchant_account_id: MerchantAccountId,
     code: StoreCode,
     name: String,
     default_region: RegionCode,
@@ -93,7 +87,6 @@ pub struct Store {
 
 impl Store {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         code: StoreCode,
         name: impl Into<String>,
         default_region: RegionCode,
@@ -108,21 +101,16 @@ impl Store {
         }
         Ok(Self {
             id: StoreId::new(),
-            merchant_account_id,
             code,
             name,
             default_region,
             default_currency,
-            status: StoreStatus::Draft,
+            status: StoreStatus::Inactive,
         })
     }
 
     pub const fn id(&self) -> StoreId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub fn code(&self) -> &StoreCode {
@@ -177,14 +165,13 @@ mod tests {
     #[test]
     fn new_store_starts_as_draft() {
         let store = Store::create(
-            MerchantAccountId::new(),
             StoreCode::parse("main-store").unwrap(),
             "Main Store",
             RegionCode::US,
             CurrencyCode::USD,
         )
         .unwrap();
-        assert_eq!(store.status(), StoreStatus::Draft);
+        assert_eq!(store.status(), StoreStatus::Inactive);
         assert_eq!(store.default_region(), RegionCode::US);
         assert_eq!(store.default_currency(), CurrencyCode::USD);
     }

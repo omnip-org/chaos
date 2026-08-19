@@ -190,8 +190,8 @@ impl PostgresStorefrontSalesRepository {
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -241,7 +241,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
                 .ok_or_else(price_context_unavailable)?;
         let locale = select_locale(&mut transaction, actor, requested_locale).await?;
         let cart = Cart::create(
-            actor.merchant_account_id,
             actor.store_id,
             channel_id,
             PriceListId::from_uuid(price_list_id),
@@ -249,13 +248,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO sales.carts \
-             (id, merchant_account_id, store_id, shopper_id, customer_id, sales_channel_id, price_list_id, currency, locale) \
-             VALUES ($1, $2, $3, $4, \
-                     (SELECT customer_id FROM sales.customer_shopper_links WHERE merchant_account_id = $2 \
-                        AND store_id = $3 AND shopper_id = $4 AND sales_channel_id = $5), $5, $6, $7, $8)",
+             (id, store_id, shopper_id, customer_id, sales_channel_id, price_list_id, currency, locale) \
+             VALUES ($1, $2, $3, \
+                     (SELECT customer_id FROM sales.customer_shopper_links WHERE \
+                        store_id = $4 AND shopper_id = $5 AND sales_channel_id = $6), $7, $8, $9, $10)",
         )
         .bind(cart.id().as_uuid())
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(shopper_id.as_uuid())
         .bind(channel_id.as_uuid())
@@ -380,10 +378,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         }
         lock_active_cart(&mut transaction, actor, cart_id).await?;
         sqlx::query(
-            "DELETE FROM sales.cart_lines WHERE merchant_account_id = $1 AND store_id = $2 \
-             AND cart_id = $3 AND product_variant_id = $4",
+            "DELETE FROM sales.cart_lines WHERE store_id = $1 \
+             AND cart_id = $2 AND product_variant_id = $3",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(product_variant_id.as_uuid())
@@ -457,9 +454,8 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await?;
         let existing_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM sales.cart_lines \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND cart_id = $3",
+             WHERE store_id = $1 AND cart_id = $2",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -470,7 +466,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         }
         let cart = Cart::rehydrate(
             cart_id,
-            actor.merchant_account_id,
             actor.store_id,
             channel_id,
             PriceListId::from_uuid(header.1),
@@ -572,9 +567,8 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let result = sqlx::query(
             "UPDATE sales.carts SET status = 'completed', version = version + 1, \
                     updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 AND status = 'active'",
+             WHERE store_id = $1 AND id = $2 AND status = 'active'",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .execute(&mut *transaction)
@@ -612,10 +606,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let currency = parse_currency(&header.2)?;
         let shippable: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM sales.cart_lines \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND cart_id = $3 \
+             WHERE store_id = $1 AND cart_id = $2 \
                AND requires_shipping)",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(cart_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -630,13 +623,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
                     s.estimated_min_days, s.estimated_max_days \
              FROM fulfillment.shipping_services s \
              JOIN fulfillment.shipping_service_regions r \
-               ON r.merchant_account_id = s.merchant_account_id \
-              AND r.store_id = s.store_id AND r.shipping_service_id = s.id \
-             WHERE s.merchant_account_id = $1 AND s.store_id = $2 \
-               AND s.currency = $3 AND s.status = 'active' AND r.country_code = $4 \
+               ON r.store_id = s.store_id AND r.shipping_service_id = s.id \
+             WHERE s.store_id = $1 \
+               AND s.currency = $2 AND s.status = 'active' AND r.country_code = $3 \
              ORDER BY s.amount_minor, s.code, s.id",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(currency.as_str())
         .bind(destination_country)
@@ -683,10 +674,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         }
         let checkout = sqlx::query_as::<_, (String, OffsetDateTime)>(
             "SELECT status::text, expires_at FROM sales.checkouts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-               AND id = $4 FOR UPDATE",
+             WHERE store_id = $1 AND sales_channel_id = $2 \
+               AND id = $3 FOR UPDATE",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(checkout_id.as_uuid())
@@ -703,16 +693,15 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let order = Order::create(checkout_id);
         sqlx::query(
             "INSERT INTO sales.orders \
-             (id, merchant_account_id, store_id, sales_channel_id, checkout_id, \
+             (id, store_id, sales_channel_id, checkout_id, \
               shopper_id, customer_id, inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             SELECT $5, merchant_account_id, store_id, sales_channel_id, id, shopper_id, customer_id, \
+             SELECT $1, store_id, sales_channel_id, id, shopper_id, customer_id, \
                     inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
-                    discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $6, $6 \
-             FROM sales.checkouts WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND sales_channel_id = $3 AND id = $4",
+                    discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $2, $3 \
+             FROM sales.checkouts WHERE store_id = $4 \
+               AND sales_channel_id = $5 AND id = $6",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(checkout_id.as_uuid())
@@ -723,18 +712,17 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO sales.order_lines \
-             (merchant_account_id, store_id, order_id, position, product_id, \
+             (store_id, order_id, position, product_id, \
               product_variant_id, product_title, variant_title, sku, requires_shipping, \
               track_inventory, quantity, unit_price_amount_minor, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, total_amount_minor, tax_inclusive, created_at) \
-             SELECT merchant_account_id, store_id, $4, position, product_id, product_variant_id, \
+             SELECT store_id, $1, position, product_id, product_variant_id, \
                     product_title, variant_title, sku, requires_shipping, track_inventory, quantity, \
                     unit_price_amount_minor, subtotal_amount_minor, discount_amount_minor, \
-                    tax_amount_minor, total_amount_minor, tax_inclusive, $5 \
-             FROM sales.checkout_lines WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND checkout_id = $3 ORDER BY position",
+                    tax_amount_minor, total_amount_minor, tax_inclusive, $2 \
+             FROM sales.checkout_lines WHERE store_id = $3 \
+               AND checkout_id = $4 ORDER BY position",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(checkout_id.as_uuid())
         .bind(order.id().as_uuid())
@@ -748,11 +736,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         copy_checkout_promotion_to_order(&mut transaction, actor, checkout_id, order.id()).await?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
-             (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-             VALUES ($1, $2, $3, $4, NULL, 'pending', 'created', $5)",
+             (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
+             VALUES ($1, $2, $3, NULL, 'pending', 'created', $4)",
         )
         .bind(Uuid::now_v7())
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order.id().as_uuid())
         .bind(now)
@@ -761,11 +748,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, 'order', $4, 'analytics.order.created', $5)",
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'order', $3, 'analytics.order.created', $4)",
         )
         .bind(Uuid::now_v7())
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order.id().as_uuid())
         .bind(serde_json::json!({ "order_id": order.id().as_uuid() }))
@@ -773,12 +759,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "UPDATE sales.checkouts SET status = 'completed', closed_at = $5, updated_at = $5, \
+            "UPDATE sales.checkouts SET status = 'completed', closed_at = $1, updated_at = $2, \
                     expiry_locked_by = NULL, expiry_locked_at = NULL \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-               AND id = $4 AND status = 'pending'",
+             WHERE store_id = $3 AND sales_channel_id = $4 \
+               AND id = $5 AND status = 'pending'",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(checkout_id.as_uuid())
@@ -836,8 +821,8 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<CheckoutExpiryJob>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<Uuid>)>(
-            "SELECT id, merchant_account_id, store_id, inventory_reservation_id \
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
+            "SELECT id, store_id, inventory_reservation_id \
              FROM sales.claim_expired_checkouts($1, $2, $3, $4)",
         )
         .bind(worker_id)
@@ -850,9 +835,8 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
         Ok(rows
             .into_iter()
             .map(
-                |(id, merchant_account_id, store_id, inventory_reservation_id)| CheckoutExpiryJob {
+                |(id, store_id, inventory_reservation_id)| CheckoutExpiryJob {
                     id: CheckoutId::from_uuid(id),
-                    merchant_account_id,
                     store_id,
                     inventory_reservation_id: inventory_reservation_id
                         .map(InventoryReservationId::from_uuid),
@@ -868,18 +852,17 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(job.merchant_account_id.to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(job.store_id.to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
         let checkout = sqlx::query_as::<_, (Option<Uuid>, String, OffsetDateTime)>(
             "SELECT inventory_reservation_id, status::text, expires_at \
              FROM sales.checkouts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-               AND expiry_locked_by = $4 FOR UPDATE",
+             WHERE store_id = $1 AND id = $2 \
+               AND expiry_locked_by = $3 FOR UPDATE",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id)
         .bind(job.id.as_uuid())
         .bind(worker_id)
@@ -900,9 +883,8 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
         if let Some(reservation_id) = job.inventory_reservation_id {
             let reservation_status: Option<String> = sqlx::query_scalar(
                 "SELECT status::text FROM inventory.inventory_reservations \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+                 WHERE store_id = $1 AND id = $2 FOR UPDATE",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id)
             .bind(reservation_id.as_uuid())
             .fetch_optional(&mut *transaction)
@@ -911,7 +893,6 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
             if reservation_status.as_deref() == Some("active") {
                 close_reservation(
                     &mut transaction,
-                    job.merchant_account_id,
                     StoreId::from_uuid(job.store_id),
                     reservation_id,
                     ReservationClosure::Expired,
@@ -922,12 +903,11 @@ impl CheckoutExpiryQueue for PostgresStorefrontSalesRepository {
         }
         let result = sqlx::query(
             "UPDATE sales.checkouts \
-             SET status = 'expired', closed_at = $5, updated_at = $5, \
+             SET status = 'expired', closed_at = $1, updated_at = $2, \
                  expiry_locked_by = NULL, expiry_locked_at = NULL \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-               AND expiry_locked_by = $4 AND status = 'pending'",
+             WHERE store_id = $3 AND id = $4 \
+               AND expiry_locked_by = $5 AND status = 'pending'",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id)
         .bind(job.id.as_uuid())
         .bind(worker_id)
@@ -952,24 +932,20 @@ async fn select_price_list(
         "SELECT price_list.id, price_list.currency::text \
          FROM pricing.price_lists AS price_list \
          INNER JOIN merchant.stores AS store \
-           ON store.merchant_account_id = price_list.merchant_account_id \
-          AND store.id = price_list.store_id \
+           ON store.id = price_list.store_id \
          INNER JOIN merchant.sales_channels AS channel \
-           ON channel.merchant_account_id = store.merchant_account_id \
-          AND channel.store_id = store.id AND channel.id = $3 \
+           ON channel.store_id = store.id AND channel.id = $1 \
          INNER JOIN merchant.store_currencies AS store_currency \
-           ON store_currency.merchant_account_id = store.merchant_account_id \
-          AND store_currency.store_id = store.id \
+           ON store_currency.store_id = store.id \
           AND store_currency.currency = price_list.currency \
-         WHERE price_list.merchant_account_id = $1 AND price_list.store_id = $2 \
+         WHERE price_list.store_id = $2 \
            AND store.status = 'active' AND channel.status = 'active' \
            AND price_list.status = 'active' AND store_currency.enabled \
-           AND price_list.currency = COALESCE($4::char(3), store.default_currency) \
+           AND price_list.currency = COALESCE($3::char(3), store.default_currency) \
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
          ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(currency.map(|value| value.as_str().to_owned()))
@@ -985,23 +961,20 @@ async fn select_locale(
     actor: &MachineActor,
     requested: Option<Locale>,
 ) -> Result<Locale, ApplicationError> {
-    let default: Option<String> = sqlx::query_scalar(
-        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let default: Option<String> =
+        sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     let default = default.ok_or_else(price_context_unavailable)?;
     let selected = requested.unwrap_or(parse_locale(&default)?);
     if selected.as_str() == default {
         return Ok(selected);
     }
     let enabled: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+        "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(selected.as_str())
     .fetch_one(&mut **transaction)
@@ -1024,23 +997,20 @@ async fn translation_locales(
     actor: &MachineActor,
     locale: &Locale,
 ) -> Result<(Option<String>, Option<String>), ApplicationError> {
-    let default: String = sqlx::query_scalar(
-        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let default: String =
+        sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     if locale.as_str() == default {
         return Ok((None, None));
     }
     let language = locale.language();
     let primary = if language != locale.as_str() && language != default {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(language)
         .fetch_one(&mut **transaction)
@@ -1064,31 +1034,26 @@ async fn resolve_variant(
 {
     let translations = translation_locales(transaction, actor, locale).await?;
     sqlx::query_as(
-        "SELECT product.id, COALESCE((SELECT translation.title FROM catalog.product_translations AS translation WHERE translation.merchant_account_id=product.merchant_account_id AND translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM catalog.product_variant_translations AS translation WHERE translation.merchant_account_id=variant.merchant_account_id AND translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
+        "SELECT product.id, COALESCE((SELECT translation.title FROM catalog.product_translations AS translation WHERE translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$1 OR translation.locale=$2) ORDER BY CASE WHEN translation.locale=$3 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM catalog.product_variant_translations AS translation WHERE translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
                 variant.requires_shipping, variant.track_inventory, price.amount_minor, \
                 price_list.tax_inclusive \
          FROM catalog.product_variants AS variant \
          INNER JOIN catalog.products AS product \
-           ON product.merchant_account_id = variant.merchant_account_id \
-          AND product.store_id = variant.store_id AND product.id = variant.product_id \
+           ON product.store_id = variant.store_id AND product.id = variant.product_id \
          INNER JOIN catalog.product_publications AS publication \
-           ON publication.merchant_account_id = product.merchant_account_id \
-          AND publication.store_id = product.store_id AND publication.product_id = product.id \
-          AND publication.sales_channel_id = $3 \
+           ON publication.store_id = product.store_id AND publication.product_id = product.id \
+          AND publication.sales_channel_id = $7 \
          INNER JOIN pricing.price_lists AS price_list \
-           ON price_list.merchant_account_id = variant.merchant_account_id \
-          AND price_list.store_id = variant.store_id AND price_list.id = $4 \
+           ON price_list.store_id = variant.store_id AND price_list.id = $8 \
          INNER JOIN pricing.prices AS price \
-           ON price.merchant_account_id = variant.merchant_account_id \
-          AND price.store_id = variant.store_id AND price.price_list_id = price_list.id \
+           ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
-         WHERE variant.merchant_account_id = $1 AND variant.store_id = $2 AND variant.id = $5 \
+         WHERE variant.store_id = $9 AND variant.id = $10 \
            AND variant.status = 'active' AND product.status = 'active' \
            AND price_list.status = 'active' \
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(price_list_id.as_uuid())
@@ -1108,11 +1073,11 @@ async fn insert_or_replace_line(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.cart_lines \
-         (merchant_account_id, store_id, cart_id, product_id, product_variant_id, \
+         (store_id, cart_id, product_id, product_variant_id, \
           product_title, variant_title, sku, requires_shipping, track_inventory, quantity, \
           unit_price_amount_minor, tax_inclusive) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
-         ON CONFLICT (merchant_account_id, store_id, cart_id, product_variant_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         ON CONFLICT (store_id, cart_id, product_variant_id) \
          DO UPDATE SET product_title = EXCLUDED.product_title, \
              variant_title = EXCLUDED.variant_title, sku = EXCLUDED.sku, \
              requires_shipping = EXCLUDED.requires_shipping, \
@@ -1120,7 +1085,7 @@ async fn insert_or_replace_line(
              unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
              tax_inclusive = EXCLUDED.tax_inclusive, updated_at = CURRENT_TIMESTAMP",
     )
-    .bind(actor.merchant_account_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
     .bind(line.product_id().as_uuid())
@@ -1146,9 +1111,8 @@ async fn bump_cart(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "UPDATE sales.carts SET version = version + 1, updated_at = CURRENT_TIMESTAMP \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
     .execute(&mut **transaction)
@@ -1164,10 +1128,9 @@ async fn lock_active_cart(
 ) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, String)>(
         "SELECT sales_channel_id, price_list_id, currency::text, locale, status::text \
-         FROM sales.carts WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND sales_channel_id = $3 AND id = $4 FOR UPDATE",
+         FROM sales.carts WHERE store_id = $1 \
+           AND sales_channel_id = $2 AND id = $3 FOR UPDATE",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
@@ -1188,10 +1151,9 @@ async fn load_cart(
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
         "SELECT id, shopper_id, price_list_id, currency::text, locale, status::text, version, created_at, updated_at \
-         FROM sales.carts WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND sales_channel_id = $3 AND id = $4",
+         FROM sales.carts WHERE store_id = $1 \
+           AND sales_channel_id = $2 AND id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
@@ -1238,10 +1200,9 @@ async fn load_cart_line_rows(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
                 tax_inclusive FROM sales.cart_lines \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND cart_id = $3 \
+         WHERE store_id = $1 AND cart_id = $2 \
          ORDER BY product_variant_id ASC",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -1285,28 +1246,22 @@ async fn refresh_cart_lines(
                 price.amount_minor, price_list.tax_inclusive \
          FROM sales.cart_lines AS cart_line \
          INNER JOIN catalog.product_variants AS variant \
-           ON variant.merchant_account_id = cart_line.merchant_account_id \
-          AND variant.store_id = cart_line.store_id \
+           ON variant.store_id = cart_line.store_id \
           AND variant.id = cart_line.product_variant_id AND variant.status = 'active' \
          INNER JOIN catalog.products AS product \
-           ON product.merchant_account_id = variant.merchant_account_id \
-          AND product.store_id = variant.store_id AND product.id = variant.product_id \
+           ON product.store_id = variant.store_id AND product.id = variant.product_id \
           AND product.status = 'active' \
          INNER JOIN catalog.product_publications AS publication \
-           ON publication.merchant_account_id = product.merchant_account_id \
-          AND publication.store_id = product.store_id AND publication.product_id = product.id \
-          AND publication.sales_channel_id = $4 \
+           ON publication.store_id = product.store_id AND publication.product_id = product.id \
+          AND publication.sales_channel_id = $1 \
          INNER JOIN pricing.price_lists AS price_list \
-           ON price_list.merchant_account_id = cart_line.merchant_account_id \
-          AND price_list.store_id = cart_line.store_id AND price_list.id = $5 \
+           ON price_list.store_id = cart_line.store_id AND price_list.id = $2 \
          INNER JOIN pricing.prices AS price \
-           ON price.merchant_account_id = variant.merchant_account_id \
-          AND price.store_id = variant.store_id AND price.price_list_id = price_list.id \
+           ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
-         WHERE cart_line.merchant_account_id = $1 AND cart_line.store_id = $2 \
-           AND cart_line.cart_id = $3 ORDER BY variant.id ASC",
+         WHERE cart_line.store_id = $3 \
+           AND cart_line.cart_id = $4 ORDER BY variant.id ASC",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
     .bind(channel_id.as_uuid())
@@ -1342,12 +1297,11 @@ async fn require_price_list_active(
 ) -> Result<(), ApplicationError> {
     let active: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM pricing.price_lists \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-           AND currency = $4 AND status = 'active' \
-           AND (starts_at IS NULL OR starts_at <= $5) \
+         WHERE store_id = $1 AND id = $2 \
+           AND currency = $3 AND status = 'active' \
+           AND (starts_at IS NULL OR starts_at <= $4) \
            AND (ends_at IS NULL OR ends_at > $5))",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(price_list_id.as_uuid())
     .bind(currency.as_str())
@@ -1375,11 +1329,10 @@ async fn reserve_inventory(
     let reservation_id = InventoryReservationId::new();
     sqlx::query(
         "INSERT INTO inventory.inventory_reservations \
-         (id, merchant_account_id, store_id, sales_channel_id, expires_at) \
-         VALUES ($1, $2, $3, $4, $5)",
+         (id, store_id, sales_channel_id, expires_at) \
+         VALUES ($1, $2, $3, $4)",
     )
     .bind(reservation_id.as_uuid())
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(expires_at)
@@ -1391,14 +1344,12 @@ async fn reserve_inventory(
             "SELECT stock.id, stock.on_hand_quantity, stock.reserved_quantity \
              FROM inventory.stock_items AS stock \
              INNER JOIN inventory.inventory_locations AS location \
-               ON location.merchant_account_id = stock.merchant_account_id \
-              AND location.store_id = stock.store_id AND location.id = stock.inventory_location_id \
-             WHERE stock.merchant_account_id = $1 AND stock.store_id = $2 \
-               AND stock.product_variant_id = $3 AND location.status = 'active' \
+               ON location.store_id = stock.store_id AND location.id = stock.inventory_location_id \
+             WHERE stock.store_id = $1 \
+               AND stock.product_variant_id = $2 AND location.status = 'active' \
                AND stock.on_hand_quantity > stock.reserved_quantity \
              ORDER BY stock.id ASC FOR UPDATE OF stock",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(line.product_variant_id().as_uuid())
         .fetch_all(&mut **transaction)
@@ -1416,8 +1367,8 @@ async fn reserve_inventory(
             }
             let balance = current.reserve(allocated)?;
             sqlx::query(
-                "UPDATE inventory.stock_items SET reserved_quantity = $2, \
-                        updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                "UPDATE inventory.stock_items SET reserved_quantity = $1, \
+                        updated_at = CURRENT_TIMESTAMP WHERE id = $2",
             )
             .bind(stock_item_id)
             .bind(balance.reserved())
@@ -1426,10 +1377,9 @@ async fn reserve_inventory(
             .map_err(database_error)?;
             sqlx::query(
                 "INSERT INTO inventory.inventory_reservation_lines \
-                 (merchant_account_id, store_id, reservation_id, stock_item_id, \
-                  product_variant_id, quantity) VALUES ($1, $2, $3, $4, $5, $6)",
+                 (store_id, reservation_id, stock_item_id, \
+                  product_variant_id, quantity) VALUES ($1, $2, $3, $4, $5)",
             )
-            .bind(actor.merchant_account_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(reservation_id.as_uuid())
             .bind(stock_item_id)
@@ -1440,13 +1390,12 @@ async fn reserve_inventory(
             .map_err(database_error)?;
             sqlx::query(
                 "INSERT INTO inventory.stock_ledger_entries \
-                 (id, merchant_account_id, store_id, stock_item_id, reservation_id, kind, \
+                 (id, store_id, stock_item_id, reservation_id, kind, \
                   on_hand_delta_quantity, reserved_delta_quantity, resulting_on_hand_quantity, \
                   resulting_reserved_quantity) \
-                 VALUES ($1, $2, $3, $4, $5, 'reservation_created', 0, $6, $7, $8)",
+                 VALUES ($1, $2, $3, $4, 'reservation_created', 0, $5, $6, $7)",
             )
             .bind(Uuid::now_v7())
-            .bind(actor.merchant_account_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(stock_item_id)
             .bind(reservation_id.as_uuid())
@@ -1475,16 +1424,15 @@ async fn insert_checkout(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.checkouts \
-         (id, merchant_account_id, store_id, cart_id, shopper_id, customer_id, sales_channel_id, price_list_id, \
+         (id, store_id, cart_id, shopper_id, customer_id, sales_channel_id, price_list_id, \
           inventory_reservation_id, currency, locale, subtotal_amount_minor, discount_amount_minor, \
           tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, \
-                 (SELECT customer_id FROM sales.customer_shopper_links WHERE merchant_account_id = $2 \
-                    AND store_id = $3 AND shopper_id = $5 AND sales_channel_id = $6), \
-                 $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+         VALUES ($1, $2, $3, $4, \
+                 (SELECT customer_id FROM sales.customer_shopper_links WHERE \
+                    store_id = $5 AND shopper_id = $6 AND sales_channel_id = $7), \
+                 $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
     )
     .bind(checkout.id().as_uuid())
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.cart_id().as_uuid())
     .bind(shopper_id.as_uuid())
@@ -1523,14 +1471,13 @@ async fn insert_checkout(
         let cart_line = line.cart_line();
         sqlx::query(
             "INSERT INTO sales.checkout_lines \
-             (merchant_account_id, store_id, checkout_id, position, product_id, \
+             (store_id, checkout_id, position, product_id, \
               product_variant_id, product_title, variant_title, sku, requires_shipping, \
               track_inventory, quantity, unit_price_amount_minor, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, total_amount_minor, tax_inclusive) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
-                     $14, $15, $16, $17, $18)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
+                     $13, $14, $15, $16, $17)",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(checkout.id().as_uuid())
         .bind(i16::try_from(position).map_err(unexpected_conversion)?)
@@ -1563,10 +1510,9 @@ async fn insert_checkout_identity(
     let identity = checkout.identity();
     sqlx::query(
         "INSERT INTO sales.checkout_contacts \
-         (merchant_account_id, store_id, checkout_id, email, phone) \
-         VALUES ($1, $2, $3, $4, $5)",
+         (store_id, checkout_id, email, phone) \
+         VALUES ($1, $2, $3, $4)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.id().as_uuid())
     .bind(identity.contact().email())
@@ -1596,11 +1542,10 @@ async fn insert_checkout_shipping(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.checkout_shipping_selections \
-         (merchant_account_id, store_id, checkout_id, shipping_service_id, service_code, \
+         (store_id, checkout_id, shipping_service_id, service_code, \
           service_name, amount_minor, currency, estimated_min_days, estimated_max_days) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .bind(selection.service_id().as_uuid())
@@ -1624,10 +1569,9 @@ async fn insert_checkout_tax(
     let rule = checkout.tax_rule();
     sqlx::query(
         "INSERT INTO sales.checkout_tax_calculations \
-         (merchant_account_id, store_id, checkout_id, tax_rule_id, rule_code, rule_name, \
-          country_code, rate_basis_points) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         (store_id, checkout_id, tax_rule_id, rule_code, rule_name, \
+          country_code, rate_basis_points) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.id().as_uuid())
     .bind(rule.rule_id().as_uuid())
@@ -1649,14 +1593,13 @@ async fn insert_checkout_promotion(
     let promotion = checkout.promotion().ok_or_else(corrupt_sales_state)?;
     sqlx::query(
         "INSERT INTO sales.checkout_promotion_calculations \
-         (merchant_account_id, store_id, checkout_id, promotion_id, handle, name, trigger, \
+         (store_id, checkout_id, promotion_id, handle, name, trigger, \
           redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
           currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
           discount_amount_minor) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7::pricing.promotion_trigger,$8, \
-                 $9::pricing.promotion_value_kind,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
+         VALUES ($1,$2,$3,$4,$5,$6::pricing.promotion_trigger,$7, \
+                 $8::pricing.promotion_value_kind,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.id().as_uuid())
     .bind(promotion.promotion_id().as_uuid())
@@ -1696,11 +1639,10 @@ async fn insert_checkout_address(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.checkout_addresses \
-         (merchant_account_id, store_id, checkout_id, kind, full_name, company, address_line1, \
+         (store_id, checkout_id, kind, full_name, company, address_line1, \
           address_line2, locality, administrative_area, postal_code, country_code) \
-         VALUES ($1, $2, $3, $4::sales.address_kind, $5, $6, $7, $8, $9, $10, $11, $12)",
+         VALUES ($1, $2, $3::sales.address_kind, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .bind(kind)
@@ -1726,12 +1668,11 @@ async fn copy_checkout_identity_to_order(
 ) -> Result<(), ApplicationError> {
     let contact = sqlx::query(
         "INSERT INTO sales.order_contacts \
-         (merchant_account_id, store_id, order_id, email, phone) \
-         SELECT merchant_account_id, store_id, $4, email, phone \
+         (store_id, order_id, email, phone) \
+         SELECT store_id, $1, email, phone \
          FROM sales.checkout_contacts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $2 AND checkout_id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -1740,14 +1681,13 @@ async fn copy_checkout_identity_to_order(
     .map_err(database_error)?;
     let addresses = sqlx::query(
         "INSERT INTO sales.order_addresses \
-         (merchant_account_id, store_id, order_id, kind, full_name, company, address_line1, \
+         (store_id, order_id, kind, full_name, company, address_line1, \
           address_line2, locality, administrative_area, postal_code, country_code) \
-         SELECT merchant_account_id, store_id, $4, kind, full_name, company, address_line1, \
+         SELECT store_id, $1, kind, full_name, company, address_line1, \
                 address_line2, locality, administrative_area, postal_code, country_code \
          FROM sales.checkout_addresses \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $2 AND checkout_id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -1768,16 +1708,19 @@ async fn copy_checkout_shipping_to_order(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.order_shipping_selections \
-         (merchant_account_id, store_id, order_id, shipping_service_id, service_code, service_name, \
+         (store_id, order_id, shipping_service_id, service_code, service_name, \
           amount_minor, currency, estimated_min_days, estimated_max_days) \
-         SELECT merchant_account_id, store_id, $4, shipping_service_id, service_code, service_name, \
+         SELECT store_id, $1, shipping_service_id, service_code, service_name, \
                 amount_minor, currency, estimated_min_days, estimated_max_days \
          FROM sales.checkout_shipping_selections \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $2 AND checkout_id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid())
-    .bind(checkout_id.as_uuid()).bind(order_id.as_uuid())
-    .execute(&mut **transaction).await.map_err(database_error)?;
+    .bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     Ok(())
 }
 
@@ -1789,13 +1732,12 @@ async fn copy_checkout_tax_to_order(
 ) -> Result<(), ApplicationError> {
     let result = sqlx::query(
         "INSERT INTO sales.order_tax_calculations \
-         (merchant_account_id, store_id, order_id, tax_rule_id, rule_code, rule_name, \
+         (store_id, order_id, tax_rule_id, rule_code, rule_name, \
           country_code, rate_basis_points) \
-         SELECT merchant_account_id, store_id, $4, tax_rule_id, rule_code, rule_name, \
+         SELECT store_id, $1, tax_rule_id, rule_code, rule_name, \
                 country_code, rate_basis_points FROM sales.checkout_tax_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $2 AND checkout_id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -1816,19 +1758,19 @@ async fn copy_checkout_promotion_to_order(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO sales.order_promotion_calculations \
-         (merchant_account_id, store_id, order_id, promotion_id, handle, name, trigger, \
+         (store_id, order_id, promotion_id, handle, name, trigger, \
           redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
           currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
           discount_amount_minor) \
-         SELECT merchant_account_id, store_id, $4, promotion_id, handle, name, trigger, \
+         SELECT store_id, $1, promotion_id, handle, name, trigger, \
                 redemption_code, value_kind, rate_basis_points, amount_minor, maximum_amount_minor, \
                 currency, minimum_subtotal_amount_minor, priority, starts_at, ends_at, \
                 discount_amount_minor \
          FROM sales.checkout_promotion_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $2 AND checkout_id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid())
-    .bind(checkout_id.as_uuid()).bind(order_id.as_uuid())
+    .bind(order_id.as_uuid()).bind(actor.store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
     .execute(&mut **transaction).await.map_err(database_error)?;
     Ok(())
 }
@@ -1840,9 +1782,8 @@ async fn load_checkout_identity(
 ) -> Result<CheckoutIdentity, ApplicationError> {
     let contact = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT email::text, phone FROM sales.checkout_contacts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $1 AND checkout_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1853,9 +1794,8 @@ async fn load_checkout_identity(
         "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
                 administrative_area, postal_code, country_code::text \
          FROM sales.checkout_addresses \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3 ORDER BY kind",
+         WHERE store_id = $1 AND checkout_id = $2 ORDER BY kind",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -1871,9 +1811,8 @@ async fn load_order_identity(
 ) -> Result<CheckoutIdentity, ApplicationError> {
     let contact = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT email::text, phone FROM sales.order_contacts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1884,9 +1823,8 @@ async fn load_order_identity(
         "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
                 administrative_area, postal_code, country_code::text \
          FROM sales.order_addresses \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY kind",
+         WHERE store_id = $1 AND order_id = $2 ORDER BY kind",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -1931,10 +1869,9 @@ async fn load_active_tax_rule(
     let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
         "SELECT id, code, name, country_code::text, rate_basis_points \
          FROM pricing.tax_rules \
-         WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND country_code = $3 AND status = 'active' FOR SHARE",
+         WHERE store_id = $1 \
+           AND country_code = $2 AND status = 'active' FOR SHARE",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(country_code)
     .fetch_optional(&mut **transaction)
@@ -1969,12 +1906,11 @@ async fn select_promotion(
                 rate_basis_points, amount_minor, maximum_amount_minor, \
                 minimum_subtotal_amount_minor, priority, starts_at, ends_at \
          FROM pricing.promotions \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND currency = $3 \
+         WHERE store_id = $1 AND currency = $2 \
            AND status = 'active' \
-           AND (trigger = 'automatic' OR (trigger = 'code' AND redemption_code = $4)) \
+           AND (trigger = 'automatic' OR (trigger = 'code' AND redemption_code = $3)) \
          ORDER BY priority, id FOR SHARE",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(currency.as_str())
     .bind(requested_code.as_deref())
@@ -2050,13 +1986,12 @@ async fn load_active_shipping_service(
                 s.estimated_min_days, s.estimated_max_days \
          FROM fulfillment.shipping_services s \
          JOIN fulfillment.shipping_service_regions r \
-           ON r.merchant_account_id = s.merchant_account_id AND r.store_id = s.store_id \
+           ON r.store_id = s.store_id \
           AND r.shipping_service_id = s.id \
-         WHERE s.merchant_account_id = $1 AND s.store_id = $2 AND s.id = $3 \
-           AND s.currency = $4 AND s.status = 'active' AND r.country_code = $5 \
+         WHERE s.store_id = $1 AND s.id = $2 \
+           AND s.currency = $3 AND s.status = 'active' AND r.country_code = $4 \
          FOR SHARE OF s",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(service_id.as_uuid())
     .bind(currency.as_str())
@@ -2092,9 +2027,8 @@ async fn load_checkout_shipping(
         "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
                 estimated_min_days, estimated_max_days \
          FROM sales.checkout_shipping_selections \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $1 AND checkout_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2112,9 +2046,8 @@ async fn load_order_shipping(
         "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
                 estimated_min_days, estimated_max_days \
          FROM sales.order_shipping_selections \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2144,9 +2077,8 @@ async fn load_checkout_tax(
     let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
         "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
          FROM sales.checkout_tax_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $1 AND checkout_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2164,9 +2096,8 @@ async fn load_order_tax(
     let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
         "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
          FROM sales.order_tax_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2218,9 +2149,8 @@ async fn load_checkout_promotion(
                 rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
                 minimum_subtotal_amount_minor, priority, starts_at, ends_at \
          FROM sales.checkout_promotion_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND checkout_id = $3",
+         WHERE store_id = $1 AND checkout_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2240,9 +2170,8 @@ async fn load_order_promotion(
                 rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
                 minimum_subtotal_amount_minor, priority, starts_at, ends_at \
          FROM sales.order_promotion_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -2261,9 +2190,8 @@ async fn load_checkout(
         "SELECT id, shopper_id, customer_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at, created_at FROM sales.checkouts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
+         WHERE store_id = $1 AND sales_channel_id = $2 AND id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(checkout_id.as_uuid())
@@ -2273,15 +2201,13 @@ async fn load_checkout(
     let Some(row) = row else {
         return Ok(None);
     };
-    let locale: String = sqlx::query_scalar(
-        "SELECT locale FROM sales.checkouts WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let locale: String =
+        sqlx::query_scalar("SELECT locale FROM sales.checkouts WHERE store_id=$1 AND id=$2")
+            .bind(actor.store_id.as_uuid())
+            .bind(checkout_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     let identity = load_checkout_identity(transaction, actor, checkout_id).await?;
     let shipping = load_checkout_shipping(transaction, actor, checkout_id).await?;
     let tax_rule = load_checkout_tax(transaction, actor, checkout_id).await?;
@@ -2290,10 +2216,9 @@ async fn load_checkout(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, quantity, unit_price_amount_minor, subtotal_amount_minor, \
                 discount_amount_minor, tax_amount_minor, total_amount_minor, tax_inclusive \
-         FROM sales.checkout_lines WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND checkout_id = $3 ORDER BY position ASC",
+         FROM sales.checkout_lines WHERE store_id = $1 \
+           AND checkout_id = $2 ORDER BY position ASC",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -2355,9 +2280,8 @@ pub(super) async fn load_order(
         "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 AND id = $4",
+         WHERE store_id = $1 AND sales_channel_id = $2 AND id = $3",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(order_id.as_uuid())
@@ -2367,20 +2291,17 @@ pub(super) async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
-    let locale: String = sqlx::query_scalar(
-        "SELECT locale FROM sales.orders WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let locale: String =
+        sqlx::query_scalar("SELECT locale FROM sales.orders WHERE store_id=$1 AND id=$2")
+            .bind(actor.store_id.as_uuid())
+            .bind(order_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     let derived_statuses = sqlx::query_as::<_, (String, String)>(
         "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -2395,9 +2316,8 @@ pub(super) async fn load_order(
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
                 subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 total_amount_minor, tax_inclusive FROM sales.order_lines \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY position",
+         WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -2415,10 +2335,9 @@ pub(super) async fn load_order(
         ),
     >(
         "SELECT id, from_status::text, to_status::text, kind::text, actor_user_id, occurred_at \
-         FROM sales.order_transitions WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND order_id = $3 ORDER BY occurred_at, id",
+         FROM sales.order_transitions WHERE store_id = $1 \
+           AND order_id = $2 ORDER BY occurred_at, id",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -3213,10 +3132,9 @@ async fn ensure_cart_owner(
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM sales.carts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-           AND id = $4 AND shopper_id = $5)",
+         WHERE store_id = $1 AND sales_channel_id = $2 \
+           AND id = $3 AND shopper_id = $4)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(cart_id.as_uuid())
@@ -3239,10 +3157,9 @@ async fn ensure_checkout_owner(
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM sales.checkouts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-           AND id = $4 AND shopper_id = $5)",
+         WHERE store_id = $1 AND sales_channel_id = $2 \
+           AND id = $3 AND shopper_id = $4)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(checkout_id.as_uuid())
@@ -3265,10 +3182,9 @@ async fn ensure_order_owner(
 ) -> Result<(), ApplicationError> {
     let owned: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-           AND id = $4 AND shopper_id = $5)",
+         WHERE store_id = $1 AND sales_channel_id = $2 \
+           AND id = $3 AND shopper_id = $4)",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
     .bind(order_id.as_uuid())
@@ -3477,10 +3393,7 @@ mod tests {
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
         inventory::InventoryLocationId,
-        merchant::{
-            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-            StoreId,
-        },
+        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
     use time::Duration;
@@ -3539,7 +3452,6 @@ mod tests {
             .unwrap();
         let suffix = Uuid::now_v7().simple().to_string();
         let user_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
@@ -3556,35 +3468,24 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Sales Repository Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("sales-repository-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         for (id, code) in [
             (store_id, "sales-store"),
             (other_store_id, "other-sales-store"),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.stores \
-                 (id, merchant_account_id, code, name, status) \
-                 VALUES ($1, $2, $3, 'Sales Store', 'active')",
+                 (id, code, name, status) \
+                 VALUES ($1, $2, 'Sales Store', 'active')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(code)
             .execute(&owner_pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+                 (store_id, currency) VALUES ($1, 'USD')",
             )
-            .bind(account_id.as_uuid())
             .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
@@ -3592,13 +3493,12 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO pricing.promotions \
-             (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+             (id, store_id, handle, name, trigger, value_kind, \
               rate_basis_points, currency, minimum_subtotal_amount_minor, priority) \
-             VALUES ($1, $2, $3, 'automatic-ten', 'Automatic ten percent', 'automatic', \
+             VALUES ($1, $2, 'automatic-ten', 'Automatic ten percent', 'automatic', \
                      'percentage', 1000, 'USD', 0, 100)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
@@ -3606,22 +3506,20 @@ mod tests {
         let shipping_service_id = ShippingServiceId::new();
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
-             (id, merchant_account_id, store_id, code, name, amount_minor, currency, \
+             (id, store_id, code, name, amount_minor, currency, \
               estimated_min_days, estimated_max_days) \
-             VALUES ($1, $2, $3, 'standard', 'Standard shipping', 0, 'USD', 2, 5)",
+             VALUES ($1, $2, 'standard', 'Standard shipping', 0, 'USD', 2, 5)",
         )
         .bind(shipping_service_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO fulfillment.shipping_service_regions \
-             (merchant_account_id, store_id, shipping_service_id, country_code) \
-             VALUES ($1, $2, $3, 'US')",
+             (store_id, shipping_service_id, country_code) \
+             VALUES ($1, $2, 'US')",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(shipping_service_id.as_uuid())
         .execute(&owner_pool)
@@ -3629,11 +3527,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.tax_rules \
-             (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
-             VALUES ($1, $2, $3, 'us-sales-tax', 'US sales tax', 'US', 900)",
+             (id, store_id, code, name, country_code, rate_basis_points) \
+             VALUES ($1, $2, 'us-sales-tax', 'US sales tax', 'US', 900)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
@@ -3644,11 +3541,10 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO merchant.sales_channels \
-                 (id, merchant_account_id, store_id, code, name, kind, is_default) \
-                 VALUES ($1, $2, $3, $4, 'Web', 'web', true)",
+                 (id, store_id, code, name, kind, is_default) \
+                 VALUES ($1, $2, $3, 'Web', 'web', true)",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(code)
             .execute(&owner_pool)
@@ -3657,22 +3553,20 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, status) \
-             VALUES ($1, $2, $3, 'checkout-product', 'Checkout Product', 'active')",
+             (id, store_id, handle, title, status) \
+             VALUES ($1, $2, 'checkout-product', 'Checkout Product', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, sku, status, track_inventory) \
-             VALUES ($1, $2, $3, $4, 'Default', 'CHECKOUT-SKU', 'active', true)",
+             (id, store_id, product_id, title, sku, status, track_inventory) \
+             VALUES ($1, $2, $3, 'Default', 'CHECKOUT-SKU', 'active', true)",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -3681,10 +3575,9 @@ mod tests {
         for locale in ["zh", "zh-CN"] {
             sqlx::query(
                 "INSERT INTO merchant.store_locales \
-                 (merchant_account_id, store_id, locale, created_by_user_id, created_at) \
-                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+                 (store_id, locale, created_by_user_id, created_at) \
+                 VALUES ($1, $2, $3, CURRENT_TIMESTAMP)",
             )
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(locale)
             .bind(user_id.as_uuid())
@@ -3694,11 +3587,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.product_translations \
-             (merchant_account_id, store_id, product_id, locale, title, description, \
+             (store_id, product_id, locale, title, description, \
               updated_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, 'zh', 'Localized Checkout Product', '', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             VALUES ($1, $2, 'zh', 'Localized Checkout Product', '', $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(user_id.as_uuid())
@@ -3707,11 +3599,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variant_translations \
-             (merchant_account_id, store_id, product_id, product_variant_id, locale, title, \
+             (store_id, product_id, product_variant_id, locale, title, \
               updated_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, 'zh', 'Localized Default', $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             VALUES ($1, $2, $3, 'zh', 'Localized Default', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -3721,10 +3612,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_publications \
-             (merchant_account_id, store_id, product_id, sales_channel_id) \
-             VALUES ($1, $2, $3, $4)",
+             (store_id, product_id, sales_channel_id) \
+             VALUES ($1, $2, $3)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(channel_id.as_uuid())
@@ -3733,22 +3623,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency, status) \
-             VALUES ($1, $2, $3, 'default-usd', 'Default USD', 'USD', 'active')",
+             (id, store_id, code, name, currency, status) \
+             VALUES ($1, $2, 'default-usd', 'Default USD', 'USD', 'active')",
         )
         .bind(price_list_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.prices \
-             (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 1250)",
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 1250)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -3757,22 +3645,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO inventory.inventory_locations \
-             (id, merchant_account_id, store_id, code, name) \
-             VALUES ($1, $2, $3, 'primary', 'Primary')",
+             (id, store_id, code, name) \
+             VALUES ($1, $2, 'primary', 'Primary')",
         )
         .bind(location_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO inventory.stock_items \
-             (id, merchant_account_id, store_id, inventory_location_id, product_variant_id, \
-              on_hand_quantity) VALUES ($1, $2, $3, $4, $5, 5)",
+             (id, store_id, inventory_location_id, product_variant_id, \
+              on_hand_quantity) VALUES ($1, $2, $3, $4, 5)",
         )
         .bind(stock_item_id)
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(location_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -3782,11 +3668,9 @@ mod tests {
 
         let machine = MachineActor {
             api_key_id: ApiKeyId::new(),
-            merchant_account_id: account_id,
             store_id,
             sales_channel_id: Some(channel_id),
             class: ApiKeyClass::Publishable,
-            mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CartsWrite, ApiKeyScope::CheckoutWrite],
             created_by_user_id: user_id,
         };
@@ -3840,10 +3724,9 @@ mod tests {
 
         sqlx::query(
             "UPDATE catalog.product_translations SET title = 'Changed Translation' \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
                AND locale = 'zh'",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -3949,8 +3832,8 @@ mod tests {
         );
 
         let mut runtime_connection = runtime_pool.acquire().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, false)")
-            .bind(account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, false)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *runtime_connection)
             .await
             .unwrap();

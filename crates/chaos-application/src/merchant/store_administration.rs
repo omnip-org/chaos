@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation, RegionCode,
     merchant::{
-        ApiKeyScope, MerchantRole, SalesChannel, SalesChannelCode, SalesChannelId,
-        SalesChannelKind, SalesChannelStatus, Store, StoreCode, StoreId, StoreStatus,
+        ApiKeyScope, SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind,
+        SalesChannelStatus, Store, StoreCode, StoreId, StoreRole, StoreStatus,
     },
 };
 
@@ -83,7 +83,6 @@ impl StoreAdministration {
     pub async fn update_store(&self, input: UpdateStoreInput) -> Result<StoreId, ApplicationError> {
         require_store_administrator(&input.actor)?;
         let replacement = Store::create(
-            input.actor.merchant_account_id(),
             StoreCode::parse(input.code)?,
             input.name,
             RegionCode::parse(&input.default_region)?,
@@ -123,7 +122,7 @@ impl StoreAdministration {
             .change_store_status(
                 input.actor,
                 input.store_id,
-                StoreStatus::Archived,
+                StoreStatus::Inactive,
                 &input.idempotency,
             )
             .await
@@ -166,13 +165,7 @@ impl StoreAdministration {
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         require_store_administrator(&input.actor)?;
-        let channel = channel(
-            &input.actor,
-            input.store_id,
-            input.code,
-            input.name,
-            input.kind,
-        )?;
+        let channel = channel(input.store_id, input.code, input.name, input.kind)?;
         self.repository
             .create_sales_channel(input.actor, &channel, &input.idempotency)
             .await
@@ -183,13 +176,7 @@ impl StoreAdministration {
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         require_store_administrator(&input.actor)?;
-        let replacement = channel(
-            &input.actor,
-            input.store_id,
-            input.code,
-            input.name,
-            input.kind,
-        )?;
+        let replacement = channel(input.store_id, input.code, input.name, input.kind)?;
         self.repository
             .update_sales_channel(
                 input.actor,
@@ -235,7 +222,6 @@ impl StoreAdministration {
 }
 
 fn channel(
-    actor: &AdminActor,
     store_id: StoreId,
     code: String,
     name: String,
@@ -248,7 +234,6 @@ fn channel(
         }],
     })?;
     Ok(SalesChannel::create(
-        actor.merchant_account_id(),
         store_id,
         SalesChannelCode::parse(code)?,
         name,
@@ -258,11 +243,9 @@ fn channel(
 
 fn require_store_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => match merchant.role() {
-            MerchantRole::Owner | MerchantRole::Administrator => Ok(()),
-            MerchantRole::Developer | MerchantRole::Manager | MerchantRole::Support => {
-                Err(ApplicationError::Forbidden)
-            }
+        AdminActor::Store(store_actor) => match store_actor.role() {
+            StoreRole::Owner => Ok(()),
+            StoreRole::Member => Err(ApplicationError::Forbidden),
         },
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::StoreAdminWrite) {

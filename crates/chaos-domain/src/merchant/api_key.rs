@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
 
-use super::{MerchantAccountId, StoreId};
+use super::StoreId;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ApiKeyId(Uuid);
@@ -52,29 +52,6 @@ impl ApiKeyClass {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ApiKeyMode {
-    Test,
-    Live,
-}
-
-impl ApiKeyMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Test => "test",
-            Self::Live => "live",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "test" => Some(Self::Test),
-            "live" => Some(Self::Live),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ApiKeyScope {
     AnalyticsWrite,
@@ -101,6 +78,9 @@ pub enum ApiKeyScope {
     PaymentsWrite,
     MediaRead,
     MediaWrite,
+    ApiKeysRead,
+    ApiKeysWrite,
+    ProviderSecretsWrite,
 }
 
 impl ApiKeyScope {
@@ -130,6 +110,9 @@ impl ApiKeyScope {
             Self::PaymentsWrite => "payments:write",
             Self::MediaRead => "media:read",
             Self::MediaWrite => "media:write",
+            Self::ApiKeysRead => "api_keys:read",
+            Self::ApiKeysWrite => "api_keys:write",
+            Self::ProviderSecretsWrite => "provider_secrets:write",
         }
     }
 
@@ -159,6 +142,9 @@ impl ApiKeyScope {
             "payments:write" => Some(Self::PaymentsWrite),
             "media:read" => Some(Self::MediaRead),
             "media:write" => Some(Self::MediaWrite),
+            "api_keys:read" => Some(Self::ApiKeysRead),
+            "api_keys:write" => Some(Self::ApiKeysWrite),
+            "provider_secrets:write" => Some(Self::ProviderSecretsWrite),
             _ => None,
         }
     }
@@ -185,21 +171,17 @@ impl ApiKeyScope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApiKey {
     id: ApiKeyId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     name: String,
     class: ApiKeyClass,
-    mode: ApiKeyMode,
     scopes: Vec<ApiKeyScope>,
 }
 
 impl ApiKey {
     pub fn issue(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         name: impl Into<String>,
         class: ApiKeyClass,
-        mode: ApiKeyMode,
         scopes: Vec<ApiKeyScope>,
     ) -> Result<Self, DomainError> {
         let name = name.into();
@@ -234,21 +216,15 @@ impl ApiKey {
 
         Ok(Self {
             id: ApiKeyId::new(),
-            merchant_account_id,
             store_id,
             name,
             class,
-            mode,
             scopes,
         })
     }
 
     pub const fn id(&self) -> ApiKeyId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -263,10 +239,6 @@ impl ApiKey {
         self.class
     }
 
-    pub const fn mode(&self) -> ApiKeyMode {
-        self.mode
-    }
-
     pub fn scopes(&self) -> &[ApiKeyScope] {
         &self.scopes
     }
@@ -279,11 +251,9 @@ mod tests {
     #[test]
     fn secret_key_can_receive_mcp_scope() {
         let key = ApiKey::issue(
-            MerchantAccountId::new(),
             StoreId::new(),
             "Production MCP",
             ApiKeyClass::Secret,
-            ApiKeyMode::Live,
             vec![ApiKeyScope::McpTools, ApiKeyScope::OrdersRead],
         )
         .unwrap();
@@ -295,11 +265,9 @@ mod tests {
     #[test]
     fn secret_key_can_receive_admin_write_scopes() {
         let key = ApiKey::issue(
-            MerchantAccountId::new(),
             StoreId::new(),
             "Production MCP Admin",
             ApiKeyClass::Secret,
-            ApiKeyMode::Live,
             vec![
                 ApiKeyScope::McpTools,
                 ApiKeyScope::ProductsRead,
@@ -331,11 +299,9 @@ mod tests {
             ApiKeyScope::CollectionsWrite,
         ] {
             let result = ApiKey::issue(
-                MerchantAccountId::new(),
                 StoreId::new(),
                 "Private Browser",
                 ApiKeyClass::Publishable,
-                ApiKeyMode::Live,
                 vec![scope],
             );
             assert!(matches!(result, Err(DomainError::Validation(_))));
@@ -361,11 +327,9 @@ mod tests {
     #[test]
     fn publishable_key_accepts_storefront_writes_and_rejects_private_scopes() {
         let key = ApiKey::issue(
-            MerchantAccountId::new(),
             StoreId::new(),
             "Browser",
             ApiKeyClass::Publishable,
-            ApiKeyMode::Live,
             vec![
                 ApiKeyScope::CatalogRead,
                 ApiKeyScope::CartsWrite,
@@ -381,11 +345,9 @@ mod tests {
         assert!(key.scopes().contains(&ApiKeyScope::ReviewsWrite));
 
         let result = ApiKey::issue(
-            MerchantAccountId::new(),
             StoreId::new(),
             "Private Browser",
             ApiKeyClass::Publishable,
-            ApiKeyMode::Live,
             vec![ApiKeyScope::McpTools],
         );
         assert!(matches!(result, Err(DomainError::Validation(_))));
@@ -394,11 +356,9 @@ mod tests {
     #[test]
     fn key_rejects_duplicate_scopes() {
         let result = ApiKey::issue(
-            MerchantAccountId::new(),
             StoreId::new(),
             "Duplicate",
             ApiKeyClass::Secret,
-            ApiKeyMode::Test,
             vec![ApiKeyScope::CatalogRead, ApiKeyScope::CatalogRead],
         );
 

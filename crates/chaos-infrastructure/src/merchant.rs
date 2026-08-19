@@ -1,38 +1,32 @@
 use anyhow::Context;
-use chaos_domain::merchant::MerchantAccountId;
+use chaos_domain::merchant::StoreId;
 use sqlx::{PgPool, Postgres, Transaction};
 
 #[cfg(test)]
 use sqlx::PgConnection;
 
-pub struct MerchantAccountTransaction<'a> {
+pub struct StoreTransaction<'a> {
     inner: Transaction<'a, Postgres>,
-    merchant_account_id: MerchantAccountId,
+    store_id: StoreId,
 }
 
-impl<'a> MerchantAccountTransaction<'a> {
-    pub(crate) async fn begin(
-        pool: &'a PgPool,
-        merchant_account_id: MerchantAccountId,
-    ) -> anyhow::Result<Self> {
+impl<'a> StoreTransaction<'a> {
+    pub(crate) async fn begin(pool: &'a PgPool, store_id: StoreId) -> anyhow::Result<Self> {
         let mut inner = pool
             .begin()
             .await
-            .context("failed to begin merchant account transaction")?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(merchant_account_id.as_uuid().to_string())
+            .context("failed to begin store transaction")?;
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *inner)
             .await
-            .context("failed to establish PostgreSQL merchant account context")?;
+            .context("failed to establish PostgreSQL store context")?;
 
-        Ok(Self {
-            inner,
-            merchant_account_id,
-        })
+        Ok(Self { inner, store_id })
     }
 
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
+    pub const fn store_id(&self) -> StoreId {
+        self.store_id
     }
 
     #[cfg(test)]
@@ -44,14 +38,14 @@ impl<'a> MerchantAccountTransaction<'a> {
         self.inner
             .commit()
             .await
-            .context("failed to commit merchant account transaction")
+            .context("failed to commit store transaction")
     }
 
     pub async fn rollback(self) -> anyhow::Result<()> {
         self.inner
             .rollback()
             .await
-            .context("failed to roll back merchant account transaction")
+            .context("failed to roll back store transaction")
     }
 }
 
@@ -64,7 +58,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn rls_hides_other_merchant_accounts_rows() {
+    async fn rls_hides_other_stores_rows() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let pool = PgPoolOptions::new()
@@ -82,8 +76,6 @@ mod tests {
         .unwrap();
         assert_eq!(public_business_tables, 0);
 
-        let account_a = MerchantAccountId::new();
-        let account_b = MerchantAccountId::new();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
         let channel_a = Uuid::now_v7();
@@ -113,129 +105,109 @@ mod tests {
             .await
             .unwrap();
 
-        for (account_id, slug) in [
-            (account_a, "rls-test-account-a"),
-            (account_b, "rls-test-account-b"),
-        ] {
+        for (store_id, code) in [(store_a, "store-a"), (store_b, "store-b")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(format!("{slug}-{}", Uuid::now_v7().simple()))
-            .bind(slug)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-        for (store_id, account_id, code) in [
-            (store_a, account_a, "store-a"),
-            (store_b, account_b, "store-b"),
-        ] {
-            sqlx::query(
-                "INSERT INTO merchant.stores \
-                 (id, merchant_account_id, code, name, default_currency) \
-                 VALUES ($1, $2, $3, $4, 'USD')",
+                "INSERT INTO merchant.stores (id, code, name, default_currency, status) \
+                 VALUES ($1, $2, $3, 'USD', 'active')",
             )
             .bind(store_id)
-            .bind(account_id.as_uuid())
             .bind(code)
             .bind(code)
             .execute(&pool)
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+                "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+                 VALUES ($1, $2, 'owner')",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id)
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO merchant.store_currencies (store_id, currency) VALUES ($1, 'USD')",
+            )
             .bind(store_id)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (channel_id, store_id, account_id, code) in [
-            (channel_a, store_a, account_a, "web-a"),
-            (channel_b, store_b, account_b, "web-b"),
-        ] {
+        for (channel_id, store_id, code) in
+            [(channel_a, store_a, "web-a"), (channel_b, store_b, "web-b")]
+        {
             sqlx::query(
                 "INSERT INTO merchant.sales_channels \
-                 (id, merchant_account_id, store_id, code, name, kind, is_default) \
-                 VALUES ($1, $2, $3, $4, $4, 'web', true)",
+                 (id, store_id, code, name, kind, is_default) \
+                 VALUES ($1, $2, $3, $3, 'web', true)",
             )
             .bind(channel_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(code)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (tax_rule_id, store_id, account_id, code) in [
-            (tax_rule_a, store_a, account_a, "tax-a"),
-            (tax_rule_b, store_b, account_b, "tax-b"),
+        for (tax_rule_id, store_id, code) in [
+            (tax_rule_a, store_a, "tax-a"),
+            (tax_rule_b, store_b, "tax-b"),
         ] {
             sqlx::query(
                 "INSERT INTO pricing.tax_rules \
-                 (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
-                 VALUES ($1, $2, $3, $4, $4, 'US', 0)",
+                 (id, store_id, code, name, country_code, rate_basis_points) \
+                 VALUES ($1, $2, $3, $3, 'US', 0)",
             )
             .bind(tax_rule_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(code)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (promotion_id, store_id, account_id, handle) in [
-            (promotion_a, store_a, account_a, "promotion-a"),
-            (promotion_b, store_b, account_b, "promotion-b"),
+        for (promotion_id, store_id, handle) in [
+            (promotion_a, store_a, "promotion-a"),
+            (promotion_b, store_b, "promotion-b"),
         ] {
             sqlx::query(
                 "INSERT INTO pricing.promotions \
-                 (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+                 (id, store_id, handle, name, trigger, value_kind, \
                   rate_basis_points, currency) \
-                 VALUES ($1, $2, $3, $4, $4, 'automatic', 'percentage', 1000, 'USD')",
+                 VALUES ($1, $2, $3, $3, 'automatic', 'percentage', 1000, 'USD')",
             )
             .bind(promotion_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(handle)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (product_id, store_id, account_id, handle) in [
-            (product_a, store_a, account_a, "product-a"),
-            (product_b, store_b, account_b, "product-b"),
+        for (product_id, store_id, handle) in [
+            (product_a, store_a, "product-a"),
+            (product_b, store_b, "product-b"),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title) \
-                 VALUES ($1, $2, $3, $4, $4)",
+                "INSERT INTO catalog.products (id, store_id, handle, title) \
+                 VALUES ($1, $2, $3, $3)",
             )
             .bind(product_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(handle)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (key_id, store_id, account_id, identifier) in [
-            (key_a, store_a, account_a, "RlsKeyAccountA01"),
-            (key_b, store_b, account_b, "RlsKeyAccountB02"),
+        for (key_id, store_id, identifier) in [
+            (key_a, store_a, "RlsKeyAccountA01"),
+            (key_b, store_b, "RlsKeyAccountB02"),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.api_keys \
-                 (id, merchant_account_id, store_id, key_identifier, secret_digest, \
-                  display_suffix, name, class, mode, created_by_user_id) \
-                 VALUES ($1, $2, $3, $4, $5, 'abcd', 'RLS test key', \
-                         'secret', 'test', $6)",
+                 (id, store_id, key_identifier, secret_digest, \
+                  display_suffix, name, class, created_by_user_id) \
+                 VALUES ($1, $2, $3, $4, 'abcd', 'RLS test key', \
+                         'secret', $5)",
             )
             .bind(key_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(identifier)
             .bind(vec![7_u8; 32])
@@ -244,24 +216,21 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO merchant.api_key_scopes \
-                 (merchant_account_id, api_key_id, scope) \
-                 VALUES ($1, $2, 'mcp:tools')",
+                "INSERT INTO merchant.api_key_scopes (api_key_id, scope) \
+                 VALUES ($1, 'mcp:tools')",
             )
-            .bind(account_id.as_uuid())
             .bind(key_id)
             .execute(&pool)
             .await
             .unwrap();
         }
-        for (customer_id, address_id, shopper_id, store_id, channel_id, account_id, label) in [
+        for (customer_id, address_id, shopper_id, store_id, channel_id, label) in [
             (
                 customer_a,
                 customer_address_a,
                 shopper_a,
                 store_a,
                 channel_a,
-                account_a,
                 "Home A",
             ),
             (
@@ -270,17 +239,14 @@ mod tests {
                 shopper_b,
                 store_b,
                 channel_b,
-                account_b,
                 "Home B",
             ),
         ] {
             sqlx::query(
-                "INSERT INTO sales.customers \
-                 (id, merchant_account_id, store_id, user_id, email) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO sales.customers (id, store_id, user_id, email) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(customer_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(user_id)
             .bind(format!("{customer_id}@example.com"))
@@ -289,12 +255,11 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO sales.customer_addresses \
-                 (id, merchant_account_id, store_id, customer_id, label, full_name, \
+                 (id, store_id, customer_id, label, full_name, \
                   address_line1, locality, country_code) \
-                 VALUES ($1, $2, $3, $4, $5, 'RLS Customer', '1 Main', 'Town', 'US')",
+                 VALUES ($1, $2, $3, $4, 'RLS Customer', '1 Main', 'Town', 'US')",
             )
             .bind(address_id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(customer_id)
             .bind(label)
@@ -303,10 +268,9 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO sales.customer_shopper_links \
-                 (merchant_account_id, store_id, customer_id, shopper_id, sales_channel_id) \
-                 VALUES ($1, $2, $3, $4, $5)",
+                 (store_id, customer_id, shopper_id, sales_channel_id) \
+                 VALUES ($1, $2, $3, $4)",
             )
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(customer_id)
             .bind(shopper_id)
@@ -315,17 +279,16 @@ mod tests {
             .await
             .unwrap();
         }
-        for (id, account_id, store_id, external_reference) in [
-            (provider_account_a, account_a, store_a, "rls-provider-a"),
-            (provider_account_b, account_b, store_b, "rls-provider-b"),
+        for (id, store_id, external_reference) in [
+            (provider_account_a, store_a, "rls-provider-a"),
+            (provider_account_b, store_b, "rls-provider-b"),
         ] {
             sqlx::query(
                 "INSERT INTO payments.provider_accounts \
-                 (id, merchant_account_id, store_id, provider, external_account_reference) \
-                 VALUES ($1, $2, $3, 'testpay', $4)",
+                 (id, store_id, provider, external_account_reference) \
+                 VALUES ($1, $2, 'testpay', $3)",
             )
             .bind(id)
-            .bind(account_id.as_uuid())
             .bind(store_id)
             .bind(external_reference)
             .execute(&pool)
@@ -333,7 +296,7 @@ mod tests {
             .unwrap();
         }
 
-        let mut transaction = MerchantAccountTransaction::begin(&pool, account_a)
+        let mut transaction = StoreTransaction::begin(&pool, StoreId::from_uuid(store_a))
             .await
             .unwrap();
         sqlx::query("SET LOCAL ROLE chaos_runtime")
@@ -411,18 +374,13 @@ mod tests {
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
-        sqlx::query("DELETE FROM payments.provider_accounts WHERE merchant_account_id = ANY($1)")
-            .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
+        sqlx::query("DELETE FROM payments.provider_accounts WHERE store_id = ANY($1)")
+            .bind(vec![store_a, store_b])
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
-            .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = ANY($1)")
-            .bind(vec![account_a.as_uuid(), account_b.as_uuid()])
+        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+            .bind(vec![store_a, store_b])
             .execute(&pool)
             .await
             .unwrap();
@@ -443,7 +401,6 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
-        let account_id = Uuid::now_v7();
         let store_id = Uuid::now_v7();
         let product_a = Uuid::now_v7();
         let product_b = Uuid::now_v7();
@@ -453,31 +410,20 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string();
 
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Catalog Constraint Test')",
-        )
-        .bind(account_id)
-        .bind(format!("catalog-constraint-{suffix}"))
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'catalog-test', 'Catalog Test')",
+            "INSERT INTO merchant.stores (id, code, name) \
+             VALUES ($1, $2, 'Catalog Test')",
         )
         .bind(store_id)
-        .bind(account_id)
+        .bind(format!("catalog-test-{suffix}"))
         .execute(&pool)
         .await
         .unwrap();
         for (product_id, handle) in [(product_a, "product-a"), (product_b, "product-b")] {
             sqlx::query(
-                "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title) \
-                 VALUES ($1, $2, $3, $4, $4)",
+                "INSERT INTO catalog.products (id, store_id, handle, title) \
+                 VALUES ($1, $2, $3, $3)",
             )
             .bind(product_id)
-            .bind(account_id)
             .bind(store_id)
             .bind(handle)
             .execute(&pool)
@@ -486,11 +432,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.product_options \
-             (id, merchant_account_id, store_id, product_id, name, position) \
-             VALUES ($1, $2, $3, $4, 'Color', 0)",
+             (id, store_id, product_id, name, position) \
+             VALUES ($1, $2, $3, 'Color', 0)",
         )
         .bind(option_a)
-        .bind(account_id)
         .bind(store_id)
         .bind(product_a)
         .execute(&pool)
@@ -498,11 +443,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_option_values \
-             (id, merchant_account_id, store_id, product_id, option_id, value, position) \
-             VALUES ($1, $2, $3, $4, $5, 'Blue', 0)",
+             (id, store_id, product_id, option_id, value, position) \
+             VALUES ($1, $2, $3, $4, 'Blue', 0)",
         )
         .bind(option_value_a)
-        .bind(account_id)
         .bind(store_id)
         .bind(product_a)
         .bind(option_a)
@@ -511,11 +455,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title) \
-             VALUES ($1, $2, $3, $4, 'Default')",
+             (id, store_id, product_id, title) \
+             VALUES ($1, $2, $3, 'Default')",
         )
         .bind(variant_b)
-        .bind(account_id)
         .bind(store_id)
         .bind(product_b)
         .execute(&pool)
@@ -524,11 +467,10 @@ mod tests {
 
         let cross_product = sqlx::query(
             "INSERT INTO catalog.variant_selected_options \
-             (merchant_account_id, store_id, product_id, variant_id, \
+             (store_id, product_id, variant_id, \
               option_id, option_value_id) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             VALUES ($1, $2, $3, $4, $5)",
         )
-        .bind(account_id)
         .bind(store_id)
         .bind(product_b)
         .bind(variant_b)
@@ -540,11 +482,6 @@ mod tests {
 
         sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
             .bind(store_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(account_id)
             .execute(&pool)
             .await
             .unwrap();

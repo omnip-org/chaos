@@ -8,7 +8,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CatalogMetadata, Product, ProductId},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -31,7 +31,6 @@ impl PostgresCatalogProvisioningUnitOfWork {
 
 struct PostgresCatalogProvisioningTransaction {
     transaction: Transaction<'static, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 }
 
@@ -48,14 +47,13 @@ impl CatalogProvisioningUnitOfWork for PostgresCatalogProvisioningUnitOfWork {
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresCatalogProvisioningTransaction {
             transaction,
-            merchant_account_id: actor.merchant_account_id(),
             store_id,
         }))
     }
@@ -65,18 +63,8 @@ impl CatalogProvisioningUnitOfWork for PostgresCatalogProvisioningUnitOfWork {
 impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-                SELECT 1 \
-                FROM merchant.stores AS store \
-                INNER JOIN merchant.merchant_accounts AS account \
-                    ON account.id = store.merchant_account_id \
-                WHERE store.merchant_account_id = $1 \
-                  AND store.id = $2 \
-                  AND store.status IN ('draft', 'active') \
-                  AND account.status = 'active'\
-             )",
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1 AND status = 'active')",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
@@ -97,7 +85,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     ) -> Result<Option<ProductId>, ApplicationError> {
         let Some(body) = idempotency::reserve(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             CREATE_PRODUCT_OPERATION,
             request,
         )
@@ -122,11 +110,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     async fn insert_product(&mut self, product: &Product) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, description, status, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.product_status, $8::jsonb)",
+             (id, store_id, handle, title, description, status, metadata) \
+             VALUES ($1, $2, $3, $4, $5, $6::catalog.product_status, $7::jsonb)",
         )
         .bind(product.id().as_uuid())
-        .bind(product.merchant_account_id().as_uuid())
         .bind(product.store_id().as_uuid())
         .bind(product.handle().as_str())
         .bind(product.title())
@@ -140,11 +127,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
         for option in product.options() {
             sqlx::query(
                 "INSERT INTO catalog.product_options \
-                 (id, merchant_account_id, store_id, product_id, name, position) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 (id, store_id, product_id, name, position) \
+                 VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(option.id().as_uuid())
-            .bind(product.merchant_account_id().as_uuid())
             .bind(product.store_id().as_uuid())
             .bind(product.id().as_uuid())
             .bind(option.name())
@@ -155,11 +141,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             for value in option.values() {
                 sqlx::query(
                     "INSERT INTO catalog.product_option_values \
-                     (id, merchant_account_id, store_id, product_id, option_id, value, position) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                     (id, store_id, product_id, option_id, value, position) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
                 )
                 .bind(value.id().as_uuid())
-                .bind(product.merchant_account_id().as_uuid())
                 .bind(product.store_id().as_uuid())
                 .bind(product.id().as_uuid())
                 .bind(option.id().as_uuid())
@@ -174,12 +159,11 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
         for variant in product.variants() {
             sqlx::query(
                 "INSERT INTO catalog.product_variants \
-                 (id, merchant_account_id, store_id, product_id, title, sku, status, \
+                 (id, store_id, product_id, title, sku, status, \
                   requires_shipping, track_inventory, metadata) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7::catalog.variant_status, $8, $9, $10::jsonb)",
+                 VALUES ($1, $2, $3, $4, $5, $6::catalog.variant_status, $7, $8, $9::jsonb)",
             )
             .bind(variant.id().as_uuid())
-            .bind(product.merchant_account_id().as_uuid())
             .bind(product.store_id().as_uuid())
             .bind(product.id().as_uuid())
             .bind(variant.title())
@@ -194,11 +178,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             for selection in variant.selected_options() {
                 sqlx::query(
                     "INSERT INTO catalog.variant_selected_options \
-                     (merchant_account_id, store_id, product_id, variant_id, option_id, \
+                     (store_id, product_id, variant_id, option_id, \
                       option_value_id) \
-                     VALUES ($1, $2, $3, $4, $5, $6)",
+                     VALUES ($1, $2, $3, $4, $5)",
                 )
-                .bind(product.merchant_account_id().as_uuid())
                 .bind(product.store_id().as_uuid())
                 .bind(product.id().as_uuid())
                 .bind(variant.id().as_uuid())
@@ -219,7 +202,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         idempotency::complete(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             CREATE_PRODUCT_OPERATION,
             request,
             201,
@@ -239,12 +222,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
 fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error {
         return match database_error.constraint() {
-            Some("products_merchant_account_id_store_id_handle_key") => {
-                ApplicationError::Conflict {
-                    code: "product_handle_taken",
-                    message: "the product handle is already in use for this store",
-                }
-            }
+            Some("products_store_id_handle_key") => ApplicationError::Conflict {
+                code: "product_handle_taken",
+                message: "the product handle is already in use for this store",
+            },
             Some("product_variants_store_sku_key") => ApplicationError::Conflict {
                 code: "variant_sku_taken",
                 message: "the variant SKU is already in use for this store",
@@ -271,7 +252,10 @@ mod tests {
         merchant::MerchantQueries,
         ports::{AdminActor, IdempotencyRequest},
     };
-    use chaos_domain::{identity::UserId, merchant::StoreId};
+    use chaos_domain::{
+        identity::UserId,
+        merchant::{StoreId, StoreRole},
+    };
     use sqlx::postgres::PgPoolOptions;
 
     use crate::repositories::PostgresMerchantReadRepository;
@@ -302,12 +286,11 @@ mod tests {
             .await
             .unwrap();
         let owner_user_id = UserId::new();
-        let support_user_id = UserId::new();
-        let merchant_account_id = MerchantAccountId::new();
+        let member_user_id = UserId::new();
         let store_id = StoreId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (user_id, label) in [(owner_user_id, "owner"), (support_user_id, "support")] {
+        for (user_id, label) in [(owner_user_id, "owner"), (member_user_id, "member")] {
             sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
                 .bind(user_id.as_uuid())
                 .bind(format!("catalog-{label}-{suffix}@example.com"))
@@ -316,59 +299,44 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Catalog Test')",
+            "INSERT INTO merchant.stores \
+             (id, code, name, default_region, default_currency) \
+             VALUES ($1, $2, 'Catalog Store', 'US', 'USD')",
         )
-        .bind(merchant_account_id.as_uuid())
-        .bind(format!("catalog-test-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(format!("catalog-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (user_id, role) in [(owner_user_id, "owner"), (support_user_id, "support")] {
+        for (user_id, role) in [(owner_user_id, "owner"), (member_user_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(merchant_account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(user_id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
             .await
             .unwrap();
         }
-        sqlx::query(
-            "INSERT INTO merchant.stores \
-             (id, merchant_account_id, code, name, default_region, default_currency) \
-             VALUES ($1, $2, 'catalog', 'Catalog Store', 'US', 'USD')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(merchant_account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
 
         let queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             runtime_pool.clone(),
         )));
-        let owner = queries
-            .authorize(owner_user_id, merchant_account_id)
-            .await
-            .unwrap();
-        let support = queries
-            .authorize(support_user_id, merchant_account_id)
-            .await
-            .unwrap();
+        let owner = queries.authorize(owner_user_id, store_id).await.unwrap();
+        assert_eq!(owner.role(), StoreRole::Owner);
         let service = CreateProduct::new(Arc::new(PostgresCatalogProvisioningUnitOfWork::new(
             runtime_pool,
         )));
         let idempotency_key = format!("product-{suffix}");
-        let make_input = |actor: chaos_application::merchant::MerchantActor,
+        let make_input = |actor: chaos_application::merchant::StoreActor,
                           fingerprint,
                           key: String,
                           handle: &str,
                           sku: &str| CreateProductInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id,
             handle: handle.into(),
             title: "Classic Shirt".into(),
@@ -407,18 +375,6 @@ mod tests {
             },
         };
 
-        assert!(matches!(
-            service
-                .execute(make_input(
-                    support,
-                    [40; 32],
-                    idempotency_key.clone(),
-                    "classic-shirt",
-                    "SHIRT-BLUE-M",
-                ))
-                .await,
-            Err(ApplicationError::Forbidden)
-        ));
         let output = service
             .execute(make_input(
                 owner,
@@ -514,19 +470,14 @@ mod tests {
             .unwrap();
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'store' AND scope_id = $1",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(merchant_account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
-            .bind(vec![owner_user_id.as_uuid(), support_user_id.as_uuid()])
+            .bind(vec![owner_user_id.as_uuid(), member_user_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();

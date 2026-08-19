@@ -261,7 +261,7 @@ mod tests {
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
+        merchant::{ApiKeyClass, ApiKeyId, SalesChannelId, StoreId},
     };
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
     use secrecy::ExposeSecret;
@@ -277,22 +277,19 @@ mod tests {
 
     async fn insert_publishable_key(
         pool: &PgPool,
-        account_id: MerchantAccountId,
         store_id: StoreId,
         user_id: UserId,
     ) -> GeneratedApiKeyMaterial {
-        let material =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable, ApiKeyMode::Live);
+        let material = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable);
         let key_id = ApiKeyId::new();
         sqlx::query(
             "INSERT INTO merchant.api_keys \
-             (id, merchant_account_id, store_id, key_identifier, secret_digest, \
-              display_suffix, name, class, mode, created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Storefront HTTP', \
-                     'publishable', 'live', $7)",
+             (id, store_id, key_identifier, secret_digest, \
+              display_suffix, name, class, created_by_user_id) \
+             VALUES ($1, $2, $3, $4, $5, 'Storefront HTTP', \
+                     'publishable', $6)",
         )
         .bind(key_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(&material.key_identifier)
         .bind(material.secret_digest.as_slice())
@@ -302,10 +299,9 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.api_key_scopes (merchant_account_id, api_key_id, scope) \
-             VALUES ($1, $2, 'catalog:read')",
+            "INSERT INTO merchant.api_key_scopes (api_key_id, scope) \
+             VALUES ($1, 'catalog:read')",
         )
-        .bind(account_id.as_uuid())
         .bind(key_id.as_uuid())
         .execute(pool)
         .await
@@ -325,7 +321,6 @@ mod tests {
             .await
             .unwrap();
         let user_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
         let product_id = ProductId::new();
@@ -340,62 +335,49 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Storefront HTTP')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("storefront-http-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.stores \
-             (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'storefront-http', 'Storefront HTTP', 'active')",
+             (id, code, name, status) \
+             VALUES ($1, $2, 'Storefront HTTP', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
+        .bind(format!("storefront-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
         .bind(channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.store_currencies (merchant_account_id, store_id, currency) \
-             VALUES ($1, $2, 'USD')",
+            "INSERT INTO merchant.store_currencies (store_id, currency) \
+             VALUES ($1, 'USD')",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, description, status) \
-             VALUES ($1, $2, $3, 'public-shirt', 'Public Shirt', 'Public description', 'active')",
+             (id, store_id, handle, title, description, status) \
+             VALUES ($1, $2, 'public-shirt', 'Public Shirt', 'Public description', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, sku, status) \
-             VALUES ($1, $2, $3, $4, 'Default', 'PUBLIC-SHIRT', 'active')",
+             (id, store_id, product_id, title, sku, status) \
+             VALUES ($1, $2, $3, 'Default', 'PUBLIC-SHIRT', 'active')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -403,10 +385,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_publications \
-             (merchant_account_id, store_id, product_id, sales_channel_id) \
-             VALUES ($1, $2, $3, $4)",
+             (store_id, product_id, sales_channel_id) \
+             VALUES ($1, $2, $3)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(channel_id.as_uuid())
@@ -415,22 +396,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency, status) \
-             VALUES ($1, $2, $3, 'public-retail', 'Public Retail', 'USD', 'active')",
+             (id, store_id, code, name, currency, status) \
+             VALUES ($1, $2, 'public-retail', 'Public Retail', 'USD', 'active')",
         )
         .bind(price_list_id)
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.prices \
-             (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 4200)",
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 4200)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id)
         .bind(variant_id.as_uuid())
@@ -440,10 +419,9 @@ mod tests {
         for locale in ["zh", "zh-CN", "fr"] {
             sqlx::query(
                 "INSERT INTO merchant.store_locales \
-                 (merchant_account_id, store_id, locale, created_by_user_id, created_at) \
-                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)",
+                 (store_id, locale, created_by_user_id, created_at) \
+                 VALUES ($1, $2, $3, CURRENT_TIMESTAMP)",
             )
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(locale)
             .bind(user_id.as_uuid())
@@ -454,12 +432,11 @@ mod tests {
         for (locale, title) in [("zh", "Language Shirt"), ("zh-CN", "Regional Shirt")] {
             sqlx::query(
                 "INSERT INTO catalog.product_translations \
-                 (merchant_account_id, store_id, product_id, locale, title, description, \
+                 (store_id, product_id, locale, title, description, \
                   updated_by_user_id, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, 'Localized description', $6, \
+                 VALUES ($1, $2, $3, $4, 'Localized description', $5, \
                          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
             )
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(product_id.as_uuid())
             .bind(locale)
@@ -471,11 +448,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.product_variant_translations \
-             (merchant_account_id, store_id, product_id, product_variant_id, locale, title, \
+             (store_id, product_id, product_variant_id, locale, title, \
               updated_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, 'zh', 'Localized Default', $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             VALUES ($1, $2, $3, 'zh', 'Localized Default', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -483,7 +459,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        let material = insert_publishable_key(&owner_pool, account_id, store_id, user_id).await;
+        let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
             state

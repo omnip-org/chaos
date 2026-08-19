@@ -12,7 +12,7 @@ use chaos_domain::{
         ProductId, ProductOptionId, ProductOptionValueId, ProductStatus, ProductVariantId,
         VariantStatus,
     },
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -38,9 +38,8 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Option<Vec<CatalogProductListItem>>, ApplicationError> {
-        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin(actor).await?;
-        if !store_exists(&mut transaction, merchant_account_id, store_id).await? {
+        if !store_exists(&mut transaction, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<
@@ -59,17 +58,14 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                     count(variant.id), product.created_at, product.updated_at \
              FROM catalog.products AS product \
              LEFT JOIN catalog.product_variants AS variant \
-               ON variant.merchant_account_id = product.merchant_account_id \
-              AND variant.store_id = product.store_id \
+              ON variant.store_id = product.store_id \
               AND variant.product_id = product.id \
-             WHERE product.merchant_account_id = $1 \
-               AND product.store_id = $2 \
-               AND ($3::uuid IS NULL OR product.id > $3) \
+             WHERE product.store_id = $1 \
+               AND ($2::uuid IS NULL OR product.id > $2) \
              GROUP BY product.id \
              ORDER BY product.id ASC \
-             LIMIT $4",
+             LIMIT $3",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(ProductId::as_uuid))
         .bind(i64::from(limit))
@@ -107,7 +103,6 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<Option<CatalogProductDetail>, ApplicationError> {
-        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin(actor).await?;
         let product = sqlx::query_as::<
             _,
@@ -125,9 +120,8 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
             "SELECT id, handle::text, title, description, status::text, metadata, \
                     created_at, updated_at \
              FROM catalog.products \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -142,10 +136,9 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
             "SELECT id, name::text, position \
              FROM catalog.product_options \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
              ORDER BY position ASC",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -154,10 +147,9 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
              FROM catalog.product_option_values \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
              ORDER BY option_id ASC, position ASC",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -180,10 +172,9 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
             "SELECT id, title, sku::text, status::text, requires_shipping, track_inventory, \
                     metadata, created_at, updated_at \
              FROM catalog.product_variants \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
              ORDER BY id ASC",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -194,22 +185,18 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
                     selection.option_value_id, value.value::text \
              FROM catalog.variant_selected_options AS selection \
              INNER JOIN catalog.product_options AS option \
-               ON option.merchant_account_id = selection.merchant_account_id \
-              AND option.store_id = selection.store_id \
+              ON option.store_id = selection.store_id \
               AND option.product_id = selection.product_id \
               AND option.id = selection.option_id \
              INNER JOIN catalog.product_option_values AS value \
-               ON value.merchant_account_id = selection.merchant_account_id \
-              AND value.store_id = selection.store_id \
+              ON value.store_id = selection.store_id \
               AND value.product_id = selection.product_id \
               AND value.option_id = selection.option_id \
               AND value.id = selection.option_value_id \
-             WHERE selection.merchant_account_id = $1 \
-               AND selection.store_id = $2 \
-               AND selection.product_id = $3 \
+             WHERE selection.store_id = $1 \
+               AND selection.product_id = $2 \
              ORDER BY selection.variant_id ASC, option.position ASC",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -314,8 +301,8 @@ impl PostgresCatalogReadRepository {
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
@@ -325,20 +312,13 @@ impl PostgresCatalogReadRepository {
 
 async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (\
-            SELECT 1 FROM merchant.stores \
-            WHERE merchant_account_id = $1 AND id = $2\
-         )",
-    )
-    .bind(merchant_account_id.as_uuid())
-    .bind(store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(unexpected_database_error)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(unexpected_database_error)
 }
 
 fn parse_product_status(value: &str) -> Result<ProductStatus, ApplicationError> {
@@ -370,7 +350,6 @@ mod tests {
     use chaos_domain::{
         catalog::{ProductOptionId, ProductOptionValueId, ProductVariantId},
         identity::UserId,
-        merchant::MerchantAccountId,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -402,8 +381,6 @@ mod tests {
             .await
             .unwrap();
         let user_id = UserId::new();
-        let support_user_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let mut product_ids = [ProductId::new(), ProductId::new()];
@@ -414,59 +391,42 @@ mod tests {
         let variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (id, role) in [(user_id, "owner"), (support_user_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(id.as_uuid())
-                .bind(format!("catalog-read-{role}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(user_id.as_uuid())
+            .bind(format!("catalog-read-owner-{suffix}@example.com"))
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        for (id, code) in [(store_id, "catalog-read"), (other_store_id, "other-read")] {
+            sqlx::query(
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Catalog Read Store')",
+            )
+            .bind(id.as_uuid())
+            .bind(format!("{code}-{suffix}"))
+            .execute(&owner_pool)
+            .await
+            .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Catalog Read Test')",
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, 'owner')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("catalog-read-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(user_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(user_id, "owner"), (support_user_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        for (id, code) in [(store_id, "catalog-read"), (other_store_id, "other-read")] {
-            sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Catalog Read Store')",
-            )
-            .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
-            .bind(code)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
         for (id, handle, title) in [
             (detail_product_id, "first-shirt", "First Shirt"),
             (product_ids[1], "second-shirt", "Second Shirt"),
         ] {
             sqlx::query(
                 "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title, description) \
-                 VALUES ($1, $2, $3, $4, $5, 'Product description')",
+                 (id, store_id, handle, title, description) \
+                 VALUES ($1, $2, $3, $4, 'Product description')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(handle)
             .bind(title)
@@ -476,11 +436,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.product_options \
-             (id, merchant_account_id, store_id, product_id, name, position) \
-             VALUES ($1, $2, $3, $4, 'Color', 0)",
+             (id, store_id, product_id, name, position) \
+             VALUES ($1, $2, $3, 'Color', 0)",
         )
         .bind(option_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(detail_product_id.as_uuid())
         .execute(&owner_pool)
@@ -488,11 +447,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_option_values \
-             (id, merchant_account_id, store_id, product_id, option_id, value, position) \
-             VALUES ($1, $2, $3, $4, $5, 'Blue', 0)",
+             (id, store_id, product_id, option_id, value, position) \
+             VALUES ($1, $2, $3, $4, 'Blue', 0)",
         )
         .bind(value_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(detail_product_id.as_uuid())
         .bind(option_id.as_uuid())
@@ -501,11 +459,10 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, sku) \
-             VALUES ($1, $2, $3, $4, 'Blue', 'READ-BLUE')",
+             (id, store_id, product_id, title, sku) \
+             VALUES ($1, $2, $3, 'Blue', 'READ-BLUE')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(detail_product_id.as_uuid())
         .execute(&owner_pool)
@@ -513,10 +470,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.variant_selected_options \
-             (merchant_account_id, store_id, product_id, variant_id, option_id, option_value_id) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (store_id, product_id, variant_id, option_id, option_value_id) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(detail_product_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -529,16 +485,12 @@ mod tests {
         let memberships = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             runtime_pool.clone(),
         )));
-        let owner = memberships.authorize(user_id, account_id).await.unwrap();
-        let support = memberships
-            .authorize(support_user_id, account_id)
-            .await
-            .unwrap();
+        let owner = memberships.authorize(user_id, store_id).await.unwrap();
         let queries =
             CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(runtime_pool)));
 
         let first_page = queries
-            .list_products(AdminActor::Merchant(owner), store_id, None, 1)
+            .list_products(AdminActor::Store(owner), store_id, None, 1)
             .await
             .unwrap();
         assert_eq!(first_page.items.len(), 1);
@@ -547,7 +499,7 @@ mod tests {
         assert_eq!(first_page.items[0].variant_count, 1);
         let second_page = queries
             .list_products(
-                AdminActor::Merchant(owner),
+                AdminActor::Store(owner),
                 store_id,
                 Some(detail_product_id),
                 1,
@@ -558,7 +510,7 @@ mod tests {
         assert!(!second_page.has_more);
 
         let detail = queries
-            .get_product(AdminActor::Merchant(support), store_id, detail_product_id)
+            .get_product(AdminActor::Store(owner), store_id, detail_product_id)
             .await
             .unwrap();
         assert_eq!(detail.options.len(), 1);
@@ -568,11 +520,7 @@ mod tests {
         assert_eq!(detail.variants[0].selected_options[0].value, "Blue");
         assert!(matches!(
             queries
-                .get_product(
-                    AdminActor::Merchant(owner),
-                    other_store_id,
-                    detail_product_id
-                )
+                .get_product(AdminActor::Store(owner), other_store_id, detail_product_id)
                 .await,
             Err(ApplicationError::NotFound {
                 resource: "product",
@@ -581,7 +529,7 @@ mod tests {
         ));
         assert!(matches!(
             queries
-                .list_products(AdminActor::Merchant(owner), StoreId::new(), None, 10)
+                .list_products(AdminActor::Store(owner), StoreId::new(), None, 10)
                 .await,
             Err(ApplicationError::NotFound {
                 resource: "store",
@@ -589,18 +537,13 @@ mod tests {
             })
         ));
 
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
-            .bind(account_id.as_uuid())
+        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+            .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
-            .bind(vec![user_id.as_uuid(), support_user_id.as_uuid()])
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();

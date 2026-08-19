@@ -11,34 +11,31 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{ProductId, ReviewId, ReviewStatus},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     StorefrontMachine,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub fn admin_routes() -> Router<ApiState> {
     Router::new()
+        .route("/stores/{store_id}/reviews", get(list_reviews))
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/reviews",
-            get(list_reviews),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/reviews/{review_id}/approve",
+            "/stores/{store_id}/reviews/{review_id}/approve",
             post(approve_review),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/reviews/{review_id}/reject",
+            "/stores/{store_id}/reviews/{review_id}/reject",
             post(reject_review),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/reviews/{review_id}/replies",
+            "/stores/{store_id}/reviews/{review_id}/replies",
             post(add_reply),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -55,12 +52,10 @@ pub fn storefront_routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 #[derive(Deserialize)]
 struct ReviewPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     review_id: Uuid,
 }
@@ -192,11 +187,10 @@ async fn list_product_reviews(
 
 async fn list_reviews(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<ReviewData>>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let status = match query.status.as_deref() {
         None => ReviewStatus::Pending,
         Some(value) => ReviewStatus::parse(value).ok_or(ApplicationError::Validation {
@@ -216,7 +210,7 @@ async fn list_reviews(
     let page = state
         .review_administration
         .list_by_status(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             status,
             after,
@@ -240,16 +234,15 @@ async fn list_reviews(
 async fn approve_review(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ReviewPath>,
     ApiJson(body): ApiJson<ApproveReviewBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.review_id, &body))?;
     let id = state
         .review_administration
         .approve(ApproveReviewInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             review_id: ReviewId::from_uuid(path.review_id),
             verified_buyer: body.verified_buyer,
@@ -263,15 +256,14 @@ async fn approve_review(
 async fn reject_review(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ReviewPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.review_id, "reject"))?;
     let id = state
         .review_administration
         .reject(RejectReviewInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             review_id: ReviewId::from_uuid(path.review_id),
             idempotency: request,
@@ -284,16 +276,15 @@ async fn reject_review(
 async fn add_reply(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ReviewPath>,
     ApiJson(body): ApiJson<AddReplyBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.review_id, &body))?;
     let id = state
         .review_administration
         .add_reply(AddReviewReplyInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             parent_review_id: ReviewId::from_uuid(path.review_id),
             content: body.content,
@@ -340,14 +331,6 @@ fn review_data(item: ReviewSummary) -> ReviewData {
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),
         replies: Vec::new(),
-    }
-}
-
-fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == path {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
     }
 }
 

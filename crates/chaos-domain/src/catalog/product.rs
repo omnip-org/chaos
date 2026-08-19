@@ -2,11 +2,7 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
-use crate::{
-    DomainError, FieldViolation,
-    catalog::CatalogMetadata,
-    merchant::{MerchantAccountId, StoreId},
-};
+use crate::{DomainError, FieldViolation, catalog::CatalogMetadata, merchant::StoreId};
 
 macro_rules! catalog_id {
     ($name:ident) => {
@@ -344,7 +340,6 @@ impl ProductVariant {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Product {
     id: ProductId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     content: ProductContent,
     status: ProductStatus,
@@ -354,7 +349,6 @@ pub struct Product {
 
 impl Product {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         handle: ProductHandle,
         title: impl Into<String>,
@@ -364,7 +358,6 @@ impl Product {
         let content = ProductContent::new(handle, title, description, metadata)?;
         Ok(Self {
             id: ProductId::new(),
-            merchant_account_id,
             store_id,
             content,
             status: ProductStatus::Draft,
@@ -535,10 +528,6 @@ impl Product {
         self.id
     }
 
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
-    }
-
     pub const fn store_id(&self) -> StoreId {
         self.store_id
     }
@@ -599,7 +588,6 @@ mod tests {
 
     fn product() -> Product {
         Product::create(
-            MerchantAccountId::new(),
             StoreId::new(),
             ProductHandle::parse("classic-shirt").unwrap(),
             "Classic Shirt",

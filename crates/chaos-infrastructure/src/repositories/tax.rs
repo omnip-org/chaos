@@ -49,8 +49,8 @@ impl PostgresTaxRuleRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -69,22 +69,28 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
     ) -> Result<TaxRuleDetail, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(&mut transaction, &actor, CREATE_OPERATION, request).await? {
-            let detail = load(&mut transaction, &actor, store_id, TaxRuleId::from_uuid(id))
+            let detail = load(&mut transaction, store_id, TaxRuleId::from_uuid(id))
                 .await?
                 .ok_or_else(|| rule_not_found(TaxRuleId::from_uuid(id)))?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(detail);
         }
-        require_store(&mut transaction, &actor, store_id).await?;
+        require_store(&mut transaction, store_id).await?;
         sqlx::query(
             "INSERT INTO pricing.tax_rules \
-             (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::pricing.tax_rule_status)",
+             (id, store_id, code, name, country_code, rate_basis_points, status) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7::pricing.tax_rule_status)",
         )
-        .bind(rule.id().as_uuid()).bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid())
-        .bind(rule.code()).bind(rule.name()).bind(rule.country_code())
-        .bind(i32::try_from(rule.rate_basis_points()).map_err(conversion_error)?).bind(rule.status().as_str())
-        .execute(&mut *transaction).await.map_err(map_write_error)?;
+        .bind(rule.id().as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(rule.code())
+        .bind(rule.name())
+        .bind(rule.country_code())
+        .bind(i32::try_from(rule.rate_basis_points()).map_err(conversion_error)?)
+        .bind(rule.status().as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_write_error)?;
         complete(
             &mut transaction,
             &actor,
@@ -93,7 +99,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             rule.id(),
         )
         .await?;
-        let detail = load(&mut transaction, &actor, store_id, rule.id())
+        let detail = load(&mut transaction, store_id, rule.id())
             .await?
             .ok_or_else(|| rule_not_found(rule.id()))?;
         transaction.commit().await.map_err(database_error)?;
@@ -106,13 +112,12 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
         store_id: StoreId,
     ) -> Result<Vec<TaxRuleDetail>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        require_store(&mut transaction, &actor, store_id).await?;
+        require_store(&mut transaction, store_id).await?;
         let rows = sqlx::query_as::<_, TaxRuleRow>(
             "SELECT id, code, name, country_code::text, rate_basis_points, status::text, \
                     created_at, updated_at FROM pricing.tax_rules \
-             WHERE merchant_account_id = $1 AND store_id = $2 ORDER BY created_at, id",
+             WHERE store_id = $1 ORDER BY created_at, id",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
@@ -139,9 +144,9 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             .is_none()
         {
             let result = sqlx::query(
-                "UPDATE pricing.tax_rules SET status = $4::pricing.tax_rule_status, updated_at = CURRENT_TIMESTAMP \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
-            ).bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid())
+                "UPDATE pricing.tax_rules SET status = $3::pricing.tax_rule_status, updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id = $1 AND id = $2",
+            ).bind(store_id.as_uuid())
               .bind(rule_id.as_uuid()).bind(status.as_str())
               .execute(&mut *transaction).await.map_err(map_write_error)?;
             if result.rows_affected() != 1 {
@@ -149,7 +154,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             }
             complete(&mut transaction, &actor, operation, request, rule_id).await?;
         }
-        let detail = load(&mut transaction, &actor, store_id, rule_id)
+        let detail = load(&mut transaction, store_id, rule_id)
             .await?
             .ok_or_else(|| rule_not_found(rule_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -159,16 +164,14 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
 
 async fn load(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
     store_id: StoreId,
     rule_id: TaxRuleId,
 ) -> Result<Option<TaxRuleDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, TaxRuleRow>(
         "SELECT id, code, name, country_code::text, rate_basis_points, status::text, \
                 created_at, updated_at FROM pricing.tax_rules \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(actor.merchant_account_id().as_uuid())
     .bind(store_id.as_uuid())
     .bind(rule_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -194,18 +197,14 @@ fn tax_rule_detail(row: TaxRuleRow) -> Result<TaxRuleDetail, ApplicationError> {
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-         WHERE merchant_account_id = $1 AND id = $2 AND status <> 'archived')",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+            .bind(store_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     if exists {
         Ok(())
     } else {
@@ -224,7 +223,7 @@ async fn reserve(
 ) -> Result<Option<Uuid>, ApplicationError> {
     let Some(body) = idempotency::reserve(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
     )
@@ -248,7 +247,7 @@ async fn complete(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         200,
@@ -260,7 +259,7 @@ async fn complete(
 fn map_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(error) = &error {
         match error.constraint() {
-            Some("tax_rules_merchant_account_id_store_id_code_key") => {
+            Some("tax_rules_store_id_code_key") => {
                 return ApplicationError::Conflict {
                     code: "tax_rule_code_taken",
                     message: "the Tax Rule code is already in use for this Store",

@@ -12,44 +12,35 @@ use chaos_application::{
     },
     ports::{AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem},
 };
-use chaos_domain::merchant::{MerchantAccountId, SalesChannelId, StoreId};
+use chaos_domain::merchant::{SalesChannelId, StoreId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
+        .route("/stores/{store_id}", get(get_store).put(update_store))
+        .route("/stores/{store_id}/activate", post(activate_store))
+        .route("/stores/{store_id}/archive", post(archive_store))
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}",
-            get(get_store).put(update_store),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/activate",
-            post(activate_store),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/archive",
-            post(archive_store),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels",
+            "/stores/{store_id}/sales-channels",
             get(list_sales_channels).post(create_sales_channel),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels/{sales_channel_id}",
+            "/stores/{store_id}/sales-channels/{sales_channel_id}",
             get(get_sales_channel).put(update_sales_channel),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels/{sales_channel_id}/activate",
+            "/stores/{store_id}/sales-channels/{sales_channel_id}/activate",
             post(activate_sales_channel),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/sales-channels/{sales_channel_id}/archive",
+            "/stores/{store_id}/sales-channels/{sales_channel_id}/archive",
             post(archive_sales_channel),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -57,13 +48,11 @@ pub(super) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct SalesChannelPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     sales_channel_id: Uuid,
 }
@@ -122,16 +111,12 @@ struct SalesChannelData {
 
 async fn get_store(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<StoreData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .store_administration
-        .get_store(
-            AdminActor::Merchant(actor),
-            StoreId::from_uuid(path.store_id),
-        )
+        .get_store(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(store_data(item)?))
 }
@@ -139,16 +124,15 @@ async fn get_store(
 async fn update_store(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<UpdateStoreBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, path.store_id, None, &body)?;
     let id = state
         .store_administration
         .update_store(UpdateStoreInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -163,7 +147,7 @@ async fn update_store(
 async fn activate_store(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_store_status(state, headers, actor, path, true).await
@@ -172,7 +156,7 @@ async fn activate_store(
 async fn archive_store(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_store_status(state, headers, actor, path, false).await
@@ -181,13 +165,12 @@ async fn archive_store(
 async fn change_store_status(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: StorePath,
     activate: bool,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeStoreStatusInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         idempotency: action_request(&headers, path.store_id, None, activate)?,
     };
@@ -201,11 +184,10 @@ async fn change_store_status(
 
 async fn list_sales_channels(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<SalesChannelData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -216,7 +198,7 @@ async fn list_sales_channels(
     let page = state
         .store_administration
         .list_sales_channels(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -237,14 +219,13 @@ async fn list_sales_channels(
 
 async fn get_sales_channel(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<SalesChannelPath>,
 ) -> Result<ApiResponse<SalesChannelData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .store_administration
         .get_sales_channel(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             SalesChannelId::from_uuid(path.sales_channel_id),
         )
@@ -255,16 +236,15 @@ async fn get_sales_channel(
 async fn create_sales_channel(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<SalesChannelBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, path.store_id, None, &body)?;
     let id = state
         .store_administration
         .create_sales_channel(CreateSalesChannelInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -278,16 +258,15 @@ async fn create_sales_channel(
 async fn update_sales_channel(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<SalesChannelPath>,
     ApiJson(body): ApiJson<SalesChannelBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, path.store_id, Some(path.sales_channel_id), &body)?;
     let id = state
         .store_administration
         .update_sales_channel(UpdateSalesChannelInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
             code: body.code,
@@ -302,7 +281,7 @@ async fn update_sales_channel(
 async fn activate_sales_channel(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<SalesChannelPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_channel_status(state, headers, actor, path, true).await
@@ -311,7 +290,7 @@ async fn activate_sales_channel(
 async fn archive_sales_channel(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<SalesChannelPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_channel_status(state, headers, actor, path, false).await
@@ -320,13 +299,12 @@ async fn archive_sales_channel(
 async fn change_channel_status(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: SalesChannelPath,
     activate: bool,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeSalesChannelStatusInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
         idempotency: action_request(
@@ -407,14 +385,6 @@ fn channel_data(item: SalesChannelAdminItem) -> Result<SalesChannelData, Applica
     })
 }
 
-fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == expected {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use axum::http::{Method, StatusCode};
@@ -442,7 +412,6 @@ mod tests {
             .unwrap();
         let owner_id = UserId::new();
         let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let default_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string();
@@ -456,21 +425,21 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Store HTTP Test')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Store HTTP', 'inactive')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("store-http-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(format!("store-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+        for (id, role) in [(owner_id, "owner"), (support_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
@@ -478,40 +447,25 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'store-http', 'Store HTTP')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.store_currencies \
-             (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+             (store_id, currency) VALUES ($1, 'USD')",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Online Store', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Online Store', 'web', true)",
         )
         .bind(default_channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
 
-        let store_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let store_uri = format!("/admin/v1/stores/{}", store_id.as_uuid());
         let channels_uri = format!("{store_uri}/sales-channels");
         let owner_state = test_state(&database_url, owner_id);
 
@@ -520,7 +474,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response_json(response).await["data"]["status"], "draft");
+        assert_eq!(response_json(response).await["data"]["status"], "inactive");
 
         let response = router(owner_state.clone())
             .oneshot(request(

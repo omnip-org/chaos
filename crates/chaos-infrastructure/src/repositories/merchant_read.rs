@@ -1,15 +1,12 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{MerchantAccountListItem, MerchantReadRepository, StoreListItem},
+    ports::{MerchantReadRepository, StoreListItem},
 };
 use chaos_domain::{
-    CurrencyCode, DomainError, RegionCode,
+    CurrencyCode, RegionCode,
     identity::UserId,
-    merchant::{
-        MerchantAccountId, MerchantAccountSlug, MerchantAccountStatus, MerchantRole, StoreCode,
-        StoreId, StoreStatus,
-    },
+    merchant::{StoreCode, StoreId, StoreRole, StoreStatus},
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -27,65 +24,19 @@ impl PostgresMerchantReadRepository {
 
 #[async_trait]
 impl MerchantReadRepository for PostgresMerchantReadRepository {
-    async fn list_merchant_accounts(
-        &self,
-        user_id: UserId,
-        after: Option<MerchantAccountId>,
-        limit: u16,
-    ) -> Result<Vec<MerchantAccountListItem>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
-        set_user_context(&mut transaction, user_id).await?;
-        let rows = sqlx::query_as::<_, (Uuid, String, String, String, String)>(
-            "SELECT account.id, account.slug::text, account.display_name, \
-                    account.status::text, membership.role::text \
-             FROM merchant.merchant_account_memberships AS membership \
-             INNER JOIN merchant.merchant_accounts AS account \
-                ON account.id = membership.merchant_account_id \
-             WHERE membership.user_id = $1 \
-               AND ($2::uuid IS NULL OR account.id > $2) \
-             ORDER BY account.id ASC \
-             LIMIT $3",
-        )
-        .bind(user_id.as_uuid())
-        .bind(after.map(MerchantAccountId::as_uuid))
-        .bind(i64::from(limit))
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-        transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)?;
-
-        rows.into_iter()
-            .map(|(id, slug, display_name, status, role)| {
-                Ok(MerchantAccountListItem {
-                    id: MerchantAccountId::from_uuid(id),
-                    slug: MerchantAccountSlug::parse(slug).map_err(corrupt_database_value)?,
-                    display_name,
-                    status: MerchantAccountStatus::parse(&status)
-                        .ok_or_else(|| corrupt_database_enum("merchant account status", &status))?,
-                    role: MerchantRole::parse(&role)
-                        .ok_or_else(|| corrupt_database_enum("merchant role", &role))?,
-                })
-            })
-            .collect()
-    }
-
     async fn membership_role(
         &self,
         user_id: UserId,
-        merchant_account_id: MerchantAccountId,
-    ) -> Result<Option<MerchantRole>, ApplicationError> {
+        store_id: StoreId,
+    ) -> Result<Option<StoreRole>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         set_user_context(&mut transaction, user_id).await?;
-        set_merchant_context(&mut transaction, merchant_account_id).await?;
         let role = sqlx::query_scalar::<_, String>(
             "SELECT role::text \
-             FROM merchant.merchant_account_memberships \
-             WHERE merchant_account_id = $1 AND user_id = $2",
+             FROM merchant.store_memberships \
+             WHERE store_id = $1 AND user_id = $2",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(user_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
@@ -96,8 +47,7 @@ impl MerchantReadRepository for PostgresMerchantReadRepository {
             .map_err(unexpected_database_error)?;
 
         role.map(|value| {
-            MerchantRole::parse(&value)
-                .ok_or_else(|| corrupt_database_enum("merchant role", &value))
+            StoreRole::parse(&value).ok_or_else(|| corrupt_database_enum("store role", &value))
         })
         .transpose()
     }
@@ -105,23 +55,22 @@ impl MerchantReadRepository for PostgresMerchantReadRepository {
     async fn list_stores(
         &self,
         user_id: UserId,
-        merchant_account_id: MerchantAccountId,
         after: Option<StoreId>,
         limit: u16,
     ) -> Result<Vec<StoreListItem>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         set_user_context(&mut transaction, user_id).await?;
-        set_merchant_context(&mut transaction, merchant_account_id).await?;
-        let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String)>(
-            "SELECT id, code::text, name, default_region::text, \
-                    default_currency::text, status::text \
-             FROM merchant.stores \
-             WHERE merchant_account_id = $1 \
-               AND ($2::uuid IS NULL OR id > $2) \
-             ORDER BY id ASC \
+        let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String, String)>(
+            "SELECT store.id, store.code::text, store.name, store.default_region::text, \
+                    store.default_currency::text, store.status::text, membership.role::text \
+             FROM merchant.store_memberships AS membership \
+             INNER JOIN merchant.stores AS store ON store.id = membership.store_id \
+             WHERE membership.user_id = $1 \
+               AND ($2::uuid IS NULL OR store.id > $2) \
+             ORDER BY store.id ASC \
              LIMIT $3",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(user_id.as_uuid())
         .bind(after.map(StoreId::as_uuid))
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
@@ -133,7 +82,7 @@ impl MerchantReadRepository for PostgresMerchantReadRepository {
             .map_err(unexpected_database_error)?;
 
         rows.into_iter()
-            .map(|(id, code, name, region, currency, status)| {
+            .map(|(id, code, name, region, currency, status, role)| {
                 Ok(StoreListItem {
                     id: StoreId::from_uuid(id),
                     code: StoreCode::parse(code).map_err(corrupt_database_value)?,
@@ -144,6 +93,8 @@ impl MerchantReadRepository for PostgresMerchantReadRepository {
                         .map_err(corrupt_database_value)?,
                     status: StoreStatus::parse(&status)
                         .ok_or_else(|| corrupt_database_enum("store status", &status))?,
+                    role: StoreRole::parse(&role)
+                        .ok_or_else(|| corrupt_database_enum("store role", &role))?,
                 })
             })
             .collect()
@@ -162,19 +113,7 @@ async fn set_user_context(
     Ok(())
 }
 
-async fn set_merchant_context(
-    transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: MerchantAccountId,
-) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-        .bind(merchant_account_id.as_uuid().to_string())
-        .execute(&mut **transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-    Ok(())
-}
-
-fn corrupt_database_value(error: DomainError) -> ApplicationError {
+fn corrupt_database_value(error: chaos_domain::DomainError) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database invariant violation: {error}"))
 }
 
@@ -194,7 +133,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn lists_only_authorized_accounts_and_stores_with_keyset_pagination() {
+    async fn lists_only_authorized_stores_with_keyset_pagination() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -217,11 +156,9 @@ mod tests {
             .unwrap();
         let user_id = UserId::new();
         let other_user_id = UserId::new();
-        let first_account_id = MerchantAccountId::new();
-        let second_account_id = MerchantAccountId::new();
-        let other_account_id = MerchantAccountId::new();
         let first_store_id = StoreId::new();
         let second_store_id = StoreId::new();
+        let other_store_id = StoreId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string();
 
         for (id, label) in [(user_id, "reader"), (other_user_id, "other")] {
@@ -232,107 +169,66 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for (id, slug, name) in [
-            (first_account_id, format!("first-{unique_suffix}"), "First"),
-            (
-                second_account_id,
-                format!("second-{unique_suffix}"),
-                "Second",
-            ),
-            (other_account_id, format!("other-{unique_suffix}"), "Other"),
+        for (id, code, name) in [
+            (first_store_id, format!("first-{unique_suffix}"), "First"),
+            (second_store_id, format!("second-{unique_suffix}"), "Second"),
+            (other_store_id, format!("other-{unique_suffix}"), "Other"),
         ] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(id.as_uuid())
-            .bind(slug)
-            .bind(name)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
+            sqlx::query("INSERT INTO merchant.stores (id, code, name) VALUES ($1, $2, $3)")
+                .bind(id.as_uuid())
+                .bind(code)
+                .bind(name)
+                .execute(&owner_pool)
+                .await
+                .unwrap();
         }
-        for (account_id, member_id) in [
-            (first_account_id, user_id),
-            (second_account_id, user_id),
-            (other_account_id, other_user_id),
+        for (store_id, member_id) in [
+            (first_store_id, user_id),
+            (second_store_id, user_id),
+            (other_store_id, other_user_id),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) VALUES ($1, $2, 'owner')",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) VALUES ($1, $2, 'owner')",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(member_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        for (id, code) in [(first_store_id, "first"), (second_store_id, "second")] {
-            sqlx::query(
-                "INSERT INTO merchant.stores \
-                 (id, merchant_account_id, code, name) VALUES ($1, $2, $3, $4)",
-            )
-            .bind(id.as_uuid())
-            .bind(first_account_id.as_uuid())
-            .bind(code)
-            .bind(format!("{code} Store"))
             .execute(&owner_pool)
             .await
             .unwrap();
         }
 
         let repository = PostgresMerchantReadRepository::new(runtime_pool);
-        let first_page = repository
-            .list_merchant_accounts(user_id, None, 1)
-            .await
-            .unwrap();
+        let first_page = repository.list_stores(user_id, None, 1).await.unwrap();
         assert_eq!(first_page.len(), 1);
-        assert_eq!(first_page[0].id, first_account_id);
+        assert_eq!(first_page[0].id, first_store_id);
         let second_page = repository
-            .list_merchant_accounts(user_id, Some(first_page[0].id), 2)
+            .list_stores(user_id, Some(first_page[0].id), 2)
             .await
             .unwrap();
         assert_eq!(second_page.len(), 1);
-        assert_eq!(second_page[0].id, second_account_id);
+        assert_eq!(second_page[0].id, second_store_id);
 
         assert_eq!(
             repository
-                .membership_role(user_id, first_account_id)
+                .membership_role(user_id, first_store_id)
                 .await
                 .unwrap(),
-            Some(MerchantRole::Owner)
+            Some(StoreRole::Owner)
         );
         assert_eq!(
             repository
-                .membership_role(user_id, other_account_id)
+                .membership_role(user_id, other_store_id)
                 .await
                 .unwrap(),
             None
         );
 
-        let stores = repository
-            .list_stores(user_id, first_account_id, Some(first_store_id), 2)
-            .await
-            .unwrap();
-        assert_eq!(stores.len(), 1);
-        assert_eq!(stores[0].id, second_store_id);
-        assert_eq!(stores[0].default_region, RegionCode::US);
-        assert_eq!(stores[0].default_currency, CurrencyCode::USD);
-
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
+        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
             .bind(vec![
-                first_account_id.as_uuid(),
-                second_account_id.as_uuid(),
-                other_account_id.as_uuid(),
-            ])
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = ANY($1)")
-            .bind(vec![
-                first_account_id.as_uuid(),
-                second_account_id.as_uuid(),
-                other_account_id.as_uuid(),
+                first_store_id.as_uuid(),
+                second_store_id.as_uuid(),
+                other_store_id.as_uuid(),
             ])
             .execute(&owner_pool)
             .await

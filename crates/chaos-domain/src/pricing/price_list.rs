@@ -4,9 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    CurrencyCode, DomainError, FieldViolation,
-    catalog::ProductVariantId,
-    merchant::{MerchantAccountId, StoreId},
+    CurrencyCode, DomainError, FieldViolation, catalog::ProductVariantId, merchant::StoreId,
 };
 
 use super::Money;
@@ -154,7 +152,6 @@ impl Price {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriceList {
     id: PriceListId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     code: PriceListCode,
     name: String,
@@ -167,7 +164,6 @@ pub struct PriceList {
 
 impl PriceList {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         code: PriceListCode,
         name: impl Into<String>,
@@ -181,7 +177,6 @@ impl PriceList {
         }
         Ok(Self {
             id: PriceListId::new(),
-            merchant_account_id,
             store_id,
             code,
             name,
@@ -263,9 +258,6 @@ impl PriceList {
     pub const fn id(&self) -> PriceListId {
         self.id
     }
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
-    }
     pub const fn store_id(&self) -> StoreId {
         self.store_id
     }
@@ -308,7 +300,6 @@ mod tests {
 
     fn price_list() -> PriceList {
         PriceList::create(
-            MerchantAccountId::new(),
             StoreId::new(),
             PriceListCode::parse("us-retail").unwrap(),
             "US Retail",

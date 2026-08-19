@@ -70,6 +70,10 @@ pub struct ProductVariantParams {
     /// Exactly one value per declared product option, if any options are declared.
     #[serde(default)]
     pub selected_options: Vec<ProductSelectedOptionParams>,
+    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Not shown to shoppers.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -89,6 +93,10 @@ pub struct CreateProductParams {
     pub options: Vec<ProductOptionParams>,
     /// At least one variant is required to later activate the product.
     pub variants: Vec<ProductVariantParams>,
+    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Not shown to shoppers.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -117,6 +125,12 @@ pub struct UpdateProductParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Not shown to shoppers. This replaces the product's entire
+    /// metadata, like every other field on this call; omit it (or pass null) to clear
+    /// existing metadata rather than to preserve it.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt (see change-status tools).
@@ -209,7 +223,8 @@ impl ChaosMcp {
 
     #[tool(
         description = "Get full details for a single product in the Store bound to this API \
-                        key, including options, variants, and their selected option values."
+                        key, including options, variants, their selected option values, and \
+                        metadata (both product-level and per-variant)."
     )]
     async fn get_product(
         &self,
@@ -270,7 +285,9 @@ impl ChaosMcp {
                         "option_value_id": selection.option_value_id.as_uuid(),
                         "value": selection.value,
                     })).collect::<Vec<_>>(),
+                    "metadata": variant.metadata,
                 })).collect::<Vec<_>>(),
+                "metadata": detail.metadata,
                 "created_at": format_time(detail.created_at),
                 "updated_at": format_time(detail.updated_at),
             }))),
@@ -280,9 +297,11 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create a new draft product in the Store bound to this API key, with its \
-                        options and variants. The product starts as draft and is not visible \
-                        anywhere until activate_product and publish_product are also called. \
-                        Requires confirm: true and an idempotency_key."
+                        options, variants, and optional metadata (product-level and \
+                        per-variant, arbitrary JSON up to 32KB, useful for automation \
+                        bookkeeping). The product starts as draft and is not visible anywhere \
+                        until activate_product and publish_product are also called. Requires \
+                        confirm: true and an idempotency_key."
     )]
     async fn create_product(
         &self,
@@ -332,8 +351,7 @@ impl ChaosMcp {
                         value: selection.value,
                     })
                     .collect(),
-                // Not yet exposed as an MCP tool parameter; use the Admin HTTP API to set metadata.
-                metadata: None,
+                metadata: variant.metadata,
             })
             .collect();
 
@@ -348,7 +366,7 @@ impl ChaosMcp {
                 description: params.description,
                 options,
                 variants,
-                metadata: None,
+                metadata: params.metadata,
                 idempotency,
             })
             .await
@@ -359,8 +377,10 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a product's handle, title, and description in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Update a product's handle, title, description, and metadata in the \
+                        Store bound to this API key. Every field is replaced wholesale, \
+                        including metadata (omit it to clear existing metadata). Requires \
+                        confirm: true and an idempotency_key."
     )]
     async fn update_product(
         &self,
@@ -400,7 +420,7 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
-                metadata: None,
+                metadata: params.metadata,
                 idempotency,
             })
             .await

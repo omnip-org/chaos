@@ -30,8 +30,8 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<EmailDeliveryJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, i32, Value, String, i32)>(
-            "SELECT id, merchant_account_id, store_id, recipient_email, template_key, \
+        sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, Value, String, i32)>(
+            "SELECT id, store_id, recipient_email, template_key, \
                     template_version, template_payload, provider, attempts \
              FROM notification.claim_email_deliveries($1, $2, $3, $4)",
         )
@@ -46,15 +46,14 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
         .map(|row| {
             Ok(EmailDeliveryJob {
                 id: row.0,
-                merchant_account_id: row.1,
-                store_id: row.2,
-                recipient_email: row.3,
-                template_key: row.4,
-                template_version: u32::try_from(row.5)
+                store_id: row.1,
+                recipient_email: row.2,
+                template_key: row.3,
+                template_version: u32::try_from(row.4)
                     .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-                template_payload: row.6,
-                provider: row.7,
-                attempts: u32::try_from(row.8)
+                template_payload: row.5,
+                provider: row.6,
+                attempts: u32::try_from(row.7)
                     .map_err(|error| ApplicationError::Unexpected(error.into()))?,
             })
         })
@@ -159,33 +158,15 @@ mod tests {
         .await
         .expect("clean notification fixture");
         let suffix = Uuid::now_v7().simple().to_string();
-        let account_a = Uuid::now_v7();
-        let account_b = Uuid::now_v7();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
-        for (account_id, slug) in [
-            (account_a, format!("notify-a-{suffix}")),
-            (account_b, format!("notify-b-{suffix}")),
-        ] {
+        for (store_id, code) in [(store_a, "na"), (store_b, "nb")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-                 VALUES ($1, $2, 'Notification Test')",
-            )
-            .bind(account_id)
-            .bind(slug)
-            .execute(&owner_pool)
-            .await
-            .expect("merchant account");
-        }
-        for (store_id, account_id, code) in [(store_a, account_a, "na"), (store_b, account_b, "nb")]
-        {
-            sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Notification Store')",
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Notification Store')",
             )
             .bind(store_id)
-            .bind(account_id)
-            .bind(code)
+            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .expect("store");
@@ -193,25 +174,19 @@ mod tests {
         let delivery_a = Uuid::now_v7();
         let delivery_b = Uuid::now_v7();
         let suppressed_delivery = Uuid::now_v7();
-        for (id, account_id, store_id, recipient) in [
-            (delivery_a, account_a, store_a, "a@example.com"),
-            (delivery_b, account_b, store_b, "b@example.com"),
-            (
-                suppressed_delivery,
-                account_a,
-                store_a,
-                "blocked@example.com",
-            ),
+        for (id, store_id, recipient) in [
+            (delivery_a, store_a, "a@example.com"),
+            (delivery_b, store_b, "b@example.com"),
+            (suppressed_delivery, store_a, "blocked@example.com"),
         ] {
             sqlx::query(
                 "INSERT INTO notification.email_deliveries \
-                 (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+                 (id, store_id, semantic_event_id, semantic_event_type, \
                   recipient_email, template_key, template_version, template_payload) \
-                 VALUES ($1, $2, $3, $4, 'order.confirmed', $5, \
-                         'order_confirmation', 1, $6)",
+                 VALUES ($1, $2, $3, 'order.confirmed', $4, \
+                         'order_confirmation', 1, $5)",
             )
             .bind(id)
-            .bind(account_id)
             .bind(store_id)
             .bind(Uuid::now_v7())
             .bind(recipient)
@@ -226,11 +201,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO notification.email_suppressions \
-             (id, merchant_account_id, store_id, recipient_email, suppression_reason) \
-             VALUES ($1, $2, $3, 'blocked@example.com', 'manual')",
+             (id, store_id, recipient_email, suppression_reason) \
+             VALUES ($1, $2, 'blocked@example.com', 'manual')",
         )
         .bind(Uuid::now_v7())
-        .bind(account_a)
         .bind(store_a)
         .execute(&owner_pool)
         .await
@@ -238,15 +212,14 @@ mod tests {
         let dead_delivery = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO notification.email_deliveries \
-             (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+             (id, store_id, semantic_event_id, semantic_event_type, \
               recipient_email, template_key, template_version, template_payload, \
               delivery_status, attempts, locked_by, locked_at) \
-             VALUES ($1, $2, $3, $4, 'order.confirmed', 'dead@example.com', \
-                     'order_confirmation', 1, $5, 'processing', 8, $6, \
+             VALUES ($1, $2, $3, 'order.confirmed', 'dead@example.com', \
+                     'order_confirmation', 1, $4, 'processing', 8, $5, \
                      CURRENT_TIMESTAMP - INTERVAL '10 minutes')",
         )
         .bind(dead_delivery)
-        .bind(account_a)
         .bind(store_a)
         .bind(Uuid::now_v7())
         .bind(json!({
@@ -268,8 +241,8 @@ mod tests {
             .await
             .expect("claim");
         assert_eq!(jobs.len(), 2);
-        assert!(jobs.iter().any(|job| job.merchant_account_id == account_a));
-        assert!(jobs.iter().any(|job| job.merchant_account_id == account_b));
+        assert!(jobs.iter().any(|job| job.store_id == store_a));
+        assert!(jobs.iter().any(|job| job.store_id == store_b));
         let dead_state: String = sqlx::query_scalar(
             "SELECT delivery_status::text FROM notification.email_deliveries WHERE id = $1",
         )
@@ -389,11 +362,11 @@ mod tests {
         assert_eq!(state, "complained");
 
         let mut transaction = runtime_pool.begin().await.expect("RLS transaction");
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_a.to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_a.to_string())
             .execute(&mut *transaction)
             .await
-            .expect("account context");
+            .expect("store context");
         let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM notification.email_deliveries")
             .fetch_one(&mut *transaction)
             .await

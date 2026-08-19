@@ -18,45 +18,42 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CollectionId, MediaAssetId, ProductId, ProductVariantId},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, StoreContext,
     merchant::idempotency_key,
 };
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
+        .route("/stores/{store_id}/locales", get(store_locales))
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales",
-            get(store_locales),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales/{locale}",
+            "/stores/{store_id}/locales/{locale}",
             put(enable_locale).delete(disable_locale),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/locales/{locale}/default",
+            "/stores/{store_id}/locales/{locale}/default",
             post(set_default_locale),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/translations/{locale}",
+            "/stores/{store_id}/products/{product_id}/translations/{locale}",
             get(get_product_translation)
                 .put(upsert_product_translation)
                 .delete(remove_product_translation),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/translations/{locale}",
+            "/stores/{store_id}/collections/{collection_id}/translations/{locale}",
             get(get_collection_translation)
                 .put(upsert_collection_translation)
                 .delete(remove_collection_translation),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/translations/{locale}",
+            "/stores/{store_id}/products/{product_id}/media/{media_asset_id}/translations/{locale}",
             get(get_media_translation)
                 .put(upsert_media_translation)
                 .delete(remove_media_translation),
@@ -66,32 +63,27 @@ pub fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 #[derive(Deserialize)]
 struct LocalePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     locale: String,
 }
 #[derive(Deserialize)]
 struct ProductTranslationPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
     locale: String,
 }
 #[derive(Deserialize)]
 struct CollectionTranslationPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     collection_id: Uuid,
     locale: String,
 }
 #[derive(Deserialize)]
 struct MediaTranslationPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
     media_asset_id: Uuid,
@@ -168,17 +160,13 @@ struct RemovedData {
 
 async fn store_locales(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     Ok(ApiResponse::ok(locale_data(
         state
             .catalog_localization
-            .store_locales(
-                AdminActor::Merchant(actor),
-                StoreId::from_uuid(path.store_id),
-            )
+            .store_locales(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
             .await?,
     )))
 }
@@ -186,7 +174,7 @@ async fn store_locales(
 async fn enable_locale(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<LocalePath>,
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
     locale_action(state, headers, actor, path, "enable").await
@@ -194,7 +182,7 @@ async fn enable_locale(
 async fn set_default_locale(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<LocalePath>,
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
     locale_action(state, headers, actor, path, "default").await
@@ -202,7 +190,7 @@ async fn set_default_locale(
 async fn disable_locale(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<LocalePath>,
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
     locale_action(state, headers, actor, path, "disable").await
@@ -210,13 +198,12 @@ async fn disable_locale(
 async fn locale_action(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: LocalePath,
     action: &'static str,
 ) -> Result<ApiResponse<StoreLocalesData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = StoreLocaleInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         locale: path.locale,
         idempotency: mutation(&headers, &(path.store_id, action))?,
@@ -233,15 +220,14 @@ async fn locale_action(
 
 async fn get_product_translation(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductTranslationPath>,
 ) -> Result<ApiResponse<ProductTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     Ok(ApiResponse::ok(product_translation_data(
         state
             .catalog_localization
             .product_translation(
-                AdminActor::Merchant(actor),
+                AdminActor::Store(actor),
                 StoreId::from_uuid(path.store_id),
                 ProductId::from_uuid(path.product_id),
                 &path.locale,
@@ -253,11 +239,10 @@ async fn get_product_translation(
 async fn upsert_product_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductTranslationPath>,
     ApiJson(body): ApiJson<ProductTranslationBody>,
 ) -> Result<ApiResponse<ProductTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(path.store_id, path.product_id, &path.locale, &body),
@@ -265,7 +250,7 @@ async fn upsert_product_translation(
     let translation = state
         .catalog_localization
         .upsert_product_translation(UpsertProductTranslationInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             locale: path.locale,
@@ -289,10 +274,9 @@ async fn upsert_product_translation(
 async fn remove_product_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductTranslationPath>,
 ) -> Result<ApiResponse<RemovedData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(path.store_id, path.product_id, &path.locale, "remove"),
@@ -300,7 +284,7 @@ async fn remove_product_translation(
     state
         .catalog_localization
         .remove_product_translation(TranslationActionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             resource_id: ProductId::from_uuid(path.product_id),
             locale: path.locale,
@@ -313,15 +297,14 @@ async fn remove_product_translation(
 
 async fn get_collection_translation(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<CollectionTranslationPath>,
 ) -> Result<ApiResponse<ContentTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     Ok(ApiResponse::ok(collection_translation_data(
         state
             .catalog_localization
             .collection_translation(
-                AdminActor::Merchant(actor),
+                AdminActor::Store(actor),
                 StoreId::from_uuid(path.store_id),
                 CollectionId::from_uuid(path.collection_id),
                 &path.locale,
@@ -332,11 +315,10 @@ async fn get_collection_translation(
 async fn upsert_collection_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<CollectionTranslationPath>,
     ApiJson(body): ApiJson<ContentTranslationBody>,
 ) -> Result<ApiResponse<ContentTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(path.store_id, path.collection_id, &path.locale, &body),
@@ -344,7 +326,7 @@ async fn upsert_collection_translation(
     let value = state
         .catalog_localization
         .upsert_collection_translation(UpsertCollectionTranslationInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             locale: path.locale,
@@ -359,10 +341,9 @@ async fn upsert_collection_translation(
 async fn remove_collection_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<CollectionTranslationPath>,
 ) -> Result<ApiResponse<RemovedData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(path.store_id, path.collection_id, &path.locale, "remove"),
@@ -370,7 +351,7 @@ async fn remove_collection_translation(
     state
         .catalog_localization
         .remove_collection_translation(TranslationActionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             resource_id: CollectionId::from_uuid(path.collection_id),
             locale: path.locale,
@@ -383,15 +364,14 @@ async fn remove_collection_translation(
 
 async fn get_media_translation(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaTranslationPath>,
 ) -> Result<ApiResponse<MediaTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     Ok(ApiResponse::ok(media_translation_data(
         state
             .catalog_localization
             .media_translation(
-                AdminActor::Merchant(actor),
+                AdminActor::Store(actor),
                 StoreId::from_uuid(path.store_id),
                 ProductId::from_uuid(path.product_id),
                 MediaAssetId::from_uuid(path.media_asset_id),
@@ -403,11 +383,10 @@ async fn get_media_translation(
 async fn upsert_media_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaTranslationPath>,
     ApiJson(body): ApiJson<MediaTranslationBody>,
 ) -> Result<ApiResponse<MediaTranslationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(
@@ -421,7 +400,7 @@ async fn upsert_media_translation(
     let value = state
         .catalog_localization
         .upsert_media_translation(UpsertMediaTranslationInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -436,10 +415,9 @@ async fn upsert_media_translation(
 async fn remove_media_translation(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaTranslationPath>,
 ) -> Result<ApiResponse<RemovedData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = mutation(
         &headers,
         &(
@@ -453,7 +431,7 @@ async fn remove_media_translation(
     state
         .catalog_localization
         .remove_media_translation(MediaTranslationActionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -509,13 +487,6 @@ fn media_translation_data(value: MediaTranslation) -> MediaTranslationData {
         updated_at: value.updated_at.into(),
     }
 }
-fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == path {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
-}
 fn mutation<T: Serialize>(headers: &HeaderMap, value: &T) -> Result<IdempotencyRequest, ApiError> {
     Ok(IdempotencyRequest {
         key: idempotency_key(headers)?,
@@ -533,7 +504,7 @@ mod tests {
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
-        merchant::{MerchantAccountId, StoreId},
+        merchant::StoreId,
     };
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
@@ -556,7 +527,6 @@ mod tests {
             .unwrap();
         let owner = UserId::new();
         let support = UserId::new();
-        let account = MerchantAccountId::new();
         let store = StoreId::new();
         let product = ProductId::new();
         let variant = ProductVariantId::new();
@@ -571,21 +541,21 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id,slug,display_name) \
-             VALUES ($1,$2,'Localization Test')",
+            "INSERT INTO merchant.stores (id,code,name,status) \
+             VALUES ($1,$2,'Localization','active')",
         )
-        .bind(account.as_uuid())
-        .bind(format!("localization-{suffix}"))
+        .bind(store.as_uuid())
+        .bind(format!("localization-{}", &suffix[12..28]))
         .execute(&pool)
         .await
         .unwrap();
-        for (user, role) in [(owner, "owner"), (support, "support")] {
+        for (user, role) in [(owner, "owner"), (support, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id,user_id,role) \
-                 VALUES ($1,$2,$3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id,user_id,role) \
+                 VALUES ($1,$2,$3::merchant.store_role)",
             )
-            .bind(account.as_uuid())
+            .bind(store.as_uuid())
             .bind(user.as_uuid())
             .bind(role)
             .execute(&pool)
@@ -593,43 +563,28 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id,merchant_account_id,code,name,status) \
-             VALUES ($1,$2,'localization','Localization','active')",
-        )
-        .bind(store.as_uuid())
-        .bind(account.as_uuid())
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO catalog.products \
-             (id,merchant_account_id,store_id,handle,title,status) \
-             VALUES ($1,$2,$3,'localized-product','Canonical Product','active')",
+             (id,store_id,handle,title,status) \
+             VALUES ($1,$2,'localized-product','Canonical Product','active')",
         )
         .bind(product.as_uuid())
-        .bind(account.as_uuid())
         .bind(store.as_uuid())
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id,merchant_account_id,store_id,product_id,title,status) \
-             VALUES ($1,$2,$3,$4,'Canonical Variant','active')",
+             (id,store_id,product_id,title,status) \
+             VALUES ($1,$2,$3,'Canonical Variant','active')",
         )
         .bind(variant.as_uuid())
-        .bind(account.as_uuid())
         .bind(store.as_uuid())
         .bind(product.as_uuid())
         .execute(&pool)
         .await
         .unwrap();
 
-        let locales = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/locales",
-            account.as_uuid(),
-            store.as_uuid()
-        );
+        let locales = format!("/admin/v1/stores/{}/locales", store.as_uuid());
         let owner_state = test_state(&database_url, owner);
         let response = router(owner_state.clone())
             .oneshot(request(Method::GET, &locales, None, None))
@@ -684,8 +639,7 @@ mod tests {
         );
 
         let translation = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/products/{}/translations/zh",
-            account.as_uuid(),
+            "/admin/v1/stores/{}/products/{}/translations/zh",
             store.as_uuid(),
             product.as_uuid()
         );
@@ -729,7 +683,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::FORBIDDEN
+            StatusCode::OK
         );
         assert_eq!(
             router(owner_state.clone())
@@ -770,7 +724,7 @@ mod tests {
                 .oneshot(request(
                     Method::GET,
                     &locales.replace(
-                        &account.as_uuid().to_string(),
+                        &store.as_uuid().to_string(),
                         &uuid::Uuid::now_v7().to_string()
                     ),
                     None,

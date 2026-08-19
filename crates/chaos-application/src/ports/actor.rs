@@ -1,10 +1,10 @@
-use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
+use chaos_domain::{identity::UserId, merchant::StoreId};
 
-use crate::merchant::MerchantActor;
+use crate::merchant::StoreActor;
 
 use super::MachineActor;
 
-/// The caller of an admin-facing use case: either a human merchant member
+/// The caller of an admin-facing use case: either a human Store member
 /// (passwordless session) or a Store-scoped API key (MCP / machine client).
 ///
 /// Kept as a closed enum rather than a trait so it stays object-safe at
@@ -13,15 +13,15 @@ use super::MachineActor;
 /// write/read authorization is decided.
 #[derive(Clone)]
 pub enum AdminActor {
-    Merchant(MerchantActor),
+    Store(StoreActor),
     Machine(MachineActor),
 }
 
 impl AdminActor {
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
+    pub const fn store_id(&self) -> StoreId {
         match self {
-            Self::Merchant(actor) => actor.merchant_account_id(),
-            Self::Machine(actor) => actor.merchant_account_id,
+            Self::Store(actor) => actor.store_id(),
+            Self::Machine(actor) => actor.store_id,
         }
     }
 
@@ -32,15 +32,15 @@ impl AdminActor {
     /// mutation is genuinely attributable to the key that person issued.
     pub const fn audit_user_id(&self) -> UserId {
         match self {
-            Self::Merchant(actor) => actor.user_id(),
+            Self::Store(actor) => actor.user_id(),
             Self::Machine(actor) => actor.created_by_user_id,
         }
     }
 }
 
-impl From<MerchantActor> for AdminActor {
-    fn from(actor: MerchantActor) -> Self {
-        Self::Merchant(actor)
+impl From<StoreActor> for AdminActor {
+    fn from(actor: StoreActor) -> Self {
+        Self::Store(actor)
     }
 }
 

@@ -25,18 +25,12 @@ impl RedisAnalyticsCollectionRateLimiter {
 impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
     async fn consume(
         &self,
-        merchant_account_id: Uuid,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         anonymous_event_counts: &[(Uuid, u16)],
         event_count: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError> {
-        let slot = format!(
-            "{}:{}:{}",
-            merchant_account_id,
-            store_id.as_uuid(),
-            sales_channel_id.as_uuid()
-        );
+        let slot = format!("{}:{}", store_id.as_uuid(), sales_channel_id.as_uuid());
         let script = Script::new(
             "local retry_after = 0\n\
              for index, key in ipairs(KEYS) do\n\
@@ -109,14 +103,12 @@ mod tests {
             .expect("TEST_REDIS_URL must identify a disposable Redis database");
         let client = RedisClient::open(redis_url).unwrap();
         let limiter = RedisAnalyticsCollectionRateLimiter::new(client);
-        let account_id = Uuid::now_v7();
         let store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
         let anonymous_id = Uuid::now_v7();
 
         let allowed = limiter
             .consume(
-                account_id,
                 store_id,
                 channel_id,
                 &[(anonymous_id, ANONYMOUS_EVENT_LIMIT)],
@@ -127,7 +119,7 @@ mod tests {
         assert!(allowed.allowed);
 
         let denied = limiter
-            .consume(account_id, store_id, channel_id, &[(anonymous_id, 1)], 1)
+            .consume(store_id, channel_id, &[(anonymous_id, 1)], 1)
             .await
             .unwrap();
         assert!(!denied.allowed);

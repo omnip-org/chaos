@@ -18,7 +18,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     payments::{PaymentAttemptId, PaymentProviderAccountId},
     sales::OrderId,
 };
@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use super::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, CheckoutShopper,
-    MerchantContext,
+    StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
@@ -48,15 +48,15 @@ pub(super) fn routes() -> Router<ApiState> {
             get(get_client_action),
         )
         .route(
-            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds",
+            "/admin/v1/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds",
             post(create_refund),
         )
         .route(
-            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts",
+            "/admin/v1/stores/{store_id}/payment-provider-accounts",
             get(list_provider_accounts).post(create_provider_account),
         )
         .route(
-            "/admin/v1/merchant-accounts/{merchant_account_id}/stores/{store_id}/payment-provider-accounts/{provider_account_id}",
+            "/admin/v1/stores/{store_id}/payment-provider-accounts/{provider_account_id}",
             get(get_provider_account).put(update_provider_account),
         )
         .route("/webhooks/v1/payments/{provider}", post(receive_webhook))
@@ -75,7 +75,6 @@ struct AttemptPath {
 
 #[derive(Deserialize)]
 struct RefundPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     payment_attempt_id: Uuid,
 }
@@ -87,13 +86,11 @@ struct WebhookPath {
 
 #[derive(Deserialize)]
 struct ProviderCollectionPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ProviderPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     provider_account_id: Uuid,
 }
@@ -211,11 +208,10 @@ struct PaymentProviderAccountData {
 
 async fn list_provider_accounts(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProviderCollectionPath>,
     ApiQuery(query): ApiQuery<ProviderListQuery>,
 ) -> Result<ApiResponse<Vec<PaymentProviderAccountData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let after = query
         .cursor
         .as_deref()
@@ -245,10 +241,9 @@ async fn list_provider_accounts(
 
 async fn get_provider_account(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProviderPath>,
 ) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let value = state
         .payment_provider_administration
         .get(
@@ -263,11 +258,10 @@ async fn get_provider_account(
 async fn create_provider_account(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProviderCollectionPath>,
     ApiJson(body): ApiJson<CreateProviderAccountBody>,
 ) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(&headers, "create_payment_provider_account", &body)?;
     let value = state
         .payment_provider_administration
@@ -290,11 +284,10 @@ async fn create_provider_account(
 async fn update_provider_account(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProviderPath>,
     ApiJson(body): ApiJson<UpdateProviderAccountBody>,
 ) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(
         &headers,
         "update_payment_provider_account",
@@ -408,11 +401,10 @@ async fn get_client_action(
 async fn create_refund(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<RefundPath>,
     ApiJson(body): ApiJson<CreateRefundBody>,
 ) -> Result<ApiResponse<RefundData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = body_request(
         &headers,
         "create_refund",
@@ -421,7 +413,7 @@ async fn create_refund(
     let refund = state
         .payment_service
         .create_refund(CreateRefundInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             payment_attempt_id: PaymentAttemptId::from_uuid(path.payment_attempt_id),
             amount_minor: body.amount_minor,
@@ -526,13 +518,5 @@ fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProvider
         webhook_rotation_expires_at: value.webhook_rotation_expires_at.map(Into::into),
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
-    }
-}
-
-fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == expected {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
     }
 }

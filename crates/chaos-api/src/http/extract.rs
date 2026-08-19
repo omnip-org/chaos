@@ -7,13 +7,13 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{CustomerActor, MachineActor, ShopperActor},
 };
 use chaos_domain::{
     FieldViolation,
     identity::UserId,
-    merchant::{ApiKeyScope, MerchantAccountId},
+    merchant::{ApiKeyScope, StoreId},
 };
 use secrecy::SecretString;
 use serde::de::DeserializeOwned;
@@ -244,9 +244,9 @@ fn customer_session_token(headers: &HeaderMap) -> Result<SecretString, ApiError>
 }
 
 #[derive(Clone, Copy)]
-pub struct MerchantContext(pub MerchantActor);
+pub struct StoreContext(pub StoreActor);
 
-impl FromRequestParts<ApiState> for MerchantContext {
+impl FromRequestParts<ApiState> for StoreContext {
     type Rejection = ApiError;
 
     async fn from_request_parts(
@@ -256,24 +256,24 @@ impl FromRequestParts<ApiState> for MerchantContext {
         let session = AuthenticatedSession::from_request_parts(parts, state).await?;
         let Path(parameters) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
             .await
-            .map_err(|_| invalid_merchant_account_id())?;
-        let merchant_account_id = parameters
-            .get("merchant_account_id")
+            .map_err(|_| invalid_store_id())?;
+        let store_id = parameters
+            .get("store_id")
             .and_then(|value| Uuid::parse_str(value).ok())
-            .map(MerchantAccountId::from_uuid)
-            .ok_or_else(invalid_merchant_account_id)?;
+            .map(StoreId::from_uuid)
+            .ok_or_else(invalid_store_id)?;
         let actor = state
             .merchant_queries
-            .authorize(session.user_id, merchant_account_id)
+            .authorize(session.user_id, store_id)
             .await?;
         Ok(Self(actor))
     }
 }
 
-fn invalid_merchant_account_id() -> ApiError {
+fn invalid_store_id() -> ApiError {
     ApplicationError::Validation {
         violations: vec![FieldViolation {
-            field: "merchant_account_id",
+            field: "store_id",
             reason: "must be a valid UUID".into(),
         }],
     }

@@ -2,18 +2,14 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
     ports::{
-        ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
-        GeneratedApiKeyMaterial, IdempotencyRequest, MachineActor,
+        AdminActor, ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator,
+        ApiKeyRepository, GeneratedApiKeyMaterial, IdempotencyRequest, MachineActor,
     },
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{
-        ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-        StoreId,
-    },
+    merchant::{ApiKey, ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -32,20 +28,14 @@ const REVOKE_API_KEY_OPERATION: &str = "api_keys.revoke.v1";
 pub struct SecureApiKeyMaterialGenerator;
 
 impl ApiKeyMaterialGenerator for SecureApiKeyMaterialGenerator {
-    fn generate(&self, class: ApiKeyClass, mode: ApiKeyMode) -> GeneratedApiKeyMaterial {
+    fn generate(&self, class: ApiKeyClass) -> GeneratedApiKeyMaterial {
         let mut identifier_bytes = [0_u8; 12];
         let mut secret_bytes = [0_u8; 32];
         rand::rng().fill_bytes(&mut identifier_bytes);
         rand::rng().fill_bytes(&mut secret_bytes);
         let key_identifier = URL_SAFE_NO_PAD.encode(identifier_bytes);
         let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext = format!(
-            "cc_v1_{}_{}_{}_{}",
-            mode.as_str(),
-            class.as_str(),
-            key_identifier,
-            secret
-        );
+        let plaintext = format!("cc_v1_{}_{}_{}", class.as_str(), key_identifier, secret);
         let secret_digest = Sha256::digest(plaintext.as_bytes()).into();
         let display_suffix = secret[secret.len() - 4..].to_owned();
 
@@ -73,15 +63,15 @@ impl PostgresApiKeyRepository {
 impl ApiKeyRepository for PostgresApiKeyRepository {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         api_key: &ApiKey,
         material: &GeneratedApiKeyMaterial,
         idempotency: &IdempotencyRequest,
     ) -> Result<ApiKeyCreationStatus, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_context(&mut transaction, actor).await?;
+        set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, api_key.store_id()).await?;
-        let scope = IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid());
+        let scope = IdempotencyScope::Store(actor.store_id().as_uuid());
         if idempotency::reserve(
             &mut transaction,
             &scope,
@@ -97,21 +87,19 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
 
         sqlx::query(
             "INSERT INTO merchant.api_keys \
-             (id, merchant_account_id, store_id, key_identifier, secret_digest, \
-              display_suffix, name, class, mode, created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, \
-                     $8::merchant.api_key_class, $9::merchant.api_key_mode, $10)",
+             (id, store_id, key_identifier, secret_digest, \
+              display_suffix, name, class, created_by_user_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, \
+                     $7::merchant.api_key_class, $8)",
         )
         .bind(api_key.id().as_uuid())
-        .bind(api_key.merchant_account_id().as_uuid())
         .bind(api_key.store_id().as_uuid())
         .bind(&material.key_identifier)
         .bind(material.secret_digest.as_slice())
         .bind(&material.display_suffix)
         .bind(api_key.name())
         .bind(api_key.class().as_str())
-        .bind(api_key.mode().as_str())
-        .bind(actor.user_id().as_uuid())
+        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -119,10 +107,9 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
         for key_scope in api_key.scopes() {
             sqlx::query(
                 "INSERT INTO merchant.api_key_scopes \
-                 (merchant_account_id, api_key_id, scope) \
-                 VALUES ($1, $2, $3::merchant.api_key_scope)",
+                 (api_key_id, scope) \
+                 VALUES ($1, $2::merchant.api_key_scope)",
             )
-            .bind(api_key.merchant_account_id().as_uuid())
             .bind(api_key.id().as_uuid())
             .bind(key_scope.as_str())
             .execute(&mut *transaction)
@@ -145,19 +132,18 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ApiKeyId>,
         limit: u16,
     ) -> Result<Vec<ApiKeyListItem>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_context(&mut transaction, actor).await?;
+        set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
         let rows = sqlx::query_as::<
             _,
             (
                 Uuid,
-                String,
                 String,
                 String,
                 String,
@@ -168,23 +154,20 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
             ),
         >(
             "SELECT key.id, key.name, key.key_identifier, key.display_suffix::text, \
-                    key.class::text, key.mode::text, \
+                    key.class::text, \
                     ARRAY( \
                         SELECT scope.scope::text \
                         FROM merchant.api_key_scopes AS scope \
-                        WHERE scope.merchant_account_id = key.merchant_account_id \
-                          AND scope.api_key_id = key.id \
+                        WHERE scope.api_key_id = key.id \
                         ORDER BY scope.scope::text \
                     ), \
                     key.created_at, key.revoked_at \
              FROM merchant.api_keys AS key \
-             WHERE key.merchant_account_id = $1 \
-               AND key.store_id = $2 \
-               AND ($3::uuid IS NULL OR key.id > $3) \
+             WHERE key.store_id = $1 \
+               AND ($2::uuid IS NULL OR key.id > $2) \
              ORDER BY key.id ASC \
-             LIMIT $4",
+             LIMIT $3",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(ApiKeyId::as_uuid))
         .bind(i64::from(limit))
@@ -201,7 +184,6 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
                     key_identifier,
                     display_suffix,
                     class,
-                    mode,
                     scopes,
                     created_at,
                     revoked_at,
@@ -213,8 +195,6 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
                         display_suffix,
                         class: ApiKeyClass::parse(&class)
                             .ok_or_else(|| corrupt_enum("API key class", &class))?,
-                        mode: ApiKeyMode::parse(&mode)
-                            .ok_or_else(|| corrupt_enum("API key mode", &mode))?,
                         scopes: scopes
                             .into_iter()
                             .map(|scope| {
@@ -232,15 +212,15 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
 
     async fn revoke(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         api_key_id: ApiKeyId,
         idempotency: &IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_context(&mut transaction, actor).await?;
+        set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
-        let scope = IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid());
+        let scope = IdempotencyScope::Store(actor.store_id().as_uuid());
         if idempotency::reserve(
             &mut transaction,
             &scope,
@@ -257,14 +237,13 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
         let result = sqlx::query(
             "UPDATE merchant.api_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
-                 revoked_by_user_id = COALESCE(revoked_by_user_id, $4), \
+                 revoked_by_user_id = COALESCE(revoked_by_user_id, $3), \
                  updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(api_key_id.as_uuid())
-        .bind(actor.user_id().as_uuid())
+        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -295,21 +274,9 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
             return Ok(None);
         };
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
-        let row = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                Uuid,
-                Option<Uuid>,
-                String,
-                String,
-                Vec<String>,
-                Uuid,
-            ),
-        >(
-            "SELECT api_key_id, merchant_account_id, store_id, sales_channel_id, \
-                    class, mode, scopes, created_by_user_id \
+        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, String, Vec<String>, Uuid)>(
+            "SELECT api_key_id, store_id, sales_channel_id, \
+                    class, scopes, created_by_user_id \
              FROM merchant.authenticate_api_key($1, $2)",
         )
         .bind(key_identifier)
@@ -319,25 +286,13 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
         .map_err(database_error)?;
 
         row.map(
-            |(
-                api_key_id,
-                merchant_account_id,
-                store_id,
-                sales_channel_id,
-                class,
-                mode,
-                scopes,
-                created_by_user_id,
-            )| {
+            |(api_key_id, store_id, sales_channel_id, class, scopes, created_by_user_id)| {
                 Ok(MachineActor {
                     api_key_id: ApiKeyId::from_uuid(api_key_id),
-                    merchant_account_id: MerchantAccountId::from_uuid(merchant_account_id),
                     store_id: StoreId::from_uuid(store_id),
                     sales_channel_id: sales_channel_id.map(SalesChannelId::from_uuid),
                     class: ApiKeyClass::parse(&class)
                         .ok_or_else(|| corrupt_enum("API key class", &class))?,
-                    mode: ApiKeyMode::parse(&mode)
-                        .ok_or_else(|| corrupt_enum("API key mode", &mode))?,
                     scopes: scopes
                         .into_iter()
                         .map(|scope| {
@@ -355,15 +310,25 @@ impl ApiKeyRepository for PostgresApiKeyRepository {
 
 async fn set_context(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    actor: &AdminActor,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.user_id', $1, true)")
-        .bind(actor.user_id().as_uuid().to_string())
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-        .bind(actor.merchant_account_id().as_uuid().to_string())
+    match actor {
+        AdminActor::Store(_) => {
+            sqlx::query("SELECT set_config('app.user_id', $1, true)")
+                .bind(actor.audit_user_id().as_uuid().to_string())
+                .execute(&mut **transaction)
+                .await
+                .map_err(database_error)?;
+        }
+        AdminActor::Machine(_) => {
+            sqlx::query("SELECT set_config('app.user_id', '', true)")
+                .execute(&mut **transaction)
+                .await
+                .map_err(database_error)?;
+        }
+    }
+    sqlx::query("SELECT set_config('app.store_id', $1, true)")
+        .bind(actor.store_id().as_uuid().to_string())
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
@@ -375,13 +340,7 @@ async fn require_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS ( \
-            SELECT 1 \
-            FROM merchant.stores AS store \
-            INNER JOIN merchant.merchant_accounts AS account \
-                ON account.id = store.merchant_account_id \
-            WHERE store.id = $1 AND account.status = 'active' \
-         )",
+        "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1 AND status = 'active')",
     )
     .bind(store_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -396,10 +355,8 @@ async fn require_store(
 fn parse_key_identifier(presented_key: &str) -> Option<&str> {
     let remainder = presented_key.strip_prefix("cc_")?;
     let (version, remainder) = remainder.split_once('_')?;
-    let (mode, remainder) = remainder.split_once('_')?;
     let (class, credential) = remainder.split_once('_')?;
     if version != "v1"
-        || ApiKeyMode::parse(mode).is_none()
         || ApiKeyClass::parse(class).is_none()
         || !credential.is_ascii()
         || credential.len() != 60
@@ -434,10 +391,7 @@ mod tests {
     use chaos_application::merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateApiKeyInput, MerchantQueries,
     };
-    use chaos_domain::{
-        identity::UserId,
-        merchant::{ApiKeyScope, MerchantAccountId},
-    };
+    use chaos_domain::{identity::UserId, merchant::ApiKeyScope};
     use sqlx::postgres::PgPoolOptions;
 
     use crate::repositories::PostgresMerchantReadRepository;
@@ -446,8 +400,7 @@ mod tests {
 
     #[test]
     fn generated_key_has_parseable_versioned_shape() {
-        let generated =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Secret, ApiKeyMode::Live);
+        let generated = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Secret);
         let plaintext = generated.plaintext.expose_secret();
 
         assert_eq!(
@@ -456,13 +409,13 @@ mod tests {
         );
         let expected_digest: [u8; 32] = Sha256::digest(plaintext.as_bytes()).into();
         assert_eq!(generated.secret_digest, expected_digest);
-        assert!(plaintext.starts_with("cc_v1_live_secret_"));
+        assert!(plaintext.starts_with("cc_v1_secret_"));
         assert!(plaintext.ends_with(&generated.display_suffix));
     }
 
     #[test]
     fn malformed_key_is_rejected_before_database_lookup() {
-        assert_eq!(parse_key_identifier("cc_v1_live_secret_short_secret"), None);
+        assert_eq!(parse_key_identifier("cc_v1_secret_short_secret"), None);
         assert_eq!(parse_key_identifier("not-a-key"), None);
     }
 
@@ -490,7 +443,6 @@ mod tests {
             .await
             .unwrap();
         let user_id = UserId::new();
-        let merchant_account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string();
 
@@ -501,30 +453,21 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'API Key Test')",
-        )
-        .bind(merchant_account_id.as_uuid())
-        .bind(format!("api-key-{unique_suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.merchant_account_memberships \
-             (merchant_account_id, user_id, role) VALUES ($1, $2, 'owner')",
-        )
-        .bind(merchant_account_id.as_uuid())
-        .bind(user_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.stores \
-             (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'api-test', 'API Test', 'active')",
+             (id, code, name, status) \
+             VALUES ($1, $2, 'API Test', 'active')",
         )
         .bind(store_id.as_uuid())
-        .bind(merchant_account_id.as_uuid())
+        .bind(format!("api-test-{unique_suffix}"))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.store_memberships \
+             (store_id, user_id, role) VALUES ($1, $2, 'owner')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(user_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
@@ -532,19 +475,15 @@ mod tests {
         let repository = Arc::new(PostgresApiKeyRepository::new(runtime_pool.clone()));
         let queries =
             MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(runtime_pool)));
-        let actor = queries
-            .authorize(user_id, merchant_account_id)
-            .await
-            .unwrap();
+        let actor = AdminActor::Store(queries.authorize(user_id, store_id).await.unwrap());
         let management =
             ApiKeyManagement::new(repository.clone(), Arc::new(SecureApiKeyMaterialGenerator));
         let authentication = ApiKeyAuthentication::new(repository);
         let creation_input = || CreateApiKeyInput {
-            actor,
+            actor: actor.clone(),
             store_id,
             name: "MCP production".into(),
             class: "secret".into(),
-            mode: "live".into(),
             scopes: vec!["mcp:tools".into(), "orders:read".into()],
             idempotency: IdempotencyRequest {
                 key: format!("create-{unique_suffix}"),
@@ -564,7 +503,10 @@ mod tests {
         let expected_digest: [u8; 32] = Sha256::digest(plaintext.expose_secret().as_bytes()).into();
         assert_eq!(stored_digest, expected_digest);
 
-        let page = management.list(actor, store_id, None, 20).await.unwrap();
+        let page = management
+            .list(actor.clone(), store_id, None, 20)
+            .await
+            .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, api_key_id);
         assert_eq!(page.items[0].revoked_at, None);
@@ -576,7 +518,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(machine_actor.merchant_account_id, merchant_account_id);
         assert_eq!(machine_actor.store_id, store_id);
         assert!(
             authentication
@@ -602,11 +543,11 @@ mod tests {
             request_fingerprint: [42; 32],
         };
         management
-            .revoke(actor, store_id, api_key_id, revoke_request())
+            .revoke(actor.clone(), store_id, api_key_id, revoke_request())
             .await
             .unwrap();
         management
-            .revoke(actor, store_id, api_key_id, revoke_request())
+            .revoke(actor.clone(), store_id, api_key_id, revoke_request())
             .await
             .unwrap();
         assert!(matches!(
@@ -620,19 +561,14 @@ mod tests {
 
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'store' AND scope_id = $1",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
-            .bind(merchant_account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(merchant_account_id.as_uuid())
+        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+            .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();

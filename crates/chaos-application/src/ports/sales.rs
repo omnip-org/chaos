@@ -154,7 +154,6 @@ pub struct OrderPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CheckoutExpiryJob {
     pub id: CheckoutId,
-    pub merchant_account_id: Uuid,
     pub store_id: Uuid,
     pub inventory_reservation_id: Option<InventoryReservationId>,
 }

@@ -1,16 +1,8 @@
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 
-CREATE TYPE merchant.merchant_account_status AS ENUM ('active', 'suspended', 'closed');
+CREATE TYPE merchant.store_role AS ENUM ('owner', 'member');
 
-CREATE TYPE merchant.merchant_role AS ENUM (
-    'owner',
-    'administrator',
-    'developer',
-    'manager',
-    'support'
-);
-
-CREATE TYPE merchant.store_status AS ENUM ('draft', 'active', 'archived');
+CREATE TYPE merchant.store_status AS ENUM ('active', 'inactive');
 
 CREATE TYPE merchant.sales_channel_kind AS ENUM (
     'web',
@@ -25,8 +17,6 @@ CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
 CREATE TYPE merchant.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
 
 CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
-
-CREATE TYPE merchant.api_key_mode AS ENUM ('test', 'live');
 
 CREATE TYPE merchant.api_key_scope AS ENUM (
     'analytics:write',
@@ -52,10 +42,13 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
     'payments:write',
     'media:read',
     'media:write',
-    'reviews:write'
+    'reviews:write',
+    'api_keys:read',
+    'api_keys:write',
+    'provider_secrets:write'
 );
 
-CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'merchant_account', 'shopper');
+CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 
 CREATE TYPE integration.queue_status AS ENUM ('pending', 'processing', 'processed', 'dead_letter');
 
@@ -126,52 +119,17 @@ CREATE TABLE identity.passkey_credentials (
     )
 );
 
-CREATE TABLE merchant.merchant_accounts (
-    id            UUID                                NOT NULL PRIMARY KEY,
-    slug          extensions.citext                   NOT NULL UNIQUE,
-    display_name  TEXT                                NOT NULL,
-    status        merchant.merchant_account_status    NOT NULL DEFAULT 'active',
-    created_at    TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at    TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT merchant_accounts_slug_format_check CHECK (
-        slug::text ~ '^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
-    ),
-    CONSTRAINT merchant_accounts_display_name_length_check CHECK (
-        length(trim(display_name)) BETWEEN 1 AND 120
-    )
-);
-
-CREATE TABLE merchant.merchant_account_memberships (
-    merchant_account_id  UUID                      NOT NULL,
-    user_id              UUID                      NOT NULL,
-    role                 merchant.merchant_role    NOT NULL,
-    created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (merchant_account_id, user_id),
-    FOREIGN KEY (merchant_account_id)
-        REFERENCES merchant.merchant_accounts(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE
-);
-
 CREATE TABLE merchant.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                     NOT NULL,
-    code                 extensions.citext        NOT NULL,
+    code                 extensions.citext        NOT NULL UNIQUE,
     name                 TEXT                     NOT NULL,
     default_region       CHAR(2)                  NOT NULL DEFAULT 'US',
     default_currency     CHAR(3)                  NOT NULL DEFAULT 'USD',
     default_locale       VARCHAR(63)              NOT NULL DEFAULT 'en-US',
-    status               merchant.store_status    NOT NULL DEFAULT 'draft',
+    status               merchant.store_status    NOT NULL DEFAULT 'inactive',
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, code),
-    UNIQUE (merchant_account_id, id),
-    FOREIGN KEY (merchant_account_id)
-        REFERENCES merchant.merchant_accounts(id),
     CONSTRAINT stores_code_format_check CHECK (
         code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
     ),
@@ -189,16 +147,29 @@ CREATE TABLE merchant.stores (
     )
 );
 
+CREATE TABLE merchant.store_memberships (
+    store_id    UUID                    NOT NULL,
+    user_id     UUID                    NOT NULL,
+    role        merchant.store_role     NOT NULL,
+    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (store_id, user_id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)
+        REFERENCES identity.users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE merchant.store_locales (
-    merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
     locale              VARCHAR(63) NOT NULL,
     created_by_user_id  UUID        NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, locale),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, locale),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
     CONSTRAINT store_locales_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
@@ -207,7 +178,6 @@ CREATE TABLE merchant.store_locales (
 
 CREATE TABLE merchant.store_locale_events (
     id                  UUID                             NOT NULL PRIMARY KEY,
-    merchant_account_id UUID                             NOT NULL,
     store_id            UUID                             NOT NULL,
     locale              VARCHAR(63)                      NOT NULL,
     previous_locale     VARCHAR(63),
@@ -215,9 +185,8 @@ CREATE TABLE merchant.store_locale_events (
     actor_user_id       UUID                             NOT NULL,
     occurred_at         TIMESTAMPTZ                      NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
     CONSTRAINT store_locale_events_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
@@ -232,7 +201,6 @@ CREATE TABLE merchant.store_locale_events (
 
 CREATE TABLE merchant.sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                              NOT NULL,
     store_id             UUID                              NOT NULL,
     code                 extensions.citext                 NOT NULL,
     name                 TEXT                              NOT NULL,
@@ -242,10 +210,9 @@ CREATE TABLE merchant.sales_channels (
     created_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, code),
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, code),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     CONSTRAINT sales_channels_code_format_check CHECK (
         code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
     ),
@@ -255,14 +222,13 @@ CREATE TABLE merchant.sales_channels (
 );
 
 CREATE TABLE merchant.store_currencies (
-    merchant_account_id  UUID       NOT NULL,
     store_id             UUID       NOT NULL,
     currency             CHAR(3)    NOT NULL,
     enabled              BOOLEAN    NOT NULL DEFAULT true,
 
-    PRIMARY KEY (merchant_account_id, store_id, currency),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, currency),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     CONSTRAINT store_currencies_currency_format_check CHECK (
         currency ~ '^[A-Z]{3}$'
     )
@@ -270,7 +236,6 @@ CREATE TABLE merchant.store_currencies (
 
 CREATE TABLE merchant.api_keys (
     id                   UUID                      NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                      NOT NULL,
     store_id             UUID                      NOT NULL,
     sales_channel_id     UUID,
     key_identifier       TEXT                      NOT NULL UNIQUE,
@@ -278,7 +243,6 @@ CREATE TABLE merchant.api_keys (
     display_suffix       CHAR(4)                   NOT NULL,
     name                 TEXT                      NOT NULL,
     class                merchant.api_key_class    NOT NULL,
-    mode                 merchant.api_key_mode     NOT NULL,
     created_by_user_id   UUID                      NOT NULL,
     revoked_by_user_id   UUID,
     expires_at           TIMESTAMPTZ,
@@ -287,11 +251,10 @@ CREATE TABLE merchant.api_keys (
     created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
     FOREIGN KEY (created_by_user_id)
         REFERENCES identity.users(id),
     FOREIGN KEY (revoked_by_user_id)
@@ -318,13 +281,12 @@ CREATE TABLE merchant.api_keys (
 );
 
 CREATE TABLE merchant.api_key_scopes (
-    merchant_account_id  UUID                      NOT NULL,
     api_key_id           UUID                      NOT NULL,
     scope                merchant.api_key_scope    NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, api_key_id, scope),
-    FOREIGN KEY (merchant_account_id, api_key_id)
-        REFERENCES merchant.api_keys(merchant_account_id, id) ON DELETE CASCADE
+    PRIMARY KEY (api_key_id, scope),
+    FOREIGN KEY (api_key_id)
+        REFERENCES merchant.api_keys(id) ON DELETE CASCADE
 );
 
 CREATE TABLE integration.idempotency_records (
@@ -359,7 +321,6 @@ CREATE TABLE integration.idempotency_records (
 
 CREATE TABLE integration.webhook_inbox (
     id                         UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id        UUID                     NOT NULL,
     store_id                   UUID                     NOT NULL,
     provider                   TEXT                     NOT NULL,
     provider_event_id          TEXT                     NOT NULL,
@@ -377,8 +338,8 @@ CREATE TABLE integration.webhook_inbox (
     created_at                 TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (provider, provider_event_id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
     CONSTRAINT webhook_inbox_attempts_nonnegative_check CHECK (attempts >= 0),
     CONSTRAINT webhook_inbox_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT webhook_inbox_processed_shape_check CHECK (
@@ -410,7 +371,6 @@ CREATE TABLE integration.event_consumer_registry (
 
 CREATE TABLE integration.outbox_events (
     id                   UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                     NOT NULL,
     store_id             UUID                     NOT NULL,
     aggregate_type       TEXT                     NOT NULL,
     aggregate_id         UUID                     NOT NULL,
@@ -425,8 +385,8 @@ CREATE TABLE integration.outbox_events (
     last_error           TEXT,
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (event_type)
         REFERENCES integration.event_consumer_registry(event_type),
     CONSTRAINT outbox_events_attempts_nonnegative_check CHECK (attempts >= 0),
@@ -450,24 +410,24 @@ CREATE INDEX sessions_user_expires_idx
 CREATE INDEX passkey_credentials_user_created_idx
     ON identity.passkey_credentials (user_id, created_at DESC);
 
-CREATE INDEX merchant_account_memberships_user_idx
-    ON merchant.merchant_account_memberships (user_id, merchant_account_id);
+CREATE INDEX store_memberships_user_idx
+    ON merchant.store_memberships (user_id, store_id);
 
-CREATE INDEX stores_merchant_account_status_idx
-    ON merchant.stores (merchant_account_id, status);
+CREATE INDEX stores_status_idx
+    ON merchant.stores (status);
 
 CREATE INDEX store_locale_events_store_occurred_idx
-    ON merchant.store_locale_events (merchant_account_id, store_id, occurred_at, id);
+    ON merchant.store_locale_events (store_id, occurred_at, id);
 
 CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
-    ON merchant.sales_channels (merchant_account_id, store_id)
+    ON merchant.sales_channels (store_id)
     WHERE is_default;
 
 CREATE INDEX sales_channels_store_status_idx
-    ON merchant.sales_channels (merchant_account_id, store_id, status);
+    ON merchant.sales_channels (store_id, status);
 
 CREATE INDEX api_keys_store_created_idx
-    ON merchant.api_keys (merchant_account_id, store_id, created_at DESC, id DESC);
+    ON merchant.api_keys (store_id, created_at DESC, id DESC);
 
 CREATE INDEX webhook_inbox_claim_idx
     ON integration.webhook_inbox (status, available_at, created_at, id)
@@ -485,8 +445,7 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM merchant.stores
-        WHERE merchant_account_id = OLD.merchant_account_id
-          AND id = OLD.store_id
+        WHERE id = OLD.store_id
           AND default_locale = OLD.locale
     ) THEN
         RAISE EXCEPTION 'the default Store Locale cannot be disabled'
@@ -502,11 +461,9 @@ CREATE FUNCTION merchant.authenticate_api_key(
 )
 RETURNS TABLE (
     api_key_id           UUID,
-    merchant_account_id  UUID,
     store_id             UUID,
     sales_channel_id     UUID,
     class                TEXT,
-    mode                 TEXT,
     scopes               TEXT[],
     created_by_user_id   UUID
 )
@@ -516,35 +473,27 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT api_key.id,
-           api_key.merchant_account_id,
            api_key.store_id,
            sales_channel.id,
            api_key.class::TEXT,
-           api_key.mode::TEXT,
            ARRAY(
                SELECT api_key_scope.scope::TEXT
                FROM merchant.api_key_scopes AS api_key_scope
-               WHERE api_key_scope.merchant_account_id = api_key.merchant_account_id
-                 AND api_key_scope.api_key_id = api_key.id
+               WHERE api_key_scope.api_key_id = api_key.id
                ORDER BY api_key_scope.scope::TEXT
            ),
            api_key.created_by_user_id
     FROM merchant.api_keys AS api_key
-    INNER JOIN merchant.merchant_accounts AS merchant_account
-        ON merchant_account.id = api_key.merchant_account_id
     INNER JOIN merchant.stores AS store
-        ON store.merchant_account_id = api_key.merchant_account_id
-       AND store.id = api_key.store_id
+        ON store.id = api_key.store_id
     LEFT JOIN merchant.sales_channels AS sales_channel
-        ON sales_channel.merchant_account_id = api_key.merchant_account_id
-       AND sales_channel.store_id = api_key.store_id
+        ON sales_channel.store_id = api_key.store_id
        AND sales_channel.id = COALESCE(
            api_key.sales_channel_id,
            (
                SELECT default_channel.id
                FROM merchant.sales_channels AS default_channel
-               WHERE default_channel.merchant_account_id = api_key.merchant_account_id
-                 AND default_channel.store_id = api_key.store_id
+               WHERE default_channel.store_id = api_key.store_id
                  AND default_channel.is_default
                LIMIT 1
            )
@@ -553,8 +502,7 @@ AS $$
       AND api_key.secret_digest = presented_secret_digest
       AND api_key.revoked_at IS NULL
       AND (api_key.expires_at IS NULL OR api_key.expires_at > CURRENT_TIMESTAMP)
-      AND merchant_account.status = 'active'
-      AND (api_key.mode = 'test' OR store.status = 'active');
+      AND store.status = 'active';
 $$;
 
 CREATE FUNCTION integration.queue_metrics()
@@ -603,7 +551,6 @@ CREATE FUNCTION integration.claim_outbox_events(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     event_type TEXT,
     payload JSONB,
@@ -648,7 +595,7 @@ AS $$
            locked_at = claimed_at
       FROM claimable
      WHERE event.id = claimable.id
-    RETURNING event.id, event.merchant_account_id, event.store_id,
+    RETURNING event.id, event.store_id,
               event.event_type, event.payload, event.attempts;
 $$;
 
@@ -660,7 +607,6 @@ CREATE FUNCTION integration.claim_fulfillment_events(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     event_type TEXT,
     payload JSONB,
@@ -705,7 +651,7 @@ AS $$
            locked_at = claimed_at
       FROM claimable
      WHERE event.id = claimable.id
-    RETURNING event.id, event.merchant_account_id, event.store_id,
+    RETURNING event.id, event.store_id,
               event.event_type, event.payload, event.attempts;
 $$;
 
@@ -717,7 +663,6 @@ CREATE FUNCTION integration.claim_webhook_events(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     provider TEXT,
     event_type TEXT,
@@ -757,7 +702,7 @@ AS $$
            locked_at = claimed_at
       FROM claimable
      WHERE event.id = claimable.id
-    RETURNING event.id, event.merchant_account_id, event.store_id, event.provider,
+    RETURNING event.id, event.store_id, event.provider,
               event.event_type, event.payload, event.attempts;
 $$;
 
@@ -835,11 +780,9 @@ CREATE TRIGGER store_locales_protect_default
 BEFORE DELETE ON merchant.store_locales
 FOR EACH ROW EXECUTE FUNCTION merchant.prevent_default_locale_removal();
 
-ALTER TABLE merchant.merchant_accounts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE merchant.merchant_account_memberships ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE merchant.stores ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE merchant.store_memberships ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE merchant.store_locales ENABLE ROW LEVEL SECURITY;
 
@@ -859,106 +802,106 @@ ALTER TABLE integration.webhook_inbox ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY merchant_account_isolation ON merchant.merchant_accounts
-    USING (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid)
-    WITH CHECK (id = nullif(current_setting('app.merchant_account_id', true), '')::uuid);
+CREATE POLICY store_isolation ON merchant.stores
+    USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY merchant_account_directory ON merchant.merchant_accounts
+CREATE POLICY store_directory ON merchant.stores
     FOR SELECT
     USING (
         EXISTS (
             SELECT 1
-            FROM merchant.merchant_account_memberships AS membership
-            WHERE membership.merchant_account_id = merchant_accounts.id
+            FROM merchant.store_memberships AS membership
+            WHERE membership.store_id = stores.id
               AND membership.user_id =
                     nullif(current_setting('app.user_id', true), '')::uuid
         )
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.merchant_account_memberships
+CREATE POLICY store_isolation ON merchant.store_memberships
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_membership_directory ON merchant.merchant_account_memberships
+CREATE POLICY store_membership_directory ON merchant.store_memberships
     FOR SELECT
     USING (
         user_id = nullif(current_setting('app.user_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.stores
+CREATE POLICY store_isolation ON merchant.store_locales
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.store_locales
+CREATE POLICY store_isolation ON merchant.store_locale_events
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.store_locale_events
+CREATE POLICY store_isolation ON merchant.store_currencies
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.store_currencies
+CREATE POLICY store_isolation ON merchant.sales_channels
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.sales_channels
+CREATE POLICY store_isolation ON merchant.api_keys
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON merchant.api_keys
+CREATE POLICY store_isolation ON merchant.api_key_scopes
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        EXISTS (
+            SELECT 1
+            FROM merchant.api_keys AS api_key
+            WHERE api_key.id = api_key_scopes.api_key_id
+              AND api_key.store_id =
+                    nullif(current_setting('app.store_id', true), '')::uuid
+        )
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    );
-
-CREATE POLICY merchant_account_isolation ON merchant.api_key_scopes
-    USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
-    )
-    WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        EXISTS (
+            SELECT 1
+            FROM merchant.api_keys AS api_key
+            WHERE api_key.id = api_key_scopes.api_key_id
+              AND api_key.store_id =
+                    nullif(current_setting('app.store_id', true), '')::uuid
+        )
     );
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
@@ -966,8 +909,8 @@ CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
         (scope = 'user' AND scope_id =
             nullif(current_setting('app.user_id', true), '')::uuid)
         OR
-        (scope = 'merchant_account' AND scope_id =
-            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        (scope = 'store' AND scope_id =
+            nullif(current_setting('app.store_id', true), '')::uuid)
         OR
         (scope = 'shopper' AND scope_id =
             nullif(current_setting('app.shopper_id', true), '')::uuid)
@@ -976,31 +919,31 @@ CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
         (scope = 'user' AND scope_id =
             nullif(current_setting('app.user_id', true), '')::uuid)
         OR
-        (scope = 'merchant_account' AND scope_id =
-            nullif(current_setting('app.merchant_account_id', true), '')::uuid)
+        (scope = 'store' AND scope_id =
+            nullif(current_setting('app.store_id', true), '')::uuid)
         OR
         (scope = 'shopper' AND scope_id =
             nullif(current_setting('app.shopper_id', true), '')::uuid)
     );
 
-CREATE POLICY merchant_account_isolation ON integration.webhook_inbox
+CREATE POLICY store_isolation ON integration.webhook_inbox
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON integration.outbox_events
+CREATE POLICY store_isolation ON integration.outbox_events
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
 INSERT INTO integration.event_consumer_registry (event_type, consumer_owner, description)

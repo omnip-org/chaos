@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     FieldViolation,
     catalog::{Product, ProductHandle, ProductId, ProductOptionValueId, Sku},
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId},
 };
 
 use crate::{
@@ -85,7 +85,6 @@ impl CreateProduct {
 
 fn build_product(input: &CreateProductInput) -> Result<Product, ApplicationError> {
     let mut product = Product::create(
-        input.actor.merchant_account_id(),
         input.store_id,
         ProductHandle::parse(input.handle.clone())?,
         input.title.clone(),
@@ -155,19 +154,7 @@ fn selection_violation(reason: &'static str) -> ApplicationError {
 
 fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner
-                    | MerchantRole::Administrator
-                    | MerchantRole::Developer
-                    | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::ProductsWrite) {
                 Ok(())
@@ -180,19 +167,16 @@ fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
 
 #[cfg(test)]
 mod tests {
-    use chaos_domain::{
-        identity::UserId,
-        merchant::{MerchantAccountId, MerchantRole},
-    };
+    use chaos_domain::{identity::UserId, merchant::StoreRole};
 
     use super::*;
 
     fn input() -> CreateProductInput {
         CreateProductInput {
-            actor: AdminActor::Merchant(crate::merchant::MerchantActor::new(
+            actor: AdminActor::Store(crate::merchant::StoreActor::new(
                 UserId::new(),
-                MerchantAccountId::new(),
-                MerchantRole::Manager,
+                StoreId::new(),
+                StoreRole::Member,
             )),
             store_id: StoreId::new(),
             handle: "classic-shirt".into(),

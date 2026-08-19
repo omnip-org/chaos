@@ -100,8 +100,8 @@ impl PostgresOrderManagementRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -119,22 +119,20 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         limit: u16,
         filter: &OrderListFilter,
     ) -> Result<OrderPage, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT DISTINCT o.id FROM sales.orders o \
-             JOIN sales.order_contacts contact ON contact.merchant_account_id = o.merchant_account_id \
-               AND contact.store_id = o.store_id AND contact.order_id = o.id \
-             LEFT JOIN sales.customer_shopper_links link ON link.merchant_account_id = o.merchant_account_id \
-               AND link.store_id = o.store_id AND link.shopper_id = o.shopper_id \
-             WHERE o.merchant_account_id = $1 AND o.store_id = $2 \
-               AND ($3::uuid IS NULL OR o.id < $3) \
-               AND ($4::text IS NULL OR o.status::text = $4) \
-               AND ($5::uuid IS NULL OR o.customer_id = $5 OR link.customer_id = $5) \
-               AND ($6::text IS NULL OR contact.email = lower($6)) \
-             ORDER BY o.id DESC LIMIT $7",
+             JOIN sales.order_contacts contact ON contact.store_id = o.store_id \
+               AND contact.order_id = o.id \
+             LEFT JOIN sales.customer_shopper_links link ON link.store_id = o.store_id \
+               AND link.shopper_id = o.shopper_id \
+             WHERE o.store_id = $1 \
+               AND ($2::uuid IS NULL OR o.id < $2) \
+               AND ($3::text IS NULL OR o.status::text = $3) \
+               AND ($4::uuid IS NULL OR o.customer_id = $4 OR link.customer_id = $4) \
+               AND ($5::text IS NULL OR contact.email = lower($5)) \
+             ORDER BY o.id DESC LIMIT $6",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(after)
         .bind(filter.status.map(OrderStatus::as_str))
@@ -148,14 +146,9 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         let mut items = Vec::with_capacity(ids.len().min(usize::from(limit)));
         for id in ids.into_iter().take(usize::from(limit)) {
             items.push(
-                load_order(
-                    &mut transaction,
-                    account_id,
-                    store_id,
-                    OrderId::from_uuid(id),
-                )
-                .await?
-                .ok_or_else(|| order_not_found(OrderId::from_uuid(id)))?,
+                load_order(&mut transaction, store_id, OrderId::from_uuid(id))
+                    .await?
+                    .ok_or_else(|| order_not_found(OrderId::from_uuid(id)))?,
             );
         }
         transaction.commit().await.map_err(database_error)?;
@@ -168,9 +161,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         store_id: StoreId,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin_for_admin(&actor).await?;
-        let detail = load_order(&mut transaction, account_id, store_id, order_id).await?;
+        let detail = load_order(&mut transaction, store_id, order_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -189,12 +181,11 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             OrderStatus::Cancelled => CANCEL_OPERATION,
             OrderStatus::Pending => return Err(invalid_target()),
         };
-        let account_id = actor.merchant_account_id().as_uuid();
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut transaction = self.begin_for_admin(&actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             operation,
             request,
         )
@@ -206,15 +197,14 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(OrderId::from_uuid)
                 .ok_or_else(corrupt_snapshot)?;
-            return load_order(&mut transaction, account_id, store_id, replay_id)
+            return load_order(&mut transaction, store_id, replay_id)
                 .await?
                 .ok_or_else(|| order_not_found(replay_id));
         }
         let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>)>(
             "SELECT checkout_id, status::text, inventory_reservation_id FROM sales.orders \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+             WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -231,7 +221,6 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         if let Some(reservation_id) = row.2.map(InventoryReservationId::from_uuid) {
             close_reservation(
                 &mut transaction,
-                account_id,
                 store_id,
                 reservation_id,
                 if target_status == OrderStatus::Confirmed {
@@ -245,10 +234,9 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         }
         let transition_id = Uuid::now_v7();
         sqlx::query(
-            "UPDATE sales.orders SET status = $4::sales.order_status, updated_at = $5 \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+            "UPDATE sales.orders SET status = $3::sales.order_status, updated_at = $4 \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(target_status.as_str())
@@ -258,13 +246,12 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO sales.order_transitions \
-             (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, \
+             (id, store_id, order_id, from_status, to_status, kind, \
               actor_user_id, occurred_at) \
-             VALUES ($1, $2, $3, $4, $5::sales.order_status, $6::sales.order_status, \
-                     $7::sales.order_transition_kind, $8, $9)",
+             VALUES ($1, $2, $3, $4::sales.order_status, $5::sales.order_status, \
+                     $6::sales.order_transition_kind, $7, $8)",
         )
         .bind(transition_id)
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(transition.from_status.map(OrderStatus::as_str))
@@ -278,9 +265,9 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         if target_status == OrderStatus::Confirmed {
             sqlx::query(
                 "INSERT INTO notification.email_deliveries \
-                 (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+                 (id, store_id, semantic_event_id, semantic_event_type, \
                   recipient_email, template_key, template_version, template_payload, provider) \
-                 SELECT $1, order_row.merchant_account_id, order_row.store_id, $2, \
+                 SELECT $1, order_row.store_id, $2, \
                         'order.confirmed', contact.email, 'order_confirmation', 1, \
                         jsonb_build_object( \
                             'order_id', order_row.id, \
@@ -289,16 +276,13 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                         ), 'resend' \
                    FROM sales.orders AS order_row \
                    INNER JOIN sales.order_contacts AS contact \
-                     ON contact.merchant_account_id = order_row.merchant_account_id \
-                    AND contact.store_id = order_row.store_id \
+                     ON contact.store_id = order_row.store_id \
                     AND contact.order_id = order_row.id \
-                  WHERE order_row.merchant_account_id = $3 \
-                    AND order_row.store_id = $4 AND order_row.id = $5 \
-                 ON CONFLICT (merchant_account_id, store_id, semantic_event_id) DO NOTHING",
+                  WHERE order_row.store_id = $3 AND order_row.id = $4 \
+                 ON CONFLICT (store_id, semantic_event_id) DO NOTHING",
             )
             .bind(Uuid::now_v7())
             .bind(transition_id)
-            .bind(account_id)
             .bind(store_id.as_uuid())
             .bind(order_id.as_uuid())
             .execute(&mut *transaction)
@@ -307,14 +291,14 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         }
         idempotency::complete(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             operation,
             request,
             200,
             json!({"id": order_id.as_uuid()}),
         )
         .await?;
-        let detail = load_order(&mut transaction, account_id, store_id, order_id)
+        let detail = load_order(&mut transaction, store_id, order_id)
             .await?
             .ok_or_else(|| order_not_found(order_id))?;
         transaction.commit().await.map_err(database_error)?;
@@ -324,7 +308,6 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
 
 async fn load_order(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
@@ -332,9 +315,8 @@ async fn load_order(
         "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -345,9 +327,8 @@ async fn load_order(
     };
     let locale = sqlx::query_scalar::<_, String>(
         "SELECT locale FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_one(&mut **transaction)
@@ -355,26 +336,24 @@ async fn load_order(
     .map_err(database_error)?;
     let derived_statuses = sqlx::query_as::<_, (String, String)>(
         "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let identity = load_order_identity(transaction, account_id, store_id, order_id).await?;
-    let shipping = load_order_shipping(transaction, account_id, store_id, order_id).await?;
-    let tax_rule = load_order_tax(transaction, account_id, store_id, order_id).await?;
-    let promotion = load_order_promotion(transaction, account_id, store_id, order_id).await?;
+    let identity = load_order_identity(transaction, store_id, order_id).await?;
+    let shipping = load_order_shipping(transaction, store_id, order_id).await?;
+    let tax_rule = load_order_tax(transaction, store_id, order_id).await?;
+    let promotion = load_order_promotion(transaction, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
                 subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 total_amount_minor, tax_inclusive FROM sales.order_lines \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY position",
+         WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -392,10 +371,9 @@ async fn load_order(
         ),
     >(
         "SELECT id, from_status::text, to_status::text, kind::text, actor_user_id, occurred_at \
-         FROM sales.order_transitions WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND order_id = $3 ORDER BY occurred_at, id",
+         FROM sales.order_transitions WHERE store_id = $1 \
+           AND order_id = $2 ORDER BY occurred_at, id",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -471,7 +449,6 @@ async fn load_order(
 
 async fn load_order_shipping(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<Option<ShippingSelection>, ApplicationError> {
@@ -479,9 +456,8 @@ async fn load_order_shipping(
         "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
                 estimated_min_days, estimated_max_days \
          FROM sales.order_shipping_selections \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -503,16 +479,14 @@ async fn load_order_shipping(
 
 async fn load_order_tax(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<TaxRuleSnapshot, ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
         "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
          FROM sales.order_tax_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -531,7 +505,6 @@ async fn load_order_tax(
 
 async fn load_order_promotion(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<Option<PromotionSnapshot>, ApplicationError> {
@@ -558,9 +531,8 @@ async fn load_order_promotion(
                 rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
                 minimum_subtotal_amount_minor, priority, starts_at, ends_at \
          FROM sales.order_promotion_calculations \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -598,15 +570,13 @@ async fn load_order_promotion(
 
 async fn load_order_identity(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<CheckoutIdentity, ApplicationError> {
     let contact = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT email::text, phone FROM sales.order_contacts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+         WHERE store_id = $1 AND order_id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -617,9 +587,8 @@ async fn load_order_identity(
         "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
                 administrative_area, postal_code, country_code::text \
          FROM sales.order_addresses \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 ORDER BY kind",
+         WHERE store_id = $1 AND order_id = $2 ORDER BY kind",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)

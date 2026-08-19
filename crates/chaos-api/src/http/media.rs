@@ -12,33 +12,33 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{MediaAssetId, ProductId, ProductVariantId},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, StoreContext,
     merchant::idempotency_key,
 };
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media",
+            "/stores/{store_id}/products/{product_id}/media",
             post(create_media).get(list_media),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/upload",
+            "/stores/{store_id}/products/{product_id}/media/{media_asset_id}/upload",
             post(refresh_upload),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/complete",
+            "/stores/{store_id}/products/{product_id}/media/{media_asset_id}/complete",
             post(complete_media),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/media/{media_asset_id}/archive",
+            "/stores/{store_id}/products/{product_id}/media/{media_asset_id}/archive",
             post(archive_media),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -46,13 +46,11 @@ pub fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct ProductPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
 }
 #[derive(Deserialize)]
 struct MediaPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
     media_asset_id: Uuid,
@@ -111,16 +109,15 @@ struct CreatedMediaData {
 async fn create_media(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPath>,
     ApiJson(body): ApiJson<CreateMediaBody>,
 ) -> Result<Response, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.product_id, &body))?;
     let created = state
         .media_administration
         .create(CreateMediaAssetInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             product_variant_id: body.product_variant_id.map(ProductVariantId::from_uuid),
@@ -142,14 +139,13 @@ async fn create_media(
 
 async fn list_media(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPath>,
 ) -> Result<ApiResponse<Vec<MediaData>>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let items = state
         .media_administration
         .list(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             ProductId::from_uuid(path.product_id),
         )
@@ -159,14 +155,13 @@ async fn list_media(
 
 async fn refresh_upload(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaPath>,
 ) -> Result<Response, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let upload = state
         .media_administration
         .refresh_upload(RefreshMediaUploadInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -179,7 +174,7 @@ async fn refresh_upload(
 async fn complete_media(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaPath>,
 ) -> Result<ApiResponse<MediaData>, ApiError> {
     action(state, headers, actor, path, true).await
@@ -187,7 +182,7 @@ async fn complete_media(
 async fn archive_media(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<MediaPath>,
 ) -> Result<ApiResponse<MediaData>, ApiError> {
     action(state, headers, actor, path, false).await
@@ -195,13 +190,12 @@ async fn archive_media(
 async fn action(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: MediaPath,
     complete: bool,
 ) -> Result<ApiResponse<MediaData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = MediaAssetActionInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         media_asset_id: MediaAssetId::from_uuid(path.media_asset_id),
@@ -261,13 +255,6 @@ fn no_store<T: Serialize>(response: ApiResponse<T>) -> Result<Response, ApiError
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
 }
-fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == path {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
-}
 fn mutation<T: Serialize>(headers: &HeaderMap, value: &T) -> Result<IdempotencyRequest, ApiError> {
     Ok(IdempotencyRequest {
         key: idempotency_key(headers)?,
@@ -299,7 +286,7 @@ mod tests {
     use chaos_domain::{
         catalog::MediaDescriptor,
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyMode, SalesChannelId},
+        merchant::{ApiKeyClass, ApiKeyId, SalesChannelId},
     };
     use chaos_infrastructure::repositories::{
         PostgresMediaAssetRepository, SecureApiKeyMaterialGenerator,
@@ -350,18 +337,21 @@ mod tests {
 
     async fn publishable_key(
         pool: &PgPool,
-        account_id: MerchantAccountId,
         store_id: StoreId,
         channel_id: SalesChannelId,
         user_id: UserId,
     ) -> GeneratedApiKeyMaterial {
-        let material =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable, ApiKeyMode::Live);
+        let material = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable);
         let key_id = ApiKeyId::new();
-        sqlx::query("INSERT INTO merchant.api_keys (id,merchant_account_id,store_id,sales_channel_id,key_identifier,secret_digest,display_suffix,name,class,mode,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,'Media Storefront','publishable','live',$8)")
-            .bind(key_id.as_uuid()).bind(account_id.as_uuid()).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(&material.key_identifier).bind(material.secret_digest.as_slice()).bind(&material.display_suffix).bind(user_id.as_uuid()).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO merchant.api_key_scopes (merchant_account_id,api_key_id,scope) VALUES ($1,$2,'catalog:read')")
-            .bind(account_id.as_uuid()).bind(key_id.as_uuid()).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO merchant.api_keys (id,store_id,sales_channel_id,key_identifier,secret_digest,display_suffix,name,class,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,'Media Storefront','publishable',$7)")
+            .bind(key_id.as_uuid()).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(&material.key_identifier).bind(material.secret_digest.as_slice()).bind(&material.display_suffix).bind(user_id.as_uuid()).execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.api_key_scopes (api_key_id,scope) VALUES ($1,'catalog:read')",
+        )
+        .bind(key_id.as_uuid())
+        .execute(pool)
+        .await
+        .unwrap();
         material
     }
 
@@ -377,9 +367,8 @@ mod tests {
             .unwrap();
         let owner = UserId::new();
         let support = UserId::new();
-        let account = MerchantAccountId::new();
-        let other_account = MerchantAccountId::new();
         let store = StoreId::new();
+        let other_store = StoreId::new();
         let channel = SalesChannelId::new();
         let product = ProductId::new();
         let variant = ProductVariantId::new();
@@ -388,8 +377,6 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string();
         let digest = "ab".repeat(32);
 
-        sqlx::query("INSERT INTO merchant.merchant_accounts (id,slug,display_name) VALUES ($1,$2,'Media Test'),($3,$4,'Other Media Test')")
-            .bind(account.as_uuid()).bind(format!("media-{suffix}")).bind(other_account.as_uuid()).bind(format!("media-other-{suffix}")).execute(&pool).await.unwrap();
         for (id, role) in [(owner, "owner"), (support, "support")] {
             sqlx::query("INSERT INTO identity.users (id,email) VALUES ($1,$2)")
                 .bind(id.as_uuid())
@@ -397,17 +384,22 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO merchant.merchant_account_memberships (merchant_account_id,user_id,role) VALUES ($1,$2,$3::merchant.merchant_role)")
-                .bind(account.as_uuid()).bind(id.as_uuid()).bind(role).execute(&pool).await.unwrap();
         }
-        sqlx::query("INSERT INTO merchant.stores (id,merchant_account_id,code,name,status) VALUES ($1,$2,'media','Media Store','active')")
-            .bind(store.as_uuid()).bind(account.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO merchant.sales_channels (id,merchant_account_id,store_id,code,name,kind,is_default,status) VALUES ($1,$2,$3,'web','Web','web',true,'active')")
-            .bind(channel.as_uuid()).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO merchant.store_currencies (merchant_account_id,store_id,currency) VALUES ($1,$2,'USD')")
-            .bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO catalog.products (id,merchant_account_id,store_id,handle,title,status) VALUES ($1,$2,$3,'media-product','Media Product','active')")
-            .bind(product.as_uuid()).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO merchant.stores (id,code,name,status) VALUES ($1,$2,'Media Store','active')")
+            .bind(store.as_uuid()).bind(format!("media-{}", &suffix[12..28])).execute(&pool).await.unwrap();
+        for (id, role) in [(owner, "owner"), (support, "member")] {
+            sqlx::query("INSERT INTO merchant.store_memberships (store_id,user_id,role) VALUES ($1,$2,$3::merchant.store_role)")
+                .bind(store.as_uuid()).bind(id.as_uuid()).bind(role).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO merchant.sales_channels (id,store_id,code,name,kind,is_default,status) VALUES ($1,$2,'web','Web','web',true,'active')")
+            .bind(channel.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO merchant.store_currencies (store_id,currency) VALUES ($1,'USD')")
+            .bind(store.as_uuid())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO catalog.products (id,store_id,handle,title,status) VALUES ($1,$2,'media-product','Media Product','active')")
+            .bind(product.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
         for (id, title) in [
             (variant, "Default"),
             (foreign_variant, "Foreign Product Variant"),
@@ -418,18 +410,18 @@ mod tests {
                 ProductId::new()
             };
             if id == foreign_variant {
-                sqlx::query("INSERT INTO catalog.products (id,merchant_account_id,store_id,handle,title,status) VALUES ($1,$2,$3,'foreign-media-product','Foreign Media Product','active')")
-                    .bind(parent.as_uuid()).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
+                sqlx::query("INSERT INTO catalog.products (id,store_id,handle,title,status) VALUES ($1,$2,'foreign-media-product','Foreign Media Product','active')")
+                    .bind(parent.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
             }
-            sqlx::query("INSERT INTO catalog.product_variants (id,merchant_account_id,store_id,product_id,title,status) VALUES ($1,$2,$3,$4,$5,'active')")
-                .bind(id.as_uuid()).bind(account.as_uuid()).bind(store.as_uuid()).bind(parent.as_uuid()).bind(title).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO catalog.product_variants (id,store_id,product_id,title,status) VALUES ($1,$2,$3,$4,'active')")
+                .bind(id.as_uuid()).bind(store.as_uuid()).bind(parent.as_uuid()).bind(title).execute(&pool).await.unwrap();
         }
-        sqlx::query("INSERT INTO catalog.product_publications (merchant_account_id,store_id,product_id,sales_channel_id) VALUES ($1,$2,$3,$4)")
-            .bind(account.as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(channel.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO pricing.price_lists (id,merchant_account_id,store_id,code,name,currency,status) VALUES ($1,$2,$3,'media-retail','Media Retail','USD','active')")
-            .bind(price_list).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO pricing.prices (id,merchant_account_id,store_id,price_list_id,product_variant_id,amount_minor) VALUES ($1,$2,$3,$4,$5,1000)")
-            .bind(Uuid::now_v7()).bind(account.as_uuid()).bind(store.as_uuid()).bind(price_list).bind(variant.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO catalog.product_publications (store_id,product_id,sales_channel_id) VALUES ($1,$2,$3)")
+            .bind(store.as_uuid()).bind(product.as_uuid()).bind(channel.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO pricing.price_lists (id,store_id,code,name,currency,status) VALUES ($1,$2,'media-retail','Media Retail','USD','active')")
+            .bind(price_list).bind(store.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO pricing.prices (id,store_id,price_list_id,product_variant_id,amount_minor) VALUES ($1,$2,$3,$4,1000)")
+            .bind(Uuid::now_v7()).bind(store.as_uuid()).bind(price_list).bind(variant.as_uuid()).execute(&pool).await.unwrap();
 
         let storage = Arc::new(FakeStorage(RwLock::new(None)));
         let mut owner_state = test_state(&database_url, owner);
@@ -440,8 +432,7 @@ mod tests {
             storage.clone(),
         ));
         let base = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/products/{}/media",
-            account.as_uuid(),
+            "/admin/v1/stores/{}/products/{}/media",
             store.as_uuid(),
             product.as_uuid()
         );
@@ -527,11 +518,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["data"]["status"], "ready");
 
-        let locale = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/locales/de",
-            account.as_uuid(),
-            store.as_uuid()
-        );
+        let locale = format!("/admin/v1/stores/{}/locales/de", store.as_uuid());
         assert_eq!(
             router(owner_state.clone())
                 .oneshot(request(
@@ -559,7 +546,7 @@ mod tests {
             StatusCode::OK
         );
 
-        let material = publishable_key(&pool, account, store, channel, owner).await;
+        let material = publishable_key(&pool, store, channel, owner).await;
         let auth = format!("Bearer {}", material.plaintext.expose_secret());
         let storefront = || {
             Request::get("/store/v1/products/media-product")
@@ -592,19 +579,17 @@ mod tests {
         );
 
         let support_state = test_state(&database_url, support);
-        assert_eq!(
-            router(support_state)
-                .oneshot(request(
-                    Method::POST,
-                    &format!("{base}/{media_id}/archive"),
-                    Some(&format!("support-{suffix}")),
-                    None
-                ))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::FORBIDDEN
-        );
+        let archive_response = router(support_state)
+            .oneshot(request(
+                Method::POST,
+                &format!("{base}/{media_id}/archive"),
+                Some(&format!("support-{suffix}")),
+                None,
+            ))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(archive_response, StatusCode::OK);
         assert_eq!(
             router(owner_state.clone())
                 .oneshot(request(
@@ -649,8 +634,8 @@ mod tests {
         );
 
         let mut transaction = runtime.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id',$1,true)")
-            .bind(other_account.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id',$1,true)")
+            .bind(other_store.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .unwrap();

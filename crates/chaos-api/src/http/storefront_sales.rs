@@ -795,7 +795,7 @@ mod tests {
         fulfillment::ShippingServiceId,
         identity::UserId,
         inventory::InventoryLocationId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
+        merchant::{ApiKeyClass, ApiKeyId, SalesChannelId, StoreId},
         payments::PaymentSecretReference,
         pricing::PriceListId,
     };
@@ -851,7 +851,6 @@ mod tests {
     impl AnalyticsCollectionRateLimiter for AllowAnalyticsCollection {
         async fn consume(
             &self,
-            _merchant_account_id: Uuid,
             _store_id: StoreId,
             _sales_channel_id: SalesChannelId,
             _anonymous_event_counts: &[(Uuid, u16)],
@@ -996,22 +995,19 @@ mod tests {
 
     async fn insert_key(
         pool: &PgPool,
-        account_id: MerchantAccountId,
         store_id: StoreId,
         user_id: UserId,
         scopes: &[&str],
     ) -> GeneratedApiKeyMaterial {
-        let material =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable, ApiKeyMode::Live);
+        let material = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable);
         let key_id = ApiKeyId::new();
         sqlx::query(
             "INSERT INTO merchant.api_keys \
-             (id, merchant_account_id, store_id, key_identifier, secret_digest, \
-              display_suffix, name, class, mode, created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Sales HTTP', 'publishable', 'live', $7)",
+             (id, store_id, key_identifier, secret_digest, \
+              display_suffix, name, class, created_by_user_id) \
+             VALUES ($1, $2, $3, $4, $5, 'Sales HTTP', 'publishable', $6)",
         )
         .bind(key_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(&material.key_identifier)
         .bind(material.secret_digest.as_slice())
@@ -1022,10 +1018,9 @@ mod tests {
         .unwrap();
         for scope in scopes {
             sqlx::query(
-                "INSERT INTO merchant.api_key_scopes (merchant_account_id, api_key_id, scope) \
-                 VALUES ($1, $2, $3::merchant.api_key_scope)",
+                "INSERT INTO merchant.api_key_scopes (api_key_id, scope) \
+                 VALUES ($1, $2::merchant.api_key_scope)",
             )
-            .bind(account_id.as_uuid())
             .bind(key_id.as_uuid())
             .bind(scope)
             .execute(pool)
@@ -1099,7 +1094,6 @@ mod tests {
         let suffix = Uuid::now_v7().simple().to_string();
         let provider_account_reference = format!("acct_{suffix}");
         let user_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
@@ -1119,114 +1113,91 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Sales HTTP')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("sales-http-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'other-sales-http', 'Other Sales HTTP', 'active')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Other Sales HTTP', 'active')",
         )
         .bind(other_store_id.as_uuid())
-        .bind(account_id.as_uuid())
+        .bind(format!("sales-o-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.merchant_account_memberships \
-             (merchant_account_id, user_id, role) VALUES ($1, $2, 'owner')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Sales HTTP', 'active')",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(format!("sales-{}", &suffix[12..28]))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO merchant.store_currencies (store_id, currency) \
+             VALUES ($1, 'USD')",
+        )
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.store_memberships \
+             (store_id, user_id, role) VALUES ($1, $2, 'owner')",
+        )
+        .bind(store_id.as_uuid())
         .bind(user_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.store_currencies (merchant_account_id, store_id, currency) \
-             VALUES ($1, $2, 'USD')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(other_store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'sales-http', 'Sales HTTP', 'active')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
         .bind(other_channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(other_store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.store_currencies (merchant_account_id, store_id, currency) \
-             VALUES ($1, $2, 'USD')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.promotions \
-             (id, merchant_account_id, store_id, handle, name, trigger, redemption_code, \
+             (id, store_id, handle, name, trigger, redemption_code, \
               value_kind, amount_minor, currency, minimum_subtotal_amount_minor, priority) \
-             VALUES ($1, $2, $3, 'save-three', 'Save three dollars', 'code', 'SAVE300', \
+             VALUES ($1, $2, 'save-three', 'Save three dollars', 'code', 'SAVE300', \
                      'fixed_amount', 300, 'USD', 1000, 10)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.promotions \
-             (id, merchant_account_id, store_id, handle, name, trigger, value_kind, \
+             (id, store_id, handle, name, trigger, value_kind, \
               rate_basis_points, currency, priority) \
-             VALUES ($1, $2, $3, 'automatic-ten', 'Automatic ten percent', 'automatic', \
+             VALUES ($1, $2, 'automatic-ten', 'Automatic ten percent', 'automatic', \
                      'percentage', 1000, 'USD', 5)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
-             (id, merchant_account_id, store_id, code, name, amount_minor, currency, \
+             (id, store_id, code, name, amount_minor, currency, \
               estimated_min_days, estimated_max_days) \
-             VALUES ($1, $2, $3, 'standard', 'Standard shipping', 500, 'USD', 2, 5)",
+             VALUES ($1, $2, 'standard', 'Standard shipping', 500, 'USD', 2, 5)",
         )
         .bind(shipping_service_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO fulfillment.shipping_service_regions \
-             (merchant_account_id, store_id, shipping_service_id, country_code) \
-             VALUES ($1, $2, $3, 'US')",
+             (store_id, shipping_service_id, country_code) \
+             VALUES ($1, $2, 'US')",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(shipping_service_id.as_uuid())
         .execute(&owner_pool)
@@ -1234,39 +1205,36 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.tax_rules \
-             (id, merchant_account_id, store_id, code, name, country_code, rate_basis_points) \
-             VALUES ($1, $2, $3, 'us-sales-tax', 'US sales tax', 'US', 900)",
+             (id, store_id, code, name, country_code, rate_basis_points) \
+             VALUES ($1, $2, 'us-sales-tax', 'US sales tax', 'US', 900)",
         )
         .bind(tax_rule_id)
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
         .bind(channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO payments.provider_accounts \
-             (id, merchant_account_id, store_id, provider, external_account_reference, \
+             (id, store_id, provider, external_account_reference, \
               credential_secret_reference, webhook_secret_reference, readiness_status, \
               readiness_snapshot, readiness_checked_at, readiness_valid_until, \
               readiness_reconcile_at, enabled) \
-             VALUES ($1, $2, $3, 'testpay', $4, 'test://credential', 'test://webhook', \
+             VALUES ($1, $2, 'testpay', $3, 'test://credential', 'test://webhook', \
                      'ready', '{\"blocker_codes\":[]}'::jsonb, CURRENT_TIMESTAMP, \
                      CURRENT_TIMESTAMP + INTERVAL '24 hours', \
                      CURRENT_TIMESTAMP + INTERVAL '6 hours', true)",
         )
         .bind(testpay_provider_account_id)
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(&provider_account_reference)
         .execute(&owner_pool)
@@ -1274,22 +1242,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, status) \
-             VALUES ($1, $2, $3, 'sales-product', 'Sales Product', 'active')",
+             (id, store_id, handle, title, status) \
+             VALUES ($1, $2, 'sales-product', 'Sales Product', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, status, track_inventory) \
-             VALUES ($1, $2, $3, $4, 'Default', 'active', true)",
+             (id, store_id, product_id, title, status, track_inventory) \
+             VALUES ($1, $2, $3, 'Default', 'active', true)",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -1297,10 +1263,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_publications \
-             (merchant_account_id, store_id, product_id, sales_channel_id) \
-             VALUES ($1, $2, $3, $4)",
+             (store_id, product_id, sales_channel_id) \
+             VALUES ($1, $2, $3)",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(channel_id.as_uuid())
@@ -1309,22 +1274,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency, tax_inclusive, status) \
-             VALUES ($1, $2, $3, 'usd', 'USD', 'USD', true, 'active')",
+             (id, store_id, code, name, currency, tax_inclusive, status) \
+             VALUES ($1, $2, 'usd', 'USD', 'USD', true, 'active')",
         )
         .bind(price_list_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.prices \
-             (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 1250)",
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 1250)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -1333,22 +1296,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO inventory.inventory_locations \
-             (id, merchant_account_id, store_id, code, name) \
-             VALUES ($1, $2, $3, 'primary', 'Primary')",
+             (id, store_id, code, name) \
+             VALUES ($1, $2, 'primary', 'Primary')",
         )
         .bind(location_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO inventory.stock_items \
-             (id, merchant_account_id, store_id, inventory_location_id, product_variant_id, \
-              on_hand_quantity) VALUES ($1, $2, $3, $4, $5, 2)",
+             (id, store_id, inventory_location_id, product_variant_id, \
+              on_hand_quantity) VALUES ($1, $2, $3, $4, 2)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(location_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -1358,23 +1319,14 @@ mod tests {
 
         let full_key = insert_key(
             &owner_pool,
-            account_id,
             store_id,
             user_id,
             &["analytics:write", "carts:write", "checkout:write"],
         )
         .await;
-        let catalog_key = insert_key(
-            &owner_pool,
-            account_id,
-            store_id,
-            user_id,
-            &["catalog:read"],
-        )
-        .await;
+        let catalog_key = insert_key(&owner_pool, store_id, user_id, &["catalog:read"]).await;
         let other_store_key = insert_key(
             &owner_pool,
-            account_id,
             other_store_id,
             user_id,
             &["analytics:write", "carts:write", "checkout:write"],
@@ -1450,7 +1402,7 @@ mod tests {
             chaos_application::ports::PaymentWebhookConfigurationRepository::webhook_secret_references(
                 payment_repository.as_ref(),
                 "testpay",
-                "unknown-account",
+                "unknown-store",
             )
             .await
             .unwrap()
@@ -1470,11 +1422,8 @@ mod tests {
         ));
         let app = router(state);
 
-        let analytics_policy_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-policy",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let analytics_policy_uri =
+            format!("/admin/v1/stores/{}/analytics-policy", store_id.as_uuid());
         let default_analytics_policy = app
             .clone()
             .oneshot(request(Method::GET, &analytics_policy_uri, None, None))
@@ -1495,8 +1444,7 @@ mod tests {
             false
         );
         let analytics_destinations_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-destinations",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/analytics-destinations",
             store_id.as_uuid()
         );
         for (provider, reference, source_url, secret_reference) in [
@@ -1627,10 +1575,10 @@ mod tests {
         assert_eq!(analytics["data"]["discarded_for_consent"], 1);
         let attribution_input: (String, String, String, String, String) = sqlx::query_as(
             "SELECT landing_path, referrer_domain, campaign_source, campaign_medium, campaign_name \
-             FROM analytics.behavior_events WHERE merchant_account_id = $1 AND store_id = $2 \
+             FROM analytics.behavior_events WHERE store_id = $2 \
                AND event_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(analytics_event_id)
         .fetch_one(&owner_pool)
@@ -1855,10 +1803,10 @@ mod tests {
             "SELECT event_count, page_view_count, active_engagement_milliseconds, \
                         started_at, last_event_at \
                  FROM analytics.sessions \
-                 WHERE merchant_account_id = $1 AND store_id = $2 \
+                 WHERE store_id = $2 \
                    AND anonymous_id = $3 AND client_session_id = $4",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(session_anonymous_id)
         .bind(session_client_id)
@@ -2008,9 +1956,9 @@ mod tests {
         );
         let retention_window: (time::OffsetDateTime, time::OffsetDateTime) = sqlx::query_as(
             "SELECT received_at, retention_expires_at FROM analytics.behavior_events \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND event_id = $3",
+             WHERE store_id = $2 AND event_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(retained_policy_event_id)
         .fetch_one(&owner_pool)
@@ -2020,21 +1968,17 @@ mod tests {
             retention_window.1 - retention_window.0,
             time::Duration::days(7)
         );
-        let cross_account_policy = app
+        let store_policy = app
             .clone()
             .oneshot(request(
                 Method::GET,
-                &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-policy",
-                    Uuid::now_v7(),
-                    store_id.as_uuid()
-                ),
+                &format!("/admin/v1/stores/{}/analytics-policy", store_id.as_uuid()),
                 None,
                 None,
             ))
             .await
             .unwrap();
-        assert_eq!(cross_account_policy.status(), StatusCode::FORBIDDEN);
+        assert_eq!(store_policy.status(), StatusCode::OK);
         let analytics_rows: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events WHERE event_id = $1",
         )
@@ -2043,58 +1987,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(analytics_rows, 2);
-        let isolated_account_id = MerchantAccountId::new();
         let isolated_store_id = StoreId::new();
         let isolated_channel_id = SalesChannelId::new();
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Isolated Analytics')",
-        )
-        .bind(isolated_account_id.as_uuid())
-        .bind(format!("isolated-analytics-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name, status) \
-             VALUES ($1, $2, 'isolated', 'Isolated', 'active')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'isolated', 'active')",
         )
         .bind(isolated_store_id.as_uuid())
-        .bind(isolated_account_id.as_uuid())
+        .bind(format!("isolated-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
         .bind(isolated_channel_id.as_uuid())
-        .bind(isolated_account_id.as_uuid())
         .bind(isolated_store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         let isolated_behavior_event_id: Uuid = sqlx::query_scalar(
             "INSERT INTO analytics.behavior_events \
-             (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
+             (id, event_id, store_id, sales_channel_id, event_name, \
               schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
               advertising_storage_consent, advertising_export_eligible, consent_policy_version, collection_policy_version, \
               properties, landing_path, occurred_at, received_at, retention_expires_at) \
-             VALUES (uuidv7(),uuidv7(),$1,$2,$3,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
+             VALUES (uuidv7(),uuidv7(),$1,$2,'page_viewed',1,'browser',uuidv7(),uuidv7(), \
                      true,false,false,'cmp-v1','builtin-v1','{\"path\":\"/\"}'::jsonb, \
                      '/',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP + INTERVAL '30 days') \
              RETURNING id",
         )
-        .bind(isolated_account_id.as_uuid())
         .bind(isolated_store_id.as_uuid())
         .bind(isolated_channel_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
         .unwrap();
         let mut analytics_rls = runtime_pool.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *analytics_rls)
             .await
             .unwrap();
@@ -2103,21 +2035,20 @@ mod tests {
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
-        assert_eq!(visible_analytics_rows, 7);
+        assert_eq!(visible_analytics_rows, 6);
         let visible_analytics_sessions: i64 =
             sqlx::query_scalar("SELECT count(*) FROM analytics.sessions")
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
-        assert_eq!(visible_analytics_sessions, 3);
-        let cross_account_retention_update: (i64, i64) =
-            sqlx::query_as("SELECT * FROM analytics.apply_store_retention_policy($1,$2,1)")
-                .bind(isolated_account_id.as_uuid())
+        assert_eq!(visible_analytics_sessions, 2);
+        let cross_store_retention_update: (i64, i64) =
+            sqlx::query_as("SELECT * FROM analytics.apply_store_retention_policy($1,1)")
                 .bind(isolated_store_id.as_uuid())
                 .fetch_one(&mut *analytics_rls)
                 .await
                 .unwrap();
-        assert_eq!(cross_account_retention_update, (0, 0));
+        assert_eq!(cross_store_retention_update, (0, 0));
         analytics_rls.rollback().await.unwrap();
 
         let retention_purge = analytics_workers
@@ -2128,9 +2059,9 @@ mod tests {
         assert_eq!(retention_purge.sessions_deleted, 2);
         let retained_main_store_events: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $2",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -2138,9 +2069,9 @@ mod tests {
         assert_eq!(retained_main_store_events, 0);
         let retained_other_store_events: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $2",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(other_store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -2157,8 +2088,7 @@ mod tests {
         assert_eq!(isolated_retention_days, 30.0);
 
         let provider_accounts_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/payment-provider-accounts",
             store_id.as_uuid()
         );
         let ready_testpay = app
@@ -2340,7 +2270,7 @@ mod tests {
                 Some(json!({
                     "provider": "blockedpay",
                     "display_name": "Blocked Provider",
-                    "external_account_reference": format!("blocked-account-{suffix}"),
+                    "external_account_reference": format!("blocked-store-{suffix}"),
                     "credential_secret_reference": "test://blocked-credential",
                     "webhook_secret_reference": "test://blocked-webhook",
                     "enabled": true
@@ -2519,8 +2449,7 @@ mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/payment-provider-accounts/{stripe_account_id}",
-                    account_id.as_uuid(),
+                    "/admin/v1/stores/{}/payment-provider-accounts/{stripe_account_id}",
                     other_store_id.as_uuid()
                 ),
                 None,
@@ -2528,7 +2457,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(cross_store_provider.status(), StatusCode::NOT_FOUND);
+        assert_eq!(cross_store_provider.status(), StatusCode::FORBIDDEN);
 
         let unauthorized = app
             .clone()
@@ -2846,9 +2775,9 @@ mod tests {
         );
         let stored_identity_customer_id: Uuid = sqlx::query_scalar(
             "SELECT customer_id FROM analytics.identity_links \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3",
+             WHERE store_id = $2 AND anonymous_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(identity_anonymous_id)
         .fetch_one(&owner_pool)
@@ -2857,8 +2786,7 @@ mod tests {
         assert_eq!(stored_identity_customer_id.to_string(), customer_id);
 
         let erasure_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/analytics-erasure-requests",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/analytics-erasure-requests",
             store_id.as_uuid()
         );
         let customer_erasure_body = json!({"customer_id": customer_id});
@@ -2934,9 +2862,9 @@ mod tests {
         assert_eq!(completed_erasure["data"]["identity_links_deleted"], 1);
         let retained_customer_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM sales.customers \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $2 AND id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(&customer_id).unwrap())
         .fetch_one(&owner_pool)
@@ -2945,7 +2873,7 @@ mod tests {
         assert_eq!(retained_customer_count, 1);
         let mut immutable_erasure_audit = runtime_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *immutable_erasure_audit)
             .await
             .unwrap();
@@ -3040,9 +2968,9 @@ mod tests {
         );
         let surviving_other_store_analytics: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.behavior_events \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $2",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(other_store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -3453,9 +3381,7 @@ mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/orders?customer_id={customer_id}&email=guest%40example.com&status=pending",
-                    account_id.as_uuid(),
-                    store_id.as_uuid()
+                    "/admin/v1/stores/{}/orders?customer_id={customer_id}&email=guest%40example.com&status=pending", store_id.as_uuid()
                 ),
                 None,
                 None,
@@ -3502,8 +3428,7 @@ mod tests {
             .unwrap();
         assert_eq!(unrelated_order.status(), StatusCode::FORBIDDEN);
 
-        let orders_read_key =
-            insert_key(&owner_pool, account_id, store_id, user_id, &["orders:read"]).await;
+        let orders_read_key = insert_key(&owner_pool, store_id, user_id, &["orders:read"]).await;
         let orders_read_secret = orders_read_key.plaintext.expose_secret();
         let machine_order_lookup = app
             .clone()
@@ -3537,7 +3462,7 @@ mod tests {
 
         let mut snapshot_connection = runtime_pool.acquire().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, false)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *snapshot_connection)
             .await
             .unwrap();
@@ -3726,8 +3651,8 @@ mod tests {
         let payment_attempt = response_json(payment_attempt).await;
         let payment_attempt_id = payment_attempt["data"]["id"].as_str().unwrap();
         assert_eq!(payment_attempt["data"]["status"], "pending");
-        let payment_outbox = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
-            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
+        let payment_outbox = sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, store_id, event_type, payload, attempts \
              FROM integration.outbox_events \
              WHERE aggregate_id = $1 AND event_type = 'payment.create_requested'",
         )
@@ -3737,11 +3662,10 @@ mod tests {
         .unwrap();
         let payment_job = QueueJob {
             id: payment_outbox.0,
-            merchant_account_id: payment_outbox.1,
-            store_id: payment_outbox.2,
-            event_type: payment_outbox.3,
-            payload: payment_outbox.4,
-            attempts: payment_outbox.5 as u32,
+            store_id: payment_outbox.1,
+            event_type: payment_outbox.2,
+            payload: payment_outbox.3,
+            attempts: payment_outbox.4 as u32,
         };
         let payment_command = payment_repository
             .prepare_provider_command(&payment_job)
@@ -3821,7 +3745,7 @@ mod tests {
             let event = json!({
                 "id": format!("{event_id}-{suffix}"),
                 "event_type": event_type,
-                "account": &provider_account_reference,
+                "store": &provider_account_reference,
                 "object": "pay_provider_1",
                 "aggregate_id": payment_attempt_id,
             });
@@ -3867,11 +3791,11 @@ mod tests {
         let order_notification = sqlx::query_as::<_, (String, String, i32, Value)>(
             "SELECT recipient_email::text, template_key, template_version, template_payload \
              FROM notification.email_deliveries \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
+             WHERE store_id = $2 \
                AND semantic_event_type = 'order.confirmed' \
                AND template_payload ->> 'order_id' = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(order_id)
         .fetch_one(&owner_pool)
@@ -3882,11 +3806,7 @@ mod tests {
         assert_eq!(order_notification.2, 1);
         assert_eq!(order_notification.3["total_amount_minor"], 2700);
 
-        let admin_order_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let admin_order_uri = format!("/admin/v1/stores/{}/orders/{order_id}", store_id.as_uuid());
         let invalid_cancel = app
             .clone()
             .oneshot(request(
@@ -3904,8 +3824,7 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/payment-attempts/{payment_attempt_id}/refunds",
-                    account_id.as_uuid(),
+                    "/admin/v1/stores/{}/payment-attempts/{payment_attempt_id}/refunds",
                     store_id.as_uuid()
                 ),
                 Some("refund"),
@@ -3916,8 +3835,8 @@ mod tests {
         assert_eq!(refund.status(), StatusCode::CREATED);
         let refund = response_json(refund).await;
         let refund_id = refund["data"]["id"].as_str().unwrap();
-        let refund_outbox = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
-            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
+        let refund_outbox = sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, store_id, event_type, payload, attempts \
              FROM integration.outbox_events \
              WHERE aggregate_id = $1 AND event_type = 'refund.create_requested'",
         )
@@ -3927,11 +3846,10 @@ mod tests {
         .unwrap();
         let refund_job = QueueJob {
             id: refund_outbox.0,
-            merchant_account_id: refund_outbox.1,
-            store_id: refund_outbox.2,
-            event_type: refund_outbox.3,
-            payload: refund_outbox.4,
-            attempts: refund_outbox.5 as u32,
+            store_id: refund_outbox.1,
+            event_type: refund_outbox.2,
+            payload: refund_outbox.3,
+            attempts: refund_outbox.4 as u32,
         };
         let refund_command = payment_repository
             .prepare_provider_command(&refund_job)
@@ -3957,7 +3875,7 @@ mod tests {
             .oneshot(webhook_request(json!({
                 "id": format!("evt_refund-{suffix}"),
                 "event_type": "refund.succeeded",
-                "account": &provider_account_reference,
+                "store": &provider_account_reference,
                 "object": "refund_provider_1",
                 "aggregate_id": refund_id,
             })))
@@ -4021,11 +3939,11 @@ mod tests {
         let recoverable_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, $3, 'payment_attempt', $4, 'payment.create_requested', '{}'::jsonb)",
         )
         .bind(recoverable_id)
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::now_v7())
         .execute(&owner_pool)
@@ -4079,12 +3997,12 @@ mod tests {
         let recoverable_webhook_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO integration.webhook_inbox \
-             (id, merchant_account_id, store_id, provider, provider_event_id, event_type, \
+             (id, store_id, provider, provider_event_id, event_type, \
               external_account_reference, payload, available_at, verified_at) \
              VALUES ($1, $2, $3, 'testpay', $4, 'payment.authorized', $5, '{}'::jsonb, $6, $6)",
         )
         .bind(recoverable_webhook_id)
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(format!("recoverable-{suffix}"))
         .bind(&provider_account_reference)
@@ -4121,11 +4039,11 @@ mod tests {
         let dead_letter_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, $3, 'payment_attempt', $4, 'payment.create_requested', '{}'::jsonb)",
         )
         .bind(dead_letter_id)
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::now_v7())
         .execute(&owner_pool)
@@ -4171,8 +4089,7 @@ mod tests {
         assert_eq!(dead_letter, ("dead_letter".into(), 8));
 
         let fulfillment_base = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}/fulfillments",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/orders/{order_id}/fulfillments",
             store_id.as_uuid()
         );
         let fulfillment = app
@@ -4213,8 +4130,7 @@ mod tests {
         assert_eq!(excessive_fulfillment.status(), StatusCode::CONFLICT);
 
         let fulfillment_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/fulfillments/{fulfillment_id}",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/fulfillments/{fulfillment_id}",
             store_id.as_uuid()
         );
         let shipped = app
@@ -4309,8 +4225,7 @@ mod tests {
         assert_eq!(transition_count, 1);
 
         let provider_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/shipping-provider-accounts",
             store_id.as_uuid()
         );
         let shipping_provider_account = app
@@ -4361,8 +4276,7 @@ mod tests {
         let provider_fulfillment = response_json(provider_fulfillment).await;
         let provider_fulfillment_id = provider_fulfillment["data"]["id"].as_str().unwrap();
         let provider_fulfillment_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/fulfillments/{provider_fulfillment_id}",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/fulfillments/{provider_fulfillment_id}",
             store_id.as_uuid()
         );
         let quote_body = json!({
@@ -4377,8 +4291,7 @@ mod tests {
             .oneshot(request(
                 Method::POST,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/fulfillments/{provider_fulfillment_id}/shipping-rates",
-                    account_id.as_uuid(),
+                    "/admin/v1/stores/{}/fulfillments/{provider_fulfillment_id}/shipping-rates",
                     other_store_id.as_uuid()
                 ),
                 Some("cross-store-provider-rate-quote"),
@@ -4568,8 +4481,7 @@ mod tests {
         assert_eq!(cancellation_status, "cancelled");
 
         let return_base = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/orders/{order_id}/returns",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/orders/{order_id}/returns",
             store_id.as_uuid()
         );
         let returned = app
@@ -4591,8 +4503,7 @@ mod tests {
         let returned = response_json(returned).await;
         let return_id = returned["data"]["id"].as_str().unwrap();
         let return_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/returns/{return_id}",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/returns/{return_id}",
             store_id.as_uuid()
         );
         for (operation, key, body, expected) in [
@@ -4736,10 +4647,10 @@ mod tests {
         );
         let commerce_facts: Vec<(String, Option<i64>, Option<String>)> = sqlx::query_as(
             "SELECT fact_name::text, amount_minor, currency::text \
-             FROM analytics.commerce_facts WHERE merchant_account_id = $1 AND store_id = $2 \
+             FROM analytics.commerce_facts WHERE store_id = $2 \
              ORDER BY fact_name",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_all(&owner_pool)
         .await
@@ -4819,10 +4730,10 @@ mod tests {
                         advertising_export_eligible, model_version, consent_policy_version, \
                         collection_policy_version \
                    FROM analytics.attribution_results \
-                  WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 \
+                  WHERE store_id = $2 AND order_id = $3 \
                   ORDER BY attribution_model",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(order_id).unwrap())
         .fetch_all(&owner_pool)
@@ -4844,9 +4755,9 @@ mod tests {
         assert!(attribution_results[1].3);
         let pending_exports: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.export_deliveries \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND delivery_status = 'pending'",
+             WHERE store_id = $2 AND delivery_status = 'pending'",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -4882,9 +4793,7 @@ mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}",
-                    account_id.as_uuid(),
-                    store_id.as_uuid()
+                    "/admin/v1/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}", store_id.as_uuid()
                 ),
                 None,
                 None,
@@ -4908,8 +4817,7 @@ mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from=2025-01-01&to=2025-04-03",
-                    account_id.as_uuid(),
+                    "/admin/v1/stores/{}/analytics-reports/daily?from=2025-01-01&to=2025-04-03",
                     store_id.as_uuid()
                 ),
                 None,
@@ -4926,9 +4834,7 @@ mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}",
-                    isolated_account_id.as_uuid(),
-                    isolated_store_id.as_uuid()
+                    "/admin/v1/stores/{}/analytics-reports/daily?from={report_date}&to={report_date}", isolated_store_id.as_uuid()
                 ),
                 None,
                 None,
@@ -4938,7 +4844,7 @@ mod tests {
         assert_eq!(cross_account_daily_reports.status(), StatusCode::FORBIDDEN);
         let mut reporting_rls = reporting_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *reporting_rls)
             .await
             .unwrap();
@@ -4948,8 +4854,8 @@ mod tests {
                 .await
                 .unwrap();
         assert!(visible_daily_commerce > 0);
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(isolated_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(isolated_store_id.as_uuid().to_string())
             .execute(&mut *reporting_rls)
             .await
             .unwrap();
@@ -4969,13 +4875,13 @@ mod tests {
 
         let mut attribution_rebuild = runtime_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *attribution_rebuild)
             .await
             .unwrap();
         let rebuilt: i64 =
             sqlx::query_scalar("SELECT analytics.rebuild_store_attribution($1,$2,1::smallint,$3)")
-                .bind(account_id.as_uuid())
+                .bind(store_id.as_uuid())
                 .bind(store_id.as_uuid())
                 .bind(test_clock.now() + time::Duration::minutes(8))
                 .fetch_one(&mut *attribution_rebuild)
@@ -4996,9 +4902,9 @@ mod tests {
         );
         let rebuilt_result_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.attribution_results \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+             WHERE store_id = $2 AND order_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(order_id).unwrap())
         .fetch_one(&owner_pool)
@@ -5007,7 +4913,7 @@ mod tests {
         assert_eq!(rebuilt_result_count, 2);
         let mut attribution_rls = runtime_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *attribution_rls)
             .await
             .unwrap();
@@ -5017,8 +4923,8 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(visible_attribution_results, 2);
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(isolated_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(isolated_store_id.as_uuid().to_string())
             .execute(&mut *attribution_rls)
             .await
             .unwrap();
@@ -5074,9 +4980,9 @@ mod tests {
         );
         let erased_attribution_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM analytics.attribution_results \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3",
+             WHERE store_id = $2 AND order_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(order_id).unwrap())
         .fetch_one(&owner_pool)
@@ -5084,10 +4990,10 @@ mod tests {
         .unwrap();
         assert_eq!(erased_attribution_count, 0);
         let replay_fact_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM analytics.commerce_facts WHERE merchant_account_id = $1 \
+            "SELECT id FROM analytics.commerce_facts WHERE  \
              AND store_id = $2 AND fact_name = 'payment_captured'",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -5117,7 +5023,7 @@ mod tests {
         assert_eq!(commerce_fact_count, 6);
         let mut commerce_fact_rls = runtime_pool.begin().await.unwrap();
         sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(account_id.as_uuid().to_string())
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *commerce_fact_rls)
             .await
             .unwrap();
@@ -5127,8 +5033,8 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(visible_commerce_facts, 6);
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(isolated_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(isolated_store_id.as_uuid().to_string())
             .execute(&mut *commerce_fact_rls)
             .await
             .unwrap();
@@ -5197,9 +5103,9 @@ mod tests {
         );
         let restocks: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM inventory.stock_ledger_entries WHERE kind = 'return_restock' \
-             AND merchant_account_id = $1 AND store_id = $2",
+             AND store_id = $2",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
@@ -5208,9 +5114,9 @@ mod tests {
 
         let stock: (i64, i64) = sqlx::query_as(
             "SELECT on_hand_quantity, reserved_quantity FROM inventory.stock_items \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_variant_id = $3",
+             WHERE store_id = $2 AND product_variant_id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(variant_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -5219,9 +5125,9 @@ mod tests {
         assert_eq!(stock, (1, 0));
         let reservation_status: String = sqlx::query_scalar(
             "SELECT status::text FROM inventory.inventory_reservations \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $2",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await

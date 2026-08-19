@@ -44,8 +44,8 @@ impl PostgresStorefrontCatalogRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -76,23 +76,19 @@ impl PostgresStorefrontCatalogRepository {
                  SELECT price_list.id, price_list.currency::text, price_list.tax_inclusive \
                  FROM pricing.price_lists AS price_list \
                  INNER JOIN merchant.stores AS store \
-                   ON store.merchant_account_id = price_list.merchant_account_id \
-                  AND store.id = price_list.store_id \
+                   ON store.id = price_list.store_id \
                  INNER JOIN merchant.sales_channels AS channel \
-                   ON channel.merchant_account_id = store.merchant_account_id \
-                  AND channel.store_id = store.id \
-                  AND channel.id = $3 \
+                   ON channel.store_id = store.id \
+                  AND channel.id = $2 \
                  INNER JOIN merchant.store_currencies AS store_currency \
-                   ON store_currency.merchant_account_id = store.merchant_account_id \
-                  AND store_currency.store_id = store.id \
+                   ON store_currency.store_id = store.id \
                   AND store_currency.currency = price_list.currency \
-                 WHERE price_list.merchant_account_id = $1 \
-                   AND price_list.store_id = $2 \
+                 WHERE price_list.store_id = $1 \
                    AND price_list.status = 'active' \
                    AND store.status = 'active' \
                    AND channel.status = 'active' \
                    AND store_currency.enabled \
-                   AND price_list.currency = COALESCE($5::char(3), store.default_currency) \
+                   AND price_list.currency = COALESCE($4::char(3), store.default_currency) \
                    AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
                    AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
                  ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
@@ -104,17 +100,14 @@ impl PostgresStorefrontCatalogRepository {
              FROM catalog.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
              INNER JOIN pricing.prices AS price \
-               ON price.merchant_account_id = variant.merchant_account_id \
-              AND price.store_id = variant.store_id \
+               ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
-             WHERE variant.merchant_account_id = $1 \
-               AND variant.store_id = $2 \
-               AND variant.product_id = $4 \
+             WHERE variant.store_id = $1 \
+               AND variant.product_id = $3 \
                AND variant.status = 'active' \
              ORDER BY variant.id ASC",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
         .bind(product_id.as_uuid())
@@ -165,10 +158,9 @@ impl PostgresStorefrontCatalogRepository {
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
             "SELECT id, name::text, position \
              FROM catalog.product_options \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
              ORDER BY position ASC",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut **transaction)
@@ -177,10 +169,9 @@ impl PostgresStorefrontCatalogRepository {
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
              FROM catalog.product_option_values \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND product_id = $3 \
+             WHERE store_id = $1 AND product_id = $2 \
              ORDER BY option_id ASC, position ASC",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut **transaction)
@@ -231,9 +222,8 @@ impl PostgresStorefrontCatalogRepository {
         locale: &ResolvedLocale,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
-            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM catalog.media_assets WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND status='ready' ORDER BY position,id",
+            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM catalog.media_assets WHERE store_id=$1 AND product_id=$2 AND status='ready' ORDER BY position,id",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut **transaction)
@@ -276,21 +266,17 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT collection.id, collection.handle::text, collection.title \
              FROM catalog.collection_products AS member \
              INNER JOIN catalog.collections AS collection \
-               ON collection.merchant_account_id = member.merchant_account_id \
-              AND collection.store_id = member.store_id \
+               ON collection.store_id = member.store_id \
               AND collection.id = member.collection_id \
              INNER JOIN catalog.collection_publications AS publication \
-               ON publication.merchant_account_id = collection.merchant_account_id \
-              AND publication.store_id = collection.store_id \
+               ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
-              AND publication.sales_channel_id = $3 \
-             WHERE member.merchant_account_id = $1 \
-               AND member.store_id = $2 \
-               AND member.product_id = $4 \
+              AND publication.sales_channel_id = $2 \
+             WHERE member.store_id = $1 \
+               AND member.product_id = $3 \
                AND collection.status = 'active' \
              ORDER BY collection.handle ASC",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
         .bind(product_id.as_uuid())
@@ -333,81 +319,66 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         product.metadata \
                  FROM catalog.products AS product \
                  INNER JOIN merchant.stores AS store \
-                   ON store.merchant_account_id = product.merchant_account_id \
-                  AND store.id = product.store_id \
+                   ON store.id = product.store_id \
                  INNER JOIN merchant.sales_channels AS channel \
-                   ON channel.merchant_account_id = product.merchant_account_id \
-                  AND channel.store_id = product.store_id \
-                  AND channel.id = $3 \
+                   ON channel.store_id = product.store_id \
+                  AND channel.id = $2 \
                  INNER JOIN catalog.product_publications AS publication \
-                   ON publication.merchant_account_id = product.merchant_account_id \
-                  AND publication.store_id = product.store_id \
+                   ON publication.store_id = product.store_id \
                   AND publication.product_id = product.id \
                   AND publication.sales_channel_id = channel.id \
                  INNER JOIN search.product_documents AS search_document \
-                   ON search_document.merchant_account_id = product.merchant_account_id \
-                  AND search_document.store_id = product.store_id \
+                   ON search_document.store_id = product.store_id \
                   AND search_document.product_id = product.id \
-                 WHERE product.merchant_account_id = $1 \
-                   AND product.store_id = $2 \
+                 WHERE product.store_id = $1 \
                    AND store.status = 'active' \
                    AND channel.status = 'active' \
                    AND product.status = 'active' \
-                   AND ($5::text IS NULL OR search_document.document @@ websearch_to_tsquery('simple', $5)) \
-                   AND ($6::text IS NULL OR EXISTS ( \
+                   AND ($4::text IS NULL OR search_document.document @@ websearch_to_tsquery('simple', $4)) \
+                   AND ($5::text IS NULL OR EXISTS ( \
                        SELECT 1 FROM catalog.collections AS collection \
                        INNER JOIN catalog.collection_products AS member \
-                         ON member.merchant_account_id = collection.merchant_account_id \
-                        AND member.store_id = collection.store_id \
+                         ON member.store_id = collection.store_id \
                         AND member.collection_id = collection.id \
                         AND member.product_id = product.id \
                        INNER JOIN catalog.collection_publications AS collection_publication \
-                         ON collection_publication.merchant_account_id = collection.merchant_account_id \
-                        AND collection_publication.store_id = collection.store_id \
+                         ON collection_publication.store_id = collection.store_id \
                         AND collection_publication.collection_id = collection.id \
                         AND collection_publication.sales_channel_id = channel.id \
-                       WHERE collection.merchant_account_id = product.merchant_account_id \
-                         AND collection.store_id = product.store_id \
-                         AND collection.status = 'active' AND collection.handle = $6)) \
+                       WHERE collection.store_id = product.store_id \
+                         AND collection.status = 'active' AND collection.handle = $5)) \
                    AND ( \
-                       $4::uuid IS NULL \
-                       OR ($6::text IS NULL AND product.id > $4) \
-                       OR ($6::text IS NOT NULL AND ( \
+                       $3::uuid IS NULL \
+                       OR ($5::text IS NULL AND product.id > $3) \
+                       OR ($5::text IS NOT NULL AND ( \
                            SELECT member.position \
                            FROM catalog.collections AS collection \
                            INNER JOIN catalog.collection_products AS member \
-                             ON member.merchant_account_id = collection.merchant_account_id \
-                            AND member.store_id = collection.store_id \
+                             ON member.store_id = collection.store_id \
                             AND member.collection_id = collection.id \
-                           WHERE collection.merchant_account_id = product.merchant_account_id \
-                             AND collection.store_id = product.store_id \
-                             AND collection.handle = $6 AND member.product_id = product.id \
+                           WHERE collection.store_id = product.store_id \
+                             AND collection.handle = $5 AND member.product_id = product.id \
                        ) > ( \
                            SELECT anchor.position \
                            FROM catalog.collections AS collection \
                            INNER JOIN catalog.collection_products AS anchor \
-                             ON anchor.merchant_account_id = collection.merchant_account_id \
-                            AND anchor.store_id = collection.store_id \
+                             ON anchor.store_id = collection.store_id \
                             AND anchor.collection_id = collection.id \
-                           WHERE collection.merchant_account_id = product.merchant_account_id \
-                             AND collection.store_id = product.store_id \
-                             AND collection.handle = $6 AND anchor.product_id = $4 \
+                           WHERE collection.store_id = product.store_id \
+                             AND collection.handle = $5 AND anchor.product_id = $3 \
                        )) \
                    ) \
-                 ORDER BY CASE WHEN $6::text IS NOT NULL THEN ( \
+                 ORDER BY CASE WHEN $5::text IS NOT NULL THEN ( \
                      SELECT member.position \
                      FROM catalog.collections AS collection \
                      INNER JOIN catalog.collection_products AS member \
-                       ON member.merchant_account_id = collection.merchant_account_id \
-                      AND member.store_id = collection.store_id \
+                       ON member.store_id = collection.store_id \
                       AND member.collection_id = collection.id \
-                     WHERE collection.merchant_account_id = product.merchant_account_id \
-                       AND collection.store_id = product.store_id \
-                       AND collection.handle = $6 AND member.product_id = product.id \
+                     WHERE collection.store_id = product.store_id \
+                       AND collection.handle = $5 AND member.product_id = product.id \
                  ) END ASC, product.id ASC \
                  LIMIT 100",
             )
-            .bind(actor.merchant_account_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
             .bind(scan_after.map(ProductId::as_uuid))
@@ -477,25 +448,20 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                     product.metadata \
              FROM catalog.products AS product \
              INNER JOIN merchant.stores AS store \
-               ON store.merchant_account_id = product.merchant_account_id \
-              AND store.id = product.store_id \
+               ON store.id = product.store_id \
              INNER JOIN merchant.sales_channels AS channel \
-               ON channel.merchant_account_id = product.merchant_account_id \
-              AND channel.store_id = product.store_id \
-              AND channel.id = $3 \
+               ON channel.store_id = product.store_id \
+              AND channel.id = $2 \
              INNER JOIN catalog.product_publications AS publication \
-               ON publication.merchant_account_id = product.merchant_account_id \
-              AND publication.store_id = product.store_id \
+               ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
               AND publication.sales_channel_id = channel.id \
-             WHERE product.merchant_account_id = $1 \
-               AND product.store_id = $2 \
-               AND product.handle = $4 \
+             WHERE product.store_id = $1 \
+               AND product.handle = $3 \
                AND store.status = 'active' \
                AND channel.status = 'active' \
                AND product.status = 'active'",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
         .bind(handle)
@@ -538,14 +504,12 @@ async fn resolve_locale(
     actor: &MachineActor,
     requested: Option<Locale>,
 ) -> Result<ResolvedLocale, ApplicationError> {
-    let default: Option<String> = sqlx::query_scalar(
-        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let default: Option<String> =
+        sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     let default = default.ok_or_else(|| ApplicationError::NotFound {
         resource: "store",
         id: actor.store_id.as_uuid().to_string(),
@@ -553,9 +517,8 @@ async fn resolve_locale(
     let selected = requested.unwrap_or(Locale::parse(&default)?);
     if selected.as_str() != default {
         let enabled: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(selected.as_str())
         .fetch_one(&mut **transaction)
@@ -574,9 +537,8 @@ async fn resolve_locale(
     let language = selected.language();
     let language_translation = if language != default && language != selected.as_str() {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)",
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(language)
         .fetch_one(&mut **transaction)
@@ -605,9 +567,8 @@ async fn localized_product_content(
         return Ok((canonical_title, canonical_description));
     };
     let translated: Option<(String, String)> = sqlx::query_as(
-        "SELECT title,description FROM catalog.product_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 0 ELSE 1 END LIMIT 1",
+        "SELECT title,description FROM catalog.product_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 0 ELSE 1 END LIMIT 1",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
     .bind(exact)
@@ -628,9 +589,8 @@ async fn variant_translations(
         return Ok(HashMap::new());
     };
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT product_variant_id,title,locale FROM catalog.product_variant_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 1 ELSE 0 END",
+        "SELECT product_variant_id,title,locale FROM catalog.product_variant_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
     .bind(exact)
@@ -650,16 +610,13 @@ async fn variant_selected_options(
         "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
          FROM catalog.variant_selected_options AS selection \
          INNER JOIN catalog.product_options AS option \
-           ON option.merchant_account_id = selection.merchant_account_id \
-          AND option.store_id = selection.store_id \
+           ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
-         WHERE selection.merchant_account_id = $1 \
-           AND selection.store_id = $2 \
-           AND selection.product_id = $3 \
+         WHERE selection.store_id = $1 \
+           AND selection.product_id = $2 \
          ORDER BY selection.variant_id ASC, option.position ASC",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -688,9 +645,8 @@ async fn media_translations(
         return Ok(HashMap::new());
     };
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT media_asset_id,alt_text,locale FROM catalog.media_asset_translations WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 AND (locale=$4 OR locale=$5) ORDER BY CASE WHEN locale=$4 THEN 1 ELSE 0 END",
+        "SELECT media_asset_id,alt_text,locale FROM catalog.media_asset_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
     )
-    .bind(actor.merchant_account_id.as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
     .bind(exact)
@@ -713,10 +669,7 @@ mod tests {
     use chaos_application::ports::{MachineActor, StorefrontCatalogRepository};
     use chaos_domain::{
         identity::UserId,
-        merchant::{
-            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-            StoreId,
-        },
+        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -745,7 +698,6 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
@@ -760,35 +712,24 @@ mod tests {
         let other_price_list_id = Uuid::now_v7();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Storefront Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("storefront-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         for (id, code) in [
-            (store_id, "storefront"),
-            (other_store_id, "other-storefront"),
+            (store_id, format!("storefront-{suffix}")),
+            (other_store_id, format!("other-storefront-{suffix}")),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.stores \
-                 (id, merchant_account_id, code, name, status) \
-                 VALUES ($1, $2, $3, 'Storefront Test', 'active')",
+                 (id, code, name, status) \
+                 VALUES ($1, $2, 'Storefront Test', 'active')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
-            .bind(code)
+            .bind(&code)
             .execute(&owner_pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+                 (store_id, currency) VALUES ($1, 'USD')",
             )
-            .bind(account_id.as_uuid())
             .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
@@ -800,11 +741,10 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO merchant.sales_channels \
-                 (id, merchant_account_id, store_id, code, name, kind, is_default) \
-                 VALUES ($1, $2, $3, $4, 'Web', 'web', true)",
+                 (id, store_id, code, name, kind, is_default) \
+                 VALUES ($1, $2, $3, 'Web', 'web', true)",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(code)
             .execute(&owner_pool)
@@ -836,12 +776,11 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title, description, status) \
-                 VALUES ($1, $2, $3, $4, 'Shirt', 'Safe description', \
-                         $5::catalog.product_status)",
+                 (id, store_id, handle, title, description, status) \
+                 VALUES ($1, $2, $3, 'Shirt', 'Safe description', \
+                         $4::catalog.product_status)",
             )
             .bind(product.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(handle)
             .bind(status)
@@ -850,11 +789,10 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO catalog.product_variants \
-                 (id, merchant_account_id, store_id, product_id, title, status) \
-                 VALUES ($1, $2, $3, $4, 'Default', 'active')",
+                 (id, store_id, product_id, title, status) \
+                 VALUES ($1, $2, $3, 'Default', 'active')",
             )
             .bind(variant.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(product.as_uuid())
             .execute(&owner_pool)
@@ -868,10 +806,9 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO catalog.product_publications \
-                 (merchant_account_id, store_id, product_id, sales_channel_id) \
-                 VALUES ($1, $2, $3, $4)",
+                 (store_id, product_id, sales_channel_id) \
+                 VALUES ($1, $2, $3)",
             )
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(product.as_uuid())
             .bind(channel.as_uuid())
@@ -885,11 +822,10 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO pricing.price_lists \
-                 (id, merchant_account_id, store_id, code, name, currency, status) \
-                 VALUES ($1, $2, $3, $4, 'Retail', 'USD', 'active')",
+                 (id, store_id, code, name, currency, status) \
+                 VALUES ($1, $2, $3, 'Retail', 'USD', 'active')",
             )
             .bind(list)
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(code)
             .execute(&owner_pool)
@@ -908,12 +844,11 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO pricing.prices \
-                 (id, merchant_account_id, store_id, price_list_id, \
+                 (id, store_id, price_list_id, \
                   product_variant_id, amount_minor) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(Uuid::now_v7())
-            .bind(account_id.as_uuid())
             .bind(store.as_uuid())
             .bind(list)
             .bind(variant.as_uuid())
@@ -925,11 +860,9 @@ mod tests {
 
         let actor = MachineActor {
             api_key_id: ApiKeyId::new(),
-            merchant_account_id: account_id,
             store_id,
             sales_channel_id: Some(channel_id),
             class: ApiKeyClass::Publishable,
-            mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         };
@@ -963,8 +896,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let rebuilt: i64 = sqlx::query_scalar("SELECT search.rebuild_store_products($1, $2)")
-            .bind(account_id.as_uuid())
+        let rebuilt: i64 = sqlx::query_scalar("SELECT search.rebuild_store_products($1)")
             .bind(store_id.as_uuid())
             .fetch_one(&owner_pool)
             .await
@@ -972,9 +904,8 @@ mod tests {
         assert_eq!(rebuilt, 2);
         let indexed: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM search.product_documents \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $1",
         )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&owner_pool)
         .await

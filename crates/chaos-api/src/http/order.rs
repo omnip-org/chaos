@@ -4,7 +4,7 @@ use chaos_application::{
     sales::ChangeOrderStatusInput,
 };
 use chaos_domain::{
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     sales::{CheckoutContact, CustomerId, OrderId, OrderStatus},
 };
 use serde::Deserialize;
@@ -12,41 +12,33 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
     storefront_sales::{OrderData, order_data},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
+        .route("/stores/{store_id}/orders", get(list_orders))
+        .route("/stores/{store_id}/orders/{order_id}", get(get_order))
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders",
-            get(list_orders),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}",
-            get(get_order),
-        )
-        .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}/confirm",
+            "/stores/{store_id}/orders/{order_id}/confirm",
             axum::routing::post(confirm_order),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}/cancel",
+            "/stores/{store_id}/orders/{order_id}/cancel",
             axum::routing::post(cancel_order),
         )
 }
 
 #[derive(Deserialize)]
 struct OrderPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     order_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct OrderCollectionPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
@@ -62,11 +54,10 @@ struct OrderListQuery {
 
 async fn list_orders(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderCollectionPath>,
     ApiQuery(query): ApiQuery<OrderListQuery>,
 ) -> Result<ApiResponse<Vec<OrderData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let after = query
         .cursor
         .as_deref()
@@ -98,7 +89,7 @@ async fn list_orders(
     let page = state
         .order_management
         .list_orders(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -127,14 +118,13 @@ async fn list_orders(
 
 async fn get_order(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let order = state
         .order_management
         .get_order(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             OrderId::from_uuid(path.order_id),
         )
@@ -145,7 +135,7 @@ async fn get_order(
 async fn confirm_order(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     transition(state, headers, actor, path, OrderStatus::Confirmed).await
@@ -154,7 +144,7 @@ async fn confirm_order(
 async fn cancel_order(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     transition(state, headers, actor, path, OrderStatus::Cancelled).await
@@ -163,11 +153,10 @@ async fn cancel_order(
 async fn transition(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: OrderPath,
     target_status: OrderStatus,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = IdempotencyRequest {
         key: idempotency_key(&headers)?,
         request_fingerprint: Sha256::digest(
@@ -179,7 +168,7 @@ async fn transition(
     let order = state
         .order_management
         .change_status(ChangeOrderStatusInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             target_status,
@@ -188,12 +177,4 @@ async fn transition(
         })
         .await?;
     Ok(ApiResponse::ok(order_data(order)?))
-}
-
-fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == expected {
-        Ok(())
-    } else {
-        Err(chaos_application::ApplicationError::Forbidden.into())
-    }
 }

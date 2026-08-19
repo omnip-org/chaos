@@ -10,7 +10,7 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode,
     catalog::ProductVariantId,
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     pricing::{PriceList, PriceListId, PriceListStatus},
 };
 use serde_json::json;
@@ -46,7 +46,6 @@ impl PostgresPricingManagementRepository {
 
 struct PostgresPricingManagementTransaction {
     transaction: Transaction<'static, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     price_list_id: PriceListId,
 }
@@ -74,17 +73,13 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
         after: Option<PriceListId>,
         limit: u16,
     ) -> Result<Option<Vec<PriceListReadItem>>, ApplicationError> {
-        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin_read(actor).await?;
-        let store_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2)",
-        )
-        .bind(merchant_account_id.as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let store_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !store_exists {
             return Ok(None);
         }
@@ -95,16 +90,13 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM pricing.price_lists AS price_list \
              LEFT JOIN pricing.prices AS price \
-               ON price.merchant_account_id = price_list.merchant_account_id \
-              AND price.store_id = price_list.store_id \
+              ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
-             WHERE price_list.merchant_account_id = $1 \
-               AND price_list.store_id = $2 \
-               AND ($3::uuid IS NULL OR price_list.id > $3) \
+             WHERE price_list.store_id = $1 \
+               AND ($2::uuid IS NULL OR price_list.id > $2) \
              GROUP BY price_list.id \
-             ORDER BY price_list.id ASC LIMIT $4",
+             ORDER BY price_list.id ASC LIMIT $3",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(PriceListId::as_uuid))
         .bind(i64::from(limit))
@@ -124,7 +116,6 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Option<PriceListDetail>, ApplicationError> {
-        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.begin_read(actor).await?;
         let row = sqlx::query_as::<_, PriceListRow>(
             "SELECT price_list.id, price_list.code::text, price_list.name, \
@@ -133,14 +124,11 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM pricing.price_lists AS price_list \
              LEFT JOIN pricing.prices AS price \
-               ON price.merchant_account_id = price_list.merchant_account_id \
-              AND price.store_id = price_list.store_id \
+              ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
-             WHERE price_list.merchant_account_id = $1 \
-               AND price_list.store_id = $2 AND price_list.id = $3 \
+             WHERE price_list.store_id = $1 AND price_list.id = $2 \
              GROUP BY price_list.id",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -151,10 +139,9 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
         };
         let prices = sqlx::query_as::<_, (Uuid, i64)>(
             "SELECT product_variant_id, amount_minor FROM pricing.prices \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND price_list_id = $3 \
+             WHERE store_id = $1 AND price_list_id = $2 \
              ORDER BY product_variant_id ASC",
         )
-        .bind(merchant_account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .fetch_all(&mut *transaction)
@@ -182,12 +169,10 @@ impl PricingManagementUnitOfWork for PostgresPricingManagementRepository {
         store_id: StoreId,
         price_list_id: PriceListId,
     ) -> Result<Box<dyn PricingManagementTransaction>, ApplicationError> {
-        let merchant_account_id = actor.merchant_account_id();
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, actor).await?;
         Ok(Box::new(PostgresPricingManagementTransaction {
             transaction,
-            merchant_account_id,
             store_id,
             price_list_id,
         }))
@@ -203,7 +188,7 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     ) -> Result<Option<PriceListId>, ApplicationError> {
         let Some(body) = idempotency::reserve(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             operation,
             request,
         )
@@ -228,9 +213,8 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     ) -> Result<Option<PriceListMutationSnapshot>, ApplicationError> {
         let status = sqlx::query_scalar::<_, String>(
             "SELECT status::text FROM pricing.price_lists \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+             WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.price_list_id.as_uuid())
         .fetch_optional(&mut *self.transaction)
@@ -241,9 +225,8 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         };
         let variant_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT product_variant_id FROM pricing.prices \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND price_list_id = $3",
+             WHERE store_id = $1 AND price_list_id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.price_list_id.as_uuid())
         .fetch_all(&mut *self.transaction)
@@ -264,7 +247,6 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     ) -> Result<Vec<ProductVariantId>, ApplicationError> {
         variant_ids_with_status(
             &mut self.transaction,
-            self.merchant_account_id,
             self.store_id,
             variant_ids,
             Some("active"),
@@ -276,14 +258,7 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         &mut self,
         variant_ids: &[ProductVariantId],
     ) -> Result<Vec<ProductVariantId>, ApplicationError> {
-        variant_ids_with_status(
-            &mut self.transaction,
-            self.merchant_account_id,
-            self.store_id,
-            variant_ids,
-            None,
-        )
-        .await
+        variant_ids_with_status(&mut self.transaction, self.store_id, variant_ids, None).await
     }
 
     async fn currency_is_enabled(
@@ -292,9 +267,8 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM merchant.store_currencies \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND currency = $3 AND enabled)",
+             WHERE store_id = $1 AND currency = $2 AND enabled)",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(currency.as_str())
         .fetch_one(&mut *self.transaction)
@@ -304,12 +278,11 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
 
     async fn replace(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE pricing.price_lists SET code = $4, name = $5, currency = $6, \
-                    tax_inclusive = $7, status = $8::pricing.price_list_status, \
-                    starts_at = $9, ends_at = $10, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+            "UPDATE pricing.price_lists SET code = $3, name = $4, currency = $5, \
+                    tax_inclusive = $6, status = $7::pricing.price_list_status, \
+                    starts_at = $8, ends_at = $9, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.price_list_id.as_uuid())
         .bind(price_list.code().as_str())
@@ -329,9 +302,8 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         }
         sqlx::query(
             "DELETE FROM pricing.prices \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND price_list_id = $3",
+             WHERE store_id = $1 AND price_list_id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.price_list_id.as_uuid())
         .execute(&mut *self.transaction)
@@ -340,11 +312,10 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         for price in price_list.prices() {
             sqlx::query(
                 "INSERT INTO pricing.prices \
-                 (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 (id, store_id, price_list_id, product_variant_id, amount_minor) \
+                 VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(price.id().as_uuid())
-            .bind(self.merchant_account_id.as_uuid())
             .bind(self.store_id.as_uuid())
             .bind(self.price_list_id.as_uuid())
             .bind(price.product_variant_id().as_uuid())
@@ -358,11 +329,10 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
 
     async fn set_status(&mut self, status: PriceListStatus) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE pricing.price_lists SET status = $4::pricing.price_list_status, \
+            "UPDATE pricing.price_lists SET status = $3::pricing.price_list_status, \
                     updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.price_list_id.as_uuid())
         .bind(status.as_str())
@@ -386,7 +356,7 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     ) -> Result<(), ApplicationError> {
         idempotency::complete(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             operation,
             request,
             200,
@@ -440,8 +410,8 @@ async fn set_context(
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
-    sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-        .bind(actor.merchant_account_id().as_uuid().to_string())
+    sqlx::query("SELECT set_config('app.store_id', $1, true)")
+        .bind(actor.store_id().as_uuid().to_string())
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
@@ -450,7 +420,6 @@ async fn set_context(
 
 async fn variant_ids_with_status(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     variant_ids: &[ProductVariantId],
     status: Option<&str>,
@@ -461,10 +430,9 @@ async fn variant_ids_with_status(
         .collect::<Vec<_>>();
     let rows = sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM catalog.product_variants \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = ANY($3) \
-           AND ($4::text IS NULL OR status::text = $4)",
+         WHERE store_id = $1 AND id = ANY($2) \
+           AND ($3::text IS NULL OR status::text = $3)",
     )
-    .bind(merchant_account_id.as_uuid())
     .bind(store_id.as_uuid())
     .bind(ids)
     .bind(status)
@@ -484,7 +452,7 @@ fn parse_status(value: &str) -> Result<PriceListStatus, ApplicationError> {
 
 fn map_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("price_lists_merchant_account_id_store_id_code_key")
+        && database_error.constraint() == Some("price_lists_store_id_code_key")
     {
         return ApplicationError::Conflict {
             code: "price_list_code_taken",
@@ -541,8 +509,6 @@ mod tests {
             .await
             .unwrap();
         let owner_id = UserId::new();
-        let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let product_id = ProductId::new();
@@ -550,79 +516,59 @@ mod tests {
         let price_list_id = PriceListId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(id.as_uuid())
-                .bind(format!("pricing-management-{role}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
-        }
-
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Pricing Management Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("pricing-management-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_id.as_uuid())
+            .bind(format!("pricing-management-owner-{suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
-        }
         for (id, code) in [
             (store_id, "pricing-admin"),
             (other_store_id, "pricing-other"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Pricing Store')",
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Pricing Store')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
-            .bind(code)
+            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+                 (store_id, currency) VALUES ($1, 'USD')",
             )
-            .bind(account_id.as_uuid())
             .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
         }
         sqlx::query(
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, 'owner')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(owner_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, status) \
-             VALUES ($1, $2, $3, 'managed-product', 'Managed Product', 'active')",
+             (id, store_id, handle, title, status) \
+             VALUES ($1, $2, 'managed-product', 'Managed Product', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, status) \
-             VALUES ($1, $2, $3, $4, 'Default', 'active')",
+             (id, store_id, product_id, title, status) \
+             VALUES ($1, $2, $3, 'Default', 'active')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -630,22 +576,20 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency) \
-             VALUES ($1, $2, $3, 'retail', 'Retail', 'USD')",
+             (id, store_id, code, name, currency) \
+             VALUES ($1, $2, 'retail', 'Retail', 'USD')",
         )
         .bind(price_list_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO pricing.prices \
-             (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 2500)",
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 2500)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -656,30 +600,29 @@ mod tests {
         let queries = MerchantQueries::new(Arc::new(
             crate::repositories::PostgresMerchantReadRepository::new(runtime_pool.clone()),
         ));
-        let owner = queries.authorize(owner_id, account_id).await.unwrap();
-        let support = queries.authorize(support_id, account_id).await.unwrap();
+        let owner = queries.authorize(owner_id, store_id).await.unwrap();
         let repository = Arc::new(PostgresPricingManagementRepository::new(runtime_pool));
         let service = PricingManagement::new(repository.clone(), repository);
 
         let page = service
-            .list(AdminActor::Merchant(owner), store_id, None, 20)
+            .list(AdminActor::Store(owner), store_id, None, 20)
             .await
             .unwrap();
         assert_eq!(page.items.len(), 1);
         let detail = service
-            .get(AdminActor::Merchant(owner), store_id, price_list_id)
+            .get(AdminActor::Store(owner), store_id, price_list_id)
             .await
             .unwrap();
         assert_eq!(detail.prices[0].amount_minor, 2500);
         assert!(
             service
-                .get(AdminActor::Merchant(owner), other_store_id, price_list_id)
+                .get(AdminActor::Store(owner), other_store_id, price_list_id)
                 .await
                 .is_err()
         );
 
         let update_input = || UpdatePriceListInput {
-            actor: AdminActor::Merchant(owner),
+            actor: AdminActor::Store(owner),
             store_id,
             price_list_id,
             code: "retail-us".into(),
@@ -700,7 +643,7 @@ mod tests {
         service.update(update_input()).await.unwrap();
         service.update(update_input()).await.unwrap();
         let updated = service
-            .get(AdminActor::Merchant(owner), store_id, price_list_id)
+            .get(AdminActor::Store(owner), store_id, price_list_id)
             .await
             .unwrap();
         assert_eq!(updated.item.code, "retail-us");
@@ -709,7 +652,7 @@ mod tests {
 
         service
             .activate(ChangePriceListStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 price_list_id,
                 idempotency: IdempotencyRequest {
@@ -721,28 +664,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get(AdminActor::Merchant(owner), store_id, price_list_id)
+                .get(AdminActor::Store(owner), store_id, price_list_id)
                 .await
                 .unwrap()
                 .item
                 .status,
             PriceListStatus::Active
         );
-        let forbidden = service
-            .archive(ChangePriceListStatusInput {
-                actor: AdminActor::Merchant(support),
-                store_id,
-                price_list_id,
-                idempotency: IdempotencyRequest {
-                    key: format!("support-{suffix}"),
-                    request_fingerprint: [63; 32],
-                },
-            })
-            .await;
-        assert!(matches!(forbidden, Err(ApplicationError::Forbidden)));
         service
             .archive(ChangePriceListStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 price_list_id,
                 idempotency: IdempotencyRequest {
@@ -754,7 +685,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get(AdminActor::Merchant(owner), store_id, price_list_id)
+                .get(AdminActor::Store(owner), store_id, price_list_id)
                 .await
                 .unwrap()
                 .item

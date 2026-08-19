@@ -4,7 +4,11 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{delete, post},
 };
-use chaos_application::{ApplicationError, merchant::CreateApiKeyInput, ports::IdempotencyRequest};
+use chaos_application::{
+    ApplicationError,
+    merchant::CreateApiKeyInput,
+    ports::{AdminActor, IdempotencyRequest},
+};
 use chaos_domain::merchant::{ApiKeyId, StoreId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -12,18 +16,18 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys",
+            "/stores/{store_id}/api-keys",
             post(create_api_key).get(list_api_keys),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/api-keys/{api_key_id}",
+            "/stores/{store_id}/api-keys/{api_key_id}",
             delete(revoke_api_key),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -31,13 +35,11 @@ pub(super) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ApiKeyPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     api_key_id: Uuid,
 }
@@ -46,7 +48,6 @@ struct ApiKeyPath {
 struct CreateApiKeyBody {
     name: String,
     class: String,
-    mode: String,
     scopes: Vec<String>,
 }
 
@@ -63,7 +64,6 @@ struct ApiKeyCreatedData {
     key_identifier: String,
     display_suffix: String,
     class: &'static str,
-    mode: &'static str,
     scopes: Vec<&'static str>,
     secret: String,
 }
@@ -75,7 +75,6 @@ struct ApiKeyListData {
     key_identifier: String,
     display_suffix: String,
     class: &'static str,
-    mode: &'static str,
     scopes: Vec<&'static str>,
     created_at: ApiDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,14 +84,10 @@ struct ApiKeyListData {
 async fn create_api_key(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateApiKeyBody>,
 ) -> Result<ApiResponse<ApiKeyCreatedData>, ApiError> {
-    ensure_account_path(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let idempotency_key = idempotency_key(&headers)?;
     let request_fingerprint = Sha256::digest(
         serde_json::to_vec(&(path.store_id, &body))
@@ -102,11 +97,10 @@ async fn create_api_key(
     let output = state
         .api_key_management
         .create(CreateApiKeyInput {
-            actor,
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             name: body.name,
             class: body.class,
-            mode: body.mode,
             scopes: body.scopes,
             idempotency: IdempotencyRequest {
                 key: idempotency_key,
@@ -121,7 +115,6 @@ async fn create_api_key(
         key_identifier: output.key_identifier,
         display_suffix: output.display_suffix,
         class: output.api_key.class().as_str(),
-        mode: output.api_key.mode().as_str(),
         scopes: output
             .api_key
             .scopes()
@@ -134,14 +127,10 @@ async fn create_api_key(
 
 async fn list_api_keys(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<ApiKeyListData>>, ApiError> {
-    ensure_account_path(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -151,7 +140,12 @@ async fn list_api_keys(
         .map(ApiKeyId::from_uuid);
     let page = state
         .api_key_management
-        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
+        .list(
+            AdminActor::Store(actor),
+            StoreId::from_uuid(path.store_id),
+            after,
+            limit,
+        )
         .await?;
     let next_cursor = page.has_more.then(|| {
         page.items
@@ -169,7 +163,6 @@ async fn list_api_keys(
                 key_identifier: item.key_identifier,
                 display_suffix: item.display_suffix,
                 class: item.class.as_str(),
-                mode: item.mode.as_str(),
                 scopes: item.scopes.iter().map(|scope| scope.as_str()).collect(),
                 created_at: item.created_at.into(),
                 revoked_at: item.revoked_at.map(Into::into),
@@ -183,20 +176,16 @@ async fn list_api_keys(
 async fn revoke_api_key(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ApiKeyPath>,
 ) -> Result<StatusCode, ApiError> {
-    ensure_account_path(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let key = idempotency_key(&headers)?;
     let request_fingerprint =
         Sha256::digest(format!("{}:{}", path.store_id, path.api_key_id).as_bytes()).into();
     state
         .api_key_management
         .revoke(
-            actor,
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             ApiKeyId::from_uuid(path.api_key_id),
             IdempotencyRequest {
@@ -208,21 +197,14 @@ async fn revoke_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn ensure_account_path(actual: Uuid, extracted: Uuid) -> Result<(), ApiError> {
-    if actual == extracted {
-        return Ok(());
-    }
-    Err(ApplicationError::Forbidden.into())
-}
-
 #[cfg(test)]
 mod tests {
     use axum::{
         body::Body,
         http::{Method, Request, StatusCode},
     };
-    use chaos_domain::merchant::{ApiKeyClass, ApiKeyMode};
-    use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
+    use chaos_domain::identity::UserId;
+    use chaos_domain::merchant::ApiKeyClass;
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
@@ -237,15 +219,13 @@ mod tests {
 
     #[test]
     fn create_response_never_serializes_secret_material_by_accident() {
-        let material =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Secret, ApiKeyMode::Test);
+        let material = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Secret);
         let json = serde_json::to_value(ApiKeyCreatedData {
             id: Uuid::now_v7(),
             name: "MCP test".into(),
             key_identifier: material.key_identifier,
             display_suffix: material.display_suffix,
             class: "secret",
-            mode: "test",
             scopes: vec!["mcp:tools"],
             secret: material.plaintext.expose_secret().to_owned(),
         })
@@ -255,7 +235,7 @@ mod tests {
             json["secret"]
                 .as_str()
                 .unwrap()
-                .starts_with("cc_v1_test_secret_")
+                .starts_with("cc_v1_secret_")
         );
         assert!(json.get("secret_digest").is_none());
     }
@@ -272,7 +252,6 @@ mod tests {
             .unwrap();
         let owner_id = UserId::new();
         let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let channel_id = chaos_domain::merchant::SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string();
@@ -286,21 +265,21 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'API Key HTTP Test')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'API Key HTTP', 'active')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("api-key-http-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(format!("api-key-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+        for (id, role) in [(owner_id, "owner"), (support_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
@@ -308,35 +287,20 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'api-key-http', 'API Key HTTP')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Online Store', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Online Store', 'web', true)",
         )
         .bind(channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
 
-        let keys_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/api-keys",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let keys_uri = format!("/admin/v1/stores/{}/api-keys", store_id.as_uuid());
         let key_body = json!({
             "name": "Browser test",
             "class": "publishable",
-            "mode": "test",
             "scopes": ["catalog:read"]
         });
         let owner_state = test_state(&database_url, owner_id);
@@ -354,7 +318,7 @@ mod tests {
         let created = response_json(response).await;
         let api_key_id = created["data"]["id"].as_str().unwrap().to_owned();
         let secret = created["data"]["secret"].as_str().unwrap().to_owned();
-        assert!(secret.starts_with("cc_v1_test_publishable_"));
+        assert!(secret.starts_with("cc_v1_publishable_"));
 
         let response = router(owner_state.clone())
             .oneshot(request(
@@ -420,7 +384,6 @@ mod tests {
                 Some(json!({
                     "name": "Invalid",
                     "class": "publishable",
-                    "mode": "test",
                     "scopes": ["orders:write"]
                 })),
             ))
@@ -448,7 +411,6 @@ mod tests {
                 Some(json!({
                     "name": "Support",
                     "class": "secret",
-                    "mode": "test",
                     "scopes": ["mcp:tools"]
                 })),
             ))

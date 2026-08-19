@@ -44,7 +44,6 @@ CREATE TYPE analytics.destination_provider AS ENUM ('meta_capi', 'ga4');
 
 CREATE TABLE notification.email_deliveries (
     id                       UUID                               NOT NULL PRIMARY KEY,
-    merchant_account_id      UUID                               NOT NULL,
     store_id                 UUID                               NOT NULL,
     semantic_event_id        UUID                               NOT NULL,
     semantic_event_type      TEXT                               NOT NULL,
@@ -65,11 +64,11 @@ CREATE TABLE notification.email_deliveries (
     created_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, semantic_event_id),
+    UNIQUE (store_id, semantic_event_id),
     UNIQUE (provider, provider_message_id),
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     CONSTRAINT email_deliveries_semantic_event_type_check CHECK (
         semantic_event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
     ),
@@ -108,7 +107,6 @@ CREATE TABLE notification.email_deliveries (
 
 CREATE TABLE notification.email_suppressions (
     id                    UUID                                      NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                                      NOT NULL,
     store_id              UUID                                      NOT NULL,
     recipient_email       extensions.citext                         NOT NULL,
     suppression_reason    notification.email_suppression_reason     NOT NULL,
@@ -116,11 +114,11 @@ CREATE TABLE notification.email_suppressions (
     created_at            TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, recipient_email),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, source_delivery_id)
-        REFERENCES notification.email_deliveries(merchant_account_id, store_id, id),
+    UNIQUE (store_id, recipient_email),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, source_delivery_id)
+        REFERENCES notification.email_deliveries(store_id, id),
     CONSTRAINT email_suppressions_recipient_length_check CHECK (
         length(recipient_email::text) BETWEEN 3 AND 320
     )
@@ -128,7 +126,6 @@ CREATE TABLE notification.email_suppressions (
 
 CREATE TABLE notification.webhook_events (
     id                    UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                     NOT NULL,
     store_id              UUID                     NOT NULL,
     delivery_id           UUID                     NOT NULL,
     provider              TEXT                     NOT NULL,
@@ -140,8 +137,8 @@ CREATE TABLE notification.webhook_events (
     created_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (provider, provider_event_id),
-    FOREIGN KEY (merchant_account_id, store_id, delivery_id)
-        REFERENCES notification.email_deliveries(merchant_account_id, store_id, id),
+    FOREIGN KEY (store_id, delivery_id)
+        REFERENCES notification.email_deliveries(store_id, id),
     CONSTRAINT notification_webhook_events_provider_check CHECK (
         length(trim(provider)) BETWEEN 1 AND 50
     ),
@@ -158,7 +155,6 @@ CREATE TABLE notification.webhook_events (
 
 CREATE TABLE analytics.store_policy_versions (
     id                              UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id             UUID        NOT NULL,
     store_id                        UUID        NOT NULL,
     version                         INTEGER     NOT NULL,
     behavior_collection_enabled     BOOLEAN     NOT NULL,
@@ -169,10 +165,10 @@ CREATE TABLE analytics.store_policy_versions (
     effective_at                    TIMESTAMPTZ NOT NULL,
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, version),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, version),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES identity.users(id),
     CONSTRAINT store_policy_versions_version_check CHECK (version BETWEEN 1 AND 2147483647),
     CONSTRAINT store_policy_versions_retention_check CHECK (
@@ -182,7 +178,6 @@ CREATE TABLE analytics.store_policy_versions (
 
 CREATE TABLE analytics.identity_links (
     id                         UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id        UUID        NOT NULL,
     store_id                   UUID        NOT NULL,
     anonymous_id               UUID        NOT NULL,
     customer_id                UUID        NOT NULL,
@@ -192,12 +187,12 @@ CREATE TABLE analytics.identity_links (
     retention_expires_at       TIMESTAMPTZ NOT NULL,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, anonymous_id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, anonymous_id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id) ON DELETE CASCADE,
     CONSTRAINT identity_links_anonymous_id_check CHECK (
         anonymous_id <> '00000000-0000-0000-0000-000000000000'::UUID
     ),
@@ -216,7 +211,6 @@ CREATE TABLE analytics.identity_links (
 CREATE TABLE analytics.behavior_events (
     id                            UUID                         NOT NULL PRIMARY KEY,
     event_id                      UUID                         NOT NULL,
-    merchant_account_id           UUID                         NOT NULL,
     store_id                      UUID                         NOT NULL,
     sales_channel_id              UUID                         NOT NULL,
     event_name                    analytics.browser_event_name NOT NULL,
@@ -242,12 +236,12 @@ CREATE TABLE analytics.behavior_events (
     retention_expires_at          TIMESTAMPTZ                  NOT NULL,
     created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, event_id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, event_id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
     CONSTRAINT behavior_events_schema_version_check CHECK (schema_version = 1),
     CONSTRAINT behavior_events_source_check CHECK (source = 'browser'),
     CONSTRAINT behavior_events_identity_check CHECK (
@@ -310,7 +304,6 @@ CREATE TABLE analytics.behavior_events (
 
 CREATE TABLE analytics.behavior_event_processing (
     id                    UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                     NOT NULL,
     store_id              UUID                     NOT NULL,
     processing_status     integration.queue_status NOT NULL DEFAULT 'pending',
     attempts              INTEGER                  NOT NULL DEFAULT 0,
@@ -322,9 +315,9 @@ CREATE TABLE analytics.behavior_event_processing (
     created_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, id)
-        REFERENCES analytics.behavior_events(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id, id)
+        REFERENCES analytics.behavior_events(store_id, id) ON DELETE CASCADE,
     CONSTRAINT behavior_event_processing_attempts_check CHECK (attempts BETWEEN 0 AND 31),
     CONSTRAINT behavior_event_processing_lease_shape_check CHECK (
         (processing_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
@@ -341,7 +334,6 @@ CREATE TABLE analytics.behavior_event_processing (
 
 CREATE TABLE analytics.sessions (
     id                               UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id              UUID        NOT NULL,
     store_id                         UUID        NOT NULL,
     sales_channel_id                 UUID        NOT NULL,
     anonymous_id                     UUID        NOT NULL,
@@ -359,11 +351,11 @@ CREATE TABLE analytics.sessions (
     created_at                       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
     CONSTRAINT sessions_window_check CHECK (last_event_at >= started_at),
     CONSTRAINT sessions_counts_check CHECK (
         event_count > 0
@@ -383,7 +375,6 @@ CREATE TABLE analytics.sessions (
 
 CREATE TABLE analytics.erasure_requests (
     id                       UUID                      NOT NULL PRIMARY KEY,
-    merchant_account_id      UUID                      NOT NULL,
     store_id                 UUID                      NOT NULL,
     anonymous_id             UUID,
     customer_id              UUID,
@@ -398,9 +389,9 @@ CREATE TABLE analytics.erasure_requests (
     created_at               TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (requested_by) REFERENCES identity.users(id),
     CONSTRAINT erasure_requests_selector_check CHECK (
         (anonymous_id IS NOT NULL)::INTEGER + (customer_id IS NOT NULL)::INTEGER = 1
@@ -423,7 +414,6 @@ CREATE TABLE analytics.erasure_requests (
 
 CREATE TABLE analytics.commerce_facts (
     id                    UUID                          NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                          NOT NULL,
     store_id              UUID                          NOT NULL,
     sales_channel_id      UUID                          NOT NULL,
     fact_name             analytics.commerce_fact_name NOT NULL,
@@ -439,11 +429,11 @@ CREATE TABLE analytics.commerce_facts (
     occurred_at           TIMESTAMPTZ                   NOT NULL,
     ingested_at           TIMESTAMPTZ                   NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
     FOREIGN KEY (id) REFERENCES integration.outbox_events(id),
     CONSTRAINT commerce_facts_schema_version_check CHECK (schema_version = 1),
     CONSTRAINT commerce_facts_currency_format_check CHECK (
@@ -479,7 +469,6 @@ CREATE TABLE analytics.commerce_facts (
 
 CREATE TABLE analytics.attribution_jobs (
     commerce_fact_id     UUID                     NOT NULL,
-    merchant_account_id  UUID                     NOT NULL,
     store_id             UUID                     NOT NULL,
     model_version        SMALLINT                 NOT NULL,
     processing_status    integration.queue_status NOT NULL DEFAULT 'pending',
@@ -492,9 +481,9 @@ CREATE TABLE analytics.attribution_jobs (
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (merchant_account_id, store_id, commerce_fact_id, model_version),
-    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
-        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, commerce_fact_id, model_version),
+    FOREIGN KEY (store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(store_id, id) ON DELETE CASCADE,
     CONSTRAINT attribution_jobs_model_version_check CHECK (model_version > 0),
     CONSTRAINT attribution_jobs_attempts_check CHECK (attempts BETWEEN 0 AND 31),
     CONSTRAINT attribution_jobs_lease_shape_check CHECK (
@@ -512,7 +501,6 @@ CREATE TABLE analytics.attribution_jobs (
 
 CREATE TABLE analytics.attribution_results (
     id                            UUID                        NOT NULL PRIMARY KEY,
-    merchant_account_id           UUID                        NOT NULL,
     store_id                      UUID                        NOT NULL,
     sales_channel_id              UUID                        NOT NULL,
     commerce_fact_id              UUID                        NOT NULL,
@@ -539,13 +527,13 @@ CREATE TABLE analytics.attribution_results (
     input_event_watermark         TIMESTAMPTZ,
     attributed_at                 TIMESTAMPTZ                 NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, commerce_fact_id, attribution_model, model_version),
-    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
-        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, touch_event_id)
-        REFERENCES analytics.behavior_events(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
+    UNIQUE (store_id, commerce_fact_id, attribution_model, model_version),
+    FOREIGN KEY (store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, touch_event_id)
+        REFERENCES analytics.behavior_events(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
     CONSTRAINT attribution_results_model_version_check CHECK (model_version > 0),
     CONSTRAINT attribution_results_touch_shape_check CHECK (
         (
@@ -573,7 +561,6 @@ CREATE TABLE analytics.attribution_results (
 );
 
 CREATE TABLE analytics.daily_behavior_reports (
-    merchant_account_id             UUID        NOT NULL,
     store_id                        UUID        NOT NULL,
     sales_channel_id                UUID        NOT NULL,
     report_date                     DATE        NOT NULL,
@@ -587,9 +574,9 @@ CREATE TABLE analytics.daily_behavior_reports (
     active_engagement_milliseconds  BIGINT      NOT NULL,
     refreshed_at                    TIMESTAMPTZ NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, sales_channel_id, report_date),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, sales_channel_id, report_date),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id) ON DELETE CASCADE,
     CONSTRAINT daily_behavior_reports_counts_check CHECK (
         sessions >= 0 AND events >= 0 AND page_views >= 0 AND product_views >= 0
         AND searches >= 0 AND cart_line_additions >= 0 AND checkouts_started >= 0
@@ -598,7 +585,6 @@ CREATE TABLE analytics.daily_behavior_reports (
 );
 
 CREATE TABLE analytics.daily_commerce_reports (
-    merchant_account_id       UUID        NOT NULL,
     store_id                  UUID        NOT NULL,
     sales_channel_id          UUID        NOT NULL,
     report_date               DATE        NOT NULL,
@@ -613,9 +599,9 @@ CREATE TABLE analytics.daily_commerce_reports (
     returns_completed         BIGINT      NOT NULL,
     refreshed_at              TIMESTAMPTZ NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, sales_channel_id, report_date, currency),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, sales_channel_id, report_date, currency),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id) ON DELETE CASCADE,
     CONSTRAINT daily_commerce_reports_currency_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT daily_commerce_reports_counts_check CHECK (
         orders_created >= 0 AND order_amount_minor >= 0
@@ -626,7 +612,6 @@ CREATE TABLE analytics.daily_commerce_reports (
 );
 
 CREATE TABLE analytics.daily_attribution_reports (
-    merchant_account_id  UUID                         NOT NULL,
     store_id             UUID                         NOT NULL,
     sales_channel_id     UUID                         NOT NULL,
     report_date          DATE                         NOT NULL,
@@ -641,13 +626,12 @@ CREATE TABLE analytics.daily_attribution_reports (
     currency             CHAR(3)                      NOT NULL,
     refreshed_at         TIMESTAMPTZ                  NOT NULL,
 
-    PRIMARY KEY (
-        merchant_account_id, store_id, sales_channel_id, report_date,
+    PRIMARY KEY (store_id, sales_channel_id, report_date,
         attribution_model, model_version, is_direct,
         campaign_source, campaign_medium, campaign_name, currency
     ),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id) ON DELETE CASCADE,
     CONSTRAINT daily_attribution_reports_model_version_check CHECK (model_version > 0),
     CONSTRAINT daily_attribution_reports_campaign_check CHECK (
         length(campaign_source) <= 100
@@ -665,7 +649,6 @@ CREATE TABLE analytics.daily_attribution_reports (
 
 CREATE TABLE analytics.destination_accounts (
     id                              UUID                           NOT NULL PRIMARY KEY,
-    merchant_account_id             UUID                           NOT NULL,
     store_id                        UUID                           NOT NULL,
     provider                        analytics.destination_provider NOT NULL,
     external_destination_reference  TEXT                           NOT NULL,
@@ -676,10 +659,10 @@ CREATE TABLE analytics.destination_accounts (
     created_at                      TIMESTAMPTZ                    NOT NULL,
     updated_at                      TIMESTAMPTZ                    NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, provider),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, provider),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (created_by) REFERENCES identity.users(id),
     CONSTRAINT destination_accounts_reference_check CHECK (
         (provider = 'meta_capi'
@@ -701,7 +684,6 @@ CREATE TABLE analytics.destination_accounts (
 
 CREATE TABLE analytics.export_deliveries (
     id                    UUID                     NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID                     NOT NULL,
     store_id              UUID                     NOT NULL,
     destination_id        UUID                     NOT NULL,
     commerce_fact_id      UUID                     NOT NULL,
@@ -716,13 +698,13 @@ CREATE TABLE analytics.export_deliveries (
     created_at            TIMESTAMPTZ              NOT NULL,
     updated_at            TIMESTAMPTZ              NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, destination_id, commerce_fact_id),
-    FOREIGN KEY (merchant_account_id, store_id, destination_id)
-        REFERENCES analytics.destination_accounts(merchant_account_id, store_id, id)
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, destination_id, commerce_fact_id),
+    FOREIGN KEY (store_id, destination_id)
+        REFERENCES analytics.destination_accounts(store_id, id)
         ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, commerce_fact_id)
-        REFERENCES analytics.commerce_facts(merchant_account_id, store_id, id)
+    FOREIGN KEY (store_id, commerce_fact_id)
+        REFERENCES analytics.commerce_facts(store_id, id)
         ON DELETE CASCADE,
     CONSTRAINT export_deliveries_attempts_check CHECK (attempts BETWEEN 0 AND 31),
     CONSTRAINT export_deliveries_lease_shape_check CHECK (
@@ -748,47 +730,37 @@ CREATE INDEX email_deliveries_claim_idx
     WHERE delivery_status IN ('pending', 'processing');
 
 CREATE INDEX email_deliveries_recipient_idx
-    ON notification.email_deliveries (
-        merchant_account_id,
-        store_id,
+    ON notification.email_deliveries (store_id,
         recipient_email,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX notification_webhook_events_delivery_idx
-    ON notification.webhook_events (
-        merchant_account_id,
-        store_id,
+    ON notification.webhook_events (store_id,
         delivery_id,
         received_at,
         id
     );
 
 CREATE INDEX store_policy_versions_current_idx
-    ON analytics.store_policy_versions (
-        merchant_account_id,
-        store_id,
+    ON analytics.store_policy_versions (store_id,
         effective_at DESC,
         version DESC
     );
 
 CREATE INDEX identity_links_customer_idx
-    ON analytics.identity_links (
-        merchant_account_id,
-        store_id,
+    ON analytics.identity_links (store_id,
         customer_id,
         linked_at,
         id
     );
 
 CREATE INDEX identity_links_retention_idx
-    ON analytics.identity_links (merchant_account_id, retention_expires_at, id);
+    ON analytics.identity_links (retention_expires_at, id);
 
 CREATE INDEX behavior_events_session_time_idx
-    ON analytics.behavior_events (
-        merchant_account_id,
-        store_id,
+    ON analytics.behavior_events (store_id,
         sales_channel_id,
         session_id,
         occurred_at,
@@ -796,16 +768,12 @@ CREATE INDEX behavior_events_session_time_idx
     );
 
 CREATE INDEX behavior_events_retention_idx
-    ON analytics.behavior_events (
-        merchant_account_id,
-        retention_expires_at,
+    ON analytics.behavior_events (retention_expires_at,
         id
     );
 
 CREATE INDEX behavior_events_attribution_touch_idx
-    ON analytics.behavior_events (
-        merchant_account_id,
-        store_id,
+    ON analytics.behavior_events (store_id,
         sales_channel_id,
         anonymous_id,
         session_id,
@@ -814,9 +782,7 @@ CREATE INDEX behavior_events_attribution_touch_idx
     ) WHERE event_name = 'page_viewed';
 
 CREATE INDEX behavior_events_checkout_attribution_idx
-    ON analytics.behavior_events (
-        merchant_account_id,
-        store_id,
+    ON analytics.behavior_events (store_id,
         sales_channel_id,
         checkout_id,
         cart_id,
@@ -829,9 +795,7 @@ CREATE INDEX behavior_event_processing_claim_idx
     WHERE processing_status IN ('pending', 'processing');
 
 CREATE INDEX sessions_identity_time_idx
-    ON analytics.sessions (
-        merchant_account_id,
-        store_id,
+    ON analytics.sessions (store_id,
         sales_channel_id,
         anonymous_id,
         client_session_id,
@@ -840,20 +804,18 @@ CREATE INDEX sessions_identity_time_idx
     );
 
 CREATE INDEX sessions_retention_idx
-    ON analytics.sessions (merchant_account_id, retention_expires_at, id);
+    ON analytics.sessions (retention_expires_at, id);
 
 CREATE INDEX erasure_requests_pending_idx
     ON analytics.erasure_requests (status, requested_at, id)
     WHERE status = 'pending';
 
 CREATE INDEX commerce_facts_store_time_idx
-    ON analytics.commerce_facts (
-        merchant_account_id, store_id, occurred_at DESC, id DESC
+    ON analytics.commerce_facts (store_id, occurred_at DESC, id DESC
     );
 
 CREATE INDEX commerce_facts_store_name_time_idx
-    ON analytics.commerce_facts (
-        merchant_account_id, store_id, fact_name, occurred_at DESC, id DESC
+    ON analytics.commerce_facts (store_id, fact_name, occurred_at DESC, id DESC
     );
 
 CREATE INDEX attribution_jobs_claim_idx
@@ -861,28 +823,23 @@ CREATE INDEX attribution_jobs_claim_idx
     WHERE processing_status IN ('pending', 'processing');
 
 CREATE INDEX attribution_results_order_idx
-    ON analytics.attribution_results (
-        merchant_account_id, store_id, order_id, model_version, attribution_model
+    ON analytics.attribution_results (store_id, order_id, model_version, attribution_model
     );
 
 CREATE INDEX attribution_results_destination_idx
-    ON analytics.attribution_results (
-        merchant_account_id, store_id, attributed_at, id
+    ON analytics.attribution_results (store_id, attributed_at, id
     ) WHERE advertising_export_eligible;
 
 CREATE INDEX daily_behavior_reports_store_date_idx
-    ON analytics.daily_behavior_reports (
-        merchant_account_id, store_id, report_date DESC, sales_channel_id
+    ON analytics.daily_behavior_reports (store_id, report_date DESC, sales_channel_id
     );
 
 CREATE INDEX daily_commerce_reports_store_date_idx
-    ON analytics.daily_commerce_reports (
-        merchant_account_id, store_id, report_date DESC, sales_channel_id, currency
+    ON analytics.daily_commerce_reports (store_id, report_date DESC, sales_channel_id, currency
     );
 
 CREATE INDEX daily_attribution_reports_store_date_idx
-    ON analytics.daily_attribution_reports (
-        merchant_account_id, store_id, report_date DESC,
+    ON analytics.daily_attribution_reports (store_id, report_date DESC,
         attribution_model, model_version, sales_channel_id
     );
 
@@ -926,7 +883,6 @@ CREATE FUNCTION notification.claim_email_deliveries(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     recipient_email TEXT,
     template_key TEXT,
@@ -951,8 +907,7 @@ AS $$
            AND EXISTS (
                SELECT 1
                  FROM notification.email_suppressions AS suppression
-                WHERE suppression.merchant_account_id = delivery.merchant_account_id
-                  AND suppression.store_id = delivery.store_id
+                WHERE suppression.store_id = delivery.store_id
                   AND suppression.recipient_email = delivery.recipient_email
            )
         RETURNING delivery.id
@@ -978,8 +933,7 @@ AS $$
            AND NOT EXISTS (
                SELECT 1
                  FROM notification.email_suppressions AS suppression
-                WHERE suppression.merchant_account_id = delivery.merchant_account_id
-                  AND suppression.store_id = delivery.store_id
+                WHERE suppression.store_id = delivery.store_id
                   AND suppression.recipient_email = delivery.recipient_email
            )
          ORDER BY delivery.available_at, delivery.created_at, delivery.id
@@ -994,7 +948,7 @@ AS $$
            updated_at = claimed_at
       FROM claimable
      WHERE delivery.id = claimable.id
-    RETURNING delivery.id, delivery.merchant_account_id, delivery.store_id,
+    RETURNING delivery.id, delivery.store_id,
               delivery.recipient_email::text, delivery.template_key,
               delivery.template_version, delivery.template_payload,
               delivery.provider, delivery.attempts;
@@ -1075,10 +1029,10 @@ BEGIN
 
     webhook_id := uuidv7();
     INSERT INTO notification.webhook_events (
-        id, merchant_account_id, store_id, delivery_id, provider, provider_event_id,
+        id, store_id, delivery_id, provider, provider_event_id,
         provider_event_type, payload, received_at, processed_at
     ) VALUES (
-        webhook_id, target.merchant_account_id, target.store_id, target.id, 'resend',
+        webhook_id, target.store_id, target.id, 'resend',
         record_resend_webhook.provider_event_id, record_resend_webhook.provider_event_type,
         payload, received_at, received_at
     ) ON CONFLICT ON CONSTRAINT webhook_events_provider_provider_event_id_key DO NOTHING;
@@ -1117,12 +1071,12 @@ BEGIN
 
     IF suppression_reason IS NOT NULL THEN
         INSERT INTO notification.email_suppressions (
-            id, merchant_account_id, store_id, recipient_email, suppression_reason,
+            id, store_id, recipient_email, suppression_reason,
             source_delivery_id, created_at, updated_at
         ) VALUES (
-            uuidv7(), target.merchant_account_id, target.store_id, target.recipient_email,
+            uuidv7(), target.store_id, target.recipient_email,
             suppression_reason, target.id, received_at, received_at
-        ) ON CONFLICT (merchant_account_id, store_id, recipient_email) DO UPDATE
+        ) ON CONFLICT (store_id, recipient_email) DO UPDATE
             SET suppression_reason = CASE
                     WHEN notification.email_suppressions.suppression_reason = 'manual'
                         THEN notification.email_suppressions.suppression_reason
@@ -1253,7 +1207,6 @@ AS $$
 $$;
 
 CREATE FUNCTION analytics.apply_store_retention_policy(
-    requested_merchant_account_id UUID,
     requested_store_id UUID,
     retention_days INTEGER
 )
@@ -1273,11 +1226,10 @@ AS $$
                    event.retention_expires_at,
                    event.received_at + make_interval(days => retention_days)
                )
-         WHERE event.merchant_account_id = requested_merchant_account_id
-           AND event.store_id = requested_store_id
+         WHERE event.store_id = requested_store_id
            AND retention_days BETWEEN 1 AND 400
-           AND requested_merchant_account_id =
-               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+           AND requested_store_id =
+               nullif(current_setting('app.store_id', true), '')::uuid
         RETURNING 1
     ), updated_sessions AS (
         UPDATE analytics.sessions AS session
@@ -1286,11 +1238,10 @@ AS $$
                    session.last_event_at + make_interval(days => retention_days)
                ),
                updated_at = CURRENT_TIMESTAMP
-         WHERE session.merchant_account_id = requested_merchant_account_id
-           AND session.store_id = requested_store_id
+         WHERE session.store_id = requested_store_id
            AND retention_days BETWEEN 1 AND 400
-           AND requested_merchant_account_id =
-               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+           AND requested_store_id =
+               nullif(current_setting('app.store_id', true), '')::uuid
         RETURNING 1
     ), updated_links AS (
         UPDATE analytics.identity_links AS link
@@ -1298,11 +1249,10 @@ AS $$
                    link.retention_expires_at,
                    link.linked_at + make_interval(days => retention_days)
                )
-         WHERE link.merchant_account_id = requested_merchant_account_id
-           AND link.store_id = requested_store_id
+         WHERE link.store_id = requested_store_id
            AND retention_days BETWEEN 1 AND 400
-           AND requested_merchant_account_id =
-               nullif(current_setting('app.merchant_account_id', true), '')::uuid
+           AND requested_store_id =
+               nullif(current_setting('app.store_id', true), '')::uuid
         RETURNING 1
     )
     SELECT (SELECT count(*) FROM updated_events),
@@ -1397,7 +1347,6 @@ DECLARE
 BEGIN
     FOR request_row IN
         SELECT request.id,
-               request.merchant_account_id,
                request.store_id,
                request.anonymous_id,
                request.customer_id
@@ -1415,33 +1364,28 @@ BEGIN
               UNION
               SELECT link.anonymous_id
                 FROM analytics.identity_links AS link
-               WHERE link.merchant_account_id = request_row.merchant_account_id
-                 AND link.store_id = request_row.store_id
+               WHERE link.store_id = request_row.store_id
                  AND link.customer_id = request_row.customer_id
           ) AS target;
 
         SELECT count(*)
           INTO request_attribution_results
           FROM analytics.attribution_results AS result
-         WHERE result.merchant_account_id = request_row.merchant_account_id
-           AND result.store_id = request_row.store_id
+         WHERE result.store_id = request_row.store_id
            AND result.anonymous_id = ANY(target_anonymous_ids);
 
         DELETE FROM analytics.behavior_events AS event
-         WHERE event.merchant_account_id = request_row.merchant_account_id
-           AND event.store_id = request_row.store_id
+         WHERE event.store_id = request_row.store_id
            AND event.anonymous_id = ANY(target_anonymous_ids);
         GET DIAGNOSTICS request_behavior_events = ROW_COUNT;
 
         DELETE FROM analytics.sessions AS session
-         WHERE session.merchant_account_id = request_row.merchant_account_id
-           AND session.store_id = request_row.store_id
+         WHERE session.store_id = request_row.store_id
            AND session.anonymous_id = ANY(target_anonymous_ids);
         GET DIAGNOSTICS request_sessions = ROW_COUNT;
 
         DELETE FROM analytics.identity_links AS link
-         WHERE link.merchant_account_id = request_row.merchant_account_id
-           AND link.store_id = request_row.store_id
+         WHERE link.store_id = request_row.store_id
            AND (
                link.anonymous_id = ANY(target_anonymous_ids)
                OR (
@@ -1506,7 +1450,6 @@ CREATE FUNCTION analytics.claim_commerce_fact_events(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     event_type TEXT,
     payload JSONB,
@@ -1552,7 +1495,7 @@ AS $$
            locked_at = claimed_at
       FROM claimable
      WHERE event.id = claimable.id
-    RETURNING event.id, event.merchant_account_id, event.store_id,
+    RETURNING event.id, event.store_id,
               event.event_type, event.payload, event.attempts, event.created_at;
 $$;
 
@@ -1564,7 +1507,6 @@ CREATE FUNCTION analytics.claim_attribution_jobs(
 )
 RETURNS TABLE (
     commerce_fact_id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     model_version SMALLINT,
     attempts INTEGER
@@ -1586,8 +1528,7 @@ AS $$
            AND job.attempts >= 8
         RETURNING job.commerce_fact_id
     ), claimable AS (
-        SELECT job.merchant_account_id,
-               job.store_id,
+        SELECT job.store_id,
                job.commerce_fact_id,
                job.model_version
           FROM analytics.attribution_jobs AS job
@@ -1607,11 +1548,10 @@ AS $$
            locked_at = claimed_at,
            updated_at = claimed_at
       FROM claimable
-     WHERE job.merchant_account_id = claimable.merchant_account_id
-       AND job.store_id = claimable.store_id
+     WHERE job.store_id = claimable.store_id
        AND job.commerce_fact_id = claimable.commerce_fact_id
        AND job.model_version = claimable.model_version
-    RETURNING job.commerce_fact_id, job.merchant_account_id, job.store_id,
+    RETURNING job.commerce_fact_id, job.store_id,
               job.model_version, job.attempts;
 $$;
 
@@ -1623,7 +1563,6 @@ CREATE FUNCTION analytics.claim_export_deliveries(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     destination_id UUID,
     commerce_fact_id UUID,
@@ -1648,8 +1587,7 @@ AS $$
         SELECT delivery.id
           FROM analytics.export_deliveries AS delivery
           INNER JOIN analytics.destination_accounts AS destination
-            ON destination.merchant_account_id = delivery.merchant_account_id
-           AND destination.store_id = delivery.store_id
+            ON destination.store_id = delivery.store_id
            AND destination.id = delivery.destination_id
          WHERE (
                  (delivery.delivery_status = 'pending'
@@ -1668,12 +1606,11 @@ AS $$
            locked_by = worker_id, locked_at = claimed_at, updated_at = claimed_at
       FROM claimable
      WHERE delivery.id = claimable.id
-    RETURNING delivery.id, delivery.merchant_account_id, delivery.store_id,
+    RETURNING delivery.id, delivery.store_id,
               delivery.destination_id, delivery.commerce_fact_id, delivery.attempts;
 $$;
 
 CREATE FUNCTION analytics.rebuild_store_attribution(
-    requested_merchant_account_id UUID,
     requested_store_id UUID,
     requested_model_version SMALLINT,
     requested_at TIMESTAMPTZ
@@ -1686,8 +1623,8 @@ SET search_path = pg_catalog
 AS $$
 DECLARE rebuilt BIGINT;
 BEGIN
-    IF requested_merchant_account_id <>
-       nullif(current_setting('app.merchant_account_id', true), '')::uuid THEN
+    IF requested_store_id <>
+       nullif(current_setting('app.store_id', true), '')::uuid THEN
         RETURN 0;
     END IF;
     IF requested_model_version <= 0 THEN
@@ -1695,8 +1632,7 @@ BEGIN
     END IF;
 
     DELETE FROM analytics.attribution_results AS result
-     WHERE result.merchant_account_id = requested_merchant_account_id
-       AND result.store_id = requested_store_id
+     WHERE result.store_id = requested_store_id
        AND result.model_version = requested_model_version;
 
     UPDATE analytics.attribution_jobs AS job
@@ -1708,8 +1644,7 @@ BEGIN
            processed_at = NULL,
            last_error = NULL,
            updated_at = requested_at
-     WHERE job.merchant_account_id = requested_merchant_account_id
-       AND job.store_id = requested_store_id
+     WHERE job.store_id = requested_store_id
        AND job.model_version = requested_model_version;
     GET DIAGNOSTICS rebuilt = ROW_COUNT;
     RETURN rebuilt;
@@ -1724,7 +1659,6 @@ CREATE FUNCTION analytics.claim_sessionization_events(
 )
 RETURNS TABLE (
     behavior_event_id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     sales_channel_id UUID,
     event_name TEXT,
@@ -1763,10 +1697,9 @@ AS $$
                updated_at = claimed_at
           FROM claimable
          WHERE job.id = claimable.id
-        RETURNING job.id, job.merchant_account_id, job.store_id, job.attempts
+        RETURNING job.id, job.store_id, job.attempts
     )
     SELECT event.id,
-           claimed.merchant_account_id,
            claimed.store_id,
            event.sales_channel_id,
            event.event_name::TEXT,
@@ -1781,8 +1714,7 @@ AS $$
            claimed.attempts
       FROM claimed
       INNER JOIN analytics.behavior_events AS event
-        ON event.merchant_account_id = claimed.merchant_account_id
-       AND event.store_id = claimed.store_id
+        ON event.store_id = claimed.store_id
        AND event.id = claimed.id
      ORDER BY event.received_at, event.id;
 $$;
@@ -1821,174 +1753,174 @@ ALTER TABLE analytics.destination_accounts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE analytics.export_deliveries ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY merchant_account_isolation ON notification.email_deliveries
+CREATE POLICY store_isolation ON notification.email_deliveries
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON notification.email_suppressions
+CREATE POLICY store_isolation ON notification.email_suppressions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON notification.webhook_events
+CREATE POLICY store_isolation ON notification.webhook_events
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.behavior_events
+CREATE POLICY store_isolation ON analytics.behavior_events
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.store_policy_versions
+CREATE POLICY store_isolation ON analytics.store_policy_versions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.identity_links
+CREATE POLICY store_isolation ON analytics.identity_links
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.behavior_event_processing
+CREATE POLICY store_isolation ON analytics.behavior_event_processing
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.sessions
+CREATE POLICY store_isolation ON analytics.sessions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.erasure_requests
+CREATE POLICY store_isolation ON analytics.erasure_requests
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.commerce_facts
+CREATE POLICY store_isolation ON analytics.commerce_facts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.attribution_jobs
+CREATE POLICY store_isolation ON analytics.attribution_jobs
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.attribution_results
+CREATE POLICY store_isolation ON analytics.attribution_results
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.daily_behavior_reports
+CREATE POLICY store_isolation ON analytics.daily_behavior_reports
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.daily_commerce_reports
+CREATE POLICY store_isolation ON analytics.daily_commerce_reports
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.daily_attribution_reports
+CREATE POLICY store_isolation ON analytics.daily_attribution_reports
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.destination_accounts
+CREATE POLICY store_isolation ON analytics.destination_accounts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON analytics.export_deliveries
+CREATE POLICY store_isolation ON analytics.export_deliveries
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
 REVOKE ALL ON FUNCTION notification.claim_email_deliveries(
@@ -2042,7 +1974,7 @@ REVOKE ALL ON FUNCTION analytics.claim_export_deliveries(
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analytics.rebuild_store_attribution(
-    UUID, UUID, SMALLINT, TIMESTAMPTZ
+    UUID, SMALLINT, TIMESTAMPTZ
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analytics.claim_sessionization_events(
@@ -2057,7 +1989,7 @@ REVOKE ALL ON FUNCTION analytics.export_delivery_metrics() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analytics.retention_metrics() FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION analytics.apply_store_retention_policy(UUID, INTEGER) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
@@ -2081,7 +2013,7 @@ GRANT EXECUTE ON FUNCTION analytics.claim_export_deliveries(
     TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION analytics.rebuild_store_attribution(
-    UUID, UUID, SMALLINT, TIMESTAMPTZ
+    UUID, SMALLINT, TIMESTAMPTZ
 )
     TO chaos_runtime;
 
@@ -2097,7 +2029,7 @@ GRANT EXECUTE ON FUNCTION analytics.export_delivery_metrics() TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION analytics.retention_metrics() TO chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, UUID, INTEGER)
+GRANT EXECUTE ON FUNCTION analytics.apply_store_retention_policy(UUID, INTEGER)
     TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION analytics.purge_expired_data(INTEGER, TIMESTAMPTZ)

@@ -28,7 +28,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
     response::parse_api_time,
 };
@@ -36,35 +36,35 @@ use super::{
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists",
+            "/stores/{store_id}/price-lists",
             post(create_price_list).get(list_price_lists),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists/{price_list_id}",
+            "/stores/{store_id}/price-lists/{price_list_id}",
             axum::routing::get(get_price_list).put(update_price_list),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists/{price_list_id}/activate",
+            "/stores/{store_id}/price-lists/{price_list_id}/activate",
             post(activate_price_list),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/price-lists/{price_list_id}/archive",
+            "/stores/{store_id}/price-lists/{price_list_id}/archive",
             post(archive_price_list),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules",
+            "/stores/{store_id}/tax-rules",
             post(create_tax_rule).get(list_tax_rules),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/tax-rules/{tax_rule_id}/{operation}",
+            "/stores/{store_id}/tax-rules/{tax_rule_id}/{operation}",
             post(change_tax_rule_status),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions",
+            "/stores/{store_id}/promotions",
             post(create_promotion).get(list_promotions),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/promotions/{promotion_id}/{operation}",
+            "/stores/{store_id}/promotions/{promotion_id}/{operation}",
             post(change_promotion_status),
         )
         .layer(DefaultBodyLimit::max(128 * 1024))
@@ -72,20 +72,17 @@ pub fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct PriceListPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     price_list_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct TaxRulePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     tax_rule_id: Uuid,
     operation: String,
@@ -93,7 +90,6 @@ struct TaxRulePath {
 
 #[derive(Deserialize)]
 struct PromotionPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     promotion_id: Uuid,
     operation: String,
@@ -257,14 +253,10 @@ struct PromotionData {
 async fn create_promotion(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreatePromotionBody>,
 ) -> Result<ApiResponse<PromotionData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let trigger = PromotionTrigger::parse(&body.trigger).ok_or_else(|| invalid_enum("trigger"))?;
     let value = promotion_value(&body)?;
     let currency = CurrencyCode::parse(&body.currency).map_err(ApplicationError::from)?;
@@ -274,7 +266,7 @@ async fn create_promotion(
     let detail = state
         .promotion_management
         .create(CreatePromotionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             name: body.name,
@@ -294,19 +286,12 @@ async fn create_promotion(
 
 async fn list_promotions(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<Vec<PromotionData>>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let values = state
         .promotion_management
-        .list(
-            AdminActor::Merchant(actor),
-            StoreId::from_uuid(path.store_id),
-        )
+        .list(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         values.into_iter().map(promotion_data).collect(),
@@ -316,13 +301,9 @@ async fn list_promotions(
 async fn change_promotion_status(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PromotionPath>,
 ) -> Result<ApiResponse<PromotionData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let status = match path.operation.as_str() {
         "activate" => PromotionStatus::Active,
         "archive" => PromotionStatus::Archived,
@@ -339,7 +320,7 @@ async fn change_promotion_status(
     let detail = state
         .promotion_management
         .change_status(ChangePromotionStatusInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             promotion_id: PromotionId::from_uuid(path.promotion_id),
             status,
@@ -405,19 +386,15 @@ fn invalid_enum(field: &'static str) -> ApplicationError {
 async fn create_tax_rule(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateTaxRuleBody>,
 ) -> Result<ApiResponse<TaxRuleData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let idempotency = collection_mutation_request(&headers, path.store_id, &body)?;
     let detail = state
         .tax_management
         .create(CreateTaxRuleInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -431,19 +408,12 @@ async fn create_tax_rule(
 
 async fn list_tax_rules(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<Vec<TaxRuleData>>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let rules = state
         .tax_management
-        .list(
-            AdminActor::Merchant(actor),
-            StoreId::from_uuid(path.store_id),
-        )
+        .list(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         rules.into_iter().map(tax_rule_data).collect(),
@@ -453,13 +423,9 @@ async fn list_tax_rules(
 async fn change_tax_rule_status(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<TaxRulePath>,
 ) -> Result<ApiResponse<TaxRuleData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let status = match path.operation.as_str() {
         "activate" => TaxRuleStatus::Active,
         "archive" => TaxRuleStatus::Archived,
@@ -476,7 +442,7 @@ async fn change_tax_rule_status(
     let detail = state
         .tax_management
         .change_status(ChangeTaxRuleStatusInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             rule_id: TaxRuleId::from_uuid(path.tax_rule_id),
             status,
@@ -502,13 +468,10 @@ fn tax_rule_data(detail: chaos_application::ports::TaxRuleDetail) -> TaxRuleData
 async fn create_price_list(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreatePriceListBody>,
 ) -> Result<ApiResponse<PriceListCreatedData>, ApiError> {
-    if actor.merchant_account_id().as_uuid() != path.merchant_account_id {
-        return Err(ApplicationError::Forbidden.into());
-    }
     let idempotency_key = idempotency_key(&headers)?;
     let request_fingerprint = Sha256::digest(
         serde_json::to_vec(&(path.store_id, &body))
@@ -520,7 +483,7 @@ async fn create_price_list(
     let output = state
         .create_price_list
         .execute(CreatePriceListInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -550,14 +513,10 @@ async fn create_price_list(
 
 async fn list_price_lists(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<PriceListData>>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -568,7 +527,7 @@ async fn list_price_lists(
     let page = state
         .pricing_management
         .list(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -589,17 +548,13 @@ async fn list_price_lists(
 
 async fn get_price_list(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PriceListPath>,
 ) -> Result<ApiResponse<PriceListDetailData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let detail = state
         .pricing_management
         .get(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             PriceListId::from_uuid(path.price_list_id),
         )
@@ -620,19 +575,15 @@ async fn get_price_list(
 async fn update_price_list(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PriceListPath>,
     ApiJson(body): ApiJson<UpdatePriceListBody>,
 ) -> Result<ApiResponse<PriceListMutationData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let request = mutation_request(&headers, path.store_id, path.price_list_id, &body)?;
     let id = state
         .pricing_management
         .update(UpdatePriceListInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             price_list_id: PriceListId::from_uuid(path.price_list_id),
             code: body.code,
@@ -658,7 +609,7 @@ async fn update_price_list(
 async fn activate_price_list(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PriceListPath>,
 ) -> Result<ApiResponse<PriceListMutationData>, ApiError> {
     change_status(state, headers, actor, path, true).await
@@ -667,7 +618,7 @@ async fn activate_price_list(
 async fn archive_price_list(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PriceListPath>,
 ) -> Result<ApiResponse<PriceListMutationData>, ApiError> {
     change_status(state, headers, actor, path, false).await
@@ -676,14 +627,10 @@ async fn archive_price_list(
 async fn change_status(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: PriceListPath,
     activate: bool,
 ) -> Result<ApiResponse<PriceListMutationData>, ApiError> {
-    ensure_account(
-        actor.merchant_account_id().as_uuid(),
-        path.merchant_account_id,
-    )?;
     let idempotency = IdempotencyRequest {
         key: idempotency_key(&headers)?,
         request_fingerprint: Sha256::digest(
@@ -692,7 +639,7 @@ async fn change_status(
         .into(),
     };
     let input = ChangePriceListStatusInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         price_list_id: PriceListId::from_uuid(path.price_list_id),
         idempotency,
@@ -752,14 +699,6 @@ fn price_list_data(
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),
     })
-}
-
-fn ensure_account(actual: Uuid, expected: Uuid) -> Result<(), ApiError> {
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
 }
 
 fn parse_optional_time(
@@ -956,7 +895,6 @@ pub(crate) mod tests {
             .unwrap();
         let owner_id = UserId::new();
         let support_id = UserId::new();
-        let account_id = chaos_domain::merchant::MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let product_id = chaos_domain::catalog::ProductId::new();
@@ -974,21 +912,30 @@ pub(crate) mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Pricing HTTP Test')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Pricing HTTP', 'active')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("pricing-http-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(format!("pricing-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+        sqlx::query(
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Pricing HTTP Other', 'active')",
+        )
+        .bind(other_store_id.as_uuid())
+        .bind(format!("pricing-o-{}", &suffix[12..28]))
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        for (id, role) in [(owner_id, "owner"), (support_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
@@ -996,50 +943,29 @@ pub(crate) mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'pricing-http', 'Pricing HTTP')",
+            "INSERT INTO merchant.store_currencies (store_id, currency) \
+             VALUES ($1, 'USD')",
         )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'pricing-http-other', 'Pricing HTTP Other')",
-        )
-        .bind(other_store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.store_currencies (merchant_account_id, store_id, currency) \
-             VALUES ($1, $2, 'USD')",
-        )
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title, status) \
-             VALUES ($1, $2, $3, 'http-shirt', 'HTTP Shirt', 'active')",
+             (id, store_id, handle, title, status) \
+             VALUES ($1, $2, 'http-shirt', 'HTTP Shirt', 'active')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, status) \
-             VALUES ($1, $2, $3, $4, 'Default', 'active')",
+             (id, store_id, product_id, title, status) \
+             VALUES ($1, $2, $3, 'Default', 'active')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -1051,11 +977,10 @@ pub(crate) mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO pricing.price_lists \
-                 (id, merchant_account_id, store_id, code, name, currency) \
-                 VALUES ($1, $2, $3, $4, 'HTTP Retail', 'USD')",
+                 (id, store_id, code, name, currency) \
+                 VALUES ($1, $2, $3, 'HTTP Retail', 'USD')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(code)
             .execute(&owner_pool)
@@ -1064,11 +989,10 @@ pub(crate) mod tests {
         }
         sqlx::query(
             "INSERT INTO pricing.prices \
-             (id, merchant_account_id, store_id, price_list_id, product_variant_id, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 2500)",
+             (id, store_id, price_list_id, product_variant_id, amount_minor) \
+             VALUES ($1, $2, $3, $4, 2500)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(price_list_id.as_uuid())
         .bind(variant_id.as_uuid())
@@ -1076,16 +1000,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let collection_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/price-lists",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let collection_uri = format!("/admin/v1/stores/{}/price-lists", store_id.as_uuid());
         let detail_uri = format!("{collection_uri}/{}", price_list_id.as_uuid());
         let owner_state = test_state(&database_url, owner_id);
         let shipping_provider_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts",
-            account_id.as_uuid(),
+            "/admin/v1/stores/{}/shipping-provider-accounts",
             store_id.as_uuid()
         );
         let shipping_origin = json!({
@@ -1128,8 +1047,7 @@ pub(crate) mod tests {
             .oneshot(request(
                 Method::GET,
                 &format!(
-                    "/admin/v1/merchant-accounts/{}/stores/{}/shipping-provider-accounts/{shipping_provider_id}",
-                    account_id.as_uuid(),
+                    "/admin/v1/stores/{}/shipping-provider-accounts/{shipping_provider_id}",
                     other_store_id.as_uuid()
                 ),
                 None,
@@ -1137,7 +1055,7 @@ pub(crate) mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
         let response = router(owner_state.clone())
             .oneshot(request(
@@ -1160,9 +1078,9 @@ pub(crate) mod tests {
         let retained_secret: Option<String> = sqlx::query_scalar(
             "SELECT previous_credential_secret_reference \
              FROM fulfillment.shipping_provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $2 AND id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(shipping_provider_id).unwrap())
         .fetch_one(&owner_pool)
@@ -1175,9 +1093,9 @@ pub(crate) mod tests {
         let rotation_deadline: Option<time::OffsetDateTime> = sqlx::query_scalar(
             "SELECT credential_rotation_expires_at \
              FROM fulfillment.shipping_provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $2 AND id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(shipping_provider_id).unwrap())
         .fetch_one(&owner_pool)
@@ -1201,9 +1119,9 @@ pub(crate) mod tests {
         let unchanged_deadline: Option<time::OffsetDateTime> = sqlx::query_scalar(
             "SELECT credential_rotation_expires_at \
              FROM fulfillment.shipping_provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $2 AND id = $3",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(Uuid::parse_str(shipping_provider_id).unwrap())
         .fetch_one(&owner_pool)
@@ -1219,11 +1137,7 @@ pub(crate) mod tests {
         let list = response_json(response).await;
         assert_eq!(list["data"].as_array().unwrap().len(), 1);
         assert!(list["data"][0].get("credential_secret_reference").is_none());
-        let tax_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/tax-rules",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let tax_uri = format!("/admin/v1/stores/{}/tax-rules", store_id.as_uuid());
         let response = router(owner_state.clone())
             .oneshot(request(
                 Method::POST,
@@ -1268,11 +1182,7 @@ pub(crate) mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["data"]["status"], "archived");
 
-        let promotion_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/promotions",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let promotion_uri = format!("/admin/v1/stores/{}/promotions", store_id.as_uuid());
         let response = router(owner_state.clone())
             .oneshot(request(
                 Method::POST,
@@ -1508,6 +1418,8 @@ pub(crate) mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // Members may update price lists (owner+member); this payload is invalid for an
+        // active list (no prices), so authorization has already passed if we are not Forbidden.
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
     }
 }

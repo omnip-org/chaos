@@ -5,19 +5,21 @@ use axum::{
     routing::post,
 };
 use chaos_application::{
-    ApplicationError, merchant::CreateProviderSecretInput, ports::ProviderSecretKind,
+    ApplicationError,
+    merchant::CreateProviderSecretInput,
+    ports::{AdminActor, ProviderSecretKind},
 };
 use chaos_domain::merchant::StoreId;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext};
+use super::{ApiError, ApiJson, ApiPath, ApiResponse, ApiState, StoreContext};
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/provider-secrets",
+            "/stores/{store_id}/provider-secrets",
             post(create_provider_secret),
         )
         .layer(DefaultBodyLimit::max(20 * 1024))
@@ -25,7 +27,6 @@ pub(super) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
@@ -43,13 +44,10 @@ struct ProviderSecretCreatedData {
 
 async fn create_provider_secret(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateProviderSecretBody>,
 ) -> Result<(HeaderMap, ApiResponse<ProviderSecretCreatedData>), ApiError> {
-    if actor.merchant_account_id().as_uuid() != path.merchant_account_id {
-        return Err(ApplicationError::Forbidden.into());
-    }
     let kind = ProviderSecretKind::parse(&body.kind).ok_or_else(|| {
         ApplicationError::Validation {
             violations: vec![chaos_domain::FieldViolation {
@@ -61,7 +59,7 @@ async fn create_provider_secret(
     let secret_reference = state
         .provider_secret_management
         .create(CreateProviderSecretInput {
-            actor,
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             kind,
             value: SecretString::from(body.value),

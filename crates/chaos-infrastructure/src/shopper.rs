@@ -147,10 +147,7 @@ mod tests {
     use chaos_application::ports::{MachineActor, ShopperCredentialCodec};
     use chaos_domain::{
         identity::UserId,
-        merchant::{
-            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-            StoreId,
-        },
+        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
         sales::ShopperId,
     };
     use secrecy::SecretString;
@@ -160,11 +157,9 @@ mod tests {
     fn actor() -> MachineActor {
         MachineActor {
             api_key_id: ApiKeyId::new(),
-            merchant_account_id: MerchantAccountId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
             class: ApiKeyClass::Publishable,
-            mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CartsWrite],
             created_by_user_id: UserId::new(),
         }

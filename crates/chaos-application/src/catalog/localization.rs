@@ -6,7 +6,7 @@ use chaos_domain::{
         CollectionId, LocalizedAltText, LocalizedContent, LocalizedTitle, MediaAssetId, ProductId,
         ProductVariantId,
     },
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId, StoreRole},
 };
 use time::OffsetDateTime;
 
@@ -331,11 +331,8 @@ impl CatalogLocalization {
 
 fn require_locale_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner | MerchantRole::Administrator
-            ) {
+        AdminActor::Store(store_actor) => {
+            if store_actor.role() == StoreRole::Owner {
                 Ok(())
             } else {
                 Err(ApplicationError::Forbidden)
@@ -353,19 +350,7 @@ fn require_locale_administrator(actor: &AdminActor) -> Result<(), ApplicationErr
 
 fn require_translation_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner
-                    | MerchantRole::Administrator
-                    | MerchantRole::Developer
-                    | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::ProductsWrite)
                 || machine.scopes.contains(&ApiKeyScope::CollectionsWrite)

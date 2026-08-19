@@ -7,13 +7,13 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationCode, InventoryLocationId, InventoryReservation,
         InventoryReservationId, InventoryReservationLine, StockItemId,
     },
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
         InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
@@ -80,7 +80,6 @@ impl InventoryManagement {
     ) -> Result<InventoryLocationId, ApplicationError> {
         require_inventory_writer(&input.actor)?;
         let location = InventoryLocation::create(
-            input.actor.merchant_account_id(),
             input.store_id,
             InventoryLocationCode::parse(input.code)?,
             input.name,
@@ -178,13 +177,8 @@ impl InventoryManagement {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let reservation = InventoryReservation::create(
-            input.actor.merchant_account_id,
-            input.actor.store_id,
-            input.now,
-            input.expires_at,
-            lines,
-        )?;
+        let reservation =
+            InventoryReservation::create(input.actor.store_id, input.now, input.expires_at, lines)?;
         self.repository
             .create_reservation(&input.actor, &reservation, &input.idempotency)
             .await
@@ -224,12 +218,12 @@ impl InventoryManagement {
 
     pub async fn expire_due(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<u16, ApplicationError> {
-        require_inventory_writer(&AdminActor::Merchant(actor))?;
+        require_inventory_writer(&AdminActor::Store(actor))?;
         self.repository
             .expire_due_reservations(actor, store_id, now, limit.clamp(1, 500))
             .await
@@ -238,13 +232,7 @@ impl InventoryManagement {
 
 fn require_inventory_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => match merchant.role() {
-            MerchantRole::Owner
-            | MerchantRole::Administrator
-            | MerchantRole::Developer
-            | MerchantRole::Manager => Ok(()),
-            MerchantRole::Support => Err(ApplicationError::Forbidden),
-        },
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::InventoryWrite) {
                 Ok(())

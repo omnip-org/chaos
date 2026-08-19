@@ -28,7 +28,6 @@ pub trait EmailProvider: Send + Sync {
 
 pub struct EmailDeliveryJob {
     pub id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: Uuid,
     pub recipient_email: String,
     pub template_key: String,

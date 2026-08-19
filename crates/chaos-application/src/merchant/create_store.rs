@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     identity::UserId,
-    merchant::{MerchantAccountId, SalesChannel, Store, StoreCode, StoreId},
+    merchant::{SalesChannel, Store, StoreCode, StoreId, StoreMembership},
 };
 
 use crate::{
@@ -13,7 +13,6 @@ use crate::{
 
 pub struct CreateStoreInput {
     pub user_id: UserId,
-    pub merchant_account_id: MerchantAccountId,
     pub code: String,
     pub name: String,
     pub default_region: Option<String>,
@@ -52,22 +51,15 @@ impl CreateStore {
             .transpose()?
             .unwrap_or(CurrencyCode::USD);
         let store = Store::create(
-            input.merchant_account_id,
             StoreCode::parse(input.code)?,
             input.name,
             default_region,
             default_currency,
         )?;
-        let default_sales_channel =
-            SalesChannel::default_web(input.merchant_account_id, store.id());
-        let mut transaction = self
-            .unit_of_work
-            .begin(input.user_id, input.merchant_account_id)
-            .await?;
+        let default_sales_channel = SalesChannel::default_web(store.id());
+        let owner_membership = StoreMembership::owner(store.id(), input.user_id);
+        let mut transaction = self.unit_of_work.begin(input.user_id).await?;
 
-        if !transaction.can_create_store(input.user_id).await? {
-            return Err(ApplicationError::Forbidden);
-        }
         if let Some(store_id) = transaction
             .reserve_store_creation(&input.idempotency)
             .await?
@@ -76,6 +68,9 @@ impl CreateStore {
         }
 
         transaction.insert_store(&store).await?;
+        transaction
+            .insert_owner_membership(&owner_membership)
+            .await?;
         transaction.insert_default_currency(&store).await?;
         transaction
             .insert_default_sales_channel(&default_sales_channel)

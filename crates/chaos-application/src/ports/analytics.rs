@@ -11,7 +11,7 @@ use chaos_domain::{
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::{ApplicationError, merchant::StoreActor};
 
 use super::{CustomerActor, IdempotencyRequest};
 
@@ -25,7 +25,6 @@ pub struct AnalyticsRateLimitDecision {
 pub trait AnalyticsCollectionRateLimiter: Send + Sync {
     async fn consume(
         &self,
-        merchant_account_id: Uuid,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         anonymous_event_counts: &[(Uuid, u16)],
@@ -75,14 +74,14 @@ pub trait AnalyticsEventRepository: Send + Sync {
 pub trait AnalyticsPolicyRepository: Send + Sync {
     async fn get_store_policy(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         now: OffsetDateTime,
     ) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError>;
 
     async fn update_store_policy(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         policy: AnalyticsPolicy,
         request: &IdempotencyRequest,
@@ -148,7 +147,7 @@ pub struct AnalyticsDailyReports {
 pub trait AnalyticsReportingRepository: Send + Sync {
     async fn list_daily_reports(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         from: time::Date,
         to: time::Date,
@@ -180,13 +179,13 @@ pub struct AnalyticsDestinationConfiguration {
 pub trait AnalyticsDestinationRepository: Send + Sync {
     async fn list_destinations(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
     ) -> Result<Option<Vec<AnalyticsDestinationAccount>>, ApplicationError>;
 
     async fn configure_destination(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         configuration: AnalyticsDestinationConfiguration,
         request: &IdempotencyRequest,
@@ -196,7 +195,6 @@ pub trait AnalyticsDestinationRepository: Send + Sync {
 
 pub struct AnalyticsExportJob {
     pub id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub destination_id: Uuid,
     pub commerce_fact_id: Uuid,
@@ -282,7 +280,6 @@ pub trait AnalyticsExportQueue: Send + Sync {
 
 pub struct AnalyticsSessionizationJob {
     pub behavior_event_id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub sales_channel_id: SalesChannelId,
     pub event_name: BrowserEventName,
@@ -296,7 +293,6 @@ pub struct AnalyticsSessionizationJob {
 
 pub struct AnalyticsCommerceFactJob {
     pub id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub event_type: String,
     pub payload: serde_json::Value,
@@ -306,7 +302,6 @@ pub struct AnalyticsCommerceFactJob {
 
 pub struct AnalyticsAttributionJob {
     pub commerce_fact_id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub model_version: u16,
     pub attempts: u32,
@@ -458,7 +453,7 @@ pub trait AnalyticsPrivacyRepository: Send + Sync {
 
     async fn request_erasure(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         selector: AnalyticsErasureSelector,
         request: &IdempotencyRequest,
@@ -467,7 +462,7 @@ pub trait AnalyticsPrivacyRepository: Send + Sync {
 
     async fn get_erasure_request(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         request_id: Uuid,
     ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError>;

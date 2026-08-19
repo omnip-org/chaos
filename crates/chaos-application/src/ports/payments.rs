@@ -10,7 +10,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::{ApplicationError, merchant::StoreActor};
 
 use super::{AdminActor, IdempotencyRequest, ShopperActor};
 
@@ -100,7 +100,6 @@ pub struct VerifiedWebhookEvent {
 
 pub struct QueueJob {
     pub id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: Uuid,
     pub event_type: String,
     pub payload: Value,
@@ -109,7 +108,6 @@ pub struct QueueJob {
 
 pub struct PaymentProviderReadinessJob {
     pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub provider: String,
     pub external_account_reference: String,
@@ -289,7 +287,7 @@ pub trait PaymentSecretResolver: Send + Sync {
 pub trait PaymentProviderAccountRepository: Send + Sync {
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
@@ -297,14 +295,14 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         id: chaos_domain::payments::PaymentProviderAccountId,
     ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError>;
 
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         account: &chaos_domain::payments::PaymentProviderAccount,
         configuration: &PaymentProviderAccountConfiguration,
@@ -313,7 +311,7 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         account: &chaos_domain::payments::PaymentProviderAccount,
         configuration: &PaymentProviderAccountConfiguration,

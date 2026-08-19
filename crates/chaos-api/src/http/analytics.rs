@@ -23,7 +23,7 @@ use chaos_domain::{
         BrowserEventProperties, ConsentSnapshot,
     },
     catalog::{ProductId, ProductVariantId},
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     sales::{CartId, CheckoutId, CustomerId},
 };
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 use super::{
     AnalyticsCustomer, AnalyticsMachine, ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery,
-    ApiResponse, ApiState, MerchantContext, merchant::idempotency_key, response::parse_api_time,
+    ApiResponse, ApiState, StoreContext, merchant::idempotency_key, response::parse_api_time,
 };
 
 pub(super) fn storefront_routes() -> Router<ApiState> {
@@ -45,23 +45,23 @@ pub(super) fn storefront_routes() -> Router<ApiState> {
 pub(super) fn admin_routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-policy",
+            "/stores/{store_id}/analytics-policy",
             get(get_policy).put(update_policy),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests",
+            "/stores/{store_id}/analytics-erasure-requests",
             post(request_erasure),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-erasure-requests/{request_id}",
+            "/stores/{store_id}/analytics-erasure-requests/{request_id}",
             get(get_erasure_request),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-reports/daily",
+            "/stores/{store_id}/analytics-reports/daily",
             get(list_daily_reports),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/analytics-destinations",
+            "/stores/{store_id}/analytics-destinations",
             get(list_destinations).put(configure_destination),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -69,13 +69,11 @@ pub(super) fn admin_routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ErasurePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     request_id: Uuid,
 }
@@ -263,11 +261,10 @@ async fn link_identity(
 async fn request_erasure(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<ErasureRequestBody>,
 ) -> Result<ApiResponse<ErasureRequestData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let selector = match (body.anonymous_id, body.customer_id) {
         (Some(id), None) => AnalyticsErasureSelector::Anonymous(id),
         (None, Some(id)) => AnalyticsErasureSelector::Customer(CustomerId::from_uuid(id)),
@@ -297,10 +294,9 @@ async fn request_erasure(
 
 async fn get_erasure_request(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ErasurePath>,
 ) -> Result<ApiResponse<ErasureRequestData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .analytics_privacy
         .get_erasure_request(actor, StoreId::from_uuid(path.store_id), path.request_id)
@@ -310,11 +306,10 @@ async fn get_erasure_request(
 
 async fn list_daily_reports(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<DailyReportsQuery>,
 ) -> Result<ApiResponse<AnalyticsDailyReportsData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let format = time::format_description::parse_borrowed::<3>("[year]-[month]-[day]")
         .expect("the Analytics report date format is valid");
     let from = time::Date::parse(&query.from, &format)
@@ -330,10 +325,9 @@ async fn list_daily_reports(
 
 async fn get_policy(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<AnalyticsPolicyData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let policy = state
         .analytics_administration
         .get_policy(actor, StoreId::from_uuid(path.store_id), state.clock.now())
@@ -343,10 +337,9 @@ async fn get_policy(
 
 async fn list_destinations(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<Vec<AnalyticsDestinationData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let destinations = state
         .analytics_destinations
         .list(actor, StoreId::from_uuid(path.store_id))
@@ -359,11 +352,10 @@ async fn list_destinations(
 async fn configure_destination(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<AnalyticsDestinationBody>,
 ) -> Result<ApiResponse<AnalyticsDestinationData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let provider = AnalyticsDestinationProvider::parse(&body.provider)
         .ok_or_else(|| invalid_value("provider", "must be meta_capi or ga4"))?;
     let credential_secret_reference =
@@ -391,11 +383,10 @@ async fn configure_destination(
 async fn update_policy(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<AnalyticsPolicyBody>,
 ) -> Result<ApiResponse<AnalyticsPolicyData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = IdempotencyRequest {
         key: idempotency_key(&headers)?,
         request_fingerprint: Sha256::digest(
@@ -554,14 +545,6 @@ fn fingerprinted_request<T: Serialize>(
         )
         .into(),
     })
-}
-
-fn ensure_account(actual: MerchantAccountId, requested: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == requested {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
 }
 
 #[derive(Deserialize)]

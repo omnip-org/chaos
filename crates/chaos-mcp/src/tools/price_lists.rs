@@ -257,7 +257,7 @@ impl ChaosMcp {
         }
         let store_id = match &actor {
             AdminActor::Machine(machine) => machine.store_id,
-            AdminActor::Merchant(_) => {
+            AdminActor::Store(_) => {
                 unreachable!("authenticate_machine always returns AdminActor::Machine")
             }
         };

@@ -32,10 +32,8 @@ impl StorefrontCatalog {
             return Err(ApplicationError::Forbidden);
         }
         Ok(StorefrontContext {
-            merchant_account_id: actor.merchant_account_id,
             store_id: actor.store_id,
             sales_channel_id: actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?,
-            key_mode: actor.mode,
         })
     }
 
@@ -128,10 +126,7 @@ mod tests {
     use async_trait::async_trait;
     use chaos_domain::{
         identity::UserId,
-        merchant::{
-            ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-            StoreId,
-        },
+        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
     };
 
     use super::*;
@@ -167,11 +162,9 @@ mod tests {
     fn actor(class: ApiKeyClass) -> MachineActor {
         MachineActor {
             api_key_id: ApiKeyId::new(),
-            merchant_account_id: MerchantAccountId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
             class,
-            mode: ApiKeyMode::Live,
             scopes: vec![ApiKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         }
@@ -181,10 +174,8 @@ mod tests {
     fn storefront_context_contains_every_resolved_boundary() {
         let actor = actor(ApiKeyClass::Publishable);
         let context = StorefrontCatalog::context(&actor).unwrap();
-        assert_eq!(context.merchant_account_id, actor.merchant_account_id);
         assert_eq!(context.store_id, actor.store_id);
         assert_eq!(Some(context.sales_channel_id), actor.sales_channel_id);
-        assert_eq!(context.key_mode, ApiKeyMode::Live);
     }
 
     #[tokio::test]

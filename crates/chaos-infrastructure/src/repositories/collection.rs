@@ -47,8 +47,8 @@ impl PostgresCollectionRepository {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -64,8 +64,8 @@ impl PostgresCollectionRepository {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id.as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -86,8 +86,8 @@ impl CollectionRepository for PostgresCollectionRepository {
             return Ok(CollectionId::from_uuid(id));
         }
         require_store(&mut tx, &actor, record.store_id).await?;
-        sqlx::query("INSERT INTO catalog.collections (id, merchant_account_id, store_id, handle, title, description, metadata, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'draft',$8,$8)")
-            .bind(record.id.as_uuid()).bind(actor.merchant_account_id().as_uuid()).bind(record.store_id.as_uuid())
+        sqlx::query("INSERT INTO catalog.collections (id, store_id, handle, title, description, metadata, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'draft',$7,$7)")
+            .bind(record.id.as_uuid()).bind(record.store_id.as_uuid())
             .bind(record.content.handle().as_str()).bind(record.content.title()).bind(record.content.description())
             .bind(record.content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(record.created_at)
             .execute(&mut *tx).await.map_err(map_collection_error)?;
@@ -118,8 +118,8 @@ impl CollectionRepository for PostgresCollectionRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, (Uuid,String,String,String,i64,OffsetDateTime,OffsetDateTime)>(
-            "SELECT collection.id, collection.handle::text, collection.title, collection.status::text, count(member.product_id), collection.created_at, collection.updated_at FROM catalog.collections AS collection LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id = collection.merchant_account_id AND member.store_id = collection.store_id AND member.collection_id = collection.id WHERE collection.merchant_account_id = $1 AND collection.store_id = $2 AND ($3::uuid IS NULL OR collection.id > $3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit))
+            "SELECT collection.id, collection.handle::text, collection.title, collection.status::text, count(member.product_id), collection.created_at, collection.updated_at FROM catalog.collections AS collection LEFT JOIN catalog.collection_products AS member ON member.store_id = collection.store_id AND member.collection_id = collection.id WHERE collection.store_id = $1 AND ($2::uuid IS NULL OR collection.id > $2) GROUP BY collection.id ORDER BY collection.id LIMIT $3")
+            .bind(store_id.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit))
             .fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         rows.into_iter()
@@ -145,16 +145,16 @@ impl CollectionRepository for PostgresCollectionRepository {
         collection_id: CollectionId,
     ) -> Result<Option<CollectionDetail>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let header = sqlx::query_as::<_, (Uuid,String,String,String,String,Option<serde_json::Value>,OffsetDateTime,OffsetDateTime)>("SELECT id, handle::text, title, description, status::text, metadata, created_at, updated_at FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?;
+        let header = sqlx::query_as::<_, (Uuid,String,String,String,String,Option<serde_json::Value>,OffsetDateTime,OffsetDateTime)>("SELECT id, handle::text, title, description, status::text, metadata, created_at, updated_at FROM catalog.collections WHERE store_id=$1 AND id=$2")
+            .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?;
         let Some(row) = header else {
             tx.commit().await.map_err(database_error)?;
             return Ok(None);
         };
-        let products = sqlx::query_as::<_, (Uuid,i32)>("SELECT product_id, position FROM catalog.collection_products WHERE merchant_account_id=$1 AND store_id=$2 AND collection_id=$3 ORDER BY position")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
-        let channels = sqlx::query_scalar::<_,Uuid>("SELECT sales_channel_id FROM catalog.collection_publications WHERE merchant_account_id=$1 AND store_id=$2 AND collection_id=$3 ORDER BY sales_channel_id")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
+        let products = sqlx::query_as::<_, (Uuid,i32)>("SELECT product_id, position FROM catalog.collection_products WHERE store_id=$1 AND collection_id=$2 ORDER BY position")
+            .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
+        let channels = sqlx::query_scalar::<_,Uuid>("SELECT sales_channel_id FROM catalog.collection_publications WHERE store_id=$1 AND collection_id=$2 ORDER BY sales_channel_id")
+            .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         Ok(Some(CollectionDetail {
             id: CollectionId::from_uuid(row.0),
@@ -195,8 +195,8 @@ impl CollectionRepository for PostgresCollectionRepository {
             return Ok(CollectionId::from_uuid(id));
         }
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
-        let changed=sqlx::query("UPDATE catalog.collections SET handle=$4,title=$5,description=$6,metadata=$7::jsonb,updated_at=$8 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
+        let changed=sqlx::query("UPDATE catalog.collections SET handle=$3,title=$4,description=$5,metadata=$6::jsonb,updated_at=$7 WHERE store_id=$1 AND id=$2")
+            .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
         require_changed(changed, collection_id)?;
         event(
             &mut tx,
@@ -231,14 +231,20 @@ impl CollectionRepository for PostgresCollectionRepository {
         if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
-        let changed=sqlx::query("UPDATE catalog.collections SET status=$4::catalog.collection_status,updated_at=$5 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3 AND (($4='active' AND status='draft') OR ($4='archived' AND status IN ('draft','active')))")
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(status.as_str()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
+        let changed=sqlx::query("UPDATE catalog.collections SET status=$3::catalog.collection_status,updated_at=$4 WHERE store_id=$1 AND id=$2 AND (($3='active' AND status='draft') OR ($3='archived' AND status IN ('draft','active')))")
+            .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(status.as_str()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         if changed == 0 && !collection_exists(&mut tx, &actor, store_id, collection_id).await? {
             return Err(not_found(collection_id));
         }
         if changed == 0 && status == CollectionStatus::Active {
-            let current: String = sqlx::query_scalar("SELECT status::text FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3")
-                .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
+            let current: String = sqlx::query_scalar(
+                "SELECT status::text FROM catalog.collections WHERE store_id=$1 AND id=$2",
+            )
+            .bind(store_id.as_uuid())
+            .bind(collection_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
             if current == "archived" {
                 return Err(ApplicationError::Conflict {
                     code: "collection_archived",
@@ -282,7 +288,14 @@ impl CollectionRepository for PostgresCollectionRepository {
         }
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let ids: Vec<Uuid> = product_ids.iter().map(|id| id.as_uuid()).collect();
-        let count:i64=sqlx::query_scalar("SELECT count(*) FROM catalog.products WHERE merchant_account_id=$1 AND store_id=$2 AND id=ANY($3::uuid[])").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(&ids).fetch_one(&mut *tx).await.map_err(database_error)?;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM catalog.products WHERE store_id=$1 AND id=ANY($2::uuid[])",
+        )
+        .bind(store_id.as_uuid())
+        .bind(&ids)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
         if usize::try_from(count).ok() != Some(ids.len()) {
             return Err(ApplicationError::Validation {
                 violations: vec![chaos_domain::FieldViolation {
@@ -291,11 +304,24 @@ impl CollectionRepository for PostgresCollectionRepository {
                 }],
             });
         }
-        sqlx::query("DELETE FROM catalog.collection_products WHERE merchant_account_id=$1 AND store_id=$2 AND collection_id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
+        sqlx::query(
+            "DELETE FROM catalog.collection_products WHERE store_id=$1 AND collection_id=$2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(collection_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
         for (position, id) in ids.iter().enumerate() {
-            sqlx::query("INSERT INTO catalog.collection_products (merchant_account_id,store_id,collection_id,product_id,position,created_at) VALUES ($1,$2,$3,$4,$5,$6)").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(id).bind(i32::try_from(position).map_err(|_|invalid_snapshot())?).bind(now).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("INSERT INTO catalog.collection_products (store_id,collection_id,product_id,position,created_at) VALUES ($1,$2,$3,$4,$5)").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(id).bind(i32::try_from(position).map_err(|_|invalid_snapshot())?).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         }
-        sqlx::query("UPDATE catalog.collections SET updated_at=$4 WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
+        sqlx::query("UPDATE catalog.collections SET updated_at=$3 WHERE store_id=$1 AND id=$2")
+            .bind(store_id.as_uuid())
+            .bind(collection_id.as_uuid())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
         event(
             &mut tx,
             &actor,
@@ -340,14 +366,22 @@ impl CollectionRepository for PostgresCollectionRepository {
         if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
             return Ok(CollectionId::from_uuid(id));
         }
-        let status:String=sqlx::query_scalar("SELECT status::text FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(||not_found(collection_id))?;
+        let status: String = sqlx::query_scalar(
+            "SELECT status::text FROM catalog.collections WHERE store_id=$1 AND id=$2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(collection_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| not_found(collection_id))?;
         if published && status != "active" {
             return Err(ApplicationError::Conflict {
                 code: "collection_not_active",
                 message: "the Collection must be active before publication",
             });
         }
-        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.sales_channels WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3 AND status='active')").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(sales_channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
+        let channel:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.sales_channels WHERE store_id=$1 AND id=$2 AND status='active')").bind(store_id.as_uuid()).bind(sales_channel_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if published && !channel {
             return Err(ApplicationError::NotFound {
                 resource: "sales_channel",
@@ -355,9 +389,9 @@ impl CollectionRepository for PostgresCollectionRepository {
             });
         }
         let changed = if published {
-            sqlx::query("INSERT INTO catalog.collection_publications (merchant_account_id,store_id,collection_id,sales_channel_id,published_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
+            sqlx::query("INSERT INTO catalog.collection_publications (store_id,collection_id,sales_channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
         } else {
-            sqlx::query("DELETE FROM catalog.collection_publications WHERE merchant_account_id=$1 AND store_id=$2 AND collection_id=$3 AND sales_channel_id=$4").bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
+            sqlx::query("DELETE FROM catalog.collection_publications WHERE store_id=$1 AND collection_id=$2 AND sales_channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
         };
         if changed == 1 {
             event(
@@ -390,8 +424,8 @@ impl CollectionRepository for PostgresCollectionRepository {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
         let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
-        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$6 OR translation.locale=$7) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),collection.description),collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND ($4::uuid IS NULL OR collection.id>$4) GROUP BY collection.id ORDER BY collection.id LIMIT $5")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_all(&mut *tx).await.map_err(database_error)?;
+        let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.description),collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN merchant.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
+            .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         rows.into_iter()
             .map(|row| storefront_item(row, locale.0.clone()))
@@ -407,8 +441,8 @@ impl CollectionRepository for PostgresCollectionRepository {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
         let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
-        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.merchant_account_id=collection.merchant_account_id AND translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$5 OR translation.locale=$6) ORDER BY CASE WHEN translation.locale=$5 THEN 0 ELSE 1 END LIMIT 1),collection.description),collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.merchant_account_id=collection.merchant_account_id AND publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$3 INNER JOIN merchant.stores AS store ON store.merchant_account_id=collection.merchant_account_id AND store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.merchant_account_id=collection.merchant_account_id AND channel.store_id=collection.store_id AND channel.id=$3 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.merchant_account_id=collection.merchant_account_id AND member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.merchant_account_id=member.merchant_account_id AND product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.merchant_account_id=product.merchant_account_id AND product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$3 WHERE collection.merchant_account_id=$1 AND collection.store_id=$2 AND collection.status='active' AND collection.handle=$4 GROUP BY collection.id")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_optional(&mut *tx).await.map_err(database_error)?;
+        let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,COALESCE((SELECT translation.title FROM catalog.collection_translations AS translation WHERE translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$4 THEN 0 ELSE 1 END LIMIT 1),collection.title),COALESCE((SELECT translation.description FROM catalog.collection_translations AS translation WHERE translation.store_id=collection.store_id AND translation.collection_id=collection.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$4 THEN 0 ELSE 1 END LIMIT 1),collection.description),collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM catalog.collections AS collection INNER JOIN catalog.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN merchant.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN merchant.sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN catalog.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN catalog.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN catalog.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
+            .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).bind(locale.1.as_deref()).bind(locale.2.as_deref()).fetch_optional(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         row.map(|row| storefront_item(row, locale.0)).transpose()
     }
@@ -419,14 +453,12 @@ async fn resolve_collection_locale(
     actor: &MachineActor,
     requested: Option<Locale>,
 ) -> Result<(Locale, Option<String>, Option<String>), ApplicationError> {
-    let default: Option<String> = sqlx::query_scalar(
-        "SELECT default_locale FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2",
-    )
-    .bind(actor.merchant_account_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let default: Option<String> =
+        sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     let default = default.ok_or_else(|| ApplicationError::NotFound {
         resource: "store",
         id: actor.store_id.as_uuid().to_string(),
@@ -435,8 +467,14 @@ async fn resolve_collection_locale(
     let exact = if selected.as_str() == default {
         None
     } else {
-        let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(selected.as_str()).fetch_one(&mut **transaction).await.map_err(database_error)?;
+        let enabled: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(selected.as_str())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
         if !enabled {
             return Err(ApplicationError::Validation {
                 violations: vec![chaos_domain::FieldViolation {
@@ -449,8 +487,15 @@ async fn resolve_collection_locale(
     };
     let language = selected.language();
     let primary = if exact.is_some() && language != selected.as_str() && language != default {
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE merchant_account_id=$1 AND store_id=$2 AND locale=$3)")
-            .bind(actor.merchant_account_id.as_uuid()).bind(actor.store_id.as_uuid()).bind(language).fetch_one(&mut **transaction).await.map_err(database_error)?.then(||language.to_owned())
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(language)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .then(|| language.to_owned())
     } else {
         None
     };
@@ -487,26 +532,44 @@ async fn require_store(
 }
 async fn store_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2 AND status<>'archived')").bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).fetch_one(&mut **tx).await.map_err(database_error)
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE id=$1)")
+        .bind(store.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(database_error)
 }
 async fn collection_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3)").bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).fetch_one(&mut **tx).await.map_err(database_error)
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM catalog.collections WHERE store_id=$1 AND id=$2)",
+    )
+    .bind(store.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)
 }
 async fn require_writable_collection(
     tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store: StoreId,
     id: CollectionId,
 ) -> Result<(), ApplicationError> {
-    let status:Option<String>=sqlx::query_scalar("SELECT status::text FROM catalog.collections WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3").bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).fetch_optional(&mut **tx).await.map_err(database_error)?;
+    let status: Option<String> = sqlx::query_scalar(
+        "SELECT status::text FROM catalog.collections WHERE store_id=$1 AND id=$2",
+    )
+    .bind(store.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
     match status.as_deref() {
         None => Err(not_found(id)),
         Some("archived") => Err(ApplicationError::Conflict {
@@ -533,7 +596,7 @@ async fn event(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let (channel, count) = details;
-    sqlx::query("INSERT INTO catalog.collection_events (id,merchant_account_id,store_id,collection_id,event_kind,actor_user_id,sales_channel_id,product_count,occurred_at) VALUES ($1,$2,$3,$4,$5::catalog.collection_event_kind,$6,$7,$8,$9)").bind(Uuid::now_v7()).bind(actor.merchant_account_id().as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(channel.map(SalesChannelId::as_uuid)).bind(count).bind(now).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO catalog.collection_events (id,store_id,collection_id,event_kind,actor_user_id,sales_channel_id,product_count,occurred_at) VALUES ($1,$2,$3,$4::catalog.collection_event_kind,$5,$6,$7,$8)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(channel.map(SalesChannelId::as_uuid)).bind(count).bind(now).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }
 async fn reserve(
@@ -544,7 +607,7 @@ async fn reserve(
 ) -> Result<Option<Uuid>, ApplicationError> {
     let Some(value) = idempotency::reserve(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
     )
@@ -569,7 +632,7 @@ async fn complete(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         status,
@@ -593,7 +656,7 @@ fn invalid_snapshot() -> ApplicationError {
 }
 fn map_collection_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(db) = &error
-        && db.constraint() == Some("collections_merchant_account_id_store_id_handle_key")
+        && db.constraint() == Some("collections_store_id_handle_key")
     {
         return ApplicationError::Conflict {
             code: "collection_handle_taken",

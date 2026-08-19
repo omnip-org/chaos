@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 pub(super) enum IdempotencyScope {
     User(Uuid),
-    MerchantAccount(Uuid),
+    Store(Uuid),
     Shopper(Uuid),
 }
 
@@ -13,14 +13,14 @@ impl IdempotencyScope {
     fn kind(&self) -> &'static str {
         match self {
             Self::User(_) => "user",
-            Self::MerchantAccount(_) => "merchant_account",
+            Self::Store(_) => "store",
             Self::Shopper(_) => "shopper",
         }
     }
 
     fn id(&self) -> Uuid {
         match self {
-            Self::User(id) | Self::MerchantAccount(id) | Self::Shopper(id) => *id,
+            Self::User(id) | Self::Store(id) | Self::Shopper(id) => *id,
         }
     }
 }

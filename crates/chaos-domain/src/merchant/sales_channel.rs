@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
 
-use super::{MerchantAccountId, StoreId};
+use super::StoreId;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SalesChannelId(Uuid);
@@ -112,7 +112,6 @@ impl SalesChannelStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SalesChannel {
     id: SalesChannelId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     code: SalesChannelCode,
     name: String,
@@ -123,7 +122,6 @@ pub struct SalesChannel {
 
 impl SalesChannel {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         code: SalesChannelCode,
         name: impl Into<String>,
@@ -138,7 +136,6 @@ impl SalesChannel {
         }
         Ok(Self {
             id: SalesChannelId::new(),
-            merchant_account_id,
             store_id,
             code,
             name,
@@ -148,10 +145,9 @@ impl SalesChannel {
         })
     }
 
-    pub fn default_web(merchant_account_id: MerchantAccountId, store_id: StoreId) -> Self {
+    pub fn default_web(store_id: StoreId) -> Self {
         Self {
             id: SalesChannelId::new(),
-            merchant_account_id,
             store_id,
             code: SalesChannelCode("web".into()),
             name: "Online Store".into(),
@@ -163,10 +159,6 @@ impl SalesChannel {
 
     pub const fn id(&self) -> SalesChannelId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -211,7 +203,7 @@ mod tests {
 
     #[test]
     fn default_channel_is_an_active_web_surface() {
-        let channel = SalesChannel::default_web(MerchantAccountId::new(), StoreId::new());
+        let channel = SalesChannel::default_web(StoreId::new());
 
         assert_eq!(channel.code().as_str(), "web");
         assert_eq!(channel.kind(), SalesChannelKind::Web);
@@ -222,7 +214,6 @@ mod tests {
     #[test]
     fn custom_channel_validates_content_and_default_archival() {
         let channel = SalesChannel::create(
-            MerchantAccountId::new(),
             StoreId::new(),
             SalesChannelCode::parse("mobile-app").unwrap(),
             "Mobile App",

@@ -9,7 +9,7 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode,
     catalog::ProductVariantId,
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     pricing::{PriceList, PriceListId},
 };
 use serde_json::json;
@@ -33,7 +33,6 @@ impl PostgresPricingProvisioningUnitOfWork {
 
 struct PostgresPricingProvisioningTransaction {
     transaction: Transaction<'static, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
 }
 
@@ -50,14 +49,13 @@ impl PricingProvisioningUnitOfWork for PostgresPricingProvisioningUnitOfWork {
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresPricingProvisioningTransaction {
             transaction,
-            merchant_account_id: actor.merchant_account_id(),
             store_id,
         }))
     }
@@ -67,18 +65,8 @@ impl PricingProvisioningUnitOfWork for PostgresPricingProvisioningUnitOfWork {
 impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-                SELECT 1 \
-                FROM merchant.stores AS store \
-                INNER JOIN merchant.merchant_accounts AS account \
-                  ON account.id = store.merchant_account_id \
-                WHERE store.merchant_account_id = $1 \
-                  AND store.id = $2 \
-                  AND store.status IN ('draft', 'active') \
-                  AND account.status = 'active'\
-             )",
+            "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1 AND status = 'active')",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
@@ -100,11 +88,10 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
         let enabled: bool = sqlx::query_scalar(
             "SELECT EXISTS (\
                 SELECT 1 FROM merchant.store_currencies \
-                WHERE merchant_account_id = $1 AND store_id = $2 \
-                  AND currency = $3 AND enabled\
+                WHERE store_id = $1 \
+                  AND currency = $2 AND enabled\
              )",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(currency.as_str())
         .fetch_one(&mut *self.transaction)
@@ -128,7 +115,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     ) -> Result<Option<PriceListId>, ApplicationError> {
         let Some(body) = idempotency::reserve(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             CREATE_PRICE_LIST_OPERATION,
             request,
         )
@@ -159,10 +146,9 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM catalog.product_variants \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND id = ANY($3) AND status = 'active'",
+             WHERE store_id = $1 \
+               AND id = ANY($2) AND status = 'active'",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(ids)
         .fetch_all(&mut *self.transaction)
@@ -181,9 +167,8 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM catalog.product_variants \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = ANY($3)",
+             WHERE store_id = $1 AND id = ANY($2)",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(ids)
         .fetch_all(&mut *self.transaction)
@@ -195,12 +180,11 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     async fn insert_price_list(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO pricing.price_lists \
-             (id, merchant_account_id, store_id, code, name, currency, tax_inclusive, status, \
+             (id, store_id, code, name, currency, tax_inclusive, status, \
               starts_at, ends_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::pricing.price_list_status, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7::pricing.price_list_status, $8, $9)",
         )
         .bind(price_list.id().as_uuid())
-        .bind(price_list.merchant_account_id().as_uuid())
         .bind(price_list.store_id().as_uuid())
         .bind(price_list.code().as_str())
         .bind(price_list.name())
@@ -215,12 +199,11 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
         for price in price_list.prices() {
             sqlx::query(
                 "INSERT INTO pricing.prices \
-                 (id, merchant_account_id, store_id, price_list_id, product_variant_id, \
+                 (id, store_id, price_list_id, product_variant_id, \
                   amount_minor) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(price.id().as_uuid())
-            .bind(price_list.merchant_account_id().as_uuid())
             .bind(price_list.store_id().as_uuid())
             .bind(price_list.id().as_uuid())
             .bind(price.product_variant_id().as_uuid())
@@ -239,7 +222,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         idempotency::complete(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             CREATE_PRICE_LIST_OPERATION,
             request,
             201,
@@ -258,7 +241,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
 
 fn map_pricing_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("price_lists_merchant_account_id_store_id_code_key")
+        && database_error.constraint() == Some("price_lists_store_id_code_key")
     {
         return ApplicationError::Conflict {
             code: "price_list_code_taken",
@@ -312,9 +295,6 @@ mod tests {
             .await
             .unwrap();
         let owner_id = UserId::new();
-        let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
-        let other_account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let product_id = ProductId::new();
@@ -323,81 +303,57 @@ mod tests {
         let other_variant_id = ProductVariantId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (id, label) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(id.as_uuid())
-                .bind(format!("pricing-{label}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
-        }
-        for (id, slug) in [
-            (account_id, format!("pricing-{suffix}")),
-            (other_account_id, format!("pricing-other-{suffix}")),
-        ] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-                 VALUES ($1, $2, 'Pricing Test')",
-            )
-            .bind(id.as_uuid())
-            .bind(slug)
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_id.as_uuid())
+            .bind(format!("pricing-owner-{suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
-        }
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        for (id, owning_account, code) in [
-            (store_id, account_id, "pricing"),
-            (other_store_id, other_account_id, "pricing-other"),
+        for (id, code) in [
+            (store_id, format!("pricing-{suffix}")),
+            (other_store_id, format!("pricing-other-{suffix}")),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Pricing Store')",
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Pricing Store')",
             )
             .bind(id.as_uuid())
-            .bind(owning_account.as_uuid())
             .bind(code)
             .execute(&owner_pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency, enabled) \
-                 VALUES ($1, $2, 'USD', true)",
+                 (store_id, currency, enabled) \
+                 VALUES ($1, 'USD', true)",
             )
-            .bind(owning_account.as_uuid())
             .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.store_currencies \
-             (merchant_account_id, store_id, currency, enabled) \
-             VALUES ($1, $2, 'EUR', false)",
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, 'owner')",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
+        .bind(owner_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.store_currencies \
+             (store_id, currency, enabled) \
+             VALUES ($1, 'EUR', false)",
+        )
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (product, variant, owning_account, store, handle, sku) in [
+        for (product, variant, store, handle, sku) in [
             (
                 product_id,
                 variant_id,
-                account_id,
                 store_id,
                 "priced-product",
                 "PRICED-SKU",
@@ -405,7 +361,6 @@ mod tests {
             (
                 other_product_id,
                 other_variant_id,
-                other_account_id,
                 other_store_id,
                 "other-product",
                 "OTHER-SKU",
@@ -413,11 +368,10 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title, status) \
-                 VALUES ($1, $2, $3, $4, 'Priced Product', 'active')",
+                 (id, store_id, handle, title, status) \
+                 VALUES ($1, $2, $3, 'Priced Product', 'active')",
             )
             .bind(product.as_uuid())
-            .bind(owning_account.as_uuid())
             .bind(store.as_uuid())
             .bind(handle)
             .execute(&owner_pool)
@@ -425,11 +379,10 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO catalog.product_variants \
-                 (id, merchant_account_id, store_id, product_id, title, sku) \
-                 VALUES ($1, $2, $3, $4, 'Default', $5)",
+                 (id, store_id, product_id, title, sku) \
+                 VALUES ($1, $2, $3, 'Default', $4)",
             )
             .bind(variant.as_uuid())
-            .bind(owning_account.as_uuid())
             .bind(store.as_uuid())
             .bind(product.as_uuid())
             .bind(sku)
@@ -441,18 +394,17 @@ mod tests {
         let directory = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             runtime_pool.clone(),
         )));
-        let owner = directory.authorize(owner_id, account_id).await.unwrap();
-        let support = directory.authorize(support_id, account_id).await.unwrap();
+        let owner = directory.authorize(owner_id, store_id).await.unwrap();
         let service = CreatePriceList::new(Arc::new(PostgresPricingProvisioningUnitOfWork::new(
             runtime_pool.clone(),
         )));
         let key = format!("price-list-{suffix}");
-        let input = |actor: chaos_application::merchant::MerchantActor,
+        let input = |actor: chaos_application::merchant::StoreActor,
                      currency: &str,
                      variant,
                      fingerprint,
                      key: String| CreatePriceListInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id,
             code: "us-retail".into(),
             name: "US Retail".into(),
@@ -470,12 +422,6 @@ mod tests {
                 request_fingerprint: fingerprint,
             },
         };
-        assert!(matches!(
-            service
-                .execute(input(support, "USD", variant_id, [50; 32], key.clone()))
-                .await,
-            Err(ApplicationError::Forbidden)
-        ));
         assert!(matches!(
             service
                 .execute(input(
@@ -514,8 +460,7 @@ mod tests {
             "SELECT price_list.status::text, price_list.currency::text, price.amount_minor \
              FROM pricing.price_lists AS price_list \
              INNER JOIN pricing.prices AS price \
-               ON price.merchant_account_id = price_list.merchant_account_id \
-              AND price.store_id = price_list.store_id \
+              ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.id = $1",
         )
@@ -526,8 +471,8 @@ mod tests {
         assert_eq!(stored, ("active".into(), "USD".into(), 2_500));
 
         let mut isolated = runtime_pool.begin().await.unwrap();
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(other_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(other_store_id.as_uuid().to_string())
             .execute(&mut *isolated)
             .await
             .unwrap();
@@ -537,26 +482,21 @@ mod tests {
             .unwrap();
         assert_eq!(visible, 0);
 
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = ANY($1)")
-            .bind(vec![account_id.as_uuid(), other_account_id.as_uuid()])
+        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+            .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'store' AND scope_id = $1",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = ANY($1)")
-            .bind(vec![account_id.as_uuid(), other_account_id.as_uuid()])
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
-            .bind(vec![owner_id.as_uuid(), support_id.as_uuid()])
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();

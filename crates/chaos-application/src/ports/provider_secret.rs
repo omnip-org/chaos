@@ -1,8 +1,5 @@
 use async_trait::async_trait;
-use chaos_domain::{
-    identity::UserId,
-    merchant::{MerchantAccountId, StoreId},
-};
+use chaos_domain::{identity::UserId, merchant::StoreId};
 use secrecy::SecretString;
 
 use crate::ApplicationError;
@@ -40,7 +37,6 @@ impl ProviderSecretKind {
 pub trait ProviderSecretWriter: Send + Sync {
     async fn create(
         &self,
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         created_by: UserId,
         kind: ProviderSecretKind,

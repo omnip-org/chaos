@@ -70,8 +70,8 @@ impl PostgresCustomerRepository {
         shopper_id: Option<chaos_domain::sales::ShopperId>,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.runtime_pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(machine.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(machine.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -128,12 +128,11 @@ impl CustomerRepository for PostgresCustomerRepository {
         let customer_id = CustomerId::new();
         let id: Uuid = sqlx::query_scalar(
             "INSERT INTO sales.customers \
-             (id, merchant_account_id, store_id, user_id, email) VALUES ($1,$2,$3,$4,$5) \
-             ON CONFLICT (merchant_account_id, store_id, user_id) DO UPDATE \
+             (id, store_id, user_id, email) VALUES ($1,$2,$3,$4) \
+             ON CONFLICT (store_id, user_id) DO UPDATE \
              SET email = EXCLUDED.email, updated_at = CURRENT_TIMESTAMP RETURNING id",
         )
         .bind(customer_id.as_uuid())
-        .bind(machine.merchant_account_id.as_uuid())
         .bind(machine.store_id.as_uuid())
         .bind(user_id.as_uuid())
         .bind(&email)
@@ -148,9 +147,8 @@ impl CustomerRepository for PostgresCustomerRepository {
             .map_err(database_error)?;
         let existing: Option<Uuid> = sqlx::query_scalar(
             "SELECT customer_id FROM sales.customer_shopper_links \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND shopper_id = $3",
+             WHERE store_id = $1 AND shopper_id = $2",
         )
-        .bind(machine.merchant_account_id.as_uuid())
         .bind(machine.store_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -165,10 +163,9 @@ impl CustomerRepository for PostgresCustomerRepository {
         if existing.is_none() {
             sqlx::query(
                 "INSERT INTO sales.customer_shopper_links \
-                 (merchant_account_id, store_id, customer_id, shopper_id, sales_channel_id) \
-                 VALUES ($1,$2,$3,$4,$5)",
+                 (store_id, customer_id, shopper_id, sales_channel_id) \
+                 VALUES ($1,$2,$3,$4)",
             )
-            .bind(machine.merchant_account_id.as_uuid())
             .bind(machine.store_id.as_uuid())
             .bind(customer_id.as_uuid())
             .bind(shopper.shopper_id.as_uuid())
@@ -226,10 +223,9 @@ impl CustomerRepository for PostgresCustomerRepository {
             .ok_or_else(customer_not_found)?;
         detail.customer.update_phone(phone.map(Into::into))?;
         sqlx::query(
-            "UPDATE sales.customers SET phone = $4, updated_at = CURRENT_TIMESTAMP \
-            WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+            "UPDATE sales.customers SET phone = $3, updated_at = CURRENT_TIMESTAMP \
+            WHERE store_id = $1 AND id = $2",
         )
-        .bind(actor.machine.merchant_account_id.as_uuid())
         .bind(actor.machine.store_id.as_uuid())
         .bind(detail.customer.id().as_uuid())
         .bind(detail.customer.contact().phone())
@@ -282,10 +278,10 @@ impl CustomerRepository for PostgresCustomerRepository {
         let postal = address.address();
         sqlx::query(
             "INSERT INTO sales.customer_addresses \
-             (id, merchant_account_id, store_id, customer_id, label, full_name, company, \
+             (id, store_id, customer_id, label, full_name, company, \
               address_line1, address_line2, locality, administrative_area, postal_code, country_code) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
-        ).bind(address.id().as_uuid()).bind(actor.machine.merchant_account_id.as_uuid())
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+        ).bind(address.id().as_uuid())
             .bind(actor.machine.store_id.as_uuid()).bind(customer.customer.id().as_uuid())
             .bind(address.label()).bind(postal.full_name()).bind(postal.company())
             .bind(postal.address_line1()).bind(postal.address_line2()).bind(postal.locality())
@@ -328,10 +324,9 @@ impl CustomerRepository for PostgresCustomerRepository {
             .await?
             .ok_or_else(customer_not_found)?;
         let result = sqlx::query(
-            "DELETE FROM sales.customer_addresses WHERE merchant_account_id = $1 \
-            AND store_id = $2 AND customer_id = $3 AND id = $4",
+            "DELETE FROM sales.customer_addresses WHERE store_id = $1 \
+            AND customer_id = $2 AND id = $3",
         )
-        .bind(actor.machine.merchant_account_id.as_uuid())
         .bind(actor.machine.store_id.as_uuid())
         .bind(customer.customer.id().as_uuid())
         .bind(address_id.as_uuid())
@@ -366,13 +361,13 @@ impl CustomerRepository for PostgresCustomerRepository {
             .ok_or_else(customer_not_found)?;
         let ids = sqlx::query_as::<_, (Uuid, OffsetDateTime)>(
             "SELECT DISTINCT sales_order.id, sales_order.created_at FROM sales.orders AS sales_order \
-             JOIN sales.customer_shopper_links AS link ON link.merchant_account_id = sales_order.merchant_account_id \
-              AND link.store_id = sales_order.store_id AND link.shopper_id = sales_order.shopper_id \
-             WHERE sales_order.merchant_account_id = $1 AND sales_order.store_id = $2 \
-               AND sales_order.sales_channel_id = $3 AND link.customer_id = $4 \
-               AND ($5::uuid IS NULL OR sales_order.id < $5) \
-             ORDER BY sales_order.id DESC LIMIT $6",
-        ).bind(actor.machine.merchant_account_id.as_uuid()).bind(actor.machine.store_id.as_uuid())
+             JOIN sales.customer_shopper_links AS link \
+              ON link.store_id = sales_order.store_id AND link.shopper_id = sales_order.shopper_id \
+             WHERE sales_order.store_id = $1 \
+               AND sales_order.sales_channel_id = $2 AND link.customer_id = $3 \
+               AND ($4::uuid IS NULL OR sales_order.id < $4) \
+             ORDER BY sales_order.id DESC LIMIT $5",
+        ).bind(actor.machine.store_id.as_uuid())
             .bind(channel_id.as_uuid()).bind(customer.customer.id().as_uuid()).bind(after)
             .bind(i64::from(limit) + 1).fetch_all(&mut *transaction).await.map_err(database_error)?;
         let has_more = ids.len() > usize::from(limit);
@@ -397,16 +392,13 @@ async fn load_customer_by_user(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &CustomerActor,
 ) -> Result<Option<CustomerDetail>, ApplicationError> {
-    let id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM sales.customers WHERE merchant_account_id = $1 \
-        AND store_id = $2 AND user_id = $3",
-    )
-    .bind(actor.machine.merchant_account_id.as_uuid())
-    .bind(actor.machine.store_id.as_uuid())
-    .bind(actor.user_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let id: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM sales.customers WHERE store_id = $1 AND user_id = $2")
+            .bind(actor.machine.store_id.as_uuid())
+            .bind(actor.user_id.as_uuid())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     match id {
         Some(id) => {
             load_customer_by_id(transaction, &actor.machine, CustomerId::from_uuid(id)).await
@@ -422,9 +414,8 @@ async fn load_customer_by_id(
 ) -> Result<Option<CustomerDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CustomerRow>(
         "SELECT id, user_id, email::text, phone, created_at, updated_at \
-        FROM sales.customers WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        FROM sales.customers WHERE store_id = $1 AND id = $2",
     )
-    .bind(machine.merchant_account_id.as_uuid())
     .bind(machine.store_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -435,9 +426,9 @@ async fn load_customer_by_id(
     };
     let addresses = sqlx::query_as::<_, AddressRow>("SELECT id, label, full_name, company, address_line1, \
         address_line2, locality, administrative_area, postal_code, country_code::text, created_at, updated_at \
-        FROM sales.customer_addresses WHERE merchant_account_id = $1 AND store_id = $2 AND customer_id = $3 \
+        FROM sales.customer_addresses WHERE store_id = $1 AND customer_id = $2 \
         ORDER BY created_at, id")
-        .bind(machine.merchant_account_id.as_uuid()).bind(machine.store_id.as_uuid()).bind(row.0)
+        .bind(machine.store_id.as_uuid()).bind(row.0)
         .fetch_all(&mut **transaction).await.map_err(database_error)?;
     Ok(Some(CustomerDetail {
         customer: Customer::rehydrate(
@@ -463,9 +454,8 @@ async fn load_address(
     sqlx::query_as::<_, AddressRow>(
         "SELECT id, label, full_name, company, address_line1, address_line2, \
         locality, administrative_area, postal_code, country_code::text, created_at, updated_at \
-        FROM sales.customer_addresses WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        FROM sales.customer_addresses WHERE store_id = $1 AND id = $2",
     )
-    .bind(machine.merchant_account_id.as_uuid())
     .bind(machine.store_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -529,7 +519,7 @@ async fn complete(
 
 fn map_customer_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database) = &error
-        && database.constraint() == Some("customers_merchant_account_id_store_id_email_key")
+        && database.constraint() == Some("customers_store_id_email_key")
     {
         return ApplicationError::Conflict {
             code: "customer_email_taken",

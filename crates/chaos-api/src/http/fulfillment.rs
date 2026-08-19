@@ -26,7 +26,7 @@ use chaos_domain::{
         ShippingProviderAccountId, ShippingRateQuoteId, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
-    merchant::{MerchantAccountId, StoreId},
+    merchant::StoreId,
     sales::OrderId,
 };
 use serde::{Deserialize, Serialize};
@@ -34,58 +34,58 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, StoreContext,
     merchant::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}/fulfillments",
+            "/stores/{store_id}/orders/{order_id}/fulfillments",
             post(create_fulfillment),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/{operation}",
+            "/stores/{store_id}/fulfillments/{fulfillment_id}/{operation}",
             post(transition_fulfillment),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-rates",
+            "/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-rates",
             post(quote_shipping_rates),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label",
+            "/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label",
             post(purchase_shipping_label),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label/cancel",
+            "/stores/{store_id}/fulfillments/{fulfillment_id}/shipping-label/cancel",
             post(cancel_shipping_label),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/orders/{order_id}/returns",
+            "/stores/{store_id}/orders/{order_id}/returns",
             post(create_return),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}",
+            "/stores/{store_id}/returns/{return_id}",
             axum::routing::get(get_return),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/returns/{return_id}/{operation}",
+            "/stores/{store_id}/returns/{return_id}/{operation}",
             post(transition_return),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-services",
+            "/stores/{store_id}/shipping-services",
             post(create_shipping_service).get(list_shipping_services),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-services/{shipping_service_id}/{operation}",
+            "/stores/{store_id}/shipping-services/{shipping_service_id}/{operation}",
             post(change_shipping_service_status),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts",
+            "/stores/{store_id}/shipping-provider-accounts",
             post(create_shipping_provider_account).get(list_shipping_provider_accounts),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/shipping-provider-accounts/{provider_account_id}",
+            "/stores/{store_id}/shipping-provider-accounts/{provider_account_id}",
             axum::routing::get(get_shipping_provider_account).put(update_shipping_provider_account),
         )
         .layer(DefaultBodyLimit::max(32 * 1024))
@@ -93,14 +93,12 @@ pub(super) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct OrderPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     order_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct FulfillmentPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     fulfillment_id: Uuid,
     operation: String,
@@ -108,14 +106,12 @@ struct FulfillmentPath {
 
 #[derive(Deserialize)]
 struct FulfillmentResourcePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     fulfillment_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ReturnPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     return_id: Uuid,
     operation: String,
@@ -123,20 +119,17 @@ struct ReturnPath {
 
 #[derive(Deserialize)]
 struct ReturnResourcePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     return_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ShippingServicePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     shipping_service_id: Uuid,
     operation: String,
@@ -144,7 +137,6 @@ struct ShippingServicePath {
 
 #[derive(Deserialize)]
 struct ShippingProviderPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     provider_account_id: Uuid,
 }
@@ -350,16 +342,15 @@ struct ReturnData {
 async fn create_shipping_service(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateShippingServiceBody>,
 ) -> Result<ApiResponse<ShippingServiceData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(&headers, "create_shipping_service", &body)?;
     let detail = state
         .shipping_management
         .create(CreateShippingServiceInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             code: body.code,
             name: body.name,
@@ -376,16 +367,12 @@ async fn create_shipping_service(
 
 async fn list_shipping_services(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<Vec<ShippingServiceData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let services = state
         .shipping_management
-        .list(
-            AdminActor::Merchant(actor),
-            StoreId::from_uuid(path.store_id),
-        )
+        .list(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         services.into_iter().map(shipping_service_data).collect(),
@@ -395,10 +382,9 @@ async fn list_shipping_services(
 async fn change_shipping_service_status(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ShippingServicePath>,
 ) -> Result<ApiResponse<ShippingServiceData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let status = match path.operation.as_str() {
         "activate" => ShippingServiceStatus::Active,
         "archive" => ShippingServiceStatus::Archived,
@@ -412,7 +398,7 @@ async fn change_shipping_service_status(
     let detail = state
         .shipping_management
         .change_status(ChangeShippingServiceStatusInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             service_id: ShippingServiceId::from_uuid(path.shipping_service_id),
             status,
@@ -440,16 +426,12 @@ fn shipping_service_data(detail: ShippingServiceDetail) -> ShippingServiceData {
 
 async fn list_shipping_provider_accounts(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
 ) -> Result<ApiResponse<Vec<ShippingProviderAccountData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let values = state
         .shipping_provider_administration
-        .list(
-            AdminActor::Merchant(actor),
-            StoreId::from_uuid(path.store_id),
-        )
+        .list(AdminActor::Store(actor), StoreId::from_uuid(path.store_id))
         .await?;
     Ok(ApiResponse::ok(
         values
@@ -461,14 +443,13 @@ async fn list_shipping_provider_accounts(
 
 async fn get_shipping_provider_account(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ShippingProviderPath>,
 ) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let value = state
         .shipping_provider_administration
         .get(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             ShippingProviderAccountId::from_uuid(path.provider_account_id),
         )
@@ -479,16 +460,15 @@ async fn get_shipping_provider_account(
 async fn create_shipping_provider_account(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CreateShippingProviderAccountBody>,
 ) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(&headers, "create_shipping_provider_account", &body)?;
     let value = state
         .shipping_provider_administration
         .create(CreateShippingProviderAccountInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             provider: body.provider,
             display_name: body.display_name,
@@ -504,11 +484,10 @@ async fn create_shipping_provider_account(
 async fn update_shipping_provider_account(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ShippingProviderPath>,
     ApiJson(body): ApiJson<UpdateShippingProviderAccountBody>,
 ) -> Result<ApiResponse<ShippingProviderAccountData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(
         &headers,
         "update_shipping_provider_account",
@@ -517,7 +496,7 @@ async fn update_shipping_provider_account(
     let value = state
         .shipping_provider_administration
         .update(UpdateShippingProviderAccountInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             id: ShippingProviderAccountId::from_uuid(path.provider_account_id),
             display_name: body.display_name,
@@ -575,11 +554,10 @@ fn shipping_provider_account_data(
 async fn quote_shipping_rates(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<FulfillmentResourcePath>,
     ApiJson(body): ApiJson<QuoteShippingRatesBody>,
 ) -> Result<ApiResponse<Vec<ShippingRateData>>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(
         &headers,
         "quote_shipping_rates",
@@ -588,7 +566,7 @@ async fn quote_shipping_rates(
     let rates = state
         .shipping_provider_administration
         .quote_rates(QuoteShippingRatesInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             provider_account_id: ShippingProviderAccountId::from_uuid(body.provider_account_id),
@@ -610,11 +588,10 @@ async fn quote_shipping_rates(
 async fn purchase_shipping_label(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<FulfillmentResourcePath>,
     ApiJson(body): ApiJson<PurchaseShippingLabelBody>,
 ) -> Result<ApiResponse<ShippingLabelData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(
         &headers,
         "purchase_shipping_label",
@@ -623,7 +600,7 @@ async fn purchase_shipping_label(
     let label = state
         .shipping_provider_administration
         .purchase_label(PurchaseShippingLabelInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             rate_quote_id: ShippingRateQuoteId::from_uuid(body.rate_quote_id),
@@ -637,15 +614,14 @@ async fn purchase_shipping_label(
 async fn cancel_shipping_label(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<FulfillmentResourcePath>,
 ) -> Result<ApiResponse<ShippingLabelData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(&headers, "cancel_shipping_label", &path.fulfillment_id)?;
     let label = state
         .shipping_provider_administration
         .cancel_label(CancelPurchasedShippingLabelInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             now: state.clock.now(),
@@ -708,16 +684,15 @@ fn shipping_label_data(value: ShippingLabelDetail) -> ShippingLabelData {
 async fn create_fulfillment(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateFulfillmentBody>,
 ) -> Result<ApiResponse<FulfillmentData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(&headers, "create_fulfillment", &(path.order_id, &body))?;
     let detail = state
         .fulfillment_management
         .create_fulfillment(CreateFulfillmentInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             allocations: body
@@ -737,11 +712,10 @@ async fn create_fulfillment(
 async fn transition_fulfillment(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<FulfillmentPath>,
     ApiJson(body): ApiJson<TrackingBody>,
 ) -> Result<ApiResponse<FulfillmentData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let target_status = match path.operation.as_str() {
         "ship" => FulfillmentStatus::Shipped,
         "deliver" => FulfillmentStatus::Delivered,
@@ -756,7 +730,7 @@ async fn transition_fulfillment(
     let detail = state
         .fulfillment_management
         .transition_fulfillment(TransitionFulfillmentInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             fulfillment_id: FulfillmentId::from_uuid(path.fulfillment_id),
             target_status,
@@ -772,16 +746,15 @@ async fn transition_fulfillment(
 async fn create_return(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateReturnBody>,
 ) -> Result<ApiResponse<ReturnData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let idempotency = request(&headers, "create_return", &(path.order_id, &body))?;
     let detail = state
         .fulfillment_management
         .create_return(CreateReturnInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             order_id: OrderId::from_uuid(path.order_id),
             lines: body
@@ -801,14 +774,13 @@ async fn create_return(
 
 async fn get_return(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ReturnResourcePath>,
 ) -> Result<ApiResponse<ReturnData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let detail = state
         .fulfillment_management
         .get_return(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             ReturnId::from_uuid(path.return_id),
         )
@@ -819,11 +791,10 @@ async fn get_return(
 async fn transition_return(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ReturnPath>,
     ApiJson(body): ApiJson<ReturnTransitionBody>,
 ) -> Result<ApiResponse<ReturnData>, ApiError> {
-    ensure_account(actor.merchant_account_id(), path.merchant_account_id)?;
     let target_status = match path.operation.as_str() {
         "authorize" => ReturnStatus::Authorized,
         "reject" => ReturnStatus::Rejected,
@@ -857,7 +828,7 @@ async fn transition_return(
     let detail = state
         .fulfillment_management
         .transition_return(TransitionReturnInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             return_id: ReturnId::from_uuid(path.return_id),
             target_status,
@@ -923,14 +894,6 @@ fn return_data(value: ReturnDetail) -> Result<ReturnData, ApplicationError> {
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
     })
-}
-
-fn ensure_account(actual: MerchantAccountId, expected: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == expected {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
 }
 
 fn operation_not_found(operation: String) -> ApiError {

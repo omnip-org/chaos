@@ -1,3 +1,4 @@
+mod api_keys;
 mod collections;
 mod fulfillment;
 mod inventory;
@@ -8,6 +9,8 @@ mod payments;
 mod price_lists;
 mod products;
 mod promotions;
+mod provider_secrets;
+mod reviews;
 mod store_admin;
 mod tax_rules;
 
@@ -16,11 +19,13 @@ use std::sync::Arc;
 use chaos_application::{
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
-        CreateProduct, MediaAdministration,
+        CreateProduct, MediaAdministration, ReviewAdministration,
     },
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     inventory::InventoryManagement,
-    merchant::{ApiKeyAuthentication, StoreAdministration},
+    merchant::{
+        ApiKeyAuthentication, ApiKeyManagement, ProviderSecretManagement, StoreAdministration,
+    },
     payments::PaymentService,
     ports::Clock,
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
@@ -50,6 +55,9 @@ pub struct McpState {
     pub payment_service: Arc<PaymentService>,
     pub media_administration: Arc<MediaAdministration>,
     pub catalog_localization: Arc<CatalogLocalization>,
+    pub review_administration: Arc<ReviewAdministration>,
+    pub api_key_management: Arc<ApiKeyManagement>,
+    pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub clock: Arc<dyn Clock>,
 }
 
@@ -74,7 +82,10 @@ impl ChaosMcp {
                 + Self::store_admin_tool_router()
                 + Self::payments_tool_router()
                 + Self::media_tool_router()
-                + Self::localization_tool_router(),
+                + Self::localization_tool_router()
+                + Self::reviews_tool_router()
+                + Self::api_keys_tool_router()
+                + Self::provider_secrets_tool_router(),
         }
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
-    merchant::{MerchantAccountId, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
     pricing::{Money, PriceListId, PromotionSnapshot, TaxRuleSnapshot},
 };
 
@@ -174,7 +174,6 @@ impl CartLine {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cart {
     id: CartId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     sales_channel_id: SalesChannelId,
     price_list_id: PriceListId,
@@ -185,7 +184,6 @@ pub struct Cart {
 
 impl Cart {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         price_list_id: PriceListId,
@@ -193,7 +191,6 @@ impl Cart {
     ) -> Self {
         Self {
             id: CartId::new(),
-            merchant_account_id,
             store_id,
             sales_channel_id,
             price_list_id,
@@ -206,7 +203,6 @@ impl Cart {
     #[allow(clippy::too_many_arguments)]
     pub fn rehydrate(
         id: CartId,
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         price_list_id: PriceListId,
@@ -216,7 +212,6 @@ impl Cart {
     ) -> Result<Self, DomainError> {
         let mut cart = Self {
             id,
-            merchant_account_id,
             store_id,
             sales_channel_id,
             price_list_id,
@@ -260,10 +255,6 @@ impl Cart {
 
     pub const fn id(&self) -> CartId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -681,7 +672,6 @@ mod tests {
 
     fn cart() -> Cart {
         Cart::create(
-            MerchantAccountId::new(),
             StoreId::new(),
             SalesChannelId::new(),
             PriceListId::new(),

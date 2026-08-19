@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{
         AnalyticsAttributionJob, AnalyticsAttributionQueue, AnalyticsCommerceFactJob,
         AnalyticsCommerceFactQueue, AnalyticsDailyReports, AnalyticsDestinationAccount,
@@ -117,25 +117,22 @@ struct DestinationAccountRow {
 impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
     async fn list_destinations(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
     ) -> Result<Option<Vec<AnalyticsDestinationAccount>>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2)",
-        )
-        .bind(actor.merchant_account_id().as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !exists {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
@@ -144,9 +141,8 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
             "SELECT id, store_id, provider::text, external_destination_reference, \
                     event_source_base_url, enabled, created_at, updated_at \
              FROM analytics.destination_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 ORDER BY provider",
+             WHERE store_id = $1 ORDER BY provider",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
@@ -161,20 +157,20 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
 
     async fn configure_destination(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         configuration: AnalyticsDestinationConfiguration,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsDestinationAccount, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
-        let scope = IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid());
+        let scope = IdempotencyScope::Store(store_id.as_uuid());
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
             &scope,
@@ -194,26 +190,23 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
             transaction.commit().await.map_err(database_error)?;
             return destination_account(row);
         }
-        let writable: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2 AND status <> 'archived')",
-        )
-        .bind(actor.merchant_account_id().as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let writable: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !writable {
             return Err(store_not_found(store_id));
         }
         let id = Uuid::now_v7();
         let destination_id: Uuid = sqlx::query_scalar(
             "INSERT INTO analytics.destination_accounts \
-             (id, merchant_account_id, store_id, provider, external_destination_reference, \
+             (id, store_id, provider, external_destination_reference, \
               event_source_base_url, credential_secret_reference, enabled, created_by, \
               created_at, updated_at) \
-             VALUES ($1,$2,$3,$4::analytics.destination_provider,$5,$6,$7,$8,$9,$10,$10) \
-             ON CONFLICT (merchant_account_id, store_id, provider) DO UPDATE \
+             VALUES ($1,$2,$3::analytics.destination_provider,$4,$5,$6,$7,$8,$9,$9) \
+             ON CONFLICT (store_id, provider) DO UPDATE \
              SET external_destination_reference = EXCLUDED.external_destination_reference, \
                  event_source_base_url = EXCLUDED.event_source_base_url, \
                  credential_secret_reference = EXCLUDED.credential_secret_reference, \
@@ -221,7 +214,6 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
              RETURNING id",
         )
         .bind(id)
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(configuration.provider.as_str())
         .bind(&configuration.external_destination_reference)
@@ -234,15 +226,8 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
         .await
         .map_err(database_error)?;
         if configuration.enabled {
-            enqueue_eligible_exports(
-                &mut transaction,
-                actor.merchant_account_id().as_uuid(),
-                store_id,
-                Some(destination_id),
-                None,
-                now,
-            )
-            .await?;
+            enqueue_eligible_exports(&mut transaction, store_id, Some(destination_id), None, now)
+                .await?;
         }
         idempotency::complete(
             &mut transaction,
@@ -265,27 +250,24 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
 impl AnalyticsReportingRepository for PostgresAnalyticsReportingRepository {
     async fn list_daily_reports(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         from: time::Date,
         to: time::Date,
     ) -> Result<Option<AnalyticsDailyReports>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
-        let store_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2)",
-        )
-        .bind(actor.merchant_account_id().as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let store_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !store_exists {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
@@ -295,11 +277,10 @@ impl AnalyticsReportingRepository for PostgresAnalyticsReportingRepository {
                     searches, cart_line_additions, checkouts_started, \
                     active_engagement_milliseconds, refreshed_at \
              FROM analytics.daily_behavior_reports \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND report_date BETWEEN $3 AND $4 \
+             WHERE store_id = $1 \
+               AND report_date BETWEEN $2 AND $3 \
              ORDER BY report_date, sales_channel_id LIMIT 5001",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(from)
         .bind(to)
@@ -312,11 +293,10 @@ impl AnalyticsReportingRepository for PostgresAnalyticsReportingRepository {
                     refunds_succeeded, refunded_amount_minor, fulfillments_shipped, \
                     returns_completed, refreshed_at \
              FROM analytics.daily_commerce_reports \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND report_date BETWEEN $3 AND $4 \
+             WHERE store_id = $1 \
+               AND report_date BETWEEN $2 AND $3 \
              ORDER BY report_date, sales_channel_id, currency LIMIT 5001",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(from)
         .bind(to)
@@ -329,12 +309,11 @@ impl AnalyticsReportingRepository for PostgresAnalyticsReportingRepository {
                     attributed_orders, attributed_amount_minor, currency::text AS currency, \
                     refreshed_at \
              FROM analytics.daily_attribution_reports \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND report_date BETWEEN $3 AND $4 \
+             WHERE store_id = $1 \
+               AND report_date BETWEEN $2 AND $3 \
              ORDER BY report_date, attribution_model, model_version, sales_channel_id, \
                       campaign_source, campaign_medium, campaign_name, currency LIMIT 5001",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(from)
         .bind(to)
@@ -380,16 +359,14 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
     ) -> Result<ResolvedAnalyticsPolicy, ApplicationError> {
         let sales_channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, actor.merchant_account_id.as_uuid(), None).await?;
+        set_store_context(&mut transaction, actor.store_id.as_uuid(), None).await?;
         let context_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM merchant.stores AS store \
              INNER JOIN merchant.sales_channels AS channel \
-               ON channel.merchant_account_id = store.merchant_account_id \
-              AND channel.store_id = store.id \
-             WHERE store.merchant_account_id = $1 AND store.id = $2 \
-               AND store.status = 'active' AND channel.id = $3 AND channel.status = 'active')",
+               ON channel.store_id = store.id \
+             WHERE store.id = $1 \
+               AND store.status = 'active' AND channel.id = $2 AND channel.status = 'active')",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -398,13 +375,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
         if !context_exists {
             return Err(ApplicationError::Forbidden);
         }
-        let policy = load_current_policy(
-            &mut transaction,
-            actor.merchant_account_id.as_uuid(),
-            actor.store_id,
-            now,
-        )
-        .await?;
+        let policy = load_current_policy(&mut transaction, actor.store_id, now).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(policy.map_or_else(
             || ResolvedAnalyticsPolicy {
@@ -429,20 +400,18 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
     ) -> Result<usize, ApplicationError> {
         let sales_channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
         let context_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM merchant.stores AS store \
              INNER JOIN merchant.sales_channels AS channel \
-               ON channel.merchant_account_id = store.merchant_account_id \
-              AND channel.store_id = store.id \
-             WHERE store.merchant_account_id = $1 AND store.id = $2 \
-               AND store.status = 'active' AND channel.id = $3 AND channel.status = 'active')",
+               ON channel.store_id = store.id \
+             WHERE store.id = $1 \
+               AND store.status = 'active' AND channel.id = $2 AND channel.status = 'active')",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -457,20 +426,19 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             let attribution = attribution_columns(event.properties());
             let inserted = sqlx::query_scalar::<_, uuid::Uuid>(
                 "INSERT INTO analytics.behavior_events \
-                 (id, event_id, merchant_account_id, store_id, sales_channel_id, event_name, \
+                 (id, event_id, store_id, sales_channel_id, event_name, \
                   schema_version, source, anonymous_id, session_id, analytics_storage_consent, \
                   advertising_storage_consent, advertising_export_eligible, consent_policy_version, \
                   collection_policy_version, properties, landing_path, referrer_domain, \
                   campaign_source, campaign_medium, campaign_name, cart_id, checkout_id, \
                   occurred_at, received_at, \
                   retention_expires_at) \
-                 VALUES (uuidv7(),$1,$2,$3,$4,$5::analytics.browser_event_name,$6, \
-                         'browser',$7,$8,true,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) \
-                 ON CONFLICT (merchant_account_id, store_id, event_id) DO NOTHING \
+                 VALUES (uuidv7(),$1,$2,$3,$4::analytics.browser_event_name,$5, \
+                         'browser',$6,$7,true,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) \
+                 ON CONFLICT (store_id, event_id) DO NOTHING \
                  RETURNING id",
             )
             .bind(event.event_id())
-            .bind(actor.merchant_account_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(sales_channel_id.as_uuid())
             .bind(event.name().as_str())
@@ -498,10 +466,9 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             if let Some(behavior_event_id) = inserted {
                 sqlx::query(
                     "INSERT INTO analytics.behavior_event_processing \
-                     (id, merchant_account_id, store_id, available_at) VALUES ($1,$2,$3,$4)",
+                     (id, store_id, available_at) VALUES ($1,$2,$3)",
                 )
                 .bind(behavior_event_id)
-                .bind(actor.merchant_account_id.as_uuid())
                 .bind(actor.store_id.as_uuid())
                 .bind(received_at)
                 .execute(&mut *transaction)
@@ -561,74 +528,59 @@ struct ErasureRequestRow {
 impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
     async fn get_store_policy(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         now: OffsetDateTime,
     ) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
-        let store_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2)",
-        )
-        .bind(actor.merchant_account_id().as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let store_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !store_exists {
             transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         }
-        let policy = load_current_policy(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            now,
-        )
-        .await?
-        .unwrap_or_else(|| builtin_policy(store_id));
+        let policy = load_current_policy(&mut transaction, store_id, now)
+            .await?
+            .unwrap_or_else(|| builtin_policy(store_id));
         transaction.commit().await.map_err(database_error)?;
         Ok(Some(policy))
     }
 
     async fn update_store_policy(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         policy: AnalyticsPolicy,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<StoreAnalyticsPolicy, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
         if let Some(policy_id) = reserve_policy(&mut transaction, actor, request).await? {
-            let item = load_policy_by_id(
-                &mut transaction,
-                actor.merchant_account_id().as_uuid(),
-                store_id,
-                policy_id,
-            )
-            .await?
-            .ok_or_else(invalid_policy_snapshot)?;
+            let item = load_policy_by_id(&mut transaction, store_id, policy_id)
+                .await?
+                .ok_or_else(invalid_policy_snapshot)?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(item);
         }
         let store_status = sqlx::query_scalar::<_, String>(
-            "SELECT status::text FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2 FOR UPDATE",
+            "SELECT status::text FROM merchant.stores WHERE id = $1 FOR UPDATE",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
@@ -643,9 +595,8 @@ impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
         let next_version: i32 = sqlx::query_scalar(
             "SELECT COALESCE(max(version), 0) + 1 \
              FROM analytics.store_policy_versions \
-             WHERE merchant_account_id = $1 AND store_id = $2",
+             WHERE store_id = $1",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_one(&mut *transaction)
         .await
@@ -653,13 +604,12 @@ impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
         let policy_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO analytics.store_policy_versions \
-             (id, merchant_account_id, store_id, version, behavior_collection_enabled, \
+             (id, store_id, version, behavior_collection_enabled, \
               advertising_exports_enabled, identity_linking_enabled, raw_event_retention_days, \
               created_by, effective_at, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)",
         )
         .bind(policy_id)
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(next_version)
         .bind(policy.behavior_collection_enabled())
@@ -671,22 +621,16 @@ impl AnalyticsPolicyRepository for PostgresAnalyticsEventRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        sqlx::query("SELECT * FROM analytics.apply_store_retention_policy($1,$2,$3)")
-            .bind(actor.merchant_account_id().as_uuid())
+        sqlx::query("SELECT * FROM analytics.apply_store_retention_policy($1,$2)")
             .bind(store_id.as_uuid())
             .bind(i32::from(policy.raw_event_retention_days()))
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
         complete_policy(&mut transaction, actor, request, policy_id).await?;
-        let item = load_policy_by_id(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            policy_id,
-        )
-        .await?
-        .ok_or_else(invalid_policy_snapshot)?;
+        let item = load_policy_by_id(&mut transaction, store_id, policy_id)
+            .await?
+            .ok_or_else(invalid_policy_snapshot)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
     }
@@ -707,37 +651,29 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
             .sales_channel_id
             .ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            machine.merchant_account_id.as_uuid(),
+            machine.store_id.as_uuid(),
             Some(actor.user_id.as_uuid()),
         )
         .await?;
         if let Some(link_id) = reserve_identity_link(&mut transaction, actor, request).await? {
-            let link = load_identity_link_by_id(
-                &mut transaction,
-                machine.merchant_account_id.as_uuid(),
-                machine.store_id,
-                link_id,
-            )
-            .await?
-            .ok_or_else(invalid_identity_link_snapshot)?;
+            let link = load_identity_link_by_id(&mut transaction, machine.store_id, link_id)
+                .await?
+                .ok_or_else(invalid_identity_link_snapshot)?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(link);
         }
         let customer_id = sqlx::query_scalar::<_, Uuid>(
             "SELECT customer.id FROM sales.customers AS customer \
              INNER JOIN merchant.stores AS store \
-               ON store.merchant_account_id = customer.merchant_account_id \
-              AND store.id = customer.store_id \
+               ON store.id = customer.store_id \
              INNER JOIN merchant.sales_channels AS channel \
-               ON channel.merchant_account_id = customer.merchant_account_id \
-              AND channel.store_id = customer.store_id \
-             WHERE customer.merchant_account_id = $1 AND customer.store_id = $2 \
-               AND customer.user_id = $3 AND store.status = 'active' \
-               AND channel.id = $4 AND channel.status = 'active'",
+               ON channel.store_id = customer.store_id \
+             WHERE customer.store_id = $1 \
+               AND customer.user_id = $2 AND store.status = 'active' \
+               AND channel.id = $3 AND channel.status = 'active'",
         )
-        .bind(machine.merchant_account_id.as_uuid())
         .bind(machine.store_id.as_uuid())
         .bind(actor.user_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
@@ -748,14 +684,9 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
             resource: "customer",
             id: actor.user_id.as_uuid().to_string(),
         })?;
-        let resolved = load_current_policy(
-            &mut transaction,
-            machine.merchant_account_id.as_uuid(),
-            machine.store_id,
-            now,
-        )
-        .await?
-        .unwrap_or_else(|| builtin_policy(machine.store_id));
+        let resolved = load_current_policy(&mut transaction, machine.store_id, now)
+            .await?
+            .unwrap_or_else(|| builtin_policy(machine.store_id));
         if !resolved.policy.identity_linking_enabled() {
             return Err(ApplicationError::Conflict {
                 code: "analytics_identity_linking_disabled",
@@ -764,10 +695,9 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         }
         let consent_evidence_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM analytics.behavior_events \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3 \
-               AND consent_policy_version = $4 AND analytics_storage_consent)",
+             WHERE store_id = $1 AND anonymous_id = $2 \
+               AND consent_policy_version = $3 AND analytics_storage_consent)",
         )
-        .bind(machine.merchant_account_id.as_uuid())
         .bind(machine.store_id.as_uuid())
         .bind(anonymous_id)
         .bind(consent.policy_version())
@@ -783,15 +713,14 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         let link_id = Uuid::now_v7();
         let inserted = sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO analytics.identity_links \
-             (id, merchant_account_id, store_id, anonymous_id, customer_id, \
+             (id, store_id, anonymous_id, customer_id, \
               consent_policy_version, collection_policy_version, linked_at, \
               retention_expires_at, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$8) \
-             ON CONFLICT (merchant_account_id, store_id, anonymous_id) DO NOTHING \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$7) \
+             ON CONFLICT (store_id, anonymous_id) DO NOTHING \
              RETURNING id",
         )
         .bind(link_id)
-        .bind(machine.merchant_account_id.as_uuid())
         .bind(machine.store_id.as_uuid())
         .bind(anonymous_id)
         .bind(customer_id)
@@ -805,14 +734,10 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         let actual_id = if let Some(id) = inserted {
             id
         } else {
-            let existing = load_identity_link_by_anonymous(
-                &mut transaction,
-                machine.merchant_account_id.as_uuid(),
-                machine.store_id,
-                anonymous_id,
-            )
-            .await?
-            .ok_or_else(invalid_identity_link_snapshot)?;
+            let existing =
+                load_identity_link_by_anonymous(&mut transaction, machine.store_id, anonymous_id)
+                    .await?
+                    .ok_or_else(invalid_identity_link_snapshot)?;
             if existing.customer_id.as_uuid() != customer_id {
                 return Err(ApplicationError::Conflict {
                     code: "analytics_identity_already_linked",
@@ -822,54 +747,41 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
             existing.id
         };
         complete_identity_link(&mut transaction, actor, request, actual_id).await?;
-        let link = load_identity_link_by_id(
-            &mut transaction,
-            machine.merchant_account_id.as_uuid(),
-            machine.store_id,
-            actual_id,
-        )
-        .await?
-        .ok_or_else(invalid_identity_link_snapshot)?;
+        let link = load_identity_link_by_id(&mut transaction, machine.store_id, actual_id)
+            .await?
+            .ok_or_else(invalid_identity_link_snapshot)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(link)
     }
 
     async fn request_erasure(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         selector: AnalyticsErasureSelector,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsErasureRequest, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
         if let Some(request_id) = reserve_erasure(&mut transaction, actor, request).await? {
-            let item = load_erasure_request(
-                &mut transaction,
-                actor.merchant_account_id().as_uuid(),
-                store_id,
-                request_id,
-            )
-            .await?
-            .ok_or_else(invalid_erasure_snapshot)?;
+            let item = load_erasure_request(&mut transaction, store_id, request_id)
+                .await?
+                .ok_or_else(invalid_erasure_snapshot)?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(item);
         }
-        let store_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2)",
-        )
-        .bind(actor.merchant_account_id().as_uuid())
-        .bind(store_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let store_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+                .bind(store_id.as_uuid())
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
         if !store_exists {
             return Err(store_not_found(store_id));
         }
@@ -880,12 +792,11 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         let request_id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO analytics.erasure_requests \
-             (id, merchant_account_id, store_id, anonymous_id, customer_id, requested_by, \
+             (id, store_id, anonymous_id, customer_id, requested_by, \
               requested_at, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$7)",
+             VALUES ($1,$2,$3,$4,$5,$6,$6,$6)",
         )
         .bind(request_id)
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(anonymous_id)
         .bind(customer_id)
@@ -895,38 +806,27 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
         .await
         .map_err(database_error)?;
         complete_erasure(&mut transaction, actor, request, request_id).await?;
-        let item = load_erasure_request(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            request_id,
-        )
-        .await?
-        .ok_or_else(invalid_erasure_snapshot)?;
+        let item = load_erasure_request(&mut transaction, store_id, request_id)
+            .await?
+            .ok_or_else(invalid_erasure_snapshot)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
     }
 
     async fn get_erasure_request(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         request_id: Uuid,
     ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(
+        set_store_context(
             &mut transaction,
-            actor.merchant_account_id().as_uuid(),
+            store_id.as_uuid(),
             Some(actor.user_id().as_uuid()),
         )
         .await?;
-        let item = load_erasure_request(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            request_id,
-        )
-        .await?;
+        let item = load_erasure_request(&mut transaction, store_id, request_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
     }
@@ -956,7 +856,6 @@ impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
 #[derive(FromRow)]
 struct SessionizationClaimRow {
     behavior_event_id: Uuid,
-    merchant_account_id: Uuid,
     store_id: Uuid,
     sales_channel_id: Uuid,
     event_name: String,
@@ -993,7 +892,7 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
         stale_before: OffsetDateTime,
     ) -> Result<Vec<AnalyticsSessionizationJob>, ApplicationError> {
         let rows = sqlx::query_as::<_, SessionizationClaimRow>(
-            "SELECT behavior_event_id, merchant_account_id, store_id, sales_channel_id, \
+            "SELECT behavior_event_id, store_id, sales_channel_id, \
                     event_name, anonymous_id, client_session_id, occurred_at, \
                     retention_expires_at, active_engagement_milliseconds, attempts \
              FROM analytics.claim_sessionization_events($1,$2,$3,$4)",
@@ -1009,7 +908,6 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
             .map(|row| {
                 Ok(AnalyticsSessionizationJob {
                     behavior_event_id: row.behavior_event_id,
-                    merchant_account_id: row.merchant_account_id,
                     store_id: StoreId::from_uuid(row.store_id),
                     sales_channel_id: SalesChannelId::from_uuid(row.sales_channel_id),
                     event_name: BrowserEventName::parse(&row.event_name)
@@ -1037,17 +935,12 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(job.merchant_account_id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         match result {
             Ok(contribution) => {
                 apply_session_contribution(&mut transaction, job, contribution, now).await?;
                 refresh_behavior_report(
                     &mut transaction,
-                    job.merchant_account_id,
                     job.store_id,
                     job.sales_channel_id,
                     job.occurred_at.date(),
@@ -1058,7 +951,6 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
                 if prior_date != job.occurred_at.date() {
                     refresh_behavior_report(
                         &mut transaction,
-                        job.merchant_account_id,
                         job.store_id,
                         job.sales_channel_id,
                         prior_date,
@@ -1068,12 +960,11 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
                 }
                 let updated = sqlx::query(
                     "UPDATE analytics.behavior_event_processing \
-                     SET processing_status = 'processed', processed_at = $5, \
-                         locked_by = NULL, locked_at = NULL, last_error = NULL, updated_at = $5 \
-                     WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                       AND locked_by = $4 AND processing_status = 'processing'",
+                     SET processing_status = 'processed', processed_at = $4, \
+                         locked_by = NULL, locked_at = NULL, last_error = NULL, updated_at = $4 \
+                     WHERE store_id = $1 AND id = $2 \
+                       AND locked_by = $3 AND processing_status = 'processing'",
                 )
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(job.behavior_event_id)
                 .bind(worker_id)
@@ -1092,13 +983,12 @@ impl AnalyticsSessionizationQueue for PostgresAnalyticsEventRepository {
                              THEN 'dead_letter'::integration.queue_status \
                              ELSE 'pending'::integration.queue_status END, \
                          available_at = CASE WHEN attempts >= 8 THEN available_at \
-                             ELSE $5 + make_interval(secs => least(power(2, \
+                             ELSE $4 + make_interval(secs => least(power(2, \
                                  greatest(attempts - 1, 0))::integer, 3600)) END, \
-                         locked_by = NULL, locked_at = NULL, last_error = $6, updated_at = $5 \
-                     WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                       AND locked_by = $4 AND processing_status = 'processing'",
+                         locked_by = NULL, locked_at = NULL, last_error = $5, updated_at = $4 \
+                     WHERE store_id = $1 AND id = $2 \
+                       AND locked_by = $3 AND processing_status = 'processing'",
                 )
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(job.behavior_event_id)
                 .bind(worker_id)
@@ -1153,8 +1043,8 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<AnalyticsCommerceFactJob>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32, OffsetDateTime)>(
-            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts, occurred_at \
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32, OffsetDateTime)>(
+            "SELECT id, store_id, event_type, payload, attempts, occurred_at \
              FROM analytics.claim_commerce_fact_events($1,$2,$3,$4)",
         )
         .bind(worker_id)
@@ -1168,12 +1058,11 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
             .map(|row| {
                 Ok(AnalyticsCommerceFactJob {
                     id: row.0,
-                    merchant_account_id: row.1,
-                    store_id: StoreId::from_uuid(row.2),
-                    event_type: row.3,
-                    payload: row.4,
-                    attempts: u32::try_from(row.5).map_err(conversion_error)?,
-                    occurred_at: row.6,
+                    store_id: StoreId::from_uuid(row.1),
+                    event_type: row.2,
+                    payload: row.3,
+                    attempts: u32::try_from(row.4).map_err(conversion_error)?,
+                    occurred_at: row.5,
                 })
             })
             .collect()
@@ -1187,24 +1076,23 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         attribution_available_at: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         let inserted = match job.event_type.as_str() {
             "analytics.order.created" => {
                 let order_id = fact_payload_uuid(&job.payload, "order_id")?;
                 sqlx::query(
                     "INSERT INTO analytics.commerce_facts \
-                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                     (id, store_id, sales_channel_id, fact_name, \
                       schema_version, order_id, customer_id, amount_minor, currency, \
                       occurred_at, ingested_at) \
-                     SELECT $1, orders.merchant_account_id, orders.store_id, \
+                     SELECT $1, orders.store_id, \
                             orders.sales_channel_id, 'order_created', 1, orders.id, \
-                            orders.customer_id, orders.total_amount_minor, orders.currency, $5, $6 \
+                            orders.customer_id, orders.total_amount_minor, orders.currency, $4, $5 \
                        FROM sales.orders AS orders \
-                      WHERE orders.merchant_account_id = $2 AND orders.store_id = $3 \
-                        AND orders.id = $4 ON CONFLICT (id) DO NOTHING",
+                      WHERE orders.store_id = $2 \
+                        AND orders.id = $3 ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(job.id)
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(order_id)
                 .bind(job.occurred_at)
@@ -1217,22 +1105,20 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 let attempt_id = fact_payload_uuid(&job.payload, "payment_attempt_id")?;
                 sqlx::query(
                     "INSERT INTO analytics.commerce_facts \
-                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                     (id, store_id, sales_channel_id, fact_name, \
                       schema_version, order_id, customer_id, payment_attempt_id, amount_minor, \
                       currency, occurred_at, ingested_at) \
-                     SELECT $1, attempt.merchant_account_id, attempt.store_id, \
+                     SELECT $1, attempt.store_id, \
                             orders.sales_channel_id, 'payment_captured', 1, orders.id, \
-                            orders.customer_id, attempt.id, attempt.amount_minor, attempt.currency, $5, $6 \
+                            orders.customer_id, attempt.id, attempt.amount_minor, attempt.currency, $4, $5 \
                        FROM payments.payment_attempts AS attempt \
                        INNER JOIN sales.orders AS orders \
-                         ON orders.merchant_account_id = attempt.merchant_account_id \
-                        AND orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
-                      WHERE attempt.merchant_account_id = $2 AND attempt.store_id = $3 \
-                        AND attempt.id = $4 AND attempt.status = 'captured' \
+                         ON orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
+                      WHERE attempt.store_id = $2 \
+                        AND attempt.id = $3 AND attempt.status = 'captured' \
                      ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(job.id)
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(attempt_id)
                 .bind(job.occurred_at)
@@ -1245,27 +1131,24 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 let refund_id = fact_payload_uuid(&job.payload, "refund_id")?;
                 sqlx::query(
                     "INSERT INTO analytics.commerce_facts \
-                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                     (id, store_id, sales_channel_id, fact_name, \
                       schema_version, order_id, customer_id, payment_attempt_id, refund_id, \
                       amount_minor, currency, occurred_at, ingested_at) \
-                     SELECT $1, refund.merchant_account_id, refund.store_id, \
+                     SELECT $1, refund.store_id, \
                             orders.sales_channel_id, 'refund_succeeded', 1, orders.id, \
                             orders.customer_id, attempt.id, refund.id, refund.amount_minor, \
-                            refund.currency, $5, $6 \
+                            refund.currency, $4, $5 \
                        FROM payments.refunds AS refund \
                        INNER JOIN payments.payment_attempts AS attempt \
-                         ON attempt.merchant_account_id = refund.merchant_account_id \
-                        AND attempt.store_id = refund.store_id \
+                         ON attempt.store_id = refund.store_id \
                         AND attempt.id = refund.payment_attempt_id \
                        INNER JOIN sales.orders AS orders \
-                         ON orders.merchant_account_id = attempt.merchant_account_id \
-                        AND orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
-                      WHERE refund.merchant_account_id = $2 AND refund.store_id = $3 \
-                        AND refund.id = $4 AND refund.status = 'succeeded' \
+                         ON orders.store_id = attempt.store_id AND orders.id = attempt.order_id \
+                      WHERE refund.store_id = $2 \
+                        AND refund.id = $3 AND refund.status = 'succeeded' \
                      ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(job.id)
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(refund_id)
                 .bind(job.occurred_at)
@@ -1278,22 +1161,20 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 let fulfillment_id = fact_payload_uuid(&job.payload, "fulfillment_id")?;
                 sqlx::query(
                     "INSERT INTO analytics.commerce_facts \
-                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                     (id, store_id, sales_channel_id, fact_name, \
                       schema_version, order_id, customer_id, fulfillment_id, occurred_at, ingested_at) \
-                     SELECT $1, fulfillment.merchant_account_id, fulfillment.store_id, \
+                     SELECT $1, fulfillment.store_id, \
                             orders.sales_channel_id, 'fulfillment_shipped', 1, orders.id, \
-                            orders.customer_id, fulfillment.id, $5, $6 \
+                            orders.customer_id, fulfillment.id, $4, $5 \
                        FROM fulfillment.fulfillments AS fulfillment \
                        INNER JOIN sales.orders AS orders \
-                         ON orders.merchant_account_id = fulfillment.merchant_account_id \
-                        AND orders.store_id = fulfillment.store_id \
+                         ON orders.store_id = fulfillment.store_id \
                         AND orders.id = fulfillment.order_id \
-                      WHERE fulfillment.merchant_account_id = $2 AND fulfillment.store_id = $3 \
-                        AND fulfillment.id = $4 AND fulfillment.shipped_at IS NOT NULL \
+                      WHERE fulfillment.store_id = $2 \
+                        AND fulfillment.id = $3 AND fulfillment.shipped_at IS NOT NULL \
                      ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(job.id)
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(fulfillment_id)
                 .bind(job.occurred_at)
@@ -1306,21 +1187,19 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
                 let return_id = fact_payload_uuid(&job.payload, "return_id")?;
                 sqlx::query(
                     "INSERT INTO analytics.commerce_facts \
-                     (id, merchant_account_id, store_id, sales_channel_id, fact_name, \
+                     (id, store_id, sales_channel_id, fact_name, \
                       schema_version, order_id, customer_id, return_id, occurred_at, ingested_at) \
-                     SELECT $1, returned.merchant_account_id, returned.store_id, \
+                     SELECT $1, returned.store_id, \
                             orders.sales_channel_id, 'return_completed', 1, orders.id, \
-                            orders.customer_id, returned.id, $5, $6 \
+                            orders.customer_id, returned.id, $4, $5 \
                        FROM fulfillment.returns AS returned \
                        INNER JOIN sales.orders AS orders \
-                         ON orders.merchant_account_id = returned.merchant_account_id \
-                        AND orders.store_id = returned.store_id AND orders.id = returned.order_id \
-                      WHERE returned.merchant_account_id = $2 AND returned.store_id = $3 \
-                        AND returned.id = $4 AND returned.status = 'completed' \
+                         ON orders.store_id = returned.store_id AND orders.id = returned.order_id \
+                      WHERE returned.store_id = $2 \
+                        AND returned.id = $3 AND returned.status = 'completed' \
                      ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(job.id)
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(return_id)
                 .bind(job.occurred_at)
@@ -1334,9 +1213,8 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         if inserted.rows_affected() == 0 {
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM analytics.commerce_facts \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3)",
+                 WHERE store_id = $1 AND id = $2)",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id.as_uuid())
             .bind(job.id)
             .fetch_one(&mut *transaction)
@@ -1349,13 +1227,12 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         if job.event_type == "analytics.order.created" {
             sqlx::query(
                 "INSERT INTO analytics.attribution_jobs \
-                 (commerce_fact_id, merchant_account_id, store_id, model_version, available_at) \
-                 VALUES ($1,$2,$3,$4,$5) \
-                 ON CONFLICT (merchant_account_id, store_id, commerce_fact_id, model_version) \
+                 (commerce_fact_id, store_id, model_version, available_at) \
+                 VALUES ($1,$2,$3,$4) \
+                 ON CONFLICT (store_id, commerce_fact_id, model_version) \
                  DO NOTHING",
             )
             .bind(job.id)
-            .bind(job.merchant_account_id)
             .bind(job.store_id.as_uuid())
             .bind(i16::try_from(attribution_model_version).map_err(conversion_error)?)
             .bind(attribution_available_at)
@@ -1365,7 +1242,6 @@ impl AnalyticsCommerceFactQueue for PostgresAnalyticsEventRepository {
         }
         refresh_commerce_report(
             &mut transaction,
-            job.merchant_account_id,
             job.store_id,
             job.occurred_at.date(),
             ingested_at,
@@ -1416,8 +1292,8 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<AnalyticsAttributionJob>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, i16, i32)>(
-            "SELECT commerce_fact_id, merchant_account_id, store_id, model_version, attempts \
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, i16, i32)>(
+            "SELECT commerce_fact_id, store_id, model_version, attempts \
              FROM analytics.claim_attribution_jobs($1,$2,$3,$4)",
         )
         .bind(worker_id)
@@ -1431,10 +1307,9 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
             .map(|row| {
                 Ok(AnalyticsAttributionJob {
                     commerce_fact_id: row.0,
-                    merchant_account_id: row.1,
-                    store_id: StoreId::from_uuid(row.2),
-                    model_version: u16::try_from(row.3).map_err(conversion_error)?,
-                    attempts: u32::try_from(row.4).map_err(conversion_error)?,
+                    store_id: StoreId::from_uuid(row.1),
+                    model_version: u16::try_from(row.2).map_err(conversion_error)?,
+                    attempts: u32::try_from(row.3).map_err(conversion_error)?,
                 })
             })
             .collect()
@@ -1446,27 +1321,24 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
         attributed_at: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         let affected = sqlx::query(
             "WITH order_context AS ( \
-                 SELECT fact.id AS commerce_fact_id, fact.merchant_account_id, fact.store_id, \
+                 SELECT fact.id AS commerce_fact_id, fact.store_id, \
                         fact.sales_channel_id, fact.order_id, fact.customer_id, fact.occurred_at, \
                         orders.checkout_id, checkout.cart_id \
                    FROM analytics.commerce_facts AS fact \
                    INNER JOIN sales.orders AS orders \
-                     ON orders.merchant_account_id = fact.merchant_account_id \
-                    AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
+                     ON orders.store_id = fact.store_id AND orders.id = fact.order_id \
                    INNER JOIN sales.checkouts AS checkout \
-                     ON checkout.merchant_account_id = orders.merchant_account_id \
-                    AND checkout.store_id = orders.store_id AND checkout.id = orders.checkout_id \
-                  WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 AND fact.id = $3 \
+                     ON checkout.store_id = orders.store_id AND checkout.id = orders.checkout_id \
+                  WHERE fact.store_id = $1 AND fact.id = $2 \
                     AND fact.fact_name = 'order_created' \
              ), anchor AS ( \
                  SELECT event.anonymous_id, event.session_id, event.occurred_at \
                    FROM analytics.behavior_events AS event \
                    INNER JOIN order_context AS context \
-                     ON context.merchant_account_id = event.merchant_account_id \
-                    AND context.store_id = event.store_id \
+                     ON context.store_id = event.store_id \
                     AND context.sales_channel_id = event.sales_channel_id \
                   WHERE event.event_name = 'checkout_started' \
                     AND (event.checkout_id = context.checkout_id OR event.cart_id = context.cart_id) \
@@ -1479,8 +1351,7 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
                         row_number() OVER (ORDER BY event.occurred_at DESC, event.id DESC) AS last_rank \
                    FROM analytics.behavior_events AS event \
                    INNER JOIN order_context AS context \
-                     ON context.merchant_account_id = event.merchant_account_id \
-                    AND context.store_id = event.store_id \
+                     ON context.store_id = event.store_id \
                     AND context.sales_channel_id = event.sales_channel_id \
                    INNER JOIN anchor \
                      ON anchor.anonymous_id = event.anonymous_id \
@@ -1491,8 +1362,7 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
                  SELECT max(event.received_at) AS received_at \
                    FROM analytics.behavior_events AS event \
                    INNER JOIN order_context AS context \
-                     ON context.merchant_account_id = event.merchant_account_id \
-                    AND context.store_id = event.store_id \
+                     ON context.store_id = event.store_id \
                     AND context.sales_channel_id = event.sales_channel_id \
                    INNER JOIN anchor \
                      ON anchor.anonymous_id = event.anonymous_id \
@@ -1514,26 +1384,26 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
                      ON model.attribution_model = requested.model_name \
              ) \
              INSERT INTO analytics.attribution_results \
-             (id, merchant_account_id, store_id, sales_channel_id, commerce_fact_id, order_id, \
+             (id, store_id, sales_channel_id, commerce_fact_id, order_id, \
               customer_id, checkout_id, cart_id, attribution_model, model_version, is_direct, \
               touch_event_id, anonymous_id, session_id, landing_path, referrer_domain, \
               campaign_source, campaign_medium, campaign_name, advertising_storage_consent, \
               consent_policy_version, collection_policy_version, advertising_export_eligible, \
               touch_occurred_at, input_event_watermark, attributed_at) \
-             SELECT uuidv7(), context.merchant_account_id, context.store_id, \
+             SELECT uuidv7(), context.store_id, \
                     context.sales_channel_id, context.commerce_fact_id, context.order_id, \
                     context.customer_id, context.checkout_id, context.cart_id, \
-                    requested.model_name, $4, requested.id IS NULL, requested.id, \
+                    requested.model_name, $3, requested.id IS NULL, requested.id, \
                     requested.anonymous_id, requested.session_id, requested.landing_path, \
                     requested.referrer_domain, requested.campaign_source, \
                     requested.campaign_medium, requested.campaign_name, \
                     requested.advertising_storage_consent, requested.consent_policy_version, \
                     requested.collection_policy_version, \
                     COALESCE(requested.advertising_export_eligible, false), \
-                    requested.occurred_at, watermark.received_at, $5 \
+                    requested.occurred_at, watermark.received_at, $4 \
                FROM order_context AS context CROSS JOIN requested_models AS requested \
                LEFT JOIN watermark ON true \
-             ON CONFLICT (merchant_account_id, store_id, commerce_fact_id, \
+             ON CONFLICT (store_id, commerce_fact_id, \
                           attribution_model, model_version) DO UPDATE \
                  SET is_direct = EXCLUDED.is_direct, touch_event_id = EXCLUDED.touch_event_id, \
                      anonymous_id = EXCLUDED.anonymous_id, session_id = EXCLUDED.session_id, \
@@ -1550,7 +1420,6 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
                      input_event_watermark = EXCLUDED.input_event_watermark, \
                      attributed_at = EXCLUDED.attributed_at",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(job.commerce_fact_id)
         .bind(i16::try_from(job.model_version).map_err(conversion_error)?)
@@ -1563,7 +1432,6 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
         }
         refresh_attribution_report(
             &mut transaction,
-            job.merchant_account_id,
             job.store_id,
             job.commerce_fact_id,
             attributed_at,
@@ -1571,7 +1439,6 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
         .await?;
         enqueue_eligible_exports(
             &mut transaction,
-            job.merchant_account_id,
             job.store_id,
             None,
             Some(job.commerce_fact_id),
@@ -1604,15 +1471,14 @@ impl AnalyticsAttributionQueue for PostgresAnalyticsEventRepository {
             }
         };
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         let finished = sqlx::query(
-            "UPDATE analytics.attribution_jobs SET processing_status = $6::integration.queue_status, \
-                    available_at = $7, locked_by = NULL, locked_at = NULL, processed_at = $8, \
-                    last_error = $9, updated_at = $10 \
-              WHERE merchant_account_id = $1 AND store_id = $2 AND commerce_fact_id = $3 \
-                AND model_version = $4 AND processing_status = 'processing' AND locked_by = $5",
+            "UPDATE analytics.attribution_jobs SET processing_status = $5::integration.queue_status, \
+                    available_at = $6, locked_by = NULL, locked_at = NULL, processed_at = $7, \
+                    last_error = $8, updated_at = $9 \
+              WHERE store_id = $1 AND commerce_fact_id = $2 \
+                AND model_version = $3 AND processing_status = 'processing' AND locked_by = $4",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(job.commerce_fact_id)
         .bind(i16::try_from(job.model_version).map_err(conversion_error)?)
@@ -1644,8 +1510,8 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<AnalyticsExportJob>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, i32)>(
-            "SELECT id, merchant_account_id, store_id, destination_id, commerce_fact_id, attempts \
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, i32)>(
+            "SELECT id, store_id, destination_id, commerce_fact_id, attempts \
              FROM analytics.claim_export_deliveries($1,$2,$3,$4)",
         )
         .bind(worker_id)
@@ -1659,11 +1525,10 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
             .map(|row| {
                 Ok(AnalyticsExportJob {
                     id: row.0,
-                    merchant_account_id: row.1,
-                    store_id: StoreId::from_uuid(row.2),
-                    destination_id: row.3,
-                    commerce_fact_id: row.4,
-                    attempts: u32::try_from(row.5).map_err(conversion_error)?,
+                    store_id: StoreId::from_uuid(row.1),
+                    destination_id: row.2,
+                    commerce_fact_id: row.3,
+                    attempts: u32::try_from(row.4).map_err(conversion_error)?,
                 })
             })
             .collect()
@@ -1674,7 +1539,7 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
         job: &AnalyticsExportJob,
     ) -> Result<AnalyticsExportCommand, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         let row = sqlx::query_as::<
             _,
             (
@@ -1699,21 +1564,17 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
                     orders.tax_amount_minor \
              FROM analytics.export_deliveries AS delivery \
              INNER JOIN analytics.destination_accounts AS destination \
-               ON destination.merchant_account_id = delivery.merchant_account_id \
-              AND destination.store_id = delivery.store_id \
+               ON destination.store_id = delivery.store_id \
               AND destination.id = delivery.destination_id \
              INNER JOIN analytics.commerce_facts AS fact \
-               ON fact.merchant_account_id = delivery.merchant_account_id \
-              AND fact.store_id = delivery.store_id AND fact.id = delivery.commerce_fact_id \
+               ON fact.store_id = delivery.store_id AND fact.id = delivery.commerce_fact_id \
              INNER JOIN sales.orders AS orders \
-               ON orders.merchant_account_id = fact.merchant_account_id \
-              AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
-             WHERE delivery.merchant_account_id = $1 AND delivery.store_id = $2 \
-               AND delivery.id = $3 AND delivery.destination_id = $4 \
-               AND delivery.commerce_fact_id = $5 AND delivery.delivery_status = 'processing' \
+               ON orders.store_id = fact.store_id AND orders.id = fact.order_id \
+             WHERE delivery.store_id = $1 \
+               AND delivery.id = $2 AND delivery.destination_id = $3 \
+               AND delivery.commerce_fact_id = $4 AND delivery.delivery_status = 'processing' \
                AND destination.enabled",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(job.id)
         .bind(job.destination_id)
@@ -1724,11 +1585,10 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
         .ok_or_else(invalid_export_delivery)?;
         let anonymous_id: Uuid = sqlx::query_scalar(
             "SELECT anonymous_id FROM analytics.attribution_results \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 \
+             WHERE store_id = $1 AND order_id = $2 \
                AND advertising_export_eligible AND anonymous_id IS NOT NULL \
              ORDER BY (attribution_model = 'last_touch') DESC, model_version DESC LIMIT 1",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(row.6)
         .fetch_optional(&mut *transaction)
@@ -1737,10 +1597,9 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
         .ok_or_else(invalid_export_delivery)?;
         let item_rows = sqlx::query_as::<_, (Uuid, String, i32, i64)>(
             "SELECT product_variant_id, variant_title, quantity, unit_price_amount_minor \
-             FROM sales.order_lines WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND order_id = $3 ORDER BY position",
+             FROM sales.order_lines WHERE store_id = $1 \
+               AND order_id = $2 ORDER BY position",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(row.6)
         .fetch_all(&mut *transaction)
@@ -1812,17 +1671,16 @@ impl AnalyticsExportQueue for PostgresAnalyticsEventRepository {
             ),
         };
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        set_merchant_context(&mut transaction, job.merchant_account_id, None).await?;
+        set_store_context(&mut transaction, job.store_id.as_uuid(), None).await?;
         let updated = sqlx::query(
             "UPDATE analytics.export_deliveries \
-             SET delivery_status = $6::integration.queue_status, available_at = $7, \
-                 locked_by = NULL, locked_at = NULL, delivered_at = $8, \
-                 provider_reference = $9, last_error = $10, updated_at = $11 \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-               AND destination_id = $4 AND commerce_fact_id = $5 \
-               AND delivery_status = 'processing' AND locked_by = $12",
+             SET delivery_status = $5::integration.queue_status, available_at = $6, \
+                 locked_by = NULL, locked_at = NULL, delivered_at = $7, \
+                 provider_reference = $8, last_error = $9, updated_at = $10 \
+             WHERE store_id = $1 AND id = $2 \
+               AND destination_id = $3 AND commerce_fact_id = $4 \
+               AND delivery_status = 'processing' AND locked_by = $11",
         )
-        .bind(job.merchant_account_id)
         .bind(job.store_id.as_uuid())
         .bind(job.id)
         .bind(job.destination_id)
@@ -1854,8 +1712,7 @@ async fn apply_session_contribution(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let lock_key = format!(
-        "{}:{}:{}:{}:{}",
-        job.merchant_account_id,
+        "{}:{}:{}:{}",
         job.store_id.as_uuid(),
         job.sales_channel_id.as_uuid(),
         job.anonymous_id,
@@ -1871,13 +1728,12 @@ async fn apply_session_contribution(
                 product_view_count, search_count, cart_line_added_count, \
                 checkout_started_count, active_engagement_milliseconds, retention_expires_at \
          FROM analytics.sessions \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-           AND anonymous_id = $4 AND client_session_id = $5 \
-           AND started_at <= $6 + make_interval(mins => $7) \
-           AND last_event_at >= $6 - make_interval(mins => $7) \
+         WHERE store_id = $1 AND sales_channel_id = $2 \
+           AND anonymous_id = $3 AND client_session_id = $4 \
+           AND started_at <= $5 + make_interval(mins => $6) \
+           AND last_event_at >= $5 - make_interval(mins => $6) \
          ORDER BY started_at, id FOR UPDATE",
     )
-    .bind(job.merchant_account_id)
     .bind(job.store_id.as_uuid())
     .bind(job.sales_channel_id.as_uuid())
     .bind(job.anonymous_id)
@@ -1902,13 +1758,12 @@ async fn insert_session(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO analytics.sessions \
-         (id, merchant_account_id, store_id, sales_channel_id, anonymous_id, client_session_id, \
+         (id, store_id, sales_channel_id, anonymous_id, client_session_id, \
           started_at, last_event_at, event_count, page_view_count, product_view_count, \
           search_count, cart_line_added_count, checkout_started_count, \
           active_engagement_milliseconds, retention_expires_at, created_at, updated_at) \
-         VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)",
+         VALUES (uuidv7(),$1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)",
     )
-    .bind(job.merchant_account_id)
     .bind(job.store_id.as_uuid())
     .bind(job.sales_channel_id.as_uuid())
     .bind(job.anonymous_id)
@@ -1995,26 +1850,21 @@ async fn merge_sessions(
         .map(|row| row.id)
         .collect::<Vec<_>>();
     if !merged_ids.is_empty() {
-        sqlx::query(
-            "DELETE FROM analytics.sessions \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = ANY($3)",
-        )
-        .bind(job.merchant_account_id)
-        .bind(job.store_id.as_uuid())
-        .bind(&merged_ids)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
+        sqlx::query("DELETE FROM analytics.sessions WHERE store_id = $1 AND id = ANY($2)")
+            .bind(job.store_id.as_uuid())
+            .bind(&merged_ids)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     }
     sqlx::query(
         "UPDATE analytics.sessions \
-         SET started_at = $4, last_event_at = $5, event_count = $6, page_view_count = $7, \
-             product_view_count = $8, search_count = $9, cart_line_added_count = $10, \
-             checkout_started_count = $11, active_engagement_milliseconds = $12, \
-             retention_expires_at = $13, updated_at = $14 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         SET started_at = $3, last_event_at = $4, event_count = $5, page_view_count = $6, \
+             product_view_count = $7, search_count = $8, cart_line_added_count = $9, \
+             checkout_started_count = $10, active_engagement_milliseconds = $11, \
+             retention_expires_at = $12, updated_at = $13 \
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(job.merchant_account_id)
     .bind(job.store_id.as_uuid())
     .bind(target_id)
     .bind(started_at)
@@ -2087,13 +1937,13 @@ fn stale_sessionization_lease() -> ApplicationError {
     }
 }
 
-async fn set_merchant_context(
+async fn set_store_context(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
+    store_id: Uuid,
     user_id: Option<Uuid>,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-        .bind(merchant_account_id.to_string())
+    sqlx::query("SELECT set_config('app.store_id', $1, true)")
+        .bind(store_id.to_string())
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
@@ -2109,32 +1959,22 @@ async fn set_merchant_context(
 
 async fn load_identity_link_by_id(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     link_id: Uuid,
 ) -> Result<Option<AnalyticsIdentityLink>, ApplicationError> {
-    load_identity_link(transaction, merchant_account_id, store_id, "id", link_id).await
+    load_identity_link(transaction, store_id, "id", link_id).await
 }
 
 async fn load_identity_link_by_anonymous(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     anonymous_id: Uuid,
 ) -> Result<Option<AnalyticsIdentityLink>, ApplicationError> {
-    load_identity_link(
-        transaction,
-        merchant_account_id,
-        store_id,
-        "anonymous_id",
-        anonymous_id,
-    )
-    .await
+    load_identity_link(transaction, store_id, "anonymous_id", anonymous_id).await
 }
 
 async fn load_identity_link(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     discriminator: &'static str,
     value: Uuid,
@@ -2144,18 +1984,17 @@ async fn load_identity_link(
             "SELECT id, store_id, anonymous_id, customer_id, consent_policy_version, \
                     collection_policy_version, linked_at, retention_expires_at \
              FROM analytics.identity_links \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3"
+             WHERE store_id = $1 AND id = $2"
         }
         "anonymous_id" => {
             "SELECT id, store_id, anonymous_id, customer_id, consent_policy_version, \
                     collection_policy_version, linked_at, retention_expires_at \
              FROM analytics.identity_links \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND anonymous_id = $3"
+             WHERE store_id = $1 AND anonymous_id = $2"
         }
         _ => return Err(invalid_identity_link_snapshot()),
     };
     let row = sqlx::query_as::<_, IdentityLinkRow>(query)
-        .bind(merchant_account_id)
         .bind(store_id.as_uuid())
         .bind(value)
         .fetch_optional(&mut **transaction)
@@ -2179,7 +2018,6 @@ fn identity_link_item(row: IdentityLinkRow) -> AnalyticsIdentityLink {
 
 async fn load_erasure_request(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     request_id: Uuid,
 ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError> {
@@ -2188,9 +2026,8 @@ async fn load_erasure_request(
                 behavior_events_deleted, attribution_results_deleted, sessions_deleted, identity_links_deleted, \
                 requested_at, completed_at \
          FROM analytics.erasure_requests \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(request_id)
     .fetch_optional(&mut **transaction)
@@ -2263,12 +2100,12 @@ async fn complete_identity_link(
 
 async fn reserve_erasure(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: StoreActor,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
     reserve_snapshot_id(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         REQUEST_ERASURE_OPERATION,
         request,
     )
@@ -2277,13 +2114,13 @@ async fn reserve_erasure(
 
 async fn complete_erasure(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: StoreActor,
     request: &IdempotencyRequest,
     request_id: Uuid,
 ) -> Result<(), ApplicationError> {
     complete_snapshot_id(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         REQUEST_ERASURE_OPERATION,
         request,
         202,
@@ -2334,7 +2171,6 @@ async fn complete_snapshot_id(
 
 async fn load_current_policy(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     now: OffsetDateTime,
 ) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
@@ -2343,10 +2179,9 @@ async fn load_current_policy(
                 advertising_exports_enabled, identity_linking_enabled, \
                 raw_event_retention_days, created_by, effective_at, created_at \
          FROM analytics.store_policy_versions \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND effective_at <= $3 \
+         WHERE store_id = $1 AND effective_at <= $2 \
          ORDER BY effective_at DESC, version DESC LIMIT 1",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(now)
     .fetch_optional(&mut **transaction)
@@ -2357,7 +2192,6 @@ async fn load_current_policy(
 
 async fn load_policy_by_id(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     policy_id: Uuid,
 ) -> Result<Option<StoreAnalyticsPolicy>, ApplicationError> {
@@ -2366,9 +2200,8 @@ async fn load_policy_by_id(
                 advertising_exports_enabled, identity_linking_enabled, \
                 raw_event_retention_days, created_by, effective_at, created_at \
          FROM analytics.store_policy_versions \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(policy_id)
     .fetch_optional(&mut **transaction)
@@ -2409,12 +2242,12 @@ fn builtin_policy(store_id: StoreId) -> StoreAnalyticsPolicy {
 
 async fn reserve_policy(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: StoreActor,
     request: &IdempotencyRequest,
 ) -> Result<Option<Uuid>, ApplicationError> {
     let Some(snapshot) = idempotency::reserve(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         UPDATE_POLICY_OPERATION,
         request,
     )
@@ -2432,13 +2265,13 @@ async fn reserve_policy(
 
 async fn complete_policy(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: MerchantActor,
+    actor: StoreActor,
     request: &IdempotencyRequest,
     policy_id: Uuid,
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         UPDATE_POLICY_OPERATION,
         request,
         200,
@@ -2612,7 +2445,6 @@ fn attribution_columns(properties: &BrowserEventProperties) -> AttributionColumn
 
 async fn refresh_behavior_report(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     sales_channel_id: SalesChannelId,
     report_date: time::Date,
@@ -2620,10 +2452,9 @@ async fn refresh_behavior_report(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "DELETE FROM analytics.daily_behavior_reports \
-         WHERE merchant_account_id = $1 AND store_id = $2 \
-           AND sales_channel_id = $3 AND report_date = $4",
+         WHERE store_id = $1 \
+           AND sales_channel_id = $2 AND report_date = $3",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(sales_channel_id.as_uuid())
     .bind(report_date)
@@ -2632,18 +2463,17 @@ async fn refresh_behavior_report(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO analytics.daily_behavior_reports \
-         (merchant_account_id, store_id, sales_channel_id, report_date, sessions, events, \
+         (store_id, sales_channel_id, report_date, sessions, events, \
           page_views, product_views, searches, cart_line_additions, checkouts_started, \
           active_engagement_milliseconds, refreshed_at) \
-         SELECT $1,$2,$3,$4,count(*),sum(event_count),sum(page_view_count), \
+         SELECT $1,$2,$3,count(*),sum(event_count),sum(page_view_count), \
                 sum(product_view_count),sum(search_count),sum(cart_line_added_count), \
-                sum(checkout_started_count),sum(active_engagement_milliseconds),$5 \
+                sum(checkout_started_count),sum(active_engagement_milliseconds),$4 \
            FROM analytics.sessions \
-          WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-            AND (started_at AT TIME ZONE 'UTC')::date = $4 \
+          WHERE store_id = $1 AND sales_channel_id = $2 \
+            AND (started_at AT TIME ZONE 'UTC')::date = $3 \
          HAVING count(*) > 0",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(sales_channel_id.as_uuid())
     .bind(report_date)
@@ -2656,7 +2486,7 @@ async fn refresh_behavior_report(
 
 async fn load_destination(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: MerchantActor,
+    _actor: StoreActor,
     store_id: StoreId,
     id: Uuid,
 ) -> Result<Option<DestinationAccountRow>, ApplicationError> {
@@ -2664,9 +2494,8 @@ async fn load_destination(
         "SELECT id, store_id, provider::text, external_destination_reference, \
                 event_source_base_url, enabled, created_at, updated_at \
          FROM analytics.destination_accounts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(actor.merchant_account_id().as_uuid())
     .bind(store_id.as_uuid())
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -2693,7 +2522,6 @@ fn destination_account(
 
 async fn enqueue_eligible_exports(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     destination_id: Option<Uuid>,
     source_fact_id: Option<Uuid>,
@@ -2701,31 +2529,28 @@ async fn enqueue_eligible_exports(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO analytics.export_deliveries \
-         (id, merchant_account_id, store_id, destination_id, commerce_fact_id, \
+         (id, store_id, destination_id, commerce_fact_id, \
           available_at, created_at, updated_at) \
-         SELECT uuidv7(), fact.merchant_account_id, fact.store_id, destination.id, fact.id, \
-                $5, $5, $5 \
+         SELECT uuidv7(), fact.store_id, destination.id, fact.id, \
+                $4, $4, $4 \
            FROM analytics.commerce_facts AS fact \
            INNER JOIN analytics.destination_accounts AS destination \
-             ON destination.merchant_account_id = fact.merchant_account_id \
-            AND destination.store_id = fact.store_id AND destination.enabled \
-          WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 \
-            AND ($3::uuid IS NULL OR destination.id = $3) \
-            AND ($4::uuid IS NULL OR fact.order_id = ( \
+             ON destination.store_id = fact.store_id AND destination.enabled \
+          WHERE fact.store_id = $1 \
+            AND ($2::uuid IS NULL OR destination.id = $2) \
+            AND ($3::uuid IS NULL OR fact.order_id = ( \
                 SELECT source.order_id FROM analytics.commerce_facts AS source \
-                 WHERE source.merchant_account_id = $1 AND source.store_id = $2 \
-                   AND source.id = $4 \
+                 WHERE source.store_id = $1 \
+                   AND source.id = $3 \
             )) \
             AND EXISTS ( \
                 SELECT 1 FROM analytics.attribution_results AS result \
-                 WHERE result.merchant_account_id = fact.merchant_account_id \
-                   AND result.store_id = fact.store_id AND result.order_id = fact.order_id \
+                 WHERE result.store_id = fact.store_id AND result.order_id = fact.order_id \
                    AND result.advertising_export_eligible \
             ) \
-         ON CONFLICT (merchant_account_id, store_id, destination_id, commerce_fact_id) \
+         ON CONFLICT (store_id, destination_id, commerce_fact_id) \
          DO NOTHING",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(destination_id)
     .bind(source_fact_id)
@@ -2738,16 +2563,13 @@ async fn enqueue_eligible_exports(
 
 async fn refresh_commerce_report(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     report_date: time::Date,
     refreshed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "DELETE FROM analytics.daily_commerce_reports \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND report_date = $3",
+        "DELETE FROM analytics.daily_commerce_reports WHERE store_id = $1 AND report_date = $2",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(report_date)
     .execute(&mut **transaction)
@@ -2755,11 +2577,11 @@ async fn refresh_commerce_report(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO analytics.daily_commerce_reports \
-         (merchant_account_id, store_id, sales_channel_id, report_date, currency, \
+         (store_id, sales_channel_id, report_date, currency, \
           orders_created, order_amount_minor, payments_captured, captured_amount_minor, \
           refunds_succeeded, refunded_amount_minor, fulfillments_shipped, returns_completed, \
           refreshed_at) \
-         SELECT fact.merchant_account_id, fact.store_id, fact.sales_channel_id, $3, \
+         SELECT fact.store_id, fact.sales_channel_id, $2, \
                 orders.currency, \
                 count(*) FILTER (WHERE fact.fact_name = 'order_created'), \
                 coalesce(sum(fact.amount_minor) FILTER (WHERE fact.fact_name = 'order_created'),0), \
@@ -2768,16 +2590,14 @@ async fn refresh_commerce_report(
                 count(*) FILTER (WHERE fact.fact_name = 'refund_succeeded'), \
                 coalesce(sum(fact.amount_minor) FILTER (WHERE fact.fact_name = 'refund_succeeded'),0), \
                 count(*) FILTER (WHERE fact.fact_name = 'fulfillment_shipped'), \
-                count(*) FILTER (WHERE fact.fact_name = 'return_completed'), $4 \
+                count(*) FILTER (WHERE fact.fact_name = 'return_completed'), $3 \
            FROM analytics.commerce_facts AS fact \
            INNER JOIN sales.orders AS orders \
-             ON orders.merchant_account_id = fact.merchant_account_id \
-            AND orders.store_id = fact.store_id AND orders.id = fact.order_id \
-          WHERE fact.merchant_account_id = $1 AND fact.store_id = $2 \
-            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $3 \
-          GROUP BY fact.merchant_account_id, fact.store_id, fact.sales_channel_id, orders.currency",
+             ON orders.store_id = fact.store_id AND orders.id = fact.order_id \
+          WHERE fact.store_id = $1 \
+            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $2 \
+          GROUP BY fact.store_id, fact.sales_channel_id, orders.currency",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(report_date)
     .bind(refreshed_at)
@@ -2789,26 +2609,22 @@ async fn refresh_commerce_report(
 
 async fn refresh_attribution_report(
     transaction: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     commerce_fact_id: Uuid,
     refreshed_at: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let report_date: time::Date = sqlx::query_scalar(
         "SELECT (occurred_at AT TIME ZONE 'UTC')::date FROM analytics.commerce_facts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(commerce_fact_id)
     .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "DELETE FROM analytics.daily_attribution_reports \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND report_date = $3",
+        "DELETE FROM analytics.daily_attribution_reports WHERE store_id = $1 AND report_date = $2",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(report_date)
     .execute(&mut **transaction)
@@ -2816,26 +2632,24 @@ async fn refresh_attribution_report(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO analytics.daily_attribution_reports \
-         (merchant_account_id, store_id, sales_channel_id, report_date, attribution_model, \
+         (store_id, sales_channel_id, report_date, attribution_model, \
           model_version, is_direct, campaign_source, campaign_medium, campaign_name, \
           attributed_orders, attributed_amount_minor, currency, refreshed_at) \
-         SELECT result.merchant_account_id, result.store_id, result.sales_channel_id, $3, \
+         SELECT result.store_id, result.sales_channel_id, $2, \
                 result.attribution_model, result.model_version, result.is_direct, \
                 coalesce(result.campaign_source,''), coalesce(result.campaign_medium,''), \
                 coalesce(result.campaign_name,''), count(*), sum(fact.amount_minor), \
-                fact.currency, $4 \
+                fact.currency, $3 \
            FROM analytics.attribution_results AS result \
            INNER JOIN analytics.commerce_facts AS fact \
-             ON fact.merchant_account_id = result.merchant_account_id \
-            AND fact.store_id = result.store_id AND fact.id = result.commerce_fact_id \
-          WHERE result.merchant_account_id = $1 AND result.store_id = $2 \
-            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $3 \
-          GROUP BY result.merchant_account_id, result.store_id, result.sales_channel_id, \
+             ON fact.store_id = result.store_id AND fact.id = result.commerce_fact_id \
+          WHERE result.store_id = $1 \
+            AND (fact.occurred_at AT TIME ZONE 'UTC')::date = $2 \
+          GROUP BY result.store_id, result.sales_channel_id, \
                    result.attribution_model, result.model_version, result.is_direct, \
                    coalesce(result.campaign_source,''), coalesce(result.campaign_medium,''), \
                    coalesce(result.campaign_name,''), fact.currency",
     )
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(report_date)
     .bind(refreshed_at)

@@ -8,7 +8,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CatalogMetadata, ProductContent, ProductId, ProductStatus},
-    merchant::{MerchantAccountId, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -29,7 +29,6 @@ impl PostgresCatalogManagementUnitOfWork {
 
 struct PostgresCatalogManagementTransaction {
     transaction: Transaction<'static, Postgres>,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     product_id: ProductId,
 }
@@ -48,14 +47,13 @@ impl CatalogManagementUnitOfWork for PostgresCatalogManagementUnitOfWork {
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store_id.as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresCatalogManagementTransaction {
             transaction,
-            merchant_account_id: actor.merchant_account_id(),
             store_id,
             product_id,
         }))
@@ -71,7 +69,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<Option<ProductId>, ApplicationError> {
         let Some(body) = idempotency::reserve(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             operation,
             request,
         )
@@ -98,16 +96,13 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         let row = sqlx::query_as::<_, (String, i64)>(
             "SELECT product.status::text, (\
                  SELECT count(*) FROM catalog.product_variants AS variant \
-                 WHERE variant.merchant_account_id = product.merchant_account_id \
-                   AND variant.store_id = product.store_id \
+                 WHERE variant.store_id = product.store_id \
                    AND variant.product_id = product.id\
              ) \
              FROM catalog.products AS product \
-             WHERE product.merchant_account_id = $1 \
-               AND product.store_id = $2 AND product.id = $3 \
+             WHERE product.store_id = $1 AND product.id = $2 \
              FOR UPDATE",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
         .fetch_optional(&mut *self.transaction)
@@ -133,11 +128,10 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     async fn update_content(&mut self, content: &ProductContent) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
             "UPDATE catalog.products \
-             SET handle = $4, title = $5, description = $6, metadata = $7::jsonb, \
+             SET handle = $3, title = $4, description = $5, metadata = $6::jsonb, \
                  updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
         .bind(content.handle().as_str())
@@ -153,10 +147,9 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     async fn set_status(&mut self, status: ProductStatus) -> Result<(), ApplicationError> {
         let result = sqlx::query(
             "UPDATE catalog.products \
-             SET status = $4::catalog.product_status, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             SET status = $3::catalog.product_status, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
         .bind(status.as_str())
@@ -179,11 +172,10 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         sqlx::query_scalar(
             "SELECT EXISTS (\
                 SELECT 1 FROM merchant.sales_channels \
-                WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+                WHERE store_id = $1 AND id = $2 \
                   AND status = 'active'\
              )",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .fetch_one(&mut *self.transaction)
@@ -194,10 +186,9 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     async fn publish(&mut self, sales_channel_id: SalesChannelId) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO catalog.product_publications \
-             (merchant_account_id, store_id, product_id, sales_channel_id) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+             (store_id, product_id, sales_channel_id) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
@@ -213,10 +204,9 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "DELETE FROM catalog.product_publications \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND product_id = $3 AND sales_channel_id = $4",
+             WHERE store_id = $1 \
+               AND product_id = $2 AND sales_channel_id = $3",
         )
-        .bind(self.merchant_account_id.as_uuid())
         .bind(self.store_id.as_uuid())
         .bind(self.product_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
@@ -234,7 +224,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<(), ApplicationError> {
         idempotency::complete(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
             operation,
             request,
             200,
@@ -253,7 +243,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
 
 fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("products_merchant_account_id_store_id_handle_key")
+        && database_error.constraint() == Some("products_store_id_handle_key")
     {
         return ApplicationError::Conflict {
             code: "product_handle_taken",
@@ -310,8 +300,6 @@ mod tests {
             .await
             .unwrap();
         let owner_id = UserId::new();
-        let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let product_id = ProductId::new();
@@ -321,59 +309,42 @@ mod tests {
         let other_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(id.as_uuid())
-                .bind(format!("catalog-manage-{role}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_id.as_uuid())
+            .bind(format!("catalog-manage-owner-{suffix}@example.com"))
+            .execute(&owner_pool)
+            .await
+            .unwrap();
+        for (id, code) in [(store_id, "manage"), (other_store_id, "manage-other")] {
+            sqlx::query(
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Managed Store')",
+            )
+            .bind(id.as_uuid())
+            .bind(format!("{code}-{suffix}"))
+            .execute(&owner_pool)
+            .await
+            .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Catalog Management Test')",
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, 'owner')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("catalog-manage-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(owner_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        for (id, code) in [(store_id, "manage"), (other_store_id, "manage-other")] {
-            sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Managed Store')",
-            )
-            .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
-            .bind(code)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
         for (id, owning_store, code) in [
             (channel_id, store_id, "web"),
             (other_channel_id, other_store_id, "other-web"),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.sales_channels \
-                 (id, merchant_account_id, store_id, code, name, kind) \
-                 VALUES ($1, $2, $3, $4, 'Web', 'web')",
+                 (id, store_id, code, name, kind) \
+                 VALUES ($1, $2, $3, 'Web', 'web')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(owning_store.as_uuid())
             .bind(code)
             .execute(&owner_pool)
@@ -386,11 +357,10 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO catalog.products \
-                 (id, merchant_account_id, store_id, handle, title) \
-                 VALUES ($1, $2, $3, $4, 'Managed Product')",
+                 (id, store_id, handle, title) \
+                 VALUES ($1, $2, $3, 'Managed Product')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
             .bind(store_id.as_uuid())
             .bind(handle)
             .execute(&owner_pool)
@@ -399,11 +369,10 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, sku) \
-             VALUES ($1, $2, $3, $4, 'Default', 'MANAGED-SKU')",
+             (id, store_id, product_id, title, sku) \
+             VALUES ($1, $2, $3, 'Default', 'MANAGED-SKU')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -413,8 +382,7 @@ mod tests {
         let directory = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             runtime_pool.clone(),
         )));
-        let owner = directory.authorize(owner_id, account_id).await.unwrap();
-        let support = directory.authorize(support_id, account_id).await.unwrap();
+        let owner = directory.authorize(owner_id, store_id).await.unwrap();
         let service = CatalogManagement::new(Arc::new(PostgresCatalogManagementUnitOfWork::new(
             runtime_pool,
         )));
@@ -425,23 +393,8 @@ mod tests {
 
         assert!(matches!(
             service
-                .update(UpdateProductInput {
-                    actor: AdminActor::Merchant(support),
-                    store_id,
-                    product_id,
-                    handle: "updated-product".into(),
-                    title: "Updated Product".into(),
-                    description: "Updated".into(),
-                    metadata: None,
-                    idempotency: request(format!("support-{suffix}"), [60; 32]),
-                })
-                .await,
-            Err(ApplicationError::Forbidden)
-        ));
-        assert!(matches!(
-            service
                 .activate(ChangeProductStatusInput {
-                    actor: AdminActor::Merchant(owner),
+                    actor: AdminActor::Store(owner),
                     store_id,
                     product_id: empty_product_id,
                     idempotency: request(format!("empty-{suffix}"), [61; 32]),
@@ -452,7 +405,7 @@ mod tests {
         assert!(matches!(
             service
                 .publish(ProductPublicationInput {
-                    actor: AdminActor::Merchant(owner),
+                    actor: AdminActor::Store(owner),
                     store_id,
                     product_id,
                     sales_channel_id: channel_id,
@@ -465,7 +418,7 @@ mod tests {
         let update_key = format!("update-{suffix}");
         let updated = service
             .update(UpdateProductInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 handle: "updated-product".into(),
@@ -478,7 +431,7 @@ mod tests {
             .unwrap();
         let replay = service
             .update(UpdateProductInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 handle: "updated-product".into(),
@@ -493,7 +446,7 @@ mod tests {
 
         service
             .activate(ChangeProductStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 idempotency: request(format!("activate-{suffix}"), [64; 32]),
@@ -503,7 +456,7 @@ mod tests {
         assert!(matches!(
             service
                 .publish(ProductPublicationInput {
-                    actor: AdminActor::Merchant(owner),
+                    actor: AdminActor::Store(owner),
                     store_id,
                     product_id,
                     sales_channel_id: other_channel_id,
@@ -517,7 +470,7 @@ mod tests {
         ));
         service
             .publish(ProductPublicationInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
@@ -527,7 +480,7 @@ mod tests {
             .unwrap();
         service
             .archive(ChangeProductStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 idempotency: request(format!("archive-{suffix}"), [67; 32]),
@@ -540,8 +493,7 @@ mod tests {
                     count(publication.product_id) \
              FROM catalog.products AS product \
              LEFT JOIN catalog.product_publications AS publication \
-               ON publication.merchant_account_id = product.merchant_account_id \
-              AND publication.store_id = product.store_id \
+              ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
              WHERE product.id = $1 GROUP BY product.id",
         )
@@ -561,7 +513,7 @@ mod tests {
 
         service
             .unpublish(ProductPublicationInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
@@ -578,26 +530,21 @@ mod tests {
         .unwrap();
         assert_eq!(publications, 0);
 
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
-            .bind(account_id.as_uuid())
+        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+            .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'store' AND scope_id = $1",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
-            .bind(vec![owner_id.as_uuid(), support_id.as_uuid()])
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(owner_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
@@ -627,7 +574,6 @@ mod tests {
             .await
             .unwrap();
         let owner_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
@@ -640,41 +586,30 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Machine Catalog Management Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("catalog-manage-machine-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'manage-machine', 'Managed Store')",
+            "INSERT INTO merchant.stores (id, code, name) \
+             VALUES ($1, $2, 'Managed Store')",
         )
         .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
+        .bind(format!("manage-machine-{suffix}"))
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.products \
-             (id, merchant_account_id, store_id, handle, title) \
-             VALUES ($1, $2, $3, 'machine-managed-product', 'Machine Managed Product')",
+             (id, store_id, handle, title) \
+             VALUES ($1, $2, 'machine-managed-product', 'Machine Managed Product')",
         )
         .bind(product_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO catalog.product_variants \
-             (id, merchant_account_id, store_id, product_id, title, sku) \
-             VALUES ($1, $2, $3, $4, 'Default', 'MACHINE-MANAGED-SKU')",
+             (id, store_id, product_id, title, sku) \
+             VALUES ($1, $2, $3, 'Default', 'MACHINE-MANAGED-SKU')",
         )
         .bind(variant_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .execute(&owner_pool)
@@ -690,11 +625,9 @@ mod tests {
         };
         let authorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
             api_key_id: chaos_domain::merchant::ApiKeyId::new(),
-            merchant_account_id: account_id,
             store_id,
             sales_channel_id: None,
             class: chaos_domain::merchant::ApiKeyClass::Secret,
-            mode: chaos_domain::merchant::ApiKeyMode::Live,
             scopes: vec![
                 chaos_domain::merchant::ApiKeyScope::McpTools,
                 chaos_domain::merchant::ApiKeyScope::ProductsWrite,
@@ -703,11 +636,9 @@ mod tests {
         });
         let unauthorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
             api_key_id: chaos_domain::merchant::ApiKeyId::new(),
-            merchant_account_id: account_id,
             store_id,
             sales_channel_id: None,
             class: chaos_domain::merchant::ApiKeyClass::Secret,
-            mode: chaos_domain::merchant::ApiKeyMode::Live,
             scopes: vec![chaos_domain::merchant::ApiKeyScope::McpTools],
             created_by_user_id: owner_id,
         });
@@ -758,24 +689,19 @@ mod tests {
                 .unwrap();
         assert_eq!(status_after_archive, "archived");
 
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
-            .bind(account_id.as_uuid())
+        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+            .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'store' AND scope_id = $1",
         )
-        .bind(account_id.as_uuid())
+        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)

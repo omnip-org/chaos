@@ -43,8 +43,8 @@ use chaos_application::{
     },
     inventory::InventoryManagement,
     merchant::{
-        ApiKeyAuthentication, ApiKeyManagement, CreateMerchantAccount, CreateStore,
-        MerchantQueries, ProviderSecretManagement, StoreAdministration,
+        ApiKeyAuthentication, ApiKeyManagement, CreateStore, MerchantQueries,
+        ProviderSecretManagement, StoreAdministration,
     },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
@@ -71,14 +71,13 @@ use chaos_infrastructure::{
         PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
         PostgresCollectionRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
         PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresMerchantProvisioningUnitOfWork, PostgresMerchantReadRepository,
-        PostgresOrderManagementRepository, PostgresPaymentRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPromotionRepository, PostgresReviewRepository, PostgresSearchIndexer,
-        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
-        SecureApiKeyMaterialGenerator,
+        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
+        PostgresPaymentRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository,
+        PostgresReviewRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
@@ -97,7 +96,7 @@ pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
     AnalyticsCustomer, AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedSession,
     CartMachine, CartShopper, CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession,
-    MerchantContext, OrderLookupMachine, StorefrontMachine,
+    OrderLookupMachine, StoreContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -107,7 +106,6 @@ pub struct ApiState {
     pub lifecycle: Lifecycle,
     pub metrics: PrometheusHandle,
     pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
-    pub create_merchant_account: Arc<CreateMerchantAccount>,
     pub create_store: Arc<CreateStore>,
     pub store_administration: Arc<StoreAdministration>,
     pub inventory_management: Arc<InventoryManagement>,
@@ -183,9 +181,6 @@ impl ApiState {
             &settings.email_from,
             &settings.auth_public_base_url,
         )?;
-        let create_merchant_account = CreateMerchantAccount::new(Arc::new(
-            PostgresMerchantProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
-        ));
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             infrastructure.runtime_pool(),
         )));
@@ -435,7 +430,6 @@ impl ApiState {
             lifecycle,
             metrics,
             passwordless_auth: Arc::new(passwordless_auth),
-            create_merchant_account: Arc::new(create_merchant_account),
             create_store: Arc::new(create_store),
             store_administration: Arc::new(store_administration),
             inventory_management: Arc::new(inventory_management),
@@ -503,6 +497,9 @@ pub fn router(state: ApiState) -> Router {
         payment_service: state.payment_service.clone(),
         media_administration: state.media_administration.clone(),
         catalog_localization: state.catalog_localization.clone(),
+        review_administration: state.review_administration.clone(),
+        api_key_management: state.api_key_management.clone(),
+        provider_secret_management: state.provider_secret_management.clone(),
         clock: state.clock.clone(),
     });
     Router::new()
@@ -708,7 +705,9 @@ mod tests {
             "application/vnd.oai.openapi+json"
         );
 
-        let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
+        let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
         let contract = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(contract["info"]["title"], "Chaos Admin API");
         assert_eq!(contract["openapi"], "3.1.0");
@@ -751,15 +750,12 @@ mod tests {
 
     #[tokio::test]
     async fn price_list_administration_requires_a_human_session() {
-        let account_id = uuid::Uuid::now_v7();
         let store_id = uuid::Uuid::now_v7();
         let response = router(test_state())
             .oneshot(
-                Request::get(format!(
-                    "/admin/v1/merchant-accounts/{account_id}/stores/{store_id}/price-lists"
-                ))
-                .body(Body::empty())
-                .unwrap(),
+                Request::get(format!("/admin/v1/stores/{store_id}/price-lists"))
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();

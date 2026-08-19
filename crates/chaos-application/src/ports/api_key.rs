@@ -1,17 +1,14 @@
 use async_trait::async_trait;
 use chaos_domain::{
     identity::UserId,
-    merchant::{
-        ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantAccountId, SalesChannelId,
-        StoreId,
-    },
+    merchant::{ApiKey, ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
 };
 use secrecy::SecretString;
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::MerchantActor};
+use crate::ApplicationError;
 
-use super::IdempotencyRequest;
+use super::{AdminActor, IdempotencyRequest};
 
 pub struct GeneratedApiKeyMaterial {
     pub key_identifier: String,
@@ -21,7 +18,7 @@ pub struct GeneratedApiKeyMaterial {
 }
 
 pub trait ApiKeyMaterialGenerator: Send + Sync {
-    fn generate(&self, class: ApiKeyClass, mode: ApiKeyMode) -> GeneratedApiKeyMaterial;
+    fn generate(&self, class: ApiKeyClass) -> GeneratedApiKeyMaterial;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,7 +33,6 @@ pub struct ApiKeyListItem {
     pub key_identifier: String,
     pub display_suffix: String,
     pub class: ApiKeyClass,
-    pub mode: ApiKeyMode,
     pub scopes: Vec<ApiKeyScope>,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
@@ -45,11 +41,9 @@ pub struct ApiKeyListItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachineActor {
     pub api_key_id: ApiKeyId,
-    pub merchant_account_id: MerchantAccountId,
     pub store_id: StoreId,
     pub sales_channel_id: Option<SalesChannelId>,
     pub class: ApiKeyClass,
-    pub mode: ApiKeyMode,
     pub scopes: Vec<ApiKeyScope>,
     /// The human member who created this key. Used as the audit actor for
     /// mutations that require a real `identity.users` row (e.g. Collection
@@ -61,7 +55,7 @@ pub struct MachineActor {
 pub trait ApiKeyRepository: Send + Sync {
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         api_key: &ApiKey,
         material: &GeneratedApiKeyMaterial,
         idempotency: &IdempotencyRequest,
@@ -69,7 +63,7 @@ pub trait ApiKeyRepository: Send + Sync {
 
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ApiKeyId>,
         limit: u16,
@@ -77,7 +71,7 @@ pub trait ApiKeyRepository: Send + Sync {
 
     async fn revoke(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         api_key_id: ApiKeyId,
         idempotency: &IdempotencyRequest,

@@ -15,37 +15,37 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::ProductId,
-    merchant::{MerchantAccountId, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products",
+            "/stores/{store_id}/products",
             post(create_product).get(list_products),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}",
+            "/stores/{store_id}/products/{product_id}",
             get(get_product).put(update_product),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/activate",
+            "/stores/{store_id}/products/{product_id}/activate",
             post(activate_product),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/archive",
+            "/stores/{store_id}/products/{product_id}/archive",
             post(archive_product),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/products/{product_id}/publications/{sales_channel_id}",
+            "/stores/{store_id}/products/{product_id}/publications/{sales_channel_id}",
             put(publish_product).delete(unpublish_product),
         )
         .layer(DefaultBodyLimit::max(256 * 1024))
@@ -53,20 +53,17 @@ pub fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct ProductPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ProductDetailPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct ProductPublicationPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
     sales_channel_id: Uuid,
@@ -211,14 +208,10 @@ struct ProductDetailData {
 async fn create_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPath>,
     ApiJson(body): ApiJson<CreateProductBody>,
 ) -> Result<ApiResponse<ProductCreatedData>, ApiError> {
-    let path_account_id = MerchantAccountId::from_uuid(path.merchant_account_id);
-    if path_account_id != actor.merchant_account_id() {
-        return Err(ApplicationError::Forbidden.into());
-    }
     let idempotency_key = idempotency_key(&headers)?;
     let request_fingerprint = Sha256::digest(
         serde_json::to_vec(&(path.store_id, &body))
@@ -228,7 +221,7 @@ async fn create_product(
     let output = state
         .create_product
         .execute(CreateProductInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             title: body.title,
@@ -274,11 +267,10 @@ async fn create_product(
 
 async fn list_products(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<ProductListData>>, ApiError> {
-    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -289,7 +281,7 @@ async fn list_products(
     let page = state
         .catalog_queries
         .list_products(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -320,14 +312,13 @@ async fn list_products(
 
 async fn get_product(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductDetailPath>,
 ) -> Result<ApiResponse<ProductDetailData>, ApiError> {
-    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
     let product = state
         .catalog_queries
         .get_product(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             ProductId::from_uuid(path.product_id),
         )
@@ -394,11 +385,10 @@ async fn get_product(
 async fn update_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductDetailPath>,
     ApiJson(body): ApiJson<UpdateProductBody>,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
-    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation_request(
         &headers,
         serde_json::to_vec(&(path.store_id, path.product_id, &body))
@@ -407,7 +397,7 @@ async fn update_product(
     let id = state
         .catalog_management
         .update(UpdateProductInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             product_id: ProductId::from_uuid(path.product_id),
             handle: body.handle,
@@ -423,7 +413,7 @@ async fn update_product(
 async fn activate_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductDetailPath>,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
     change_product_status(state, headers, actor, path, true).await
@@ -432,7 +422,7 @@ async fn activate_product(
 async fn archive_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductDetailPath>,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
     change_product_status(state, headers, actor, path, false).await
@@ -441,18 +431,17 @@ async fn archive_product(
 async fn change_product_status(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: ProductDetailPath,
     activate: bool,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
-    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
     let action = if activate { "activate" } else { "archive" };
     let request = mutation_request(
         &headers,
         format!("{}:{}:{action}", path.store_id, path.product_id).into_bytes(),
     )?;
     let input = ChangeProductStatusInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         idempotency: request,
@@ -468,7 +457,7 @@ async fn change_product_status(
 async fn publish_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPublicationPath>,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
     change_publication(state, headers, actor, path, true).await
@@ -477,7 +466,7 @@ async fn publish_product(
 async fn unpublish_product(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<ProductPublicationPath>,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
     change_publication(state, headers, actor, path, false).await
@@ -486,11 +475,10 @@ async fn unpublish_product(
 async fn change_publication(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: ProductPublicationPath,
     publish: bool,
 ) -> Result<ApiResponse<ProductMutationData>, ApiError> {
-    ensure_account_path(actor.merchant_account_id(), path.merchant_account_id)?;
     let action = if publish { "publish" } else { "unpublish" };
     let request = mutation_request(
         &headers,
@@ -501,7 +489,7 @@ async fn change_publication(
         .into_bytes(),
     )?;
     let input = ProductPublicationInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         product_id: ProductId::from_uuid(path.product_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
@@ -525,13 +513,6 @@ fn mutation_request(
     })
 }
 
-fn ensure_account_path(actual: MerchantAccountId, extracted: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == extracted {
-        return Ok(());
-    }
-    Err(ApplicationError::Forbidden.into())
-}
-
 const fn enabled() -> bool {
     true
 }
@@ -542,7 +523,7 @@ mod tests {
         body::Body,
         http::{Method, Request, StatusCode},
     };
-    use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
+    use chaos_domain::identity::UserId;
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
@@ -566,7 +547,6 @@ mod tests {
             .unwrap();
         let owner_id = UserId::new();
         let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string();
@@ -580,21 +560,21 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Catalog HTTP Test')",
+            "INSERT INTO merchant.stores (id, code, name, status) \
+             VALUES ($1, $2, 'Catalog HTTP', 'active')",
         )
-        .bind(account_id.as_uuid())
-        .bind(format!("catalog-http-{suffix}"))
+        .bind(store_id.as_uuid())
+        .bind(format!("catalog-{}", &suffix[12..28]))
         .execute(&owner_pool)
         .await
         .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
+        for (id, role) in [(owner_id, "owner"), (support_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
+                "INSERT INTO merchant.store_memberships \
+                 (store_id, user_id, role) \
+                 VALUES ($1, $2, $3::merchant.store_role)",
             )
-            .bind(account_id.as_uuid())
+            .bind(store_id.as_uuid())
             .bind(id.as_uuid())
             .bind(role)
             .execute(&owner_pool)
@@ -602,31 +582,17 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-             VALUES ($1, $2, 'catalog-http', 'Catalog HTTP')",
-        )
-        .bind(store_id.as_uuid())
-        .bind(account_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
         .bind(channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
 
-        let collection_uri = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/products",
-            account_id.as_uuid(),
-            store_id.as_uuid()
-        );
+        let collection_uri = format!("/admin/v1/stores/{}/products", store_id.as_uuid());
         let product_body = json!({
             "handle": "http-shirt",
             "title": "HTTP Shirt",
@@ -769,7 +735,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.status(), StatusCode::CREATED);
 
         let unauthenticated = router(test_state(&database_url, owner_id))
             .oneshot(

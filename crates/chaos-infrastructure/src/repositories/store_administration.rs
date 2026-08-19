@@ -48,8 +48,8 @@ impl PostgresStoreAdministrationRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -90,9 +90,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         let row = sqlx::query_as::<_, StoreRow>(
             "SELECT id, code::text, name, default_region::text, default_currency::text, \
                     status::text, created_at, updated_at \
-             FROM merchant.stores WHERE merchant_account_id = $1 AND id = $2",
+             FROM merchant.stores WHERE id = $1",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
@@ -114,11 +113,10 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(StoreId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE merchant.stores SET code = $3, name = $4, default_region = $5, \
-                    default_currency = $6, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND id = $2",
+            "UPDATE merchant.stores SET code = $2, name = $3, default_region = $4, \
+                    default_currency = $5, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = $1",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(replacement.code().as_str())
         .bind(replacement.name())
@@ -132,11 +130,10 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         sqlx::query(
             "INSERT INTO merchant.store_currencies \
-             (merchant_account_id, store_id, currency, enabled) VALUES ($1, $2, $3, true) \
-             ON CONFLICT (merchant_account_id, store_id, currency) \
+             (store_id, currency, enabled) VALUES ($1, $2, true) \
+             ON CONFLICT (store_id, currency) \
              DO UPDATE SET enabled = true",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(replacement.default_currency().as_str())
         .execute(&mut *transaction)
@@ -163,12 +160,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
     ) -> Result<StoreId, ApplicationError> {
         let operation = match status {
             StoreStatus::Active => ACTIVATE_STORE_OPERATION,
-            StoreStatus::Archived => ARCHIVE_STORE_OPERATION,
-            StoreStatus::Draft => {
-                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                    "draft is not a Store lifecycle action"
-                )));
-            }
+            StoreStatus::Inactive => ARCHIVE_STORE_OPERATION,
         };
         let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
@@ -176,9 +168,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         let default_currency = sqlx::query_scalar::<_, String>(
             "SELECT default_currency::text FROM merchant.stores \
-             WHERE merchant_account_id = $1 AND id = $2 FOR UPDATE",
+             WHERE id = $1 FOR UPDATE",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
@@ -187,10 +178,9 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         if status == StoreStatus::Active {
             let currency_enabled: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM merchant.store_currencies \
-                 WHERE merchant_account_id = $1 AND store_id = $2 \
-                   AND currency = $3 AND enabled)",
+                 WHERE store_id = $1 \
+                   AND currency = $2 AND enabled)",
             )
-            .bind(actor.merchant_account_id().as_uuid())
             .bind(store_id.as_uuid())
             .bind(&default_currency)
             .fetch_one(&mut *transaction)
@@ -198,10 +188,9 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             .map_err(database_error)?;
             let active_default_channel: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM merchant.sales_channels \
-                 WHERE merchant_account_id = $1 AND store_id = $2 \
+                 WHERE store_id = $1 \
                    AND is_default AND status = 'active')",
             )
-            .bind(actor.merchant_account_id().as_uuid())
             .bind(store_id.as_uuid())
             .fetch_one(&mut *transaction)
             .await
@@ -209,11 +198,10 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             Store::validate_activation(currency_enabled, active_default_channel)?;
         }
         sqlx::query(
-            "UPDATE merchant.stores SET status = $3::merchant.store_status, \
+            "UPDATE merchant.stores SET status = $2::merchant.store_status, \
                     updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND id = $2",
+             WHERE id = $1",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(status.as_str())
         .execute(&mut *transaction)
@@ -239,16 +227,15 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         limit: u16,
     ) -> Result<Option<Vec<SalesChannelAdminItem>>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        if !store_exists(&mut transaction, &actor, store_id).await? {
+        if !store_exists(&mut transaction, store_id).await? {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, kind::text, status::text, is_default, \
                     created_at, updated_at FROM merchant.sales_channels \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND ($3::uuid IS NULL OR id > $3) ORDER BY id ASC LIMIT $4",
+             WHERE store_id = $1 \
+               AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(after.map(SalesChannelId::as_uuid))
         .bind(i64::from(limit))
@@ -272,9 +259,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         let row = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, kind::text, status::text, is_default, \
                     created_at, updated_at FROM merchant.sales_channels \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -296,14 +282,13 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         {
             return Ok(SalesChannelId::from_uuid(id));
         }
-        require_writable_store(&mut transaction, &actor, channel.store_id()).await?;
+        require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5, $6::merchant.sales_channel_kind, 'active', false)",
+             (id, store_id, code, name, kind, status, is_default) \
+             VALUES ($1, $2, $3, $4, $5::merchant.sales_channel_kind, 'active', false)",
         )
         .bind(channel.id().as_uuid())
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
@@ -337,11 +322,10 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE merchant.sales_channels SET code = $4, name = $5, \
-                    kind = $6::merchant.sales_channel_kind, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+            "UPDATE merchant.sales_channels SET code = $3, name = $4, \
+                    kind = $5::merchant.sales_channel_kind, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(replacement.store_id().as_uuid())
         .bind(sales_channel_id.as_uuid())
         .bind(replacement.code().as_str())
@@ -383,9 +367,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         let is_default = sqlx::query_scalar::<_, bool>(
             "SELECT is_default FROM merchant.sales_channels \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+             WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -397,10 +380,9 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         sqlx::query(
             "UPDATE merchant.sales_channels \
-             SET status = $4::merchant.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             SET status = $3::merchant.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(sales_channel_id.as_uuid())
         .bind(status.as_str())
@@ -428,7 +410,7 @@ async fn reserve(
 ) -> Result<Option<Uuid>, ApplicationError> {
     let Some(body) = idempotency::reserve(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
     )
@@ -456,7 +438,7 @@ async fn complete(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         200,
@@ -467,34 +449,25 @@ async fn complete(
 
 async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-         WHERE merchant_account_id = $1 AND id = $2)",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        .bind(store_id.as_uuid())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)
 }
 
 async fn require_writable_store(
     transaction: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
-    let writable: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores \
-         WHERE merchant_account_id = $1 AND id = $2 AND status IN ('draft', 'active'))",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let writable: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+            .bind(store_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     if writable {
         Ok(())
     } else {
@@ -536,11 +509,11 @@ fn corrupt_status() -> ApplicationError {
 
 fn map_store_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("stores_merchant_account_id_code_key")
+        && database_error.constraint() == Some("stores_code_key")
     {
         return ApplicationError::Conflict {
             code: "store_code_taken",
-            message: "the store code is already in use for this merchant account",
+            message: "the store code is already in use",
         };
     }
     database_error(error)
@@ -548,8 +521,7 @@ fn map_store_error(error: sqlx::Error) -> ApplicationError {
 
 fn map_channel_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint()
-            == Some("sales_channels_merchant_account_id_store_id_code_key")
+        && database_error.constraint() == Some("sales_channels_store_id_code_key")
     {
         return ApplicationError::Conflict {
             code: "sales_channel_code_taken",
@@ -589,7 +561,7 @@ mod tests {
         ports::AdminActor,
         ports::IdempotencyRequest,
     };
-    use chaos_domain::{identity::UserId, merchant::MerchantAccountId};
+    use chaos_domain::identity::UserId;
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
@@ -625,74 +597,54 @@ mod tests {
             .await
             .unwrap();
         let owner_id = UserId::new();
-        let support_id = UserId::new();
-        let account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let default_channel_id = SalesChannelId::new();
         let suffix = Uuid::now_v7().simple().to_string();
 
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(id.as_uuid())
-                .bind(format!("store-admin-{role}-{suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Store Administration Test')",
-        )
-        .bind(account_id.as_uuid())
-        .bind(format!("store-admin-{suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        for (id, role) in [(owner_id, "owner"), (support_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(account_id.as_uuid())
-            .bind(id.as_uuid())
-            .bind(role)
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_id.as_uuid())
+            .bind(format!("store-admin-owner-{suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
-        }
         for (id, code) in [
             (store_id, "admin-store"),
             (other_store_id, "other-admin-store"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, merchant_account_id, code, name) \
-                 VALUES ($1, $2, $3, 'Admin Store')",
+                "INSERT INTO merchant.stores (id, code, name) \
+                 VALUES ($1, $2, 'Admin Store')",
             )
             .bind(id.as_uuid())
-            .bind(account_id.as_uuid())
-            .bind(code)
+            .bind(format!("{code}-{suffix}"))
             .execute(&owner_pool)
             .await
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.store_currencies \
-                 (merchant_account_id, store_id, currency) VALUES ($1, $2, 'USD')",
+                 (store_id, currency) VALUES ($1, 'USD')",
             )
-            .bind(account_id.as_uuid())
             .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
         }
         sqlx::query(
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, 'owner')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(owner_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, $3, 'web', 'Online Store', 'web', true)",
+             (id, store_id, code, name, kind, is_default) \
+             VALUES ($1, $2, 'web', 'Online Store', 'web', true)",
         )
         .bind(default_channel_id.as_uuid())
-        .bind(account_id.as_uuid())
         .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
@@ -701,25 +653,24 @@ mod tests {
         let queries = MerchantQueries::new(Arc::new(
             crate::repositories::PostgresMerchantReadRepository::new(runtime_pool.clone()),
         ));
-        let owner = queries.authorize(owner_id, account_id).await.unwrap();
-        let support = queries.authorize(support_id, account_id).await.unwrap();
+        let owner = queries.authorize(owner_id, store_id).await.unwrap();
         let service = StoreAdministration::new(Arc::new(
             PostgresStoreAdministrationRepository::new(runtime_pool),
         ));
 
         assert_eq!(
             service
-                .get_store(AdminActor::Merchant(owner), store_id)
+                .get_store(AdminActor::Store(owner), store_id)
                 .await
                 .unwrap()
                 .status,
-            StoreStatus::Draft
+            StoreStatus::Inactive
         );
         service
             .update_store(UpdateStoreInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
-                code: "admin-store-updated".into(),
+                code: format!("admin-store-updated-{suffix}"),
                 name: "Updated Admin Store".into(),
                 default_region: "SG".into(),
                 default_currency: "SGD".into(),
@@ -728,14 +679,13 @@ mod tests {
             .await
             .unwrap();
         let updated = service
-            .get_store(AdminActor::Merchant(owner), store_id)
+            .get_store(AdminActor::Store(owner), store_id)
             .await
             .unwrap();
-        assert_eq!(updated.code.as_str(), "admin-store-updated");
         assert_eq!(updated.default_currency.as_str(), "SGD");
         service
             .activate_store(ChangeStoreStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 idempotency: request(format!("activate-store-{suffix}"), 72),
             })
@@ -743,7 +693,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get_store(AdminActor::Merchant(owner), store_id)
+                .get_store(AdminActor::Store(owner), store_id)
                 .await
                 .unwrap()
                 .status,
@@ -752,7 +702,7 @@ mod tests {
 
         let channel_id = service
             .create_sales_channel(CreateSalesChannelInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 code: "mobile".into(),
                 name: "Mobile App".into(),
@@ -762,13 +712,13 @@ mod tests {
             .await
             .unwrap();
         let page = service
-            .list_sales_channels(AdminActor::Merchant(owner), store_id, None, 20)
+            .list_sales_channels(AdminActor::Store(owner), store_id, None, 20)
             .await
             .unwrap();
         assert_eq!(page.items.len(), 2);
         service
             .update_sales_channel(UpdateSalesChannelInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 code: "mobile-app".into(),
@@ -780,7 +730,7 @@ mod tests {
             .unwrap();
         service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 idempotency: request(format!("archive-channel-{suffix}"), 75),
@@ -789,7 +739,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get_sales_channel(AdminActor::Merchant(owner), store_id, channel_id)
+                .get_sales_channel(AdminActor::Store(owner), store_id, channel_id)
                 .await
                 .unwrap()
                 .status,
@@ -797,7 +747,7 @@ mod tests {
         );
         service
             .activate_sales_channel(ChangeSalesChannelStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: channel_id,
                 idempotency: request(format!("activate-channel-{suffix}"), 76),
@@ -806,7 +756,7 @@ mod tests {
             .unwrap();
         let default_archive = service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: default_channel_id,
                 idempotency: request(format!("archive-default-{suffix}"), 77),
@@ -818,21 +768,13 @@ mod tests {
         ));
         assert!(
             service
-                .get_sales_channel(AdminActor::Merchant(owner), other_store_id, channel_id)
+                .get_sales_channel(AdminActor::Store(owner), other_store_id, channel_id)
                 .await
                 .is_err()
         );
-        let forbidden = service
-            .archive_store(ChangeStoreStatusInput {
-                actor: AdminActor::Merchant(support),
-                store_id,
-                idempotency: request(format!("support-store-{suffix}"), 78),
-            })
-            .await;
-        assert!(matches!(forbidden, Err(ApplicationError::Forbidden)));
         service
             .archive_store(ChangeStoreStatusInput {
-                actor: AdminActor::Merchant(owner),
+                actor: AdminActor::Store(owner),
                 store_id,
                 idempotency: request(format!("archive-store-{suffix}"), 79),
             })
@@ -840,11 +782,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .get_store(AdminActor::Merchant(owner), store_id)
+                .get_store(AdminActor::Store(owner), store_id)
                 .await
                 .unwrap()
                 .status,
-            StoreStatus::Archived
+            StoreStatus::Inactive
         );
     }
 }

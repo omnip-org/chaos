@@ -3,11 +3,7 @@ use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    DomainError, FieldViolation,
-    catalog::ProductVariantId,
-    merchant::{MerchantAccountId, StoreId},
-};
+use crate::{DomainError, FieldViolation, catalog::ProductVariantId, merchant::StoreId};
 
 macro_rules! inventory_id {
     ($name:ident) => {
@@ -93,7 +89,6 @@ impl InventoryLocationStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryLocation {
     id: InventoryLocationId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     code: InventoryLocationCode,
     name: String,
@@ -102,7 +97,6 @@ pub struct InventoryLocation {
 
 impl InventoryLocation {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         code: InventoryLocationCode,
         name: impl Into<String>,
@@ -113,7 +107,6 @@ impl InventoryLocation {
         }
         Ok(Self {
             id: InventoryLocationId::new(),
-            merchant_account_id,
             store_id,
             code,
             name,
@@ -123,10 +116,6 @@ impl InventoryLocation {
 
     pub const fn id(&self) -> InventoryLocationId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -304,7 +293,6 @@ impl InventoryReservationLine {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryReservation {
     id: InventoryReservationId,
-    merchant_account_id: MerchantAccountId,
     store_id: StoreId,
     status: InventoryReservationStatus,
     expires_at: OffsetDateTime,
@@ -313,7 +301,6 @@ pub struct InventoryReservation {
 
 impl InventoryReservation {
     pub fn create(
-        merchant_account_id: MerchantAccountId,
         store_id: StoreId,
         created_at: OffsetDateTime,
         expires_at: OffsetDateTime,
@@ -337,7 +324,6 @@ impl InventoryReservation {
         }
         Ok(Self {
             id: InventoryReservationId::new(),
-            merchant_account_id,
             store_id,
             status: InventoryReservationStatus::Active,
             expires_at,
@@ -347,10 +333,6 @@ impl InventoryReservation {
 
     pub const fn id(&self) -> InventoryReservationId {
         self.id
-    }
-
-    pub const fn merchant_account_id(&self) -> MerchantAccountId {
-        self.merchant_account_id
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -455,7 +437,6 @@ mod tests {
         let line =
             InventoryReservationLine::new(StockItemId::new(), ProductVariantId::new(), 1).unwrap();
         let mut reservation = InventoryReservation::create(
-            MerchantAccountId::new(),
             StoreId::new(),
             now,
             now + Duration::minutes(10),
@@ -477,7 +458,6 @@ mod tests {
         let line = InventoryReservationLine::new(stock_item_id, variant_id, 1).unwrap();
         assert!(
             InventoryReservation::create(
-                MerchantAccountId::new(),
                 StoreId::new(),
                 OffsetDateTime::UNIX_EPOCH,
                 OffsetDateTime::UNIX_EPOCH + Duration::minutes(1),

@@ -51,7 +51,6 @@ CREATE TYPE fulfillment.return_disposition AS ENUM ('restock', 'discard');
 
 CREATE TABLE sales.customers (
     id                  UUID              NOT NULL PRIMARY KEY,
-    merchant_account_id UUID              NOT NULL,
     store_id            UUID              NOT NULL,
     user_id             UUID              NOT NULL,
     email               extensions.citext NOT NULL,
@@ -59,11 +58,11 @@ CREATE TABLE sales.customers (
     created_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, user_id),
-    UNIQUE (merchant_account_id, store_id, email),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id) ON DELETE CASCADE,
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, user_id),
+    UNIQUE (store_id, email),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES identity.users(id),
     CONSTRAINT customers_email_length_check CHECK (length(trim(email::text)) BETWEEN 3 AND 320),
     CONSTRAINT customers_phone_format_check CHECK (phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$')
@@ -71,7 +70,6 @@ CREATE TABLE sales.customers (
 
 CREATE TABLE sales.customer_addresses (
     id                   UUID     NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID     NOT NULL,
     store_id             UUID     NOT NULL,
     customer_id          UUID     NOT NULL,
     label                TEXT     NOT NULL,
@@ -86,12 +84,12 @@ CREATE TABLE sales.customer_addresses (
     created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, customer_id, id),
+    UNIQUE (store_id, customer_id, id),
     CONSTRAINT customer_addresses_customer_label_key
-        UNIQUE (merchant_account_id, store_id, customer_id, label),
+        UNIQUE (store_id, customer_id, label),
     CONSTRAINT customer_addresses_customer_fkey
-        FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id) ON DELETE CASCADE,
     CONSTRAINT customer_addresses_label_length_check CHECK (length(trim(label)) BETWEEN 1 AND 64),
     CONSTRAINT customer_addresses_full_name_length_check CHECK (length(trim(full_name)) BETWEEN 1 AND 200),
     CONSTRAINT customer_addresses_company_length_check CHECK (company IS NULL OR length(trim(company)) BETWEEN 1 AND 200),
@@ -104,25 +102,23 @@ CREATE TABLE sales.customer_addresses (
 );
 
 CREATE TABLE sales.customer_shopper_links (
-    merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
     customer_id         UUID        NOT NULL,
     shopper_id          UUID        NOT NULL,
     sales_channel_id    UUID        NOT NULL,
     linked_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (merchant_account_id, store_id, shopper_id),
+    PRIMARY KEY (store_id, shopper_id),
     CONSTRAINT customer_shopper_links_customer_fkey
-        FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id) ON DELETE CASCADE,
     CONSTRAINT customer_shopper_links_channel_fkey
-        FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id) ON DELETE CASCADE
+        FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id) ON DELETE CASCADE
 );
 
 CREATE TABLE sales.carts (
     id                   UUID                NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                NOT NULL,
     store_id             UUID                NOT NULL,
     sales_channel_id     UUID                NOT NULL,
     shopper_id           UUID                NOT NULL,
@@ -135,16 +131,16 @@ CREATE TABLE sales.carts (
     created_at           TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, id, shopper_id),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
-        REFERENCES pricing.price_lists(merchant_account_id, store_id, id, currency),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, id, shopper_id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
+    FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id),
+    FOREIGN KEY (store_id, price_list_id, currency)
+        REFERENCES pricing.price_lists(store_id, id, currency),
     CONSTRAINT carts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT carts_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
@@ -153,7 +149,6 @@ CREATE TABLE sales.carts (
 );
 
 CREATE TABLE sales.cart_lines (
-    merchant_account_id     UUID        NOT NULL,
     store_id                UUID        NOT NULL,
     cart_id                 UUID        NOT NULL,
     product_id              UUID        NOT NULL,
@@ -169,11 +164,11 @@ CREATE TABLE sales.cart_lines (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (merchant_account_id, store_id, cart_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, cart_id)
-        REFERENCES sales.carts(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, product_id, product_variant_id)
-        REFERENCES catalog.product_variants(merchant_account_id, store_id, product_id, id),
+    PRIMARY KEY (store_id, cart_id, product_variant_id),
+    FOREIGN KEY (store_id, cart_id)
+        REFERENCES sales.carts(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, product_id, product_variant_id)
+        REFERENCES catalog.product_variants(store_id, product_id, id),
     CONSTRAINT cart_lines_product_title_length_check CHECK (
         length(trim(product_title)) BETWEEN 1 AND 255
     ),
@@ -189,7 +184,6 @@ CREATE TABLE sales.cart_lines (
 
 CREATE TABLE sales.checkouts (
     id                     UUID                    NOT NULL PRIMARY KEY,
-    merchant_account_id    UUID                    NOT NULL,
     store_id               UUID                    NOT NULL,
     cart_id                UUID                    NOT NULL,
     shopper_id             UUID                    NOT NULL,
@@ -213,20 +207,20 @@ CREATE TABLE sales.checkouts (
     created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, id, shopper_id),
-    UNIQUE (merchant_account_id, store_id, cart_id),
-    UNIQUE (merchant_account_id, store_id, inventory_reservation_id),
-    FOREIGN KEY (merchant_account_id, store_id, cart_id, shopper_id)
-        REFERENCES sales.carts(merchant_account_id, store_id, id, shopper_id),
-    FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
-        REFERENCES pricing.price_lists(merchant_account_id, store_id, id, currency),
-    FOREIGN KEY (merchant_account_id, store_id, inventory_reservation_id)
-        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, id, shopper_id),
+    UNIQUE (store_id, cart_id),
+    UNIQUE (store_id, inventory_reservation_id),
+    FOREIGN KEY (store_id, cart_id, shopper_id)
+        REFERENCES sales.carts(store_id, id, shopper_id),
+    FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
+    FOREIGN KEY (store_id, price_list_id, currency)
+        REFERENCES pricing.price_lists(store_id, id, currency),
+    FOREIGN KEY (store_id, inventory_reservation_id)
+        REFERENCES inventory.inventory_reservations(store_id, id),
     CONSTRAINT checkouts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT checkouts_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
@@ -253,15 +247,14 @@ CREATE TABLE sales.checkouts (
 );
 
 CREATE TABLE sales.checkout_contacts (
-    merchant_account_id UUID              NOT NULL,
     store_id            UUID              NOT NULL,
     checkout_id         UUID              NOT NULL,
     email               extensions.citext NOT NULL,
     phone               TEXT,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, checkout_id),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id) ON DELETE CASCADE,
     CONSTRAINT checkout_contacts_email_length_check CHECK (
         length(trim(email::text)) BETWEEN 3 AND 320
     ),
@@ -271,7 +264,6 @@ CREATE TABLE sales.checkout_contacts (
 );
 
 CREATE TABLE sales.checkout_addresses (
-    merchant_account_id  UUID               NOT NULL,
     store_id             UUID               NOT NULL,
     checkout_id          UUID               NOT NULL,
     kind                 sales.address_kind NOT NULL,
@@ -284,9 +276,9 @@ CREATE TABLE sales.checkout_addresses (
     postal_code          TEXT,
     country_code         CHAR(2)            NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id, kind),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, checkout_id, kind),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id) ON DELETE CASCADE,
     CONSTRAINT checkout_addresses_full_name_length_check CHECK (
         length(trim(full_name)) BETWEEN 1 AND 200
     ),
@@ -313,7 +305,6 @@ CREATE TABLE sales.checkout_addresses (
 );
 
 CREATE TABLE sales.checkout_tax_calculations (
-    merchant_account_id UUID    NOT NULL,
     store_id            UUID    NOT NULL,
     checkout_id         UUID    NOT NULL,
     tax_rule_id         UUID    NOT NULL,
@@ -322,11 +313,11 @@ CREATE TABLE sales.checkout_tax_calculations (
     country_code        CHAR(2) NOT NULL,
     rate_basis_points   INTEGER NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, tax_rule_id)
-        REFERENCES pricing.tax_rules(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, checkout_id),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, tax_rule_id)
+        REFERENCES pricing.tax_rules(store_id, id),
     CONSTRAINT checkout_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
     CONSTRAINT checkout_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
     CONSTRAINT checkout_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
@@ -334,7 +325,6 @@ CREATE TABLE sales.checkout_tax_calculations (
 );
 
 CREATE TABLE sales.checkout_promotion_calculations (
-    merchant_account_id           UUID                      NOT NULL,
     store_id                      UUID                      NOT NULL,
     checkout_id                   UUID                      NOT NULL,
     promotion_id                  UUID                      NOT NULL,
@@ -353,11 +343,11 @@ CREATE TABLE sales.checkout_promotion_calculations (
     ends_at                       TIMESTAMPTZ,
     discount_amount_minor         BIGINT                    NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, promotion_id)
-        REFERENCES pricing.promotions(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, checkout_id),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, promotion_id)
+        REFERENCES pricing.promotions(store_id, id),
     CONSTRAINT checkout_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
     CONSTRAINT checkout_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT checkout_promotion_trigger_check CHECK (
@@ -381,7 +371,6 @@ CREATE TABLE sales.checkout_promotion_calculations (
 );
 
 CREATE TABLE sales.checkout_lines (
-    merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
     checkout_id              UUID        NOT NULL,
     position                 SMALLINT    NOT NULL,
@@ -401,10 +390,10 @@ CREATE TABLE sales.checkout_lines (
     tax_inclusive            BOOLEAN     NOT NULL,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id, position),
-    UNIQUE (merchant_account_id, store_id, checkout_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, checkout_id, position),
+    UNIQUE (store_id, checkout_id, product_variant_id),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id),
     CONSTRAINT checkout_lines_position_check CHECK (position BETWEEN 0 AND 998),
     CONSTRAINT checkout_lines_product_title_length_check CHECK (
         length(trim(product_title)) BETWEEN 1 AND 255
@@ -430,7 +419,6 @@ CREATE TABLE sales.checkout_lines (
 
 CREATE TABLE sales.orders (
     id                       UUID                  NOT NULL PRIMARY KEY,
-    merchant_account_id      UUID                  NOT NULL,
     store_id                 UUID                  NOT NULL,
     sales_channel_id         UUID                  NOT NULL,
     checkout_id              UUID                  NOT NULL,
@@ -452,19 +440,19 @@ CREATE TABLE sales.orders (
     created_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, id, shopper_id),
-    UNIQUE (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id, shopper_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id, shopper_id),
-    FOREIGN KEY (merchant_account_id, store_id, customer_id)
-        REFERENCES sales.customers(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, sales_channel_id)
-        REFERENCES merchant.sales_channels(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, price_list_id, currency)
-        REFERENCES pricing.price_lists(merchant_account_id, store_id, id, currency),
-    FOREIGN KEY (merchant_account_id, store_id, inventory_reservation_id)
-        REFERENCES inventory.inventory_reservations(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, id, shopper_id),
+    UNIQUE (store_id, checkout_id),
+    FOREIGN KEY (store_id, checkout_id, shopper_id)
+        REFERENCES sales.checkouts(store_id, id, shopper_id),
+    FOREIGN KEY (store_id, customer_id)
+        REFERENCES sales.customers(store_id, id),
+    FOREIGN KEY (sales_channel_id)
+        REFERENCES merchant.sales_channels(id),
+    FOREIGN KEY (store_id, price_list_id, currency)
+        REFERENCES pricing.price_lists(store_id, id, currency),
+    FOREIGN KEY (store_id, inventory_reservation_id)
+        REFERENCES inventory.inventory_reservations(store_id, id),
     CONSTRAINT orders_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
@@ -482,15 +470,14 @@ CREATE TABLE sales.orders (
 );
 
 CREATE TABLE sales.order_contacts (
-    merchant_account_id UUID              NOT NULL,
     store_id            UUID              NOT NULL,
     order_id            UUID              NOT NULL,
     email               extensions.citext NOT NULL,
     phone               TEXT,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, order_id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id) ON DELETE CASCADE,
     CONSTRAINT order_contacts_email_length_check CHECK (
         length(trim(email::text)) BETWEEN 3 AND 320
     ),
@@ -500,7 +487,6 @@ CREATE TABLE sales.order_contacts (
 );
 
 CREATE TABLE sales.order_addresses (
-    merchant_account_id  UUID               NOT NULL,
     store_id             UUID               NOT NULL,
     order_id             UUID               NOT NULL,
     kind                 sales.address_kind NOT NULL,
@@ -513,9 +499,9 @@ CREATE TABLE sales.order_addresses (
     postal_code          TEXT,
     country_code         CHAR(2)            NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id, kind),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
+    PRIMARY KEY (store_id, order_id, kind),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id) ON DELETE CASCADE,
     CONSTRAINT order_addresses_full_name_length_check CHECK (
         length(trim(full_name)) BETWEEN 1 AND 200
     ),
@@ -542,7 +528,6 @@ CREATE TABLE sales.order_addresses (
 );
 
 CREATE TABLE sales.order_tax_calculations (
-    merchant_account_id UUID    NOT NULL,
     store_id            UUID    NOT NULL,
     order_id            UUID    NOT NULL,
     tax_rule_id         UUID    NOT NULL,
@@ -551,11 +536,11 @@ CREATE TABLE sales.order_tax_calculations (
     country_code        CHAR(2) NOT NULL,
     rate_basis_points   INTEGER NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, tax_rule_id)
-        REFERENCES pricing.tax_rules(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, order_id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, tax_rule_id)
+        REFERENCES pricing.tax_rules(store_id, id),
     CONSTRAINT order_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
     CONSTRAINT order_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
     CONSTRAINT order_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
@@ -563,7 +548,6 @@ CREATE TABLE sales.order_tax_calculations (
 );
 
 CREATE TABLE sales.order_promotion_calculations (
-    merchant_account_id           UUID                      NOT NULL,
     store_id                      UUID                      NOT NULL,
     order_id                      UUID                      NOT NULL,
     promotion_id                  UUID                      NOT NULL,
@@ -582,11 +566,11 @@ CREATE TABLE sales.order_promotion_calculations (
     ends_at                       TIMESTAMPTZ,
     discount_amount_minor         BIGINT                    NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, promotion_id)
-        REFERENCES pricing.promotions(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, order_id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, promotion_id)
+        REFERENCES pricing.promotions(store_id, id),
     CONSTRAINT order_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
     CONSTRAINT order_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT order_promotion_trigger_check CHECK (
@@ -610,7 +594,6 @@ CREATE TABLE sales.order_promotion_calculations (
 );
 
 CREATE TABLE sales.order_lines (
-    merchant_account_id      UUID        NOT NULL,
     store_id                 UUID        NOT NULL,
     order_id                 UUID        NOT NULL,
     position                 SMALLINT    NOT NULL,
@@ -630,10 +613,10 @@ CREATE TABLE sales.order_lines (
     tax_inclusive            BOOLEAN     NOT NULL,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id, position),
-    UNIQUE (merchant_account_id, store_id, order_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, order_id, position),
+    UNIQUE (store_id, order_id, product_variant_id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id),
     CONSTRAINT order_lines_position_check CHECK (position BETWEEN 0 AND 998),
     CONSTRAINT order_lines_product_title_length_check CHECK (
         length(trim(product_title)) BETWEEN 1 AND 255
@@ -659,7 +642,6 @@ CREATE TABLE sales.order_lines (
 
 CREATE TABLE sales.order_transitions (
     id                   UUID                         NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                         NOT NULL,
     store_id             UUID                         NOT NULL,
     order_id             UUID                         NOT NULL,
     from_status          sales.order_status,
@@ -668,9 +650,9 @@ CREATE TABLE sales.order_transitions (
     actor_user_id        UUID,
     occurred_at          TIMESTAMPTZ                  NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, order_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id),
+    UNIQUE (store_id, order_id, id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id),
     FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
     CONSTRAINT order_transitions_shape_check CHECK (
         (kind = 'created' AND from_status IS NULL AND to_status = 'pending')
@@ -680,11 +662,10 @@ CREATE TABLE sales.order_transitions (
 );
 
 ALTER TABLE sales.orders
-    ADD UNIQUE (merchant_account_id, store_id, id, currency);
+    ADD UNIQUE (store_id, id, currency);
 
 CREATE TABLE sales.order_fulfillment_transitions (
     id                       UUID                           NOT NULL PRIMARY KEY,
-    merchant_account_id      UUID                           NOT NULL,
     store_id                 UUID                           NOT NULL,
     order_id                 UUID                           NOT NULL,
     source_event_id          UUID                           NOT NULL UNIQUE,
@@ -694,15 +675,14 @@ CREATE TABLE sales.order_fulfillment_transitions (
     to_delivery_status       sales.order_delivery_status    NOT NULL,
     occurred_at              TIMESTAMPTZ                    NOT NULL,
 
-    UNIQUE (merchant_account_id, store_id, order_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id),
+    UNIQUE (store_id, order_id, id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id),
     FOREIGN KEY (source_event_id) REFERENCES integration.outbox_events(id)
 );
 
 CREATE TABLE fulfillment.shipping_services (
     id                         UUID                                NOT NULL PRIMARY KEY,
-    merchant_account_id        UUID                                NOT NULL,
     store_id                   UUID                                NOT NULL,
     code                       TEXT                                NOT NULL,
     name                       TEXT                                NOT NULL,
@@ -714,12 +694,12 @@ CREATE TABLE fulfillment.shipping_services (
     created_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, code),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, currency)
-        REFERENCES merchant.store_currencies(merchant_account_id, store_id, currency),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, code),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
+    FOREIGN KEY (store_id, currency)
+        REFERENCES merchant.store_currencies(store_id, currency),
     CONSTRAINT shipping_services_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
     CONSTRAINT shipping_services_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT shipping_services_amount_nonnegative_check CHECK (amount_minor >= 0),
@@ -732,7 +712,6 @@ CREATE TABLE fulfillment.shipping_services (
 
 CREATE TABLE fulfillment.shipping_provider_accounts (
     id                                   UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id                  UUID        NOT NULL,
     store_id                             UUID        NOT NULL,
     provider                             TEXT        NOT NULL,
     display_name                         TEXT        NOT NULL,
@@ -754,11 +733,11 @@ CREATE TABLE fulfillment.shipping_provider_accounts (
     created_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
     CONSTRAINT shipping_provider_accounts_store_provider_key
-        UNIQUE (merchant_account_id, store_id, provider),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
+        UNIQUE (store_id, provider),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
     CONSTRAINT shipping_provider_accounts_provider_format_check CHECK (
         provider ~ '^[a-z0-9_]{1,64}$'
@@ -816,19 +795,17 @@ CREATE TABLE fulfillment.shipping_provider_accounts (
 );
 
 CREATE TABLE fulfillment.shipping_service_regions (
-    merchant_account_id UUID    NOT NULL,
     store_id            UUID    NOT NULL,
     shipping_service_id UUID    NOT NULL,
     country_code        CHAR(2) NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, shipping_service_id, country_code),
-    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
-        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, shipping_service_id, country_code),
+    FOREIGN KEY (store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(store_id, id),
     CONSTRAINT shipping_service_regions_country_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
 CREATE TABLE sales.checkout_shipping_selections (
-    merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
     checkout_id         UUID        NOT NULL,
     shipping_service_id UUID        NOT NULL,
@@ -839,11 +816,11 @@ CREATE TABLE sales.checkout_shipping_selections (
     estimated_min_days  SMALLINT    NOT NULL,
     estimated_max_days  SMALLINT    NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, checkout_id),
-    FOREIGN KEY (merchant_account_id, store_id, checkout_id)
-        REFERENCES sales.checkouts(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
-        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, checkout_id),
+    FOREIGN KEY (store_id, checkout_id)
+        REFERENCES sales.checkouts(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(store_id, id),
     CONSTRAINT checkout_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
     CONSTRAINT checkout_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
     CONSTRAINT checkout_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
@@ -855,7 +832,6 @@ CREATE TABLE sales.checkout_shipping_selections (
 );
 
 CREATE TABLE sales.order_shipping_selections (
-    merchant_account_id UUID        NOT NULL,
     store_id            UUID        NOT NULL,
     order_id            UUID        NOT NULL,
     shipping_service_id UUID        NOT NULL,
@@ -866,11 +842,11 @@ CREATE TABLE sales.order_shipping_selections (
     estimated_min_days  SMALLINT    NOT NULL,
     estimated_max_days  SMALLINT    NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, order_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (merchant_account_id, store_id, shipping_service_id)
-        REFERENCES fulfillment.shipping_services(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, order_id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, shipping_service_id)
+        REFERENCES fulfillment.shipping_services(store_id, id),
     CONSTRAINT order_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
     CONSTRAINT order_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
     CONSTRAINT order_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
@@ -883,7 +859,6 @@ CREATE TABLE sales.order_shipping_selections (
 
 CREATE TABLE payments.provider_accounts (
     id                         UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id        UUID        NOT NULL,
     store_id                   UUID        NOT NULL,
     provider                   TEXT        NOT NULL,
     display_name               TEXT        NOT NULL DEFAULT 'Payment provider',
@@ -908,12 +883,12 @@ CREATE TABLE payments.provider_accounts (
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
     CONSTRAINT provider_accounts_store_provider_key
-        UNIQUE (merchant_account_id, store_id, provider),
+        UNIQUE (store_id, provider),
     UNIQUE (provider, external_account_reference),
-    FOREIGN KEY (merchant_account_id, store_id)
-        REFERENCES merchant.stores(merchant_account_id, id),
+    FOREIGN KEY (store_id)
+        REFERENCES merchant.stores(id),
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
     CONSTRAINT provider_accounts_provider_length_check CHECK (
         provider ~ '^[a-z0-9_]{1,64}$'
@@ -1016,7 +991,6 @@ CREATE TABLE payments.provider_accounts (
 
 CREATE TABLE payments.payment_attempts (
     id                     UUID                            NOT NULL PRIMARY KEY,
-    merchant_account_id    UUID                            NOT NULL,
     store_id               UUID                            NOT NULL,
     order_id               UUID                            NOT NULL,
     shopper_id             UUID                            NOT NULL,
@@ -1029,16 +1003,16 @@ CREATE TABLE payments.payment_attempts (
     created_at             TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, id, shopper_id),
-    UNIQUE (merchant_account_id, store_id, id, currency),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, id, shopper_id),
+    UNIQUE (store_id, id, currency),
     UNIQUE (provider_account_id, provider_reference),
-    FOREIGN KEY (merchant_account_id, store_id, order_id, shopper_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id, shopper_id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id, currency)
-        REFERENCES sales.orders(merchant_account_id, store_id, id, currency),
-    FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
-        REFERENCES payments.provider_accounts(merchant_account_id, store_id, id),
+    FOREIGN KEY (store_id, order_id, shopper_id)
+        REFERENCES sales.orders(store_id, id, shopper_id),
+    FOREIGN KEY (store_id, order_id, currency)
+        REFERENCES sales.orders(store_id, id, currency),
+    FOREIGN KEY (store_id, provider_account_id)
+        REFERENCES payments.provider_accounts(store_id, id),
     CONSTRAINT payment_attempts_amount_positive_check CHECK (amount_minor > 0),
     CONSTRAINT payment_attempts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT payment_attempts_provider_reference_length_check CHECK (
@@ -1053,7 +1027,6 @@ CREATE TABLE payments.payment_attempts (
 
 CREATE TABLE payments.refunds (
     id                     UUID                    NOT NULL PRIMARY KEY,
-    merchant_account_id    UUID                    NOT NULL,
     store_id               UUID                    NOT NULL,
     payment_attempt_id     UUID                    NOT NULL,
     amount_minor           BIGINT                  NOT NULL,
@@ -1064,10 +1037,10 @@ CREATE TABLE payments.refunds (
     created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
     UNIQUE (payment_attempt_id, provider_reference),
-    FOREIGN KEY (merchant_account_id, store_id, payment_attempt_id, currency)
-        REFERENCES payments.payment_attempts(merchant_account_id, store_id, id, currency),
+    FOREIGN KEY (store_id, payment_attempt_id, currency)
+        REFERENCES payments.payment_attempts(store_id, id, currency),
     CONSTRAINT refunds_amount_positive_check CHECK (amount_minor > 0),
     CONSTRAINT refunds_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT refunds_provider_reference_length_check CHECK (
@@ -1082,7 +1055,6 @@ CREATE TABLE payments.refunds (
 
 CREATE TABLE fulfillment.fulfillments (
     id                   UUID                           NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                           NOT NULL,
     store_id             UUID                           NOT NULL,
     order_id             UUID                           NOT NULL,
     status               fulfillment.fulfillment_status NOT NULL DEFAULT 'pending',
@@ -1094,10 +1066,10 @@ CREATE TABLE fulfillment.fulfillments (
     created_at           TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, carrier, tracking_number),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, carrier, tracking_number),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id),
     CONSTRAINT fulfillments_tracking_shape_check CHECK (
         (status = 'pending' AND carrier IS NULL AND tracking_number IS NULL
             AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL)
@@ -1117,21 +1089,19 @@ CREATE TABLE fulfillment.fulfillments (
 );
 
 CREATE TABLE fulfillment.fulfillment_lines (
-    merchant_account_id  UUID    NOT NULL,
     store_id             UUID    NOT NULL,
     fulfillment_id       UUID    NOT NULL,
     product_variant_id   UUID    NOT NULL,
     quantity             INTEGER NOT NULL,
 
-    PRIMARY KEY (merchant_account_id, store_id, fulfillment_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, fulfillment_id)
-        REFERENCES fulfillment.fulfillments(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, fulfillment_id, product_variant_id),
+    FOREIGN KEY (store_id, fulfillment_id)
+        REFERENCES fulfillment.fulfillments(store_id, id),
     CONSTRAINT fulfillment_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999)
 );
 
 CREATE TABLE fulfillment.shipping_quote_requests (
     id                    UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id   UUID        NOT NULL,
     store_id              UUID        NOT NULL,
     fulfillment_id        UUID        NOT NULL,
     provider_account_id   UUID        NOT NULL,
@@ -1146,12 +1116,12 @@ CREATE TABLE fulfillment.shipping_quote_requests (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, idempotency_key),
-    FOREIGN KEY (merchant_account_id, store_id, fulfillment_id)
-        REFERENCES fulfillment.fulfillments(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
-        REFERENCES fulfillment.shipping_provider_accounts(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, idempotency_key),
+    FOREIGN KEY (store_id, fulfillment_id)
+        REFERENCES fulfillment.fulfillments(store_id, id),
+    FOREIGN KEY (store_id, provider_account_id)
+        REFERENCES fulfillment.shipping_provider_accounts(store_id, id),
     CONSTRAINT shipping_quote_requests_idempotency_length_check CHECK (
         length(idempotency_key) BETWEEN 1 AND 128
     ),
@@ -1173,7 +1143,6 @@ CREATE TABLE fulfillment.shipping_quote_requests (
 
 CREATE TABLE fulfillment.shipping_rate_quotes (
     id                            UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id           UUID        NOT NULL,
     store_id                      UUID        NOT NULL,
     quote_request_id              UUID        NOT NULL,
     provider_shipment_reference   TEXT        NOT NULL,
@@ -1187,10 +1156,10 @@ CREATE TABLE fulfillment.shipping_rate_quotes (
     expires_at                    TIMESTAMPTZ NOT NULL,
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, quote_request_id, provider_rate_reference),
-    FOREIGN KEY (merchant_account_id, store_id, quote_request_id)
-        REFERENCES fulfillment.shipping_quote_requests(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, quote_request_id, provider_rate_reference),
+    FOREIGN KEY (store_id, quote_request_id)
+        REFERENCES fulfillment.shipping_quote_requests(store_id, id),
     CONSTRAINT shipping_rate_quotes_shipment_reference_length_check CHECK (
         length(trim(provider_shipment_reference)) BETWEEN 1 AND 255
     ),
@@ -1212,7 +1181,6 @@ CREATE TABLE fulfillment.shipping_rate_quotes (
 
 CREATE TABLE fulfillment.shipping_labels (
     id                              UUID        NOT NULL PRIMARY KEY,
-    merchant_account_id             UUID        NOT NULL,
     store_id                        UUID        NOT NULL,
     fulfillment_id                  UUID        NOT NULL,
     provider_account_id             UUID        NOT NULL,
@@ -1249,19 +1217,19 @@ CREATE TABLE fulfillment.shipping_labels (
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    UNIQUE (merchant_account_id, store_id, fulfillment_id),
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, fulfillment_id),
     CONSTRAINT shipping_labels_purchase_idempotency_key
-        UNIQUE (merchant_account_id, store_id, purchase_idempotency_key),
+        UNIQUE (store_id, purchase_idempotency_key),
     CONSTRAINT shipping_labels_cancellation_idempotency_key
-        UNIQUE (merchant_account_id, store_id, cancellation_idempotency_key),
+        UNIQUE (store_id, cancellation_idempotency_key),
     UNIQUE (carrier, tracking_number),
-    FOREIGN KEY (merchant_account_id, store_id, fulfillment_id)
-        REFERENCES fulfillment.fulfillments(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, provider_account_id)
-        REFERENCES fulfillment.shipping_provider_accounts(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, rate_quote_id)
-        REFERENCES fulfillment.shipping_rate_quotes(merchant_account_id, store_id, id),
+    FOREIGN KEY (store_id, fulfillment_id)
+        REFERENCES fulfillment.fulfillments(store_id, id),
+    FOREIGN KEY (store_id, provider_account_id)
+        REFERENCES fulfillment.shipping_provider_accounts(store_id, id),
+    FOREIGN KEY (store_id, rate_quote_id)
+        REFERENCES fulfillment.shipping_rate_quotes(store_id, id),
     CONSTRAINT shipping_labels_purchase_idempotency_length_check CHECK (
         length(purchase_idempotency_key) BETWEEN 1 AND 128
     ),
@@ -1340,7 +1308,6 @@ CREATE TABLE fulfillment.shipping_labels (
 
 CREATE TABLE fulfillment.returns (
     id                   UUID                      NOT NULL PRIMARY KEY,
-    merchant_account_id  UUID                      NOT NULL,
     store_id             UUID                      NOT NULL,
     order_id             UUID                      NOT NULL,
     status               fulfillment.return_status NOT NULL DEFAULT 'requested',
@@ -1355,13 +1322,13 @@ CREATE TABLE fulfillment.returns (
     created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id)
-        REFERENCES sales.orders(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, order_id, currency)
-        REFERENCES sales.orders(merchant_account_id, store_id, id, currency),
-    FOREIGN KEY (merchant_account_id, store_id, refund_id)
-        REFERENCES payments.refunds(merchant_account_id, store_id, id),
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES sales.orders(store_id, id),
+    FOREIGN KEY (store_id, order_id, currency)
+        REFERENCES sales.orders(store_id, id, currency),
+    FOREIGN KEY (store_id, refund_id)
+        REFERENCES payments.refunds(store_id, id),
     CONSTRAINT returns_status_timestamps_check CHECK (
         (status = 'requested' AND authorized_at IS NULL AND received_at IS NULL
             AND completed_at IS NULL AND rejected_at IS NULL)
@@ -1379,7 +1346,6 @@ CREATE TABLE fulfillment.returns (
 );
 
 CREATE TABLE fulfillment.return_lines (
-    merchant_account_id  UUID                           NOT NULL,
     store_id             UUID                           NOT NULL,
     return_id            UUID                           NOT NULL,
     product_variant_id   UUID                           NOT NULL,
@@ -1388,11 +1354,11 @@ CREATE TABLE fulfillment.return_lines (
     refund_amount_minor  BIGINT                         NOT NULL,
     disposition          fulfillment.return_disposition,
 
-    PRIMARY KEY (merchant_account_id, store_id, return_id, product_variant_id),
-    FOREIGN KEY (merchant_account_id, store_id, return_id)
-        REFERENCES fulfillment.returns(merchant_account_id, store_id, id),
-    FOREIGN KEY (merchant_account_id, store_id, inventory_location_id)
-        REFERENCES inventory.inventory_locations(merchant_account_id, store_id, id),
+    PRIMARY KEY (store_id, return_id, product_variant_id),
+    FOREIGN KEY (store_id, return_id)
+        REFERENCES fulfillment.returns(store_id, id),
+    FOREIGN KEY (store_id, inventory_location_id)
+        REFERENCES inventory.inventory_locations(store_id, id),
     CONSTRAINT return_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999),
     CONSTRAINT return_lines_refund_amount_nonnegative_check CHECK (refund_amount_minor >= 0),
     CONSTRAINT return_lines_restock_location_check CHECK (
@@ -1401,20 +1367,17 @@ CREATE TABLE fulfillment.return_lines (
 );
 
 CREATE INDEX customers_store_created_idx
-    ON sales.customers (merchant_account_id, store_id, created_at DESC, id DESC);
+    ON sales.customers (store_id, created_at DESC, id DESC);
 
 CREATE INDEX customer_addresses_customer_idx
-    ON sales.customer_addresses (merchant_account_id, store_id, customer_id, created_at, id);
+    ON sales.customer_addresses (store_id, customer_id, created_at, id);
 
 CREATE INDEX customer_shopper_links_history_idx
-    ON sales.customer_shopper_links (
-        merchant_account_id, store_id, customer_id, sales_channel_id, shopper_id
+    ON sales.customer_shopper_links (store_id, customer_id, sales_channel_id, shopper_id
     );
 
 CREATE INDEX carts_channel_updated_idx
-    ON sales.carts (
-        merchant_account_id,
-        store_id,
+    ON sales.carts (store_id,
         sales_channel_id,
         status,
         updated_at DESC,
@@ -1422,12 +1385,10 @@ CREATE INDEX carts_channel_updated_idx
     );
 
 CREATE INDEX cart_lines_variant_lookup_idx
-    ON sales.cart_lines (merchant_account_id, store_id, product_variant_id, cart_id);
+    ON sales.cart_lines (store_id, product_variant_id, cart_id);
 
 CREATE INDEX checkouts_channel_created_idx
-    ON sales.checkouts (
-        merchant_account_id,
-        store_id,
+    ON sales.checkouts (store_id,
         sales_channel_id,
         created_at DESC,
         id DESC
@@ -1438,117 +1399,92 @@ CREATE INDEX checkouts_expiry_claim_idx
     WHERE status = 'pending';
 
 CREATE INDEX orders_channel_created_idx
-    ON sales.orders (
-        merchant_account_id,
-        store_id,
+    ON sales.orders (store_id,
         sales_channel_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX orders_customer_created_idx
-    ON sales.orders (
-        merchant_account_id, store_id, customer_id, created_at DESC, id DESC
+    ON sales.orders (store_id, customer_id, created_at DESC, id DESC
     ) WHERE customer_id IS NOT NULL;
 
 CREATE INDEX order_transitions_order_time_idx
-    ON sales.order_transitions (
-        merchant_account_id,
-        store_id,
+    ON sales.order_transitions (store_id,
         order_id,
         occurred_at,
         id
     );
 
 CREATE INDEX order_fulfillment_transitions_order_idx
-    ON sales.order_fulfillment_transitions (
-        merchant_account_id,
-        store_id,
+    ON sales.order_fulfillment_transitions (store_id,
         order_id,
         occurred_at,
         id
     );
 
 CREATE INDEX provider_accounts_store_created_idx
-    ON payments.provider_accounts (merchant_account_id, store_id, created_at DESC, id DESC);
+    ON payments.provider_accounts (store_id, created_at DESC, id DESC);
 
 CREATE INDEX provider_accounts_readiness_due_idx
     ON payments.provider_accounts (readiness_reconcile_at, id)
     WHERE enabled;
 
 CREATE INDEX payment_attempts_order_created_idx
-    ON payments.payment_attempts (
-        merchant_account_id,
-        store_id,
+    ON payments.payment_attempts (store_id,
         order_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX refunds_attempt_created_idx
-    ON payments.refunds (
-        merchant_account_id,
-        store_id,
+    ON payments.refunds (store_id,
         payment_attempt_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX shipping_services_quote_idx
-    ON fulfillment.shipping_services (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.shipping_services (store_id,
         currency,
         status,
         id
     );
 
 CREATE INDEX shipping_provider_accounts_store_created_idx
-    ON fulfillment.shipping_provider_accounts (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.shipping_provider_accounts (store_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX shipping_service_regions_quote_idx
-    ON fulfillment.shipping_service_regions (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.shipping_service_regions (store_id,
         country_code,
         shipping_service_id
     );
 
 CREATE INDEX fulfillments_order_created_idx
-    ON fulfillment.fulfillments (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.fulfillments (store_id,
         order_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX fulfillment_lines_variant_idx
-    ON fulfillment.fulfillment_lines (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.fulfillment_lines (store_id,
         product_variant_id,
         fulfillment_id
     );
 
 CREATE INDEX shipping_quote_requests_fulfillment_created_idx
-    ON fulfillment.shipping_quote_requests (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.shipping_quote_requests (store_id,
         fulfillment_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX shipping_rate_quotes_request_expiry_idx
-    ON fulfillment.shipping_rate_quotes (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.shipping_rate_quotes (store_id,
         quote_request_id,
         expires_at,
         id
@@ -1563,18 +1499,14 @@ CREATE INDEX shipping_labels_cancellation_due_idx
     WHERE cancellation_status = 'submitted' AND cancellation_reconcile_at IS NOT NULL;
 
 CREATE INDEX returns_order_created_idx
-    ON fulfillment.returns (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.returns (store_id,
         order_id,
         created_at DESC,
         id DESC
     );
 
 CREATE INDEX return_lines_variant_idx
-    ON fulfillment.return_lines (
-        merchant_account_id,
-        store_id,
+    ON fulfillment.return_lines (store_id,
         product_variant_id,
         return_id
     );
@@ -1587,7 +1519,6 @@ CREATE FUNCTION sales.claim_expired_checkouts(
 )
 RETURNS TABLE (
     id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     inventory_reservation_id UUID
 )
@@ -1614,7 +1545,7 @@ AS $$
            expiry_locked_at = claimed_at
       FROM claimable
      WHERE checkout.id = claimable.id
-    RETURNING checkout.id, checkout.merchant_account_id, checkout.store_id,
+    RETURNING checkout.id, checkout.store_id,
               checkout.inventory_reservation_id;
 $$;
 
@@ -1652,7 +1583,6 @@ CREATE FUNCTION payments.resolve_provider_account(
 )
 RETURNS TABLE (
     provider_account_id UUID,
-    merchant_account_id UUID,
     store_id            UUID
 )
 LANGUAGE SQL
@@ -1660,7 +1590,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT account.id, account.merchant_account_id, account.store_id
+    SELECT account.id, account.store_id
     FROM payments.provider_accounts AS account
     WHERE account.provider = requested_provider
       AND account.external_account_reference = requested_external_account_reference;
@@ -1701,7 +1631,6 @@ CREATE FUNCTION payments.claim_provider_readiness_checks(
 )
 RETURNS TABLE (
     provider_account_id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     provider TEXT,
     external_account_reference TEXT,
@@ -1751,7 +1680,7 @@ AS $$
            readiness_reconcile_attempts = least(account.readiness_reconcile_attempts, 30) + 1
       FROM claimable
      WHERE account.id = claimable.id
-    RETURNING account.id, account.merchant_account_id, account.store_id, account.provider,
+    RETURNING account.id, account.store_id, account.provider,
               account.external_account_reference, account.credential_secret_reference,
               account.readiness_reconcile_attempts;
 $$;
@@ -1892,7 +1821,6 @@ CREATE FUNCTION fulfillment.claim_shipping_tracking(
 )
 RETURNS TABLE (
     label_id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     fulfillment_id UUID,
     provider TEXT,
@@ -1927,9 +1855,8 @@ AS $$
            fulfillment.shipping_provider_accounts AS account
      WHERE label.id = claimable.id
        AND account.id = label.provider_account_id
-       AND account.merchant_account_id = label.merchant_account_id
        AND account.store_id = label.store_id
-    RETURNING label.id, label.merchant_account_id, label.store_id, label.fulfillment_id,
+    RETURNING label.id, label.store_id, label.fulfillment_id,
               account.provider, label.provider_tracker_reference,
               account.credential_secret_reference, label.tracking_attempts;
 $$;
@@ -1942,7 +1869,6 @@ CREATE FUNCTION fulfillment.claim_shipping_cancellations(
 )
 RETURNS TABLE (
     label_id UUID,
-    merchant_account_id UUID,
     store_id UUID,
     fulfillment_id UUID,
     provider TEXT,
@@ -1976,9 +1902,8 @@ AS $$
            fulfillment.shipping_provider_accounts AS account
      WHERE label.id = claimable.id
        AND account.id = label.provider_account_id
-       AND account.merchant_account_id = label.merchant_account_id
        AND account.store_id = label.store_id
-    RETURNING label.id, label.merchant_account_id, label.store_id, label.fulfillment_id,
+    RETURNING label.id, label.store_id, label.fulfillment_id,
               account.provider, label.provider_shipment_reference,
               account.credential_secret_reference, label.cancellation_attempts;
 $$;
@@ -2051,344 +1976,344 @@ ALTER TABLE fulfillment.returns ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE fulfillment.return_lines ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY merchant_account_isolation ON sales.carts
+CREATE POLICY store_isolation ON sales.carts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.customers
+CREATE POLICY store_isolation ON sales.customers
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.customer_addresses
+CREATE POLICY store_isolation ON sales.customer_addresses
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.customer_shopper_links
+CREATE POLICY store_isolation ON sales.customer_shopper_links
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.cart_lines
+CREATE POLICY store_isolation ON sales.cart_lines
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkouts
+CREATE POLICY store_isolation ON sales.checkouts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_contacts
+CREATE POLICY store_isolation ON sales.checkout_contacts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_addresses
+CREATE POLICY store_isolation ON sales.checkout_addresses
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_tax_calculations
+CREATE POLICY store_isolation ON sales.checkout_tax_calculations
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_promotion_calculations
+CREATE POLICY store_isolation ON sales.checkout_promotion_calculations
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_lines
+CREATE POLICY store_isolation ON sales.checkout_lines
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.orders
+CREATE POLICY store_isolation ON sales.orders
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_contacts
+CREATE POLICY store_isolation ON sales.order_contacts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_addresses
+CREATE POLICY store_isolation ON sales.order_addresses
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_tax_calculations
+CREATE POLICY store_isolation ON sales.order_tax_calculations
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_promotion_calculations
+CREATE POLICY store_isolation ON sales.order_promotion_calculations
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_lines
+CREATE POLICY store_isolation ON sales.order_lines
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_transitions
+CREATE POLICY store_isolation ON sales.order_transitions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_fulfillment_transitions
+CREATE POLICY store_isolation ON sales.order_fulfillment_transitions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.checkout_shipping_selections
+CREATE POLICY store_isolation ON sales.checkout_shipping_selections
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON sales.order_shipping_selections
+CREATE POLICY store_isolation ON sales.order_shipping_selections
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON payments.provider_accounts
+CREATE POLICY store_isolation ON payments.provider_accounts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON payments.payment_attempts
+CREATE POLICY store_isolation ON payments.payment_attempts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON payments.refunds
+CREATE POLICY store_isolation ON payments.refunds
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.fulfillments
+CREATE POLICY store_isolation ON fulfillment.fulfillments
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_services
+CREATE POLICY store_isolation ON fulfillment.shipping_services
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_provider_accounts
+CREATE POLICY store_isolation ON fulfillment.shipping_provider_accounts
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_service_regions
+CREATE POLICY store_isolation ON fulfillment.shipping_service_regions
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.fulfillment_lines
+CREATE POLICY store_isolation ON fulfillment.fulfillment_lines
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_quote_requests
+CREATE POLICY store_isolation ON fulfillment.shipping_quote_requests
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_rate_quotes
+CREATE POLICY store_isolation ON fulfillment.shipping_rate_quotes
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.shipping_labels
+CREATE POLICY store_isolation ON fulfillment.shipping_labels
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.returns
+CREATE POLICY store_isolation ON fulfillment.returns
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY merchant_account_isolation ON fulfillment.return_lines
+CREATE POLICY store_isolation ON fulfillment.return_lines
     USING (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     )
     WITH CHECK (
-        merchant_account_id =
-        nullif(current_setting('app.merchant_account_id', true), '')::uuid
+        store_id =
+        nullif(current_setting('app.store_id', true), '')::uuid
     );
 
 COMMENT ON INDEX sales.checkouts_expiry_claim_idx IS

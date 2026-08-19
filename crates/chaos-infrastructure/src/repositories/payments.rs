@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chaos_application::{
     ApplicationError,
-    merchant::MerchantActor,
+    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
@@ -219,8 +219,7 @@ impl PostgresPaymentRepository {
         &self,
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
-        self.begin_context(None, actor.merchant_account_id.as_uuid())
-            .await
+        self.begin_context(None, actor.store_id.as_uuid()).await
     }
 
     async fn begin_shopper(
@@ -239,13 +238,10 @@ impl PostgresPaymentRepository {
 
     async fn begin_human(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
-        self.begin_context(
-            Some(actor.user_id().as_uuid()),
-            actor.merchant_account_id().as_uuid(),
-        )
-        .await
+        self.begin_context(Some(actor.user_id().as_uuid()), actor.store_id().as_uuid())
+            .await
     }
 
     async fn begin_admin(
@@ -254,7 +250,7 @@ impl PostgresPaymentRepository {
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         self.begin_context(
             Some(actor.audit_user_id().as_uuid()),
-            actor.merchant_account_id().as_uuid(),
+            actor.store_id().as_uuid(),
         )
         .await
     }
@@ -262,13 +258,13 @@ impl PostgresPaymentRepository {
     async fn begin_context(
         &self,
         user_id: Option<Uuid>,
-        account_id: Uuid,
+        store_id: Uuid,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         if let Some(user_id) = user_id {
             set_config(&mut transaction, "app.user_id", user_id).await?;
         }
-        set_config(&mut transaction, "app.merchant_account_id", account_id).await?;
+        set_config(&mut transaction, "app.store_id", store_id).await?;
         Ok(transaction)
     }
 }
@@ -277,7 +273,7 @@ impl PostgresPaymentRepository {
 impl PaymentProviderAccountRepository for PostgresPaymentRepository {
     async fn list(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
@@ -291,11 +287,10 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                     credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
              FROM payments.provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 \
-               AND ($3::uuid IS NULL OR id < $3) \
-             ORDER BY id DESC LIMIT $4",
+             WHERE store_id = $1 \
+               AND ($2::uuid IS NULL OR id < $2) \
+             ORDER BY id DESC LIMIT $3",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(after)
         .bind(i64::from(limit) + 1)
@@ -314,54 +309,46 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
 
     async fn get(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         id: PaymentProviderAccountId,
     ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        let value = load_provider_account(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            id,
-        )
-        .await?;
+        let value = load_provider_account(&mut transaction, store_id, id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(value)
     }
 
     async fn create(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         account: &PaymentProviderAccount,
         configuration: &PaymentProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin_human(actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             CREATE_PROVIDER_ACCOUNT_OPERATION,
             request,
         )
         .await?
         {
-            return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
+            return replay_provider_account(&mut transaction, store_id, snapshot).await;
         }
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
             "INSERT INTO payments.provider_accounts \
-             (id, merchant_account_id, store_id, provider, display_name, \
+             (id, store_id, provider, display_name, \
               external_account_reference, credential_secret_reference, webhook_secret_reference, \
               readiness_status, readiness_snapshot, readiness_checked_at, \
               readiness_valid_until, readiness_reconcile_at, \
               enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
         )
         .bind(account.id().as_uuid())
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(account.provider())
         .bind(account.display_name())
@@ -391,13 +378,13 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .map_err(map_provider_account_write_error)?;
         complete_provider_account(
             &mut transaction,
-            account_id,
+            store_id,
             CREATE_PROVIDER_ACCOUNT_OPERATION,
             request,
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+        let value = load_provider_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -406,83 +393,81 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
 
     async fn update(
         &self,
-        actor: MerchantActor,
+        actor: StoreActor,
         store_id: StoreId,
         account: &PaymentProviderAccount,
         configuration: &PaymentProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin_human(actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             UPDATE_PROVIDER_ACCOUNT_OPERATION,
             request,
         )
         .await?
         {
-            return replay_provider_account(&mut transaction, account_id, store_id, snapshot).await;
+            return replay_provider_account(&mut transaction, store_id, snapshot).await;
         }
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
-            "UPDATE payments.provider_accounts SET display_name = $4, \
+            "UPDATE payments.provider_accounts SET display_name = $3, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
-                             AND credential_secret_reference IS DISTINCT FROM $5 \
+                             AND credential_secret_reference IS DISTINCT FROM $4 \
                         THEN credential_secret_reference ELSE previous_credential_secret_reference END, \
                     credential_rotation_expires_at = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
-                             AND credential_secret_reference IS DISTINCT FROM $5 \
+                             AND credential_secret_reference IS DISTINCT FROM $4 \
                         THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE credential_rotation_expires_at END, \
-                    credential_secret_reference = $5, \
+                    credential_secret_reference = $4, \
                     previous_webhook_secret_reference = CASE \
                         WHEN webhook_secret_reference IS NOT NULL \
-                             AND webhook_secret_reference IS DISTINCT FROM $6 \
+                             AND webhook_secret_reference IS DISTINCT FROM $5 \
                         THEN webhook_secret_reference ELSE previous_webhook_secret_reference END, \
                     webhook_rotation_expires_at = CASE \
                         WHEN webhook_secret_reference IS NOT NULL \
-                             AND webhook_secret_reference IS DISTINCT FROM $6 \
+                             AND webhook_secret_reference IS DISTINCT FROM $5 \
                         THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE webhook_rotation_expires_at END, \
-                    webhook_secret_reference = $6, \
+                    webhook_secret_reference = $5, \
                     readiness_status = CASE \
-                        WHEN $8::text IS NOT NULL THEN $8 \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN 'unchecked' \
+                        WHEN $7::text IS NOT NULL THEN $7 \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN 'unchecked' \
                         ELSE readiness_status END, \
                     readiness_snapshot = CASE \
-                        WHEN $8::text IS NOT NULL THEN $9::jsonb \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        WHEN $7::text IS NOT NULL THEN $8::jsonb \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
                         ELSE readiness_snapshot END, \
                     readiness_checked_at = CASE \
-                        WHEN $8::text IS NOT NULL THEN $10::timestamptz \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        WHEN $7::text IS NOT NULL THEN $9::timestamptz \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
                         ELSE readiness_checked_at END, \
                     readiness_valid_until = CASE \
-                        WHEN $8::text = 'ready' THEN $10::timestamptz + INTERVAL '24 hours' \
-                        WHEN $8::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '24 hours' \
+                        WHEN $7::text IS NOT NULL THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
                         ELSE readiness_valid_until END, \
                     readiness_reconcile_at = CASE \
-                        WHEN $8::text = 'ready' THEN $10::timestamptz + INTERVAL '6 hours' \
-                        WHEN $8::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 THEN NULL \
+                        WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '6 hours' \
+                        WHEN $7::text IS NOT NULL THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
                         ELSE readiness_reconcile_at END, \
                     readiness_locked_by = CASE \
-                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
                         THEN NULL ELSE readiness_locked_by END, \
                     readiness_locked_at = CASE \
-                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
                         THEN NULL ELSE readiness_locked_at END, \
                     readiness_reconcile_attempts = CASE \
-                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
                         THEN 0 ELSE readiness_reconcile_attempts END, \
                     readiness_last_error = CASE \
-                        WHEN $8::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
                         THEN NULL ELSE readiness_last_error END, \
-                    enabled = $7, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+                    enabled = $6, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(account.id().as_uuid())
         .bind(account.display_name())
@@ -504,13 +489,13 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         }
         complete_provider_account(
             &mut transaction,
-            account_id,
+            store_id,
             UPDATE_PROVIDER_ACCOUNT_OPERATION,
             request,
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+        let value = load_provider_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -552,8 +537,8 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, String, i32)>(
-            "SELECT provider_account_id, merchant_account_id, store_id, provider, \
+        sqlx::query_as::<_, (Uuid, Uuid, String, String, String, i32)>(
+            "SELECT provider_account_id, store_id, provider, \
                     external_account_reference, credential_secret_reference, attempts \
              FROM payments.claim_provider_readiness_checks($1, $2, $3, $4)",
         )
@@ -568,15 +553,14 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         .map(|row| {
             Ok(PaymentProviderReadinessJob {
                 provider_account_id: PaymentProviderAccountId::from_uuid(row.0),
-                merchant_account_id: row.1,
-                store_id: StoreId::from_uuid(row.2),
-                provider: row.3,
-                external_account_reference: row.4,
+                store_id: StoreId::from_uuid(row.1),
+                provider: row.2,
+                external_account_reference: row.3,
                 credential_secret_reference: PaymentSecretReference::new(
                     "credential_secret_reference",
-                    row.5,
+                    row.4,
                 )?,
-                attempts: u32::try_from(row.6)
+                attempts: u32::try_from(row.5)
                     .map_err(|error| ApplicationError::Unexpected(error.into()))?,
             })
         })
@@ -637,10 +621,9 @@ impl PaymentRepository for PostgresPaymentRepository {
         let mut transaction = self.begin_shopper(shopper).await?;
         let order = sqlx::query_as::<_, (i64, String, String)>(
             "SELECT total_amount_minor, currency::text, status::text FROM sales.orders \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND sales_channel_id = $3 \
-               AND id = $4 AND shopper_id = $5 FOR UPDATE",
+             WHERE store_id = $1 AND sales_channel_id = $2 \
+               AND id = $3 AND shopper_id = $4 FOR UPDATE",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -664,11 +647,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         }
         let provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM payments.provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND provider = $3 AND enabled \
+             WHERE store_id = $1 AND provider = $2 AND enabled \
                AND readiness_status = 'ready' AND readiness_valid_until > CURRENT_TIMESTAMP \
              ORDER BY id LIMIT 1",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(provider)
         .fetch_optional(&mut *transaction)
@@ -677,10 +659,9 @@ impl PaymentRepository for PostgresPaymentRepository {
         .ok_or_else(provider_unavailable)?;
         let active_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM payments.payment_attempts \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND order_id = $3 \
+             WHERE store_id = $1 AND order_id = $2 \
                AND status IN ('pending', 'authorized', 'captured'))",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -693,11 +674,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         let attempt = PaymentAttempt::create(order_id, Money::new(order.0, currency))?;
         sqlx::query(
             "INSERT INTO payments.payment_attempts \
-             (id, merchant_account_id, store_id, order_id, shopper_id, provider_account_id, \
-              amount_minor, currency) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, store_id, order_id, shopper_id, provider_account_id, \
+              amount_minor, currency) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(attempt.id().as_uuid())
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
@@ -709,7 +689,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         .map_err(database_error)?;
         insert_outbox(
             &mut transaction,
-            actor.merchant_account_id.as_uuid(),
             actor.store_id,
             "payment_attempt",
             attempt.id().as_uuid(),
@@ -723,7 +702,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         .await?;
         let detail = load_attempt(
             &mut transaction,
-            actor.merchant_account_id.as_uuid(),
             actor.store_id,
             Some(channel_id),
             Some(shopper.shopper_id.as_uuid()),
@@ -753,7 +731,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         let mut transaction = self.begin_shopper(shopper).await?;
         let detail = load_attempt(
             &mut transaction,
-            actor.merchant_account_id.as_uuid(),
             actor.store_id,
             actor.sales_channel_id,
             Some(shopper.shopper_id.as_uuid()),
@@ -772,11 +749,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         amount_minor: i64,
         request: &IdempotencyRequest,
     ) -> Result<RefundDetail, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin_admin(&actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             CREATE_REFUND_OPERATION,
             request,
         )
@@ -789,12 +765,10 @@ impl PaymentRepository for PostgresPaymentRepository {
                     attempt.status::text, attempt.provider_reference, account.provider \
              FROM payments.payment_attempts AS attempt \
              INNER JOIN payments.provider_accounts AS account \
-               ON account.merchant_account_id = attempt.merchant_account_id \
-              AND account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
-             WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 \
-               AND attempt.id = $3 FOR UPDATE OF attempt",
+               ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
+             WHERE attempt.store_id = $1 \
+               AND attempt.id = $2 FOR UPDATE OF attempt",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(attempt_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -811,10 +785,9 @@ impl PaymentRepository for PostgresPaymentRepository {
         );
         let already_refunded: i64 = sqlx::query_scalar(
             "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM payments.refunds \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND payment_attempt_id = $3 \
+             WHERE store_id = $1 AND payment_attempt_id = $2 \
                AND status IN ('pending', 'succeeded')",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(attempt_id.as_uuid())
         .fetch_one(&mut *transaction)
@@ -827,11 +800,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         )?;
         sqlx::query(
             "INSERT INTO payments.refunds \
-             (id, merchant_account_id, store_id, payment_attempt_id, amount_minor, currency) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, store_id, payment_attempt_id, amount_minor, currency) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(refund.id().as_uuid())
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(attempt_id.as_uuid())
         .bind(amount_minor)
@@ -842,7 +814,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         let id = refund.id();
         insert_outbox(
             &mut transaction,
-            account_id,
             store_id,
             "refund",
             id.as_uuid(),
@@ -854,12 +825,12 @@ impl PaymentRepository for PostgresPaymentRepository {
             None,
         )
         .await?;
-        let detail = load_refund(&mut transaction, account_id, store_id, id)
+        let detail = load_refund(&mut transaction, store_id, id)
             .await?
             .ok_or_else(|| refund_not_found(id))?;
         idempotency::complete(
             &mut transaction,
-            &IdempotencyScope::MerchantAccount(account_id),
+            &IdempotencyScope::Store(store_id.as_uuid()),
             CREATE_REFUND_OPERATION,
             request,
             201,
@@ -872,8 +843,8 @@ impl PaymentRepository for PostgresPaymentRepository {
 
     async fn ingest_webhook(&self, event: &VerifiedWebhookEvent) -> Result<bool, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        let account = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-            "SELECT provider_account_id, merchant_account_id, store_id \
+        let account = sqlx::query_as::<_, (Uuid, Uuid)>(
+            "SELECT provider_account_id, store_id \
              FROM payments.resolve_provider_account($1, $2)",
         )
         .bind(&event.provider)
@@ -882,17 +853,16 @@ impl PaymentRepository for PostgresPaymentRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(provider_unavailable)?;
-        set_config(&mut transaction, "app.merchant_account_id", account.1).await?;
+        set_config(&mut transaction, "app.store_id", account.1).await?;
         let result = sqlx::query(
             "INSERT INTO integration.webhook_inbox \
-             (id, merchant_account_id, store_id, provider, provider_event_id, event_type, \
+             (id, store_id, provider, provider_event_id, event_type, \
               external_account_reference, payload, verified_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              ON CONFLICT (provider, provider_event_id) DO NOTHING",
         )
         .bind(Uuid::now_v7())
         .bind(account.1)
-        .bind(account.2)
         .bind(&event.provider)
         .bind(&event.provider_event_id)
         .bind(&event.event_type)
@@ -911,7 +881,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         job: &QueueJob,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let mut transaction = self.begin_context(None, job.merchant_account_id).await?;
+        let mut transaction = self.begin_context(None, job.store_id).await?;
         let aggregate_id = job
             .payload
             .get("aggregate_id")
@@ -932,7 +902,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         if job.event_type.starts_with("payment.") {
             apply_payment_event(
                 &mut transaction,
-                job.merchant_account_id,
                 StoreId::from_uuid(job.store_id),
                 PaymentAttemptId::from_uuid(aggregate_id),
                 &job.event_type,
@@ -944,7 +913,6 @@ impl PaymentRepository for PostgresPaymentRepository {
         } else if job.event_type.starts_with("refund.") {
             apply_refund_event(
                 &mut transaction,
-                job.merchant_account_id,
                 StoreId::from_uuid(job.store_id),
                 RefundId::from_uuid(aggregate_id),
                 &job.event_type,
@@ -966,7 +934,7 @@ impl PaymentRepository for PostgresPaymentRepository {
     ) -> Result<ProviderCommand, ApplicationError> {
         let aggregate_id = outbox_aggregate_id(job)?;
         let provider = outbox_provider(job)?;
-        let mut transaction = self.begin_context(None, job.merchant_account_id).await?;
+        let mut transaction = self.begin_context(None, job.store_id).await?;
         let row = if job.event_type == "payment.create_requested" {
             sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
                 "SELECT attempt.amount_minor, attempt.currency::text, \
@@ -974,14 +942,12 @@ impl PaymentRepository for PostgresPaymentRepository {
                         NULL::text \
                  FROM payments.payment_attempts AS attempt \
                  INNER JOIN payments.provider_accounts AS account \
-                   ON account.merchant_account_id = attempt.merchant_account_id \
-                  AND account.store_id = attempt.store_id \
+                   ON account.store_id = attempt.store_id \
                   AND account.id = attempt.provider_account_id \
-                 WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 \
-                   AND attempt.id = $3 AND account.provider = $4 \
+                 WHERE attempt.store_id = $1 \
+                   AND attempt.id = $2 AND account.provider = $3 \
                    AND account.credential_secret_reference IS NOT NULL",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id)
             .bind(aggregate_id)
             .bind(provider)
@@ -995,18 +961,15 @@ impl PaymentRepository for PostgresPaymentRepository {
                         attempt.provider_reference \
                  FROM payments.refunds AS refund \
                  INNER JOIN payments.payment_attempts AS attempt \
-                   ON attempt.merchant_account_id = refund.merchant_account_id \
-                  AND attempt.store_id = refund.store_id \
+                   ON attempt.store_id = refund.store_id \
                   AND attempt.id = refund.payment_attempt_id \
                  INNER JOIN payments.provider_accounts AS account \
-                   ON account.merchant_account_id = attempt.merchant_account_id \
-                  AND account.store_id = attempt.store_id \
+                   ON account.store_id = attempt.store_id \
                   AND account.id = attempt.provider_account_id \
-                 WHERE refund.merchant_account_id = $1 AND refund.store_id = $2 \
-                   AND refund.id = $3 AND account.provider = $4 \
+                 WHERE refund.store_id = $1 \
+                   AND refund.id = $2 AND account.provider = $3 \
                    AND account.credential_secret_reference IS NOT NULL",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id)
             .bind(aggregate_id)
             .bind(provider)
@@ -1057,16 +1020,15 @@ impl PaymentRepository for PostgresPaymentRepository {
             return Err(provider_invalid_response());
         }
         let aggregate_id = outbox_aggregate_id(job)?;
-        let mut transaction = self.begin_context(None, job.merchant_account_id).await?;
+        let mut transaction = self.begin_context(None, job.store_id).await?;
         let rows = if job.event_type == "payment.create_requested" {
             sqlx::query(
                 "UPDATE payments.payment_attempts \
-                 SET provider_reference = COALESCE(provider_reference, $4), \
-                     updated_at = CASE WHEN provider_reference IS NULL THEN $5 ELSE updated_at END \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                   AND (provider_reference IS NULL OR provider_reference = $4)",
+                 SET provider_reference = COALESCE(provider_reference, $3), \
+                     updated_at = CASE WHEN provider_reference IS NULL THEN $4 ELSE updated_at END \
+                 WHERE store_id = $1 AND id = $2 \
+                   AND (provider_reference IS NULL OR provider_reference = $3)",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id)
             .bind(aggregate_id)
             .bind(&result.provider_reference)
@@ -1078,12 +1040,11 @@ impl PaymentRepository for PostgresPaymentRepository {
         } else if job.event_type == "refund.create_requested" {
             sqlx::query(
                 "UPDATE payments.refunds \
-                 SET provider_reference = COALESCE(provider_reference, $4), \
-                     updated_at = CASE WHEN provider_reference IS NULL THEN $5 ELSE updated_at END \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                   AND (provider_reference IS NULL OR provider_reference = $4)",
+                 SET provider_reference = COALESCE(provider_reference, $3), \
+                     updated_at = CASE WHEN provider_reference IS NULL THEN $4 ELSE updated_at END \
+                 WHERE store_id = $1 AND id = $2 \
+                   AND (provider_reference IS NULL OR provider_reference = $3)",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id)
             .bind(aggregate_id)
             .bind(&result.provider_reference)
@@ -1115,18 +1076,15 @@ impl PaymentRepository for PostgresPaymentRepository {
                     account.external_account_reference, account.credential_secret_reference \
              FROM payments.payment_attempts AS attempt \
              INNER JOIN payments.provider_accounts AS account \
-               ON account.merchant_account_id = attempt.merchant_account_id \
-              AND account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
+               ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
              INNER JOIN sales.orders AS sales_order \
-               ON sales_order.merchant_account_id = attempt.merchant_account_id \
-              AND sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
-             WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 \
-               AND attempt.id = $3 AND attempt.shopper_id = $4 \
-               AND sales_order.sales_channel_id = $5 AND attempt.status IN ('pending', 'authorized') \
+               ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+             WHERE attempt.store_id = $1 \
+               AND attempt.id = $2 AND attempt.shopper_id = $3 \
+               AND sales_order.sales_channel_id = $4 AND attempt.status IN ('pending', 'authorized') \
                AND attempt.provider_reference IS NOT NULL \
                AND account.credential_secret_reference IS NOT NULL",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(attempt_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
@@ -1161,8 +1119,8 @@ impl IntegrationQueue for PostgresPaymentRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, Value, i32)>(
-            "SELECT id, merchant_account_id, store_id, event_type, payload, attempts \
+        sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, store_id, event_type, payload, attempts \
              FROM integration.claim_outbox_events($1, $2, $3, $4)",
         )
         .bind(worker_id)
@@ -1184,8 +1142,8 @@ impl IntegrationQueue for PostgresPaymentRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<QueueJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Value, i32)>(
-            "SELECT id, merchant_account_id, store_id, provider, event_type, payload, attempts \
+        sqlx::query_as::<_, (Uuid, Uuid, String, String, Value, i32)>(
+            "SELECT id, store_id, provider, event_type, payload, attempts \
              FROM integration.claim_webhook_events($1, $2, $3, $4)",
         )
         .bind(worker_id)
@@ -1196,7 +1154,7 @@ impl IntegrationQueue for PostgresPaymentRepository {
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|row| queue_job((row.0, row.1, row.2, row.4, row.5, row.6)))
+        .map(|row| queue_job((row.0, row.1, row.3, row.4, row.5)))
         .collect()
     }
 
@@ -1224,7 +1182,6 @@ impl IntegrationQueue for PostgresPaymentRepository {
 #[allow(clippy::too_many_arguments)]
 async fn insert_outbox(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     aggregate_type: &'static str,
     aggregate_id: Uuid,
@@ -1237,11 +1194,10 @@ async fn insert_outbox(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.outbox_events \
-         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(Uuid::now_v7())
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(aggregate_type)
     .bind(aggregate_id)
@@ -1262,7 +1218,6 @@ async fn insert_outbox(
 
 async fn load_attempt(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     channel_id: Option<SalesChannelId>,
     shopper_id: Option<Uuid>,
@@ -1288,16 +1243,13 @@ async fn load_attempt(
                 attempt.failure_code, attempt.created_at, attempt.updated_at \
          FROM payments.payment_attempts AS attempt \
          INNER JOIN payments.provider_accounts AS account \
-           ON account.merchant_account_id = attempt.merchant_account_id \
-          AND account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
+           ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
          INNER JOIN sales.orders AS sales_order \
-           ON sales_order.merchant_account_id = attempt.merchant_account_id \
-          AND sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
-         WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 AND attempt.id = $3 \
-           AND ($4::uuid IS NULL OR sales_order.sales_channel_id = $4) \
-           AND ($5::uuid IS NULL OR attempt.shopper_id = $5)",
+           ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+         WHERE attempt.store_id = $1 AND attempt.id = $2 \
+           AND ($3::uuid IS NULL OR sales_order.sales_channel_id = $3) \
+           AND ($4::uuid IS NULL OR attempt.shopper_id = $4)",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(attempt_id.as_uuid())
     .bind(channel_id.map(SalesChannelId::as_uuid))
@@ -1324,7 +1276,6 @@ async fn load_attempt(
 
 async fn load_refund(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     refund_id: RefundId,
 ) -> Result<Option<RefundDetail>, ApplicationError> {
@@ -1344,9 +1295,8 @@ async fn load_refund(
     >(
         "SELECT id, payment_attempt_id, amount_minor, currency::text, status::text, \
                 provider_reference, failure_code, created_at, updated_at \
-         FROM payments.refunds WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         FROM payments.refunds WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1371,7 +1321,6 @@ async fn load_refund(
 #[allow(clippy::too_many_arguments)]
 async fn apply_payment_event(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     attempt_id: PaymentAttemptId,
     event_type: &str,
@@ -1398,12 +1347,10 @@ async fn apply_payment_event(
                 sales_order.checkout_id \
          FROM payments.payment_attempts AS attempt \
          INNER JOIN sales.orders AS sales_order \
-           ON sales_order.merchant_account_id = attempt.merchant_account_id \
-          AND sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
-         WHERE attempt.merchant_account_id = $1 AND attempt.store_id = $2 AND attempt.id = $3 \
+           ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+         WHERE attempt.store_id = $1 AND attempt.id = $2 \
          FOR UPDATE OF attempt, sales_order",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(attempt_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1442,11 +1389,10 @@ async fn apply_payment_event(
     };
     sqlx::query(
         "UPDATE payments.payment_attempts \
-         SET status = $4::payments.payment_attempt_status, provider_reference = $5, \
-             failure_code = $6, updated_at = $7 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         SET status = $3::payments.payment_attempt_status, provider_reference = $4, \
+             failure_code = $5, updated_at = $6 \
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(attempt_id.as_uuid())
     .bind(attempt.status().as_str())
@@ -1459,7 +1405,6 @@ async fn apply_payment_event(
     if attempt.status() == PaymentAttemptStatus::Captured {
         confirm_paid_order(
             transaction,
-            account_id,
             store_id,
             OrderId::from_uuid(row.0),
             CheckoutId::from_uuid(row.7),
@@ -1470,11 +1415,10 @@ async fn apply_payment_event(
         .await?;
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, 'payment_attempt', $4, 'analytics.payment.captured', $5)",
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.captured', $4)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(attempt_id.as_uuid())
         .bind(json!({ "payment_attempt_id": attempt_id.as_uuid() }))
@@ -1488,7 +1432,6 @@ async fn apply_payment_event(
 #[allow(clippy::too_many_arguments)]
 async fn confirm_paid_order(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     order_id: OrderId,
     checkout_id: CheckoutId,
@@ -1505,7 +1448,6 @@ async fn confirm_paid_order(
     if let Some(reservation_id) = reservation_id {
         close_reservation(
             transaction,
-            account_id,
             store_id,
             reservation_id,
             ReservationClosure::Consumed,
@@ -1514,10 +1456,9 @@ async fn confirm_paid_order(
         .await?;
     }
     sqlx::query(
-        "UPDATE sales.orders SET status = 'confirmed', updated_at = $4 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+        "UPDATE sales.orders SET status = 'confirmed', updated_at = $3 \
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .bind(now)
@@ -1527,11 +1468,10 @@ async fn confirm_paid_order(
     let transition_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO sales.order_transitions \
-         (id, merchant_account_id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-         VALUES ($1, $2, $3, $4, $5::sales.order_status, 'confirmed', 'confirmed', $6)",
+         (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
+         VALUES ($1, $2, $3, $4::sales.order_status, 'confirmed', 'confirmed', $5)",
     )
     .bind(transition_id)
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .bind(transition.from_status.map(OrderStatus::as_str))
@@ -1541,9 +1481,9 @@ async fn confirm_paid_order(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO notification.email_deliveries \
-         (id, merchant_account_id, store_id, semantic_event_id, semantic_event_type, \
+         (id, store_id, semantic_event_id, semantic_event_type, \
           recipient_email, template_key, template_version, template_payload, provider) \
-         SELECT $1, order_row.merchant_account_id, order_row.store_id, $2, \
+         SELECT $1, order_row.store_id, $2, \
                 'order.confirmed', contact.email, 'order_confirmation', 1, \
                 jsonb_build_object( \
                     'order_id', order_row.id, \
@@ -1552,16 +1492,13 @@ async fn confirm_paid_order(
                 ), 'resend' \
            FROM sales.orders AS order_row \
            INNER JOIN sales.order_contacts AS contact \
-             ON contact.merchant_account_id = order_row.merchant_account_id \
-            AND contact.store_id = order_row.store_id \
+             ON contact.store_id = order_row.store_id \
             AND contact.order_id = order_row.id \
-          WHERE order_row.merchant_account_id = $3 \
-            AND order_row.store_id = $4 AND order_row.id = $5 \
-         ON CONFLICT (merchant_account_id, store_id, semantic_event_id) DO NOTHING",
+          WHERE order_row.store_id = $3 AND order_row.id = $4 \
+         ON CONFLICT (store_id, semantic_event_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())
     .bind(transition_id)
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .execute(&mut **transaction)
@@ -1573,7 +1510,6 @@ async fn confirm_paid_order(
 #[allow(clippy::too_many_arguments)]
 async fn apply_refund_event(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     refund_id: RefundId,
     event_type: &str,
@@ -1583,10 +1519,9 @@ async fn apply_refund_event(
 ) -> Result<(), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>)>(
         "SELECT payment_attempt_id, amount_minor, currency::text, status::text, provider_reference \
-         FROM payments.refunds WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+         FROM payments.refunds WHERE store_id = $1 AND id = $2 \
          FOR UPDATE",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1615,11 +1550,10 @@ async fn apply_refund_event(
     };
     sqlx::query(
         "UPDATE payments.refunds \
-         SET status = $4::payments.refund_status, provider_reference = $5, \
-             failure_code = $6, updated_at = $7 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         SET status = $3::payments.refund_status, provider_reference = $4, \
+             failure_code = $5, updated_at = $6 \
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
     .bind(refund.status().as_str())
@@ -1632,11 +1566,10 @@ async fn apply_refund_event(
     if refund.status() == RefundStatus::Succeeded {
         sqlx::query(
             "INSERT INTO integration.outbox_events \
-             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, $3, 'refund', $4, 'analytics.refund.succeeded', $5)",
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'refund', $3, 'analytics.refund.succeeded', $4)",
         )
         .bind(Uuid::now_v7())
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(refund_id.as_uuid())
         .bind(json!({ "refund_id": refund_id.as_uuid() }))
@@ -1689,14 +1622,13 @@ async fn finish_job(
     }
 }
 
-fn queue_job(row: (Uuid, Uuid, Uuid, String, Value, i32)) -> Result<QueueJob, ApplicationError> {
+fn queue_job(row: (Uuid, Uuid, String, Value, i32)) -> Result<QueueJob, ApplicationError> {
     Ok(QueueJob {
         id: row.0,
-        merchant_account_id: row.1,
-        store_id: row.2,
-        event_type: row.3,
-        payload: row.4,
-        attempts: u32::try_from(row.5)
+        store_id: row.1,
+        event_type: row.2,
+        payload: row.3,
+        attempts: u32::try_from(row.4)
             .map_err(|error| ApplicationError::Unexpected(error.into()))?,
     })
 }
@@ -1894,7 +1826,6 @@ fn refund_not_found(refund_id: RefundId) -> ApplicationError {
 
 async fn load_provider_account(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     id: PaymentProviderAccountId,
 ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
@@ -1905,9 +1836,8 @@ async fn load_provider_account(
                 COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                 credential_rotation_expires_at, webhook_rotation_expires_at, \
                 created_at, updated_at FROM payments.provider_accounts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1955,7 +1885,6 @@ fn readiness_status(readiness: &PaymentProviderReadiness) -> PaymentProviderRead
 
 async fn replay_provider_account(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     snapshot: Value,
 ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
@@ -1965,21 +1894,21 @@ async fn replay_provider_account(
         .and_then(|value| Uuid::parse_str(value).ok())
         .map(PaymentProviderAccountId::from_uuid)
         .ok_or_else(corrupt_state)?;
-    load_provider_account(transaction, account_id, store_id, id)
+    load_provider_account(transaction, store_id, id)
         .await?
         .ok_or_else(corrupt_state)
 }
 
 async fn complete_provider_account(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
+    store_id: StoreId,
     operation: &'static str,
     request: &IdempotencyRequest,
     id: PaymentProviderAccountId,
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(account_id),
+        &IdempotencyScope::Store(store_id.as_uuid()),
         operation,
         request,
         200,

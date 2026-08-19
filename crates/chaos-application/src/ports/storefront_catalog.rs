@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{CollectionId, ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
-    merchant::{ApiKeyMode, MerchantAccountId, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 
 use crate::{ApplicationError, ports::MachineActor};
@@ -100,8 +100,6 @@ pub trait StorefrontCatalogRepository: Send + Sync {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorefrontContext {
-    pub merchant_account_id: MerchantAccountId,
     pub store_id: StoreId,
     pub sales_channel_id: SalesChannelId,
-    pub key_mode: ApiKeyMode,
 }

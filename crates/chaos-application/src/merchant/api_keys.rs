@@ -2,26 +2,25 @@ use std::sync::Arc;
 
 use chaos_domain::{
     FieldViolation,
-    merchant::{ApiKey, ApiKeyClass, ApiKeyId, ApiKeyMode, ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKey, ApiKeyClass, ApiKeyId, ApiKeyScope, StoreId, StoreRole},
 };
 use secrecy::SecretString;
 
 use crate::{
     ApplicationError,
     ports::{
-        ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
-        IdempotencyRequest, MachineActor,
+        AdminActor, ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator,
+        ApiKeyRepository, IdempotencyRequest, MachineActor,
     },
 };
 
-use super::{MerchantActor, Page};
+use super::Page;
 
 pub struct CreateApiKeyInput {
-    pub actor: MerchantActor,
+    pub actor: AdminActor,
     pub store_id: StoreId,
     pub name: String,
     pub class: String,
-    pub mode: String,
     pub scopes: Vec<String>,
     pub idempotency: IdempotencyRequest,
 }
@@ -53,23 +52,15 @@ impl ApiKeyManagement {
         &self,
         input: CreateApiKeyInput,
     ) -> Result<CreateApiKeyOutput, ApplicationError> {
-        authorize_api_key_management(input.actor)?;
+        authorize_api_key_management(&input.actor, ApiKeyScope::ApiKeysWrite)?;
         let class = parse_class(&input.class)?;
-        let mode = parse_mode(&input.mode)?;
         let scopes = input
             .scopes
             .iter()
             .map(|scope| parse_scope(scope))
             .collect::<Result<Vec<_>, _>>()?;
-        let api_key = ApiKey::issue(
-            input.actor.merchant_account_id(),
-            input.store_id,
-            input.name,
-            class,
-            mode,
-            scopes,
-        )?;
-        let material = self.generator.generate(class, mode);
+        let api_key = ApiKey::issue(input.store_id, input.name, class, scopes)?;
+        let material = self.generator.generate(class);
         let status = self
             .repository
             .create(input.actor, &api_key, &material, &input.idempotency)
@@ -91,12 +82,12 @@ impl ApiKeyManagement {
 
     pub async fn list(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         after: Option<ApiKeyId>,
         limit: u16,
     ) -> Result<Page<ApiKeyListItem>, ApplicationError> {
-        authorize_api_key_management(actor)?;
+        authorize_api_key_management(&actor, ApiKeyScope::ApiKeysRead)?;
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
@@ -111,12 +102,12 @@ impl ApiKeyManagement {
 
     pub async fn revoke(
         &self,
-        actor: MerchantActor,
+        actor: AdminActor,
         store_id: StoreId,
         api_key_id: ApiKeyId,
         idempotency: IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
-        authorize_api_key_management(actor)?;
+        authorize_api_key_management(&actor, ApiKeyScope::ApiKeysWrite)?;
         self.repository
             .revoke(actor, store_id, api_key_id, &idempotency)
             .await
@@ -152,19 +143,27 @@ impl ApiKeyAuthentication {
     }
 }
 
-fn authorize_api_key_management(actor: MerchantActor) -> Result<(), ApplicationError> {
-    match actor.role() {
-        MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Developer => Ok(()),
-        MerchantRole::Manager | MerchantRole::Support => Err(ApplicationError::Forbidden),
+fn authorize_api_key_management(
+    actor: &AdminActor,
+    required_scope: ApiKeyScope,
+) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Store(store_actor) => match store_actor.role() {
+            StoreRole::Owner => Ok(()),
+            StoreRole::Member => Err(ApplicationError::Forbidden),
+        },
+        AdminActor::Machine(machine) => {
+            if machine.scopes.contains(&required_scope) {
+                Ok(())
+            } else {
+                Err(ApplicationError::Forbidden)
+            }
+        }
     }
 }
 
 fn parse_class(value: &str) -> Result<ApiKeyClass, ApplicationError> {
     ApiKeyClass::parse(value).ok_or_else(|| invalid_enum("class", "must be publishable or secret"))
-}
-
-fn parse_mode(value: &str) -> Result<ApiKeyMode, ApplicationError> {
-    ApiKeyMode::parse(value).ok_or_else(|| invalid_enum("mode", "must be test or live"))
 }
 
 fn parse_scope(value: &str) -> Result<ApiKeyScope, ApplicationError> {
@@ -182,31 +181,55 @@ fn invalid_enum(field: &'static str, reason: &'static str) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use chaos_domain::{
-        identity::UserId,
-        merchant::{MerchantAccountId, MerchantRole},
-    };
+    use chaos_domain::identity::UserId;
 
     use super::*;
+    use crate::merchant::StoreActor;
 
-    fn actor(role: MerchantRole) -> MerchantActor {
-        MerchantActor::new(UserId::new(), MerchantAccountId::new(), role)
+    fn actor(role: StoreRole) -> AdminActor {
+        AdminActor::Store(StoreActor::new(UserId::new(), StoreId::new(), role))
     }
 
     #[test]
     fn only_credential_administrators_can_manage_api_keys() {
-        for role in [
-            MerchantRole::Owner,
-            MerchantRole::Administrator,
-            MerchantRole::Developer,
-        ] {
-            assert!(authorize_api_key_management(actor(role)).is_ok());
-        }
-        for role in [MerchantRole::Manager, MerchantRole::Support] {
-            assert!(matches!(
-                authorize_api_key_management(actor(role)),
-                Err(ApplicationError::Forbidden)
-            ));
-        }
+        assert!(
+            authorize_api_key_management(&actor(StoreRole::Owner), ApiKeyScope::ApiKeysWrite)
+                .is_ok()
+        );
+        assert!(matches!(
+            authorize_api_key_management(&actor(StoreRole::Member), ApiKeyScope::ApiKeysWrite),
+            Err(ApplicationError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn machine_actor_needs_the_required_scope() {
+        use chaos_domain::merchant::{ApiKeyClass, ApiKeyId};
+
+        let machine = |scopes: Vec<ApiKeyScope>| {
+            AdminActor::Machine(MachineActor {
+                api_key_id: ApiKeyId::new(),
+                store_id: StoreId::new(),
+                sales_channel_id: None,
+                class: ApiKeyClass::Secret,
+                scopes,
+                created_by_user_id: UserId::new(),
+            })
+        };
+
+        assert!(
+            authorize_api_key_management(
+                &machine(vec![ApiKeyScope::ApiKeysWrite]),
+                ApiKeyScope::ApiKeysWrite
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            authorize_api_key_management(
+                &machine(vec![ApiKeyScope::ApiKeysRead]),
+                ApiKeyScope::ApiKeysWrite
+            ),
+            Err(ApplicationError::Forbidden)
+        ));
     }
 }

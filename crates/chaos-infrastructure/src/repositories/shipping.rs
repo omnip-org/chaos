@@ -135,7 +135,6 @@ struct LabelRow {
 #[derive(sqlx::FromRow)]
 struct TrackingClaimRow {
     label_id: Uuid,
-    merchant_account_id: Uuid,
     store_id: Uuid,
     fulfillment_id: Uuid,
     provider: String,
@@ -147,7 +146,6 @@ struct TrackingClaimRow {
 #[derive(sqlx::FromRow)]
 struct CancellationClaimRow {
     label_id: Uuid,
-    merchant_account_id: Uuid,
     store_id: Uuid,
     fulfillment_id: Uuid,
     provider: String,
@@ -176,8 +174,8 @@ impl PostgresShippingServiceRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -216,12 +214,11 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         .await?;
         sqlx::query(
             "INSERT INTO fulfillment.shipping_services \
-             (id, merchant_account_id, store_id, code, name, amount_minor, currency, \
+             (id, store_id, code, name, amount_minor, currency, \
               estimated_min_days, estimated_max_days, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::fulfillment.shipping_service_status)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::fulfillment.shipping_service_status)",
         )
         .bind(service.id().as_uuid())
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(service.code())
         .bind(service.name())
@@ -236,10 +233,9 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         for country in service.destination_countries() {
             sqlx::query(
                 "INSERT INTO fulfillment.shipping_service_regions \
-                 (merchant_account_id, store_id, shipping_service_id, country_code) \
-                 VALUES ($1, $2, $3, $4)",
+                 (store_id, shipping_service_id, country_code) \
+                 VALUES ($1, $2, $3)",
             )
-            .bind(actor.merchant_account_id().as_uuid())
             .bind(store_id.as_uuid())
             .bind(service.id().as_uuid())
             .bind(country)
@@ -273,9 +269,8 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             "SELECT id, code, name, amount_minor, currency::text, estimated_min_days, \
                     estimated_max_days, status::text, created_at, updated_at \
              FROM fulfillment.shipping_services \
-             WHERE merchant_account_id = $1 AND store_id = $2 ORDER BY created_at, id",
+             WHERE store_id = $1 ORDER BY created_at, id",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
@@ -306,12 +301,13 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             .is_none()
         {
             let result = sqlx::query(
-                "UPDATE fulfillment.shipping_services SET status = $4::fulfillment.shipping_service_status, \
+                "UPDATE fulfillment.shipping_services SET status = $1::fulfillment.shipping_service_status, \
                         updated_at = CURRENT_TIMESTAMP \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+                 WHERE store_id = $2 AND id = $3",
             )
-            .bind(actor.merchant_account_id().as_uuid()).bind(store_id.as_uuid())
-            .bind(service_id.as_uuid()).bind(status.as_str())
+            .bind(status.as_str())
+            .bind(store_id.as_uuid())
+            .bind(service_id.as_uuid())
             .execute(&mut *transaction).await.map_err(database_error)?;
             if result.rows_affected() != 1 {
                 return Err(service_not_found(service_id));
@@ -342,9 +338,8 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
                     origin_city, origin_region, origin_postal_code, origin_country_code::text, \
                     origin_phone, origin_email, credential_rotation_expires_at, created_at, updated_at \
              FROM fulfillment.shipping_provider_accounts \
-             WHERE merchant_account_id = $1 AND store_id = $2 ORDER BY created_at, id",
+             WHERE store_id = $1 ORDER BY created_at, id",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
@@ -364,13 +359,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         id: ShippingProviderAccountId,
     ) -> Result<Option<ShippingProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        let value = load_provider_account(
-            &mut transaction,
-            actor.merchant_account_id().as_uuid(),
-            store_id,
-            id,
-        )
-        .await?;
+        let value = load_provider_account(&mut transaction, store_id, id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(value)
     }
@@ -383,7 +372,6 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         configuration: &ShippingProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(
@@ -396,7 +384,6 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         {
             let value = load_provider_account(
                 &mut transaction,
-                account_id,
                 store_id,
                 ShippingProviderAccountId::from_uuid(id),
             )
@@ -408,14 +395,13 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         let origin = &configuration.origin;
         sqlx::query(
             "INSERT INTO fulfillment.shipping_provider_accounts \
-             (id, merchant_account_id, store_id, provider, display_name, credential_secret_reference, \
+             (id, store_id, provider, display_name, credential_secret_reference, \
               origin_name, origin_company, origin_address_line_1, origin_address_line_2, origin_city, \
               origin_region, origin_postal_code, origin_country_code, origin_phone, origin_email, \
               enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
         )
         .bind(account.id().as_uuid())
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(account.provider())
         .bind(account.display_name())
@@ -443,7 +429,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+        let value = load_provider_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_provider_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -458,7 +444,6 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         configuration: &ShippingProviderAccountConfiguration,
         request: &IdempotencyRequest,
     ) -> Result<ShippingProviderAccountDetail, ApplicationError> {
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin(&actor).await?;
         if let Some(id) = reserve(
             &mut transaction,
@@ -470,7 +455,6 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         {
             let value = load_provider_account(
                 &mut transaction,
-                account_id,
                 store_id,
                 ShippingProviderAccountId::from_uuid(id),
             )
@@ -481,23 +465,22 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         }
         let origin = &configuration.origin;
         let result = sqlx::query(
-            "UPDATE fulfillment.shipping_provider_accounts SET display_name = $4, \
+            "UPDATE fulfillment.shipping_provider_accounts SET display_name = $1, \
                     previous_credential_secret_reference = CASE \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN credential_secret_reference IS DISTINCT FROM $2 \
                         THEN credential_secret_reference ELSE previous_credential_secret_reference END, \
                     credential_rotation_expires_at = CASE \
-                        WHEN credential_secret_reference IS DISTINCT FROM $5 \
+                        WHEN credential_secret_reference IS DISTINCT FROM $3 \
                         THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE credential_rotation_expires_at END, \
-                    credential_secret_reference = $5, origin_name = $6, origin_company = $7, \
-                    origin_address_line_1 = $8, origin_address_line_2 = $9, origin_city = $10, \
-                    origin_region = $11, origin_postal_code = $12, origin_country_code = $13, \
-                    origin_phone = $14, origin_email = $15, enabled = $16, updated_at = CURRENT_TIMESTAMP \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+                    credential_secret_reference = $4, origin_name = $5, origin_company = $6, \
+                    origin_address_line_1 = $7, origin_address_line_2 = $8, origin_city = $9, \
+                    origin_region = $10, origin_postal_code = $11, origin_country_code = $12, \
+                    origin_phone = $13, origin_email = $14, enabled = $15, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $16 AND id = $17",
         )
-        .bind(account_id)
-        .bind(store_id.as_uuid())
-        .bind(account.id().as_uuid())
         .bind(account.display_name())
+        .bind(configuration.credential_secret_reference.expose_reference())
+        .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(&origin.name)
         .bind(&origin.company)
@@ -510,6 +493,8 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         .bind(&origin.phone)
         .bind(&origin.email)
         .bind(account.enabled())
+        .bind(store_id.as_uuid())
+        .bind(account.id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
@@ -524,7 +509,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, account_id, store_id, account.id())
+        let value = load_provider_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_provider_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -544,14 +529,12 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         request: &IdempotencyRequest,
     ) -> Result<PreparedShippingQuote, ApplicationError> {
         validate_parcel(parcel)?;
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin(&actor).await?;
         if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
             "SELECT id, request_fingerprint, state FROM fulfillment.shipping_quote_requests \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND idempotency_key = $3 \
+             WHERE store_id = $1 AND idempotency_key = $2 \
              FOR UPDATE",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(&request.key)
         .fetch_optional(&mut *transaction)
@@ -563,14 +546,13 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
             }
             let id = ShippingQuoteRequestId::from_uuid(row.0);
             if row.2 == "completed" {
-                let rates = load_rates(&mut transaction, account_id, store_id, id).await?;
+                let rates = load_rates(&mut transaction, store_id, id).await?;
                 transaction.commit().await.map_err(database_error)?;
                 return Ok(PreparedShippingQuote::Completed(rates));
             }
         }
         let context = load_quote_context(
             &mut transaction,
-            account_id,
             store_id,
             fulfillment_id,
             provider_account_id,
@@ -578,13 +560,12 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         .await?;
         let inserted = sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO fulfillment.shipping_quote_requests \
-             (id, merchant_account_id, store_id, fulfillment_id, provider_account_id, \
+             (id, store_id, fulfillment_id, provider_account_id, \
               idempotency_key, request_fingerprint, length_millimetres, width_millimetres, \
               height_millimetres, weight_grams) \
              VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
-             ON CONFLICT (merchant_account_id, store_id, idempotency_key) DO NOTHING RETURNING id",
+             ON CONFLICT (store_id, idempotency_key) DO NOTHING RETURNING id",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(fulfillment_id.as_uuid())
         .bind(provider_account_id.as_uuid())
@@ -602,10 +583,9 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
             None => {
                 let row = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
                 "SELECT id, request_fingerprint, state FROM fulfillment.shipping_quote_requests \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND idempotency_key = $3 \
+                 WHERE store_id = $1 AND idempotency_key = $2 \
                  FOR UPDATE",
             )
-            .bind(account_id)
             .bind(store_id.as_uuid())
             .bind(&request.key)
             .fetch_one(&mut *transaction)
@@ -616,7 +596,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
                 }
                 let id = ShippingQuoteRequestId::from_uuid(row.0);
                 if row.2 == "completed" {
-                    let rates = load_rates(&mut transaction, account_id, store_id, id).await?;
+                    let rates = load_rates(&mut transaction, store_id, id).await?;
                     transaction.commit().await.map_err(database_error)?;
                     return Ok(PreparedShippingQuote::Completed(rates));
                 }
@@ -653,13 +633,11 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
                 message: "the Shipping Provider returned no available rates",
             });
         }
-        let account_id = actor.merchant_account_id().as_uuid();
         let mut transaction = self.begin(&actor).await?;
         let state = sqlx::query_scalar::<_, String>(
             "SELECT state FROM fulfillment.shipping_quote_requests \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+             WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(quote_request_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -667,8 +645,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         .map_err(database_error)?
         .ok_or_else(|| quote_not_found(quote_request_id))?;
         if state == "completed" {
-            let rates =
-                load_rates(&mut transaction, account_id, store_id, quote_request_id).await?;
+            let rates = load_rates(&mut transaction, store_id, quote_request_id).await?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(rates);
         }
@@ -676,12 +653,11 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         for rate in rates {
             sqlx::query(
                 "INSERT INTO fulfillment.shipping_rate_quotes \
-                 (id, merchant_account_id, store_id, quote_request_id, \
+                 (id, store_id, quote_request_id, \
                   provider_shipment_reference, provider_rate_reference, carrier, service, \
                   amount_minor, currency, estimated_delivery_days, guaranteed, expires_at) \
                  VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
             )
-            .bind(account_id)
             .bind(store_id.as_uuid())
             .bind(quote_request_id.as_uuid())
             .bind(rate.provider_shipment_reference)
@@ -704,17 +680,16 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         }
         sqlx::query(
             "UPDATE fulfillment.shipping_quote_requests \
-             SET state = 'completed', expires_at = $4, updated_at = $4 \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             SET state = 'completed', expires_at = $1, updated_at = $2 \
+             WHERE store_id = $3 AND id = $4",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(quote_request_id.as_uuid())
         .bind(expires_at)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let rates = load_rates(&mut transaction, account_id, store_id, quote_request_id).await?;
+        let rates = load_rates(&mut transaction, store_id, quote_request_id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(rates)
     }
@@ -783,14 +758,12 @@ async fn prepare_label_purchase(
     request: &IdempotencyRequest,
     now: OffsetDateTime,
 ) -> Result<PreparedShippingLabelPurchase, ApplicationError> {
-    let account_id = actor.merchant_account_id().as_uuid();
     let mut transaction = repository.begin(&actor).await?;
     if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
         "SELECT id, purchase_request_fingerprint, purchase_state \
          FROM fulfillment.shipping_labels \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND fulfillment_id = $3 FOR UPDATE",
+         WHERE store_id = $1 AND fulfillment_id = $2 FOR UPDATE",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
     .fetch_optional(&mut *transaction)
@@ -805,40 +778,36 @@ async fn prepare_label_purchase(
         }
         let label_id = ShippingLabelId::from_uuid(row.0);
         if row.2 == "purchased" {
-            let detail = load_label(&mut transaction, account_id, store_id, label_id)
+            let detail = load_label(&mut transaction, store_id, label_id)
                 .await?
                 .ok_or_else(corrupt_provider_state)?;
             transaction.commit().await.map_err(database_error)?;
             return Ok(PreparedShippingLabelPurchase::Completed(Box::new(detail)));
         }
-        let pending = load_pending_label(&mut transaction, account_id, store_id, label_id).await?;
+        let pending = load_pending_label(&mut transaction, store_id, label_id).await?;
         transaction.commit().await.map_err(database_error)?;
         return Ok(pending);
     }
     let label_id = ShippingLabelId::new();
     let inserted = sqlx::query(
         "INSERT INTO fulfillment.shipping_labels \
-         (id, merchant_account_id, store_id, fulfillment_id, provider_account_id, rate_quote_id, \
+         (id, store_id, fulfillment_id, provider_account_id, rate_quote_id, \
           purchase_idempotency_key, purchase_request_fingerprint, \
           provider_shipment_reference, provider_rate_reference) \
-         SELECT $1, $2, $3, $4, request.provider_account_id, rate.id, $6, $7, \
+         SELECT $1, $2, $3, $4, request.provider_account_id, rate.id, $5, $6, \
                 rate.provider_shipment_reference, rate.provider_rate_reference \
          FROM fulfillment.shipping_rate_quotes AS rate \
          INNER JOIN fulfillment.shipping_quote_requests AS request \
-            ON request.merchant_account_id = rate.merchant_account_id \
-           AND request.store_id = rate.store_id AND request.id = rate.quote_request_id \
+            ON request.store_id = rate.store_id AND request.id = rate.quote_request_id \
          INNER JOIN fulfillment.fulfillments AS fulfillment \
-            ON fulfillment.merchant_account_id = rate.merchant_account_id \
-           AND fulfillment.store_id = rate.store_id AND fulfillment.id = $4 \
+            ON fulfillment.store_id = rate.store_id AND fulfillment.id = $7 \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.merchant_account_id = request.merchant_account_id \
-           AND account.store_id = request.store_id AND account.id = request.provider_account_id \
-         WHERE rate.merchant_account_id = $2 AND rate.store_id = $3 AND rate.id = $5 \
-           AND request.fulfillment_id = $4 AND rate.expires_at > $8 \
+            ON account.store_id = request.store_id AND account.id = request.provider_account_id \
+         WHERE rate.store_id = $8 AND rate.id = $9 \
+           AND request.fulfillment_id = $10 AND rate.expires_at > $11 \
            AND fulfillment.status = 'pending' AND account.enabled",
     )
     .bind(label_id.as_uuid())
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
     .bind(rate_quote_id.as_uuid())
@@ -854,14 +823,13 @@ async fn prepare_label_purchase(
             message: "the Shipping Rate is expired, disabled, or not valid for this Fulfillment",
         });
     }
-    let pending = load_pending_label(&mut transaction, account_id, store_id, label_id).await?;
+    let pending = load_pending_label(&mut transaction, store_id, label_id).await?;
     transaction.commit().await.map_err(database_error)?;
     Ok(pending)
 }
 
 async fn load_pending_label(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     label_id: ShippingLabelId,
 ) -> Result<PreparedShippingLabelPurchase, ApplicationError> {
@@ -870,12 +838,10 @@ async fn load_pending_label(
                 label.provider_rate_reference, account.credential_secret_reference \
          FROM fulfillment.shipping_labels AS label \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.merchant_account_id = label.merchant_account_id \
-           AND account.store_id = label.store_id AND account.id = label.provider_account_id \
-         WHERE label.merchant_account_id = $1 AND label.store_id = $2 AND label.id = $3 \
+            ON account.store_id = label.store_id AND account.id = label.provider_account_id \
+         WHERE label.store_id = $1 AND label.id = $2 \
         ",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -900,14 +866,12 @@ async fn complete_label_purchase(
     label: PurchasedShippingLabel,
     completed_at: OffsetDateTime,
 ) -> Result<ShippingLabelDetail, ApplicationError> {
-    let account_id = actor.merchant_account_id().as_uuid();
     let mut transaction = repository.begin(&actor).await?;
     let row = sqlx::query_as::<_, (String, Uuid, String)>(
         "SELECT purchase_state, fulfillment_id, provider_shipment_reference \
          FROM fulfillment.shipping_labels \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 FOR UPDATE",
+         WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .fetch_optional(&mut *transaction)
@@ -915,7 +879,7 @@ async fn complete_label_purchase(
     .map_err(database_error)?
     .ok_or_else(|| label_not_found(label_id))?;
     if row.0 == "purchased" {
-        let detail = load_label(&mut transaction, account_id, store_id, label_id)
+        let detail = load_label(&mut transaction, store_id, label_id)
             .await?
             .ok_or_else(corrupt_provider_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -928,14 +892,13 @@ async fn complete_label_purchase(
         });
     }
     sqlx::query(
-        "UPDATE fulfillment.shipping_labels SET purchase_state = 'purchased', carrier = $4, \
-                tracking_number = $5, provider_tracker_reference = $6, label_url = $7, \
-                label_media_type = $8, purchased_at = $9, \
-                next_tracking_refresh_at = CASE WHEN $6::text IS NULL THEN NULL ELSE $9 END, \
+        "UPDATE fulfillment.shipping_labels SET purchase_state = 'purchased', carrier = $1, \
+                tracking_number = $2, provider_tracker_reference = $3, label_url = $4, \
+                label_media_type = $5, purchased_at = $6, \
+                next_tracking_refresh_at = CASE WHEN $7::text IS NULL THEN NULL ELSE $8 END, \
                 updated_at = $9 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $10 AND id = $11",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .bind(&label.carrier)
@@ -948,12 +911,11 @@ async fn complete_label_purchase(
     .await
     .map_err(database_error)?;
     let order_id = sqlx::query_scalar::<_, Uuid>(
-        "UPDATE fulfillment.fulfillments SET status = 'shipped', carrier = $4, \
-                tracking_number = $5, shipped_at = $6, updated_at = $6 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 AND status = 'pending' \
+        "UPDATE fulfillment.fulfillments SET status = 'shipped', carrier = $1, \
+                tracking_number = $2, shipped_at = $3, updated_at = $4 \
+         WHERE store_id = $5 AND id = $6 AND status = 'pending' \
          RETURNING order_id",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(row.1)
     .bind(&label.carrier)
@@ -968,10 +930,9 @@ async fn complete_label_purchase(
     })?;
     sqlx::query(
         "INSERT INTO integration.outbox_events \
-         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES (uuidv7(), $1, $2, 'fulfillment', $3, 'fulfillment.shipped', $4)",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(row.1)
     .bind(json!({
@@ -984,18 +945,17 @@ async fn complete_label_purchase(
     .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO integration.outbox_events \
-         (id, merchant_account_id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES ($1, $2, $3, 'fulfillment', $4, 'analytics.fulfillment.shipped', $5)",
     )
     .bind(Uuid::now_v7())
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(row.1)
     .bind(json!({ "fulfillment_id": row.1 }))
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
-    let detail = load_label(&mut transaction, account_id, store_id, label_id)
+    let detail = load_label(&mut transaction, store_id, label_id)
         .await?
         .ok_or_else(corrupt_provider_state)?;
     transaction.commit().await.map_err(database_error)?;
@@ -1010,16 +970,14 @@ async fn prepare_label_cancellation(
     request: &IdempotencyRequest,
     now: OffsetDateTime,
 ) -> Result<PreparedShippingLabelCancellation, ApplicationError> {
-    let account_id = actor.merchant_account_id().as_uuid();
     let mut transaction = repository.begin(&actor).await?;
     let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<Vec<u8>>, Option<String>)>(
         "SELECT id, cancellation_idempotency_key, cancellation_request_fingerprint, \
                 cancellation_status \
          FROM fulfillment.shipping_labels \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND fulfillment_id = $3 \
+         WHERE store_id = $1 AND fulfillment_id = $2 \
            AND purchase_state = 'purchased' FOR UPDATE",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
     .fetch_optional(&mut *transaction)
@@ -1038,7 +996,7 @@ async fn prepare_label_cancellation(
             });
         }
         if row.3.as_deref().is_some_and(|status| status != "submitted") {
-            let detail = load_label(&mut transaction, account_id, store_id, label_id)
+            let detail = load_label(&mut transaction, store_id, label_id)
                 .await?
                 .ok_or_else(corrupt_provider_state)?;
             transaction.commit().await.map_err(database_error)?;
@@ -1049,11 +1007,10 @@ async fn prepare_label_cancellation(
     } else {
         sqlx::query(
             "UPDATE fulfillment.shipping_labels \
-             SET cancellation_idempotency_key = $4, cancellation_request_fingerprint = $5, \
-                 cancellation_status = 'submitted', cancellation_requested_at = $6, updated_at = $6 \
-             WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+             SET cancellation_idempotency_key = $1, cancellation_request_fingerprint = $2, \
+                 cancellation_status = 'submitted', cancellation_requested_at = $3, updated_at = $4 \
+             WHERE store_id = $5 AND id = $6",
         )
-        .bind(account_id)
         .bind(store_id.as_uuid())
         .bind(label_id.as_uuid())
         .bind(&request.key)
@@ -1063,15 +1020,13 @@ async fn prepare_label_cancellation(
         .await
         .map_err(map_label_write_error)?;
     }
-    let pending =
-        load_pending_cancellation(&mut transaction, account_id, store_id, label_id).await?;
+    let pending = load_pending_cancellation(&mut transaction, store_id, label_id).await?;
     transaction.commit().await.map_err(database_error)?;
     Ok(pending)
 }
 
 async fn load_pending_cancellation(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     label_id: ShippingLabelId,
 ) -> Result<PreparedShippingLabelCancellation, ApplicationError> {
@@ -1080,12 +1035,10 @@ async fn load_pending_cancellation(
                 account.credential_secret_reference \
          FROM fulfillment.shipping_labels AS label \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.merchant_account_id = label.merchant_account_id \
-           AND account.store_id = label.store_id AND account.id = label.provider_account_id \
-         WHERE label.merchant_account_id = $1 AND label.store_id = $2 AND label.id = $3 \
+            ON account.store_id = label.store_id AND account.id = label.provider_account_id \
+         WHERE label.store_id = $1 AND label.id = $2 \
         ",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1108,18 +1061,16 @@ async fn complete_label_cancellation(
     status: ShippingCancellationStatus,
     completed_at: OffsetDateTime,
 ) -> Result<ShippingLabelDetail, ApplicationError> {
-    let account_id = actor.merchant_account_id().as_uuid();
     let mut transaction = repository.begin(&actor).await?;
     let result = sqlx::query(
-        "UPDATE fulfillment.shipping_labels SET cancellation_status = $4, \
-                cancellation_reconcile_at = CASE WHEN $4 = 'submitted' \
-                    THEN $5 + INTERVAL '15 minutes' ELSE NULL END, \
+        "UPDATE fulfillment.shipping_labels SET cancellation_status = $1, \
+                cancellation_reconcile_at = CASE WHEN $2 = 'submitted' \
+                    THEN $3 + INTERVAL '15 minutes' ELSE NULL END, \
                 cancellation_locked_by = NULL, cancellation_locked_at = NULL, \
-                cancellation_attempts = 0, cancellation_last_error = NULL, updated_at = $5 \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+                cancellation_attempts = 0, cancellation_last_error = NULL, updated_at = $4 \
+         WHERE store_id = $5 AND id = $6 \
            AND cancellation_idempotency_key IS NOT NULL",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .bind(cancellation_status_text(status))
@@ -1130,7 +1081,7 @@ async fn complete_label_cancellation(
     if result.rows_affected() != 1 {
         return Err(label_not_found(label_id));
     }
-    let detail = load_label(&mut transaction, account_id, store_id, label_id)
+    let detail = load_label(&mut transaction, store_id, label_id)
         .await?
         .ok_or_else(corrupt_provider_state)?;
     transaction.commit().await.map_err(database_error)?;
@@ -1139,7 +1090,6 @@ async fn complete_label_cancellation(
 
 async fn load_label(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     label_id: ShippingLabelId,
 ) -> Result<Option<ShippingLabelDetail>, ApplicationError> {
@@ -1152,12 +1102,10 @@ async fn load_label(
                 label.updated_at \
          FROM fulfillment.shipping_labels AS label \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.merchant_account_id = label.merchant_account_id \
-           AND account.store_id = label.store_id AND account.id = label.provider_account_id \
-         WHERE label.merchant_account_id = $1 AND label.store_id = $2 AND label.id = $3 \
+            ON account.store_id = label.store_id AND account.id = label.provider_account_id \
+         WHERE label.store_id = $1 AND label.id = $2 \
            AND label.purchase_state = 'purchased'",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(label_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1211,7 +1159,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         stale_before: OffsetDateTime,
     ) -> Result<Vec<ShippingTrackingJob>, ApplicationError> {
         let rows = sqlx::query_as::<_, TrackingClaimRow>(
-            "SELECT label_id, merchant_account_id, store_id, fulfillment_id, provider, \
+            "SELECT label_id, store_id, fulfillment_id, provider, \
                     provider_tracker_reference, credential_secret_reference, attempts \
              FROM fulfillment.claim_shipping_tracking($1, $2, $3, $4)",
         )
@@ -1226,7 +1174,6 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             .map(|row| {
                 Ok(ShippingTrackingJob {
                     label_id: ShippingLabelId::from_uuid(row.label_id),
-                    merchant_account_id: row.merchant_account_id,
                     store_id: StoreId::from_uuid(row.store_id),
                     fulfillment_id: FulfillmentId::from_uuid(row.fulfillment_id),
                     provider: row.provider,
@@ -1248,8 +1195,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(job.merchant_account_id.to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -1260,16 +1206,15 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                     chaos_application::ports::ProviderTrackingStatus::Delivered
                 );
                 let result = sqlx::query(
-                    "UPDATE fulfillment.shipping_labels SET tracking_status = $5, \
-                            tracking_status_detail = $6, estimated_delivery_at = $7, \
-                            tracking_observed_at = $8, next_tracking_refresh_at = CASE \
-                                WHEN $9 THEN NULL ELSE $8 + INTERVAL '15 minutes' END, \
+                    "UPDATE fulfillment.shipping_labels SET tracking_status = $1, \
+                            tracking_status_detail = $2, estimated_delivery_at = $3, \
+                            tracking_observed_at = $4, next_tracking_refresh_at = CASE \
+                                WHEN $5 THEN NULL ELSE $6 + INTERVAL '15 minutes' END, \
                             tracking_locked_by = NULL, tracking_locked_at = NULL, \
-                            tracking_attempts = 0, tracking_last_error = NULL, updated_at = $8 \
-                     WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                       AND tracking_locked_by = $4",
+                            tracking_attempts = 0, tracking_last_error = NULL, updated_at = $7 \
+                     WHERE store_id = $8 AND id = $9 \
+                       AND tracking_locked_by = $10",
                 )
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(job.label_id.as_uuid())
                 .bind(worker_id)
@@ -1287,11 +1232,10 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                 if terminal {
                     let order_id = sqlx::query_scalar::<_, Uuid>(
                         "UPDATE fulfillment.fulfillments SET status = 'delivered', \
-                                delivered_at = $4, updated_at = $4 \
-                         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
+                                delivered_at = $1, updated_at = $2 \
+                         WHERE store_id = $3 AND id = $4 \
                            AND status = 'shipped' RETURNING order_id",
                     )
-                    .bind(job.merchant_account_id)
                     .bind(job.store_id.as_uuid())
                     .bind(job.fulfillment_id.as_uuid())
                     .bind(snapshot.observed_at)
@@ -1301,12 +1245,11 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                     if let Some(order_id) = order_id {
                         sqlx::query(
                             "INSERT INTO integration.outbox_events \
-                             (id, merchant_account_id, store_id, aggregate_type, aggregate_id, \
+                             (id, store_id, aggregate_type, aggregate_id, \
                               event_type, payload) \
                              VALUES (uuidv7(), $1, $2, 'fulfillment', $3, \
                                      'fulfillment.delivered', $4)",
                         )
-                        .bind(job.merchant_account_id)
                         .bind(job.store_id.as_uuid())
                         .bind(job.fulfillment_id.as_uuid())
                         .bind(json!({
@@ -1325,14 +1268,13 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                 let result = sqlx::query(
                     "UPDATE fulfillment.shipping_labels SET next_tracking_refresh_at = CASE \
                             WHEN tracking_attempts >= 8 THEN NULL \
-                            ELSE $5 + make_interval(secs => least(power(2, \
+                            ELSE $1 + make_interval(secs => least(power(2, \
                                 greatest(tracking_attempts - 1, 0))::integer, 3600)) END, \
                             tracking_locked_by = NULL, tracking_locked_at = NULL, \
-                            tracking_last_error = $6, updated_at = $5 \
-                     WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                       AND tracking_locked_by = $4",
+                            tracking_last_error = $2, updated_at = $3 \
+                     WHERE store_id = $4 AND id = $5 \
+                       AND tracking_locked_by = $6",
                 )
-                .bind(job.merchant_account_id)
                 .bind(job.store_id.as_uuid())
                 .bind(job.label_id.as_uuid())
                 .bind(worker_id)
@@ -1357,7 +1299,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         stale_before: OffsetDateTime,
     ) -> Result<Vec<ShippingCancellationJob>, ApplicationError> {
         let rows = sqlx::query_as::<_, CancellationClaimRow>(
-            "SELECT label_id, merchant_account_id, store_id, fulfillment_id, provider, \
+            "SELECT label_id, store_id, fulfillment_id, provider, \
                     provider_shipment_reference, credential_secret_reference, attempts \
              FROM fulfillment.claim_shipping_cancellations($1, $2, $3, $4)",
         )
@@ -1372,7 +1314,6 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             .map(|row| {
                 Ok(ShippingCancellationJob {
                     label_id: ShippingLabelId::from_uuid(row.label_id),
-                    merchant_account_id: row.merchant_account_id,
                     store_id: StoreId::from_uuid(row.store_id),
                     fulfillment_id: FulfillmentId::from_uuid(row.fulfillment_id),
                     provider: row.provider,
@@ -1394,22 +1335,20 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(job.merchant_account_id.to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
         let updated = match result {
             Ok(status) => sqlx::query(
-                "UPDATE fulfillment.shipping_labels SET cancellation_status = $5, \
-                        cancellation_reconcile_at = CASE WHEN $5 = 'submitted' \
-                            THEN $6 + INTERVAL '15 minutes' ELSE NULL END, \
+                "UPDATE fulfillment.shipping_labels SET cancellation_status = $1, \
+                        cancellation_reconcile_at = CASE WHEN $2 = 'submitted' \
+                            THEN $3 + INTERVAL '15 minutes' ELSE NULL END, \
                         cancellation_locked_by = NULL, cancellation_locked_at = NULL, \
-                        cancellation_attempts = 0, cancellation_last_error = NULL, updated_at = $6 \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                   AND cancellation_locked_by = $4",
+                        cancellation_attempts = 0, cancellation_last_error = NULL, updated_at = $4 \
+                 WHERE store_id = $5 AND id = $6 \
+                   AND cancellation_locked_by = $7",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id.as_uuid())
             .bind(job.label_id.as_uuid())
             .bind(worker_id)
@@ -1421,14 +1360,13 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             Err(error) => sqlx::query(
                 "UPDATE fulfillment.shipping_labels SET cancellation_reconcile_at = CASE \
                         WHEN cancellation_attempts >= 8 THEN NULL \
-                        ELSE $5 + make_interval(secs => least(power(2, \
+                        ELSE $1 + make_interval(secs => least(power(2, \
                             greatest(cancellation_attempts - 1, 0))::integer, 3600)) END, \
                         cancellation_locked_by = NULL, cancellation_locked_at = NULL, \
-                        cancellation_last_error = $6, updated_at = $5 \
-                 WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3 \
-                   AND cancellation_locked_by = $4",
+                        cancellation_last_error = $2, updated_at = $3 \
+                 WHERE store_id = $4 AND id = $5 \
+                   AND cancellation_locked_by = $6",
             )
-            .bind(job.merchant_account_id)
             .bind(job.store_id.as_uuid())
             .bind(job.label_id.as_uuid())
             .bind(worker_id)
@@ -1447,7 +1385,6 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
 
 async fn load_quote_context(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     fulfillment_id: FulfillmentId,
     provider_account_id: ShippingProviderAccountId,
@@ -1468,20 +1405,16 @@ async fn load_quote_context(
                 contact.phone AS destination_phone, contact.email::text AS destination_email \
          FROM fulfillment.fulfillments AS fulfillment \
          INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.merchant_account_id = fulfillment.merchant_account_id \
-           AND account.store_id = fulfillment.store_id AND account.id = $4 \
+            ON account.store_id = fulfillment.store_id AND account.id = $1 \
          INNER JOIN sales.order_addresses AS address \
-            ON address.merchant_account_id = fulfillment.merchant_account_id \
-           AND address.store_id = fulfillment.store_id AND address.order_id = fulfillment.order_id \
+            ON address.store_id = fulfillment.store_id AND address.order_id = fulfillment.order_id \
            AND address.kind = 'shipping' \
          INNER JOIN sales.order_contacts AS contact \
-            ON contact.merchant_account_id = fulfillment.merchant_account_id \
-           AND contact.store_id = fulfillment.store_id AND contact.order_id = fulfillment.order_id \
-         WHERE fulfillment.merchant_account_id = $1 AND fulfillment.store_id = $2 \
+            ON contact.store_id = fulfillment.store_id AND contact.order_id = fulfillment.order_id \
+         WHERE fulfillment.store_id = $2 \
            AND fulfillment.id = $3 AND fulfillment.status = 'pending' \
            AND account.enabled AND address.postal_code IS NOT NULL",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
     .bind(provider_account_id.as_uuid())
@@ -1496,7 +1429,6 @@ async fn load_quote_context(
 
 async fn load_rates(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     quote_request_id: ShippingQuoteRequestId,
 ) -> Result<Vec<ShippingRateQuoteDetail>, ApplicationError> {
@@ -1505,10 +1437,9 @@ async fn load_rates(
                 carrier, service, amount_minor, currency::text, estimated_delivery_days, \
                 guaranteed, expires_at \
          FROM fulfillment.shipping_rate_quotes \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND quote_request_id = $3 \
+         WHERE store_id = $1 AND quote_request_id = $2 \
          ORDER BY amount_minor, carrier, service, id",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(quote_request_id.as_uuid())
     .fetch_all(&mut **transaction)
@@ -1674,7 +1605,6 @@ fn stale_cancellation_lease() -> ApplicationError {
 
 async fn load_provider_account(
     transaction: &mut Transaction<'static, Postgres>,
-    account_id: Uuid,
     store_id: StoreId,
     id: ShippingProviderAccountId,
 ) -> Result<Option<ShippingProviderAccountDetail>, ApplicationError> {
@@ -1685,9 +1615,8 @@ async fn load_provider_account(
                 origin_city, origin_region, origin_postal_code, origin_country_code::text, \
                 origin_phone, origin_email, credential_rotation_expires_at, created_at, updated_at \
          FROM fulfillment.shipping_provider_accounts \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(account_id)
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1736,9 +1665,8 @@ async fn load(
         "SELECT id, code, name, amount_minor, currency::text, estimated_min_days, \
                 estimated_max_days, status::text, created_at, updated_at \
          FROM fulfillment.shipping_services \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND id = $3",
+         WHERE store_id = $1 AND id = $2",
     )
-    .bind(actor.merchant_account_id().as_uuid())
     .bind(store_id.as_uuid())
     .bind(service_id.as_uuid())
     .fetch_optional(&mut **transaction)
@@ -1752,16 +1680,15 @@ async fn load(
 
 async fn detail(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store_id: StoreId,
     row: ServiceRow,
 ) -> Result<ShippingServiceDetail, ApplicationError> {
     let countries = sqlx::query_scalar::<_, String>(
         "SELECT country_code::text FROM fulfillment.shipping_service_regions \
-         WHERE merchant_account_id = $1 AND store_id = $2 AND shipping_service_id = $3 \
+         WHERE store_id = $1 AND shipping_service_id = $2 \
          ORDER BY country_code",
     )
-    .bind(actor.merchant_account_id().as_uuid())
     .bind(store_id.as_uuid())
     .bind(row.0)
     .fetch_all(&mut **transaction)
@@ -1788,18 +1715,16 @@ async fn detail(
 
 async fn require_store_currency(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store_id: StoreId,
     currency: CurrencyCode,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM merchant.stores s \
-         JOIN merchant.store_currencies c ON c.merchant_account_id = s.merchant_account_id \
-          AND c.store_id = s.id \
-         WHERE s.merchant_account_id = $1 AND s.id = $2 AND s.status <> 'archived' \
-           AND c.currency = $3 AND c.enabled)",
+         JOIN merchant.store_currencies c ON c.store_id = s.id \
+         WHERE s.id = $1 \
+           AND c.currency = $2 AND c.enabled)",
     )
-    .bind(actor.merchant_account_id().as_uuid())
     .bind(store_id.as_uuid())
     .bind(currency.as_str())
     .fetch_one(&mut **transaction)
@@ -1819,17 +1744,15 @@ async fn require_store_currency(
 
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE merchant_account_id = $1 AND id = $2)",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+            .bind(store_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
     if exists {
         Ok(())
     } else {
@@ -1848,7 +1771,7 @@ async fn reserve(
 ) -> Result<Option<Uuid>, ApplicationError> {
     let Some(body) = idempotency::reserve(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
     )
@@ -1872,7 +1795,7 @@ async fn complete(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         200,
@@ -1890,7 +1813,7 @@ async fn complete_provider_account(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         200,
@@ -1931,7 +1854,7 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
 }
 fn map_create_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(error) = &error
-        && error.constraint() == Some("shipping_services_merchant_account_id_store_id_code_key")
+        && error.constraint() == Some("shipping_services_store_id_code_key")
     {
         return ApplicationError::Conflict {
             code: "shipping_service_code_taken",

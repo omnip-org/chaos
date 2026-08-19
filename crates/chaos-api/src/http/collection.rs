@@ -14,14 +14,14 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CollectionId, ProductId},
-    merchant::{MerchantAccountId, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, MerchantContext,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StoreContext,
     StorefrontMachine,
     merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
 };
@@ -29,27 +29,27 @@ use super::{
 pub fn admin_routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections",
+            "/stores/{store_id}/collections",
             post(create_collection).get(list_collections),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}",
+            "/stores/{store_id}/collections/{collection_id}",
             get(get_collection).put(update_collection),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/activate",
+            "/stores/{store_id}/collections/{collection_id}/activate",
             post(activate_collection),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/archive",
+            "/stores/{store_id}/collections/{collection_id}/archive",
             post(archive_collection),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/products",
+            "/stores/{store_id}/collections/{collection_id}/products",
             put(replace_products),
         )
         .route(
-            "/merchant-accounts/{merchant_account_id}/stores/{store_id}/collections/{collection_id}/publications/{sales_channel_id}",
+            "/stores/{store_id}/collections/{collection_id}/publications/{sales_channel_id}",
             put(publish_collection).delete(unpublish_collection),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -63,18 +63,15 @@ pub fn storefront_routes() -> Router<ApiState> {
 
 #[derive(Deserialize)]
 struct StorePath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
 }
 #[derive(Deserialize)]
 struct DetailPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     collection_id: Uuid,
 }
 #[derive(Deserialize)]
 struct PublicationPath {
-    merchant_account_id: Uuid,
     store_id: Uuid,
     collection_id: Uuid,
     sales_channel_id: Uuid,
@@ -158,16 +155,15 @@ struct StorefrontCollectionData {
 async fn create_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiJson(body): ApiJson<CollectionBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, &body))?;
     let id = state
         .collection_administration
         .create(CreateCollectionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             handle: body.handle,
             title: body.title,
@@ -182,11 +178,10 @@ async fn create_collection(
 
 async fn list_collections(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<StorePath>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> Result<ApiResponse<Vec<CollectionListData>>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -197,7 +192,7 @@ async fn list_collections(
     let page = state
         .collection_administration
         .list(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             after,
             limit,
@@ -230,14 +225,13 @@ async fn list_collections(
 
 async fn get_collection(
     State(state): State<ApiState>,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<DetailPath>,
 ) -> Result<ApiResponse<CollectionDetailData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let item = state
         .collection_administration
         .get(
-            AdminActor::Merchant(actor),
+            AdminActor::Store(actor),
             StoreId::from_uuid(path.store_id),
             CollectionId::from_uuid(path.collection_id),
         )
@@ -248,16 +242,15 @@ async fn get_collection(
 async fn update_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<DetailPath>,
     ApiJson(body): ApiJson<CollectionBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.collection_id, &body))?;
     let id = state
         .collection_administration
         .update(UpdateCollectionInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             handle: body.handle,
@@ -274,7 +267,7 @@ async fn update_collection(
 async fn activate_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<DetailPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_status(state, headers, actor, path, true).await
@@ -282,7 +275,7 @@ async fn activate_collection(
 async fn archive_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<DetailPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     change_status(state, headers, actor, path, false).await
@@ -290,13 +283,12 @@ async fn archive_collection(
 async fn change_status(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: DetailPath,
     active: bool,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = ChangeCollectionStatusInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         collection_id: CollectionId::from_uuid(path.collection_id),
         idempotency: mutation(&headers, &(path.store_id, path.collection_id, active))?,
@@ -313,16 +305,15 @@ async fn change_status(
 async fn replace_products(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<DetailPath>,
     ApiJson(body): ApiJson<ProductsBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let request = mutation(&headers, &(path.store_id, path.collection_id, &body))?;
     let id = state
         .collection_administration
         .replace_products(ReplaceCollectionProductsInput {
-            actor: AdminActor::Merchant(actor),
+            actor: AdminActor::Store(actor),
             store_id: StoreId::from_uuid(path.store_id),
             collection_id: CollectionId::from_uuid(path.collection_id),
             product_ids: body
@@ -340,7 +331,7 @@ async fn replace_products(
 async fn publish_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PublicationPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     publication(state, headers, actor, path, true).await
@@ -348,7 +339,7 @@ async fn publish_collection(
 async fn unpublish_collection(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    MerchantContext(actor): MerchantContext,
+    StoreContext(actor): StoreContext,
     ApiPath(path): ApiPath<PublicationPath>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
     publication(state, headers, actor, path, false).await
@@ -356,13 +347,12 @@ async fn unpublish_collection(
 async fn publication(
     state: ApiState,
     headers: HeaderMap,
-    actor: chaos_application::merchant::MerchantActor,
+    actor: chaos_application::merchant::StoreActor,
     path: PublicationPath,
     published: bool,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    account(actor.merchant_account_id(), path.merchant_account_id)?;
     let input = CollectionPublicationInput {
-        actor: AdminActor::Merchant(actor),
+        actor: AdminActor::Store(actor),
         store_id: StoreId::from_uuid(path.store_id),
         collection_id: CollectionId::from_uuid(path.collection_id),
         sales_channel_id: SalesChannelId::from_uuid(path.sales_channel_id),
@@ -464,13 +454,6 @@ fn storefront_data(v: StorefrontCollectionItem) -> StorefrontCollectionData {
         metadata: v.metadata,
     }
 }
-fn account(actual: MerchantAccountId, path: Uuid) -> Result<(), ApiError> {
-    if actual.as_uuid() == path {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden.into())
-    }
-}
 fn mutation<T: Serialize>(headers: &HeaderMap, value: &T) -> Result<IdempotencyRequest, ApiError> {
     Ok(IdempotencyRequest {
         key: idempotency_key(headers)?,
@@ -490,7 +473,7 @@ mod tests {
     use chaos_application::ports::{ApiKeyMaterialGenerator, GeneratedApiKeyMaterial};
     use chaos_domain::{
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyMode},
+        merchant::{ApiKeyClass, ApiKeyId},
     };
     use chaos_infrastructure::repositories::SecureApiKeyMaterialGenerator;
     use secrecy::ExposeSecret;
@@ -507,18 +490,21 @@ mod tests {
 
     async fn publishable_key(
         pool: &PgPool,
-        account_id: MerchantAccountId,
         store_id: StoreId,
         channel_id: SalesChannelId,
         user_id: UserId,
     ) -> GeneratedApiKeyMaterial {
-        let material =
-            SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable, ApiKeyMode::Live);
+        let material = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable);
         let key_id = ApiKeyId::new();
-        sqlx::query("INSERT INTO merchant.api_keys (id,merchant_account_id,store_id,sales_channel_id,key_identifier,secret_digest,display_suffix,name,class,mode,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,'Collection Storefront','publishable','live',$8)")
-            .bind(key_id.as_uuid()).bind(account_id.as_uuid()).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(&material.key_identifier).bind(material.secret_digest.as_slice()).bind(&material.display_suffix).bind(user_id.as_uuid()).execute(pool).await.unwrap();
-        sqlx::query("INSERT INTO merchant.api_key_scopes (merchant_account_id,api_key_id,scope) VALUES ($1,$2,'catalog:read')")
-            .bind(account_id.as_uuid()).bind(key_id.as_uuid()).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO merchant.api_keys (id,store_id,sales_channel_id,key_identifier,secret_digest,display_suffix,name,class,created_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,'Collection Storefront','publishable',$7)")
+            .bind(key_id.as_uuid()).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(&material.key_identifier).bind(material.secret_digest.as_slice()).bind(&material.display_suffix).bind(user_id.as_uuid()).execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO merchant.api_key_scopes (api_key_id,scope) VALUES ($1,'catalog:read')",
+        )
+        .bind(key_id.as_uuid())
+        .execute(pool)
+        .await
+        .unwrap();
         material
     }
 
@@ -534,8 +520,6 @@ mod tests {
             .unwrap();
         let owner = UserId::new();
         let support = UserId::new();
-        let account = MerchantAccountId::new();
-        let other_account = MerchantAccountId::new();
         let store = StoreId::new();
         let other_store = StoreId::new();
         let channel = SalesChannelId::new();
@@ -555,52 +539,45 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for (id, slug) in [
-            (account, format!("collection-{suffix}")),
-            (other_account, format!("collection-other-{suffix}")),
+        for (id, code) in [
+            (store, format!("collection-{}", &suffix[12..28])),
+            (other_store, format!("collection-o-{}", &suffix[12..28])),
         ] {
-            sqlx::query("INSERT INTO merchant.merchant_accounts (id,slug,display_name) VALUES ($1,$2,'Collection Test')").bind(id.as_uuid()).bind(slug).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO merchant.stores (id,code,name,status) VALUES ($1,$2,'Collection Store','active')").bind(id.as_uuid()).bind(code).execute(&pool).await.unwrap();
         }
-        for (id, role) in [(owner, "owner"), (support, "support")] {
-            sqlx::query("INSERT INTO merchant.merchant_account_memberships (merchant_account_id,user_id,role) VALUES ($1,$2,$3::merchant.merchant_role)").bind(account.as_uuid()).bind(id.as_uuid()).bind(role).execute(&pool).await.unwrap();
+        for (id, role) in [(owner, "owner"), (support, "member")] {
+            sqlx::query("INSERT INTO merchant.store_memberships (store_id,user_id,role) VALUES ($1,$2,$3::merchant.store_role)").bind(store.as_uuid()).bind(id.as_uuid()).bind(role).execute(&pool).await.unwrap();
         }
-        for (id, account_id, code) in [
-            (store, account, "collection"),
-            (other_store, other_account, "collection-other"),
+        sqlx::query("INSERT INTO merchant.sales_channels (id,store_id,code,name,kind,is_default,status) VALUES ($1,$2,'web','Web','web',true,'active')")
+            .bind(channel.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO merchant.store_currencies (store_id,currency) VALUES ($1,'USD')")
+            .bind(store.as_uuid())
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (id, store_id, handle) in [
+            (first, store, "first-product"),
+            (second, store, "second-product"),
+            (foreign, other_store, "foreign-product"),
         ] {
-            sqlx::query("INSERT INTO merchant.stores (id,merchant_account_id,code,name,status) VALUES ($1,$2,$3,'Collection Store','active')").bind(id.as_uuid()).bind(account_id.as_uuid()).bind(code).execute(&pool).await.unwrap();
-        }
-        sqlx::query("INSERT INTO merchant.sales_channels (id,merchant_account_id,store_id,code,name,kind,is_default,status) VALUES ($1,$2,$3,'web','Web','web',true,'active')")
-            .bind(channel.as_uuid()).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO merchant.store_currencies (merchant_account_id,store_id,currency) VALUES ($1,$2,'USD')")
-            .bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
-        for (id, account_id, store_id, handle) in [
-            (first, account, store, "first-product"),
-            (second, account, store, "second-product"),
-            (foreign, other_account, other_store, "foreign-product"),
-        ] {
-            sqlx::query("INSERT INTO catalog.products (id,merchant_account_id,store_id,handle,title,status) VALUES ($1,$2,$3,$4,$4,'active')").bind(id.as_uuid()).bind(account_id.as_uuid()).bind(store_id.as_uuid()).bind(handle).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO catalog.products (id,store_id,handle,title,status) VALUES ($1,$2,$3,$3,'active')").bind(id.as_uuid()).bind(store_id.as_uuid()).bind(handle).execute(&pool).await.unwrap();
         }
         for id in [first, second] {
-            sqlx::query("INSERT INTO catalog.product_publications (merchant_account_id,store_id,product_id,sales_channel_id) VALUES ($1,$2,$3,$4)").bind(account.as_uuid()).bind(store.as_uuid()).bind(id.as_uuid()).bind(channel.as_uuid()).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO catalog.product_publications (store_id,product_id,sales_channel_id) VALUES ($1,$2,$3)").bind(store.as_uuid()).bind(id.as_uuid()).bind(channel.as_uuid()).execute(&pool).await.unwrap();
         }
         for (variant, product, sku) in [
             (first_variant, first, "COL-FIRST"),
             (second_variant, second, "COL-SECOND"),
         ] {
-            sqlx::query("INSERT INTO catalog.product_variants (id,merchant_account_id,store_id,product_id,title,sku,status) VALUES ($1,$2,$3,$4,'Default',$5,'active')").bind(variant).bind(account.as_uuid()).bind(store.as_uuid()).bind(product.as_uuid()).bind(sku).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO catalog.product_variants (id,store_id,product_id,title,sku,status) VALUES ($1,$2,$3,'Default',$4,'active')").bind(variant).bind(store.as_uuid()).bind(product.as_uuid()).bind(sku).execute(&pool).await.unwrap();
         }
-        sqlx::query("INSERT INTO pricing.price_lists (id,merchant_account_id,store_id,code,name,currency,status) VALUES ($1,$2,$3,'collection-retail','Collection Retail','USD','active')")
-            .bind(price_list).bind(account.as_uuid()).bind(store.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO pricing.price_lists (id,store_id,code,name,currency,status) VALUES ($1,$2,'collection-retail','Collection Retail','USD','active')")
+            .bind(price_list).bind(store.as_uuid()).execute(&pool).await.unwrap();
         for variant in [first_variant, second_variant] {
-            sqlx::query("INSERT INTO pricing.prices (id,merchant_account_id,store_id,price_list_id,product_variant_id,amount_minor) VALUES ($1,$2,$3,$4,$5,1000)").bind(Uuid::now_v7()).bind(account.as_uuid()).bind(store.as_uuid()).bind(price_list).bind(variant).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO pricing.prices (id,store_id,price_list_id,product_variant_id,amount_minor) VALUES ($1,$2,$3,$4,1000)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(price_list).bind(variant).execute(&pool).await.unwrap();
         }
 
-        let base = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/collections",
-            account.as_uuid(),
-            store.as_uuid()
-        );
+        let base = format!("/admin/v1/stores/{}/collections", store.as_uuid());
         let owner_state = test_state(&database_url, owner);
         let response = router(owner_state.clone())
             .oneshot(request(
@@ -618,11 +595,7 @@ mod tests {
             .to_owned();
         let detail = format!("{base}/{collection_id}");
         let publication = format!("{detail}/publications/{}", channel.as_uuid());
-        let locale_base = format!(
-            "/admin/v1/merchant-accounts/{}/stores/{}/locales/fr",
-            account.as_uuid(),
-            store.as_uuid()
-        );
+        let locale_base = format!("/admin/v1/stores/{}/locales/fr", store.as_uuid());
         assert_eq!(
             router(owner_state.clone())
                 .oneshot(request(
@@ -729,7 +702,7 @@ mod tests {
         );
         assert_eq!(body["data"]["products"][1]["position"], 1);
 
-        let material = publishable_key(&pool, account, store, channel, owner).await;
+        let material = publishable_key(&pool, store, channel, owner).await;
         let auth = format!("Bearer {}", material.plaintext.expose_secret());
         owner_state
             .search_indexer
@@ -775,19 +748,17 @@ mod tests {
         assert_eq!(products["data"][1]["handle"], "first-product");
 
         let support_state = test_state(&database_url, support);
-        assert_eq!(
-            router(support_state)
-                .oneshot(request(
-                    Method::POST,
-                    &base,
-                    Some(&format!("support-{suffix}")),
-                    Some(json!({"handle":"denied","title":"Denied"}))
-                ))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::FORBIDDEN
-        );
+        let support_create = router(support_state)
+            .oneshot(request(
+                Method::POST,
+                &base,
+                Some(&format!("support-{suffix}")),
+                Some(json!({"handle":"denied","title":"Denied"})),
+            ))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(support_create, StatusCode::CREATED);
 
         assert_eq!(
             router(owner_state.clone())

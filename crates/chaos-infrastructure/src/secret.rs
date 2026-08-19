@@ -14,11 +14,8 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    analytics::AnalyticsDestinationSecretReference,
-    fulfillment::ShippingSecretReference,
-    identity::UserId,
-    merchant::{MerchantAccountId, StoreId},
-    payments::PaymentSecretReference,
+    analytics::AnalyticsDestinationSecretReference, fulfillment::ShippingSecretReference,
+    identity::UserId, merchant::StoreId, payments::PaymentSecretReference,
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -112,7 +109,6 @@ impl AnalyticsDestinationSecretResolver for DynamicSecretResolver {
 impl ProviderSecretWriter for DynamicSecretResolver {
     async fn create(
         &self,
-        _merchant_account_id: MerchantAccountId,
         _store_id: StoreId,
         _created_by: UserId,
         _kind: ProviderSecretKind,
@@ -293,13 +289,11 @@ mod tests {
     #[tokio::test]
     async fn creates_and_resolves_an_encrypted_provider_secret() {
         let resolver = DynamicSecretResolver::new(&SecretKey::from_raw([7; 32]));
-        let merchant_account_id = MerchantAccountId::new();
         let store_id = StoreId::new();
         let created_by = UserId::new();
 
         let reference = ProviderSecretWriter::create(
             &resolver,
-            merchant_account_id,
             store_id,
             created_by,
             ProviderSecretKind::PaymentWebhook,

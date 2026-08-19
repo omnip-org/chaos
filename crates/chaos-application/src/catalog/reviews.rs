@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     catalog::{ProductId, ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent},
     identity::Email,
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId},
 };
 use time::OffsetDateTime;
 
@@ -213,19 +213,7 @@ impl StorefrontReviews {
 
 fn require_moderator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner
-                    | MerchantRole::Administrator
-                    | MerchantRole::Developer
-                    | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::ReviewsWrite) {
                 Ok(())

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::{ApiKeyScope, MerchantRole, StoreId},
+    merchant::{ApiKeyScope, StoreId},
     sales::{OrderId, OrderStatus},
 };
 use time::OffsetDateTime;
@@ -88,16 +88,7 @@ impl OrderManagement {
 
 fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
-        AdminActor::Merchant(merchant) => {
-            if matches!(
-                merchant.role(),
-                MerchantRole::Owner | MerchantRole::Administrator | MerchantRole::Manager
-            ) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(machine) => {
             if machine.scopes.contains(&ApiKeyScope::OrdersWrite) {
                 Ok(())

@@ -63,7 +63,6 @@ pub struct ReturnDetail {
 
 pub struct FulfillmentEventJob {
     pub id: Uuid,
-    pub merchant_account_id: Uuid,
     pub store_id: Uuid,
     pub event_type: String,
     pub payload: Value,
@@ -180,7 +179,6 @@ pub enum PreparedShippingLabelCancellation {
 
 pub struct ShippingTrackingJob {
     pub label_id: ShippingLabelId,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub provider: String,
@@ -191,7 +189,6 @@ pub struct ShippingTrackingJob {
 
 pub struct ShippingCancellationJob {
     pub label_id: ShippingLabelId,
-    pub merchant_account_id: Uuid,
     pub store_id: StoreId,
     pub fulfillment_id: FulfillmentId,
     pub provider: String,

@@ -54,8 +54,8 @@ impl PostgresReviewRepository {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id().as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id().as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -67,8 +67,8 @@ impl PostgresReviewRepository {
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(actor.merchant_account_id.as_uuid().to_string())
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(actor.store_id.as_uuid().to_string())
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
@@ -91,12 +91,11 @@ impl ReviewRepository for PostgresReviewRepository {
         let content = record.content;
         sqlx::query(
             "INSERT INTO catalog.reviews \
-             (id, merchant_account_id, store_id, product_id, rating, title, content, \
+             (id, store_id, product_id, rating, title, content, \
               author_name, author_email, status, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$10)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$9)",
         )
         .bind(record.id.as_uuid())
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(record.store_id.as_uuid())
         .bind(record.product_id.as_uuid())
         .bind(i16::from(content.rating().value()))
@@ -110,7 +109,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .map_err(map_review_write_error)?;
         event(
             &mut tx,
-            actor.merchant_account_id.as_uuid(),
             record.store_id,
             record.id,
             "submitted",
@@ -157,11 +155,10 @@ impl ReviewRepository for PostgresReviewRepository {
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
                     created_at, updated_at, product_id \
              FROM catalog.reviews \
-             WHERE merchant_account_id=$1 AND store_id=$2 AND status=$3::catalog.review_status \
-               AND ($4::uuid IS NULL OR id < $4) \
-             ORDER BY id DESC LIMIT $5",
+             WHERE store_id=$1 AND status=$2::catalog.review_status \
+               AND ($3::uuid IS NULL OR id < $3) \
+             ORDER BY id DESC LIMIT $4",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(status.as_str())
         .bind(after.map(ReviewId::as_uuid))
@@ -231,14 +228,13 @@ impl ReviewRepository for PostgresReviewRepository {
         let approved = status == ReviewStatus::Approved;
         let changed = sqlx::query(
             "UPDATE catalog.reviews \
-             SET status=$4::catalog.review_status, \
-                 verified_buyer=$5, \
-                 approved_at=CASE WHEN $4::catalog.review_status='approved' THEN $6 ELSE NULL END, \
-                 approved_by_user_id=CASE WHEN $4::catalog.review_status='approved' THEN $7 ELSE NULL END, \
-                 updated_at=$6 \
-             WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3 AND status='pending'",
+             SET status=$3::catalog.review_status, \
+                 verified_buyer=$4, \
+                 approved_at=CASE WHEN $3::catalog.review_status='approved' THEN $5 ELSE NULL END, \
+                 approved_by_user_id=CASE WHEN $3::catalog.review_status='approved' THEN $6 ELSE NULL END, \
+                 updated_at=$5 \
+             WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(review_id.as_uuid())
         .bind(status.as_str())
@@ -249,13 +245,12 @@ impl ReviewRepository for PostgresReviewRepository {
         .await
         .map_err(database_error)?
         .rows_affected();
-        if changed == 0 && !review_exists(&mut tx, &actor, store_id, review_id).await? {
+        if changed == 0 && !review_exists(&mut tx, store_id, review_id).await? {
             return Err(not_found(review_id));
         }
         if changed == 1 {
             event(
                 &mut tx,
-                actor.merchant_account_id().as_uuid(),
                 store_id,
                 review_id,
                 status.as_str(),
@@ -284,10 +279,9 @@ impl ReviewRepository for PostgresReviewRepository {
         }
         let product_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT product_id FROM catalog.reviews \
-             WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3 AND status='approved' \
+             WHERE store_id=$1 AND id=$2 AND status='approved' \
                AND parent_review_id IS NULL",
         )
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(parent_review_id.as_uuid())
         .fetch_optional(&mut *tx)
@@ -302,13 +296,12 @@ impl ReviewRepository for PostgresReviewRepository {
         let reply_id = ReviewId::new();
         sqlx::query(
             "INSERT INTO catalog.reviews \
-             (id, merchant_account_id, store_id, product_id, parent_review_id, content, \
+             (id, store_id, product_id, parent_review_id, content, \
               author_name, status, is_staff_reply, approved_at, approved_by_user_id, \
               created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,'Altapano','approved',true,$7,$8,$7,$7)",
+             VALUES ($1,$2,$3,$4,$5,'Altapano','approved',true,$6,$7,$6,$6)",
         )
         .bind(reply_id.as_uuid())
-        .bind(actor.merchant_account_id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(product_id)
         .bind(parent_review_id.as_uuid())
@@ -320,7 +313,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .map_err(map_review_write_error)?;
         event(
             &mut tx,
-            actor.merchant_account_id().as_uuid(),
             store_id,
             reply_id,
             "reply_added",
@@ -346,12 +338,11 @@ impl ReviewRepository for PostgresReviewRepository {
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
                     created_at, updated_at \
              FROM catalog.reviews \
-             WHERE merchant_account_id=$1 AND store_id=$2 AND product_id=$3 \
+             WHERE store_id=$1 AND product_id=$2 \
                AND status='approved' AND parent_review_id IS NULL \
-               AND ($4::uuid IS NULL OR id < $4) \
-             ORDER BY id DESC LIMIT $5",
+               AND ($3::uuid IS NULL OR id < $3) \
+             ORDER BY id DESC LIMIT $4",
         )
-        .bind(actor.merchant_account_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
         .bind(after.map(ReviewId::as_uuid))
@@ -368,11 +359,10 @@ impl ReviewRepository for PostgresReviewRepository {
                         author_email::text, status::text, is_staff_reply, verified_buyer, \
                         created_at, updated_at \
                  FROM catalog.reviews \
-                 WHERE merchant_account_id=$1 AND store_id=$2 AND status='approved' \
-                   AND parent_review_id = ANY($3::uuid[]) \
+                 WHERE store_id=$1 AND status='approved' \
+                   AND parent_review_id = ANY($2::uuid[]) \
                  ORDER BY parent_review_id, id ASC",
             )
-            .bind(actor.merchant_account_id.as_uuid())
             .bind(actor.store_id.as_uuid())
             .bind(&parent_ids)
             .fetch_all(&mut *tx)
@@ -433,40 +423,31 @@ fn row_to_summary(
 
 async fn store_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
+    _actor: &AdminActor,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE merchant_account_id=$1 AND id=$2 AND status<>'archived')",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store.as_uuid())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(database_error)
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE id=$1)")
+        .bind(store.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(database_error)
 }
 
 async fn review_exists(
     tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
     store: StoreId,
     id: ReviewId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM catalog.reviews WHERE merchant_account_id=$1 AND store_id=$2 AND id=$3)",
-    )
-    .bind(actor.merchant_account_id().as_uuid())
-    .bind(store.as_uuid())
-    .bind(id.as_uuid())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(database_error)
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM catalog.reviews WHERE store_id=$1 AND id=$2)")
+        .bind(store.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(database_error)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn event(
     tx: &mut Transaction<'_, Postgres>,
-    merchant_account_id: Uuid,
     store_id: StoreId,
     review_id: ReviewId,
     kind: &str,
@@ -475,11 +456,10 @@ async fn event(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO catalog.review_events \
-         (id, merchant_account_id, store_id, review_id, event_kind, actor_user_id, occurred_at) \
-         VALUES ($1,$2,$3,$4,$5::catalog.review_event_kind,$6,$7)",
+         (id, store_id, review_id, event_kind, actor_user_id, occurred_at) \
+         VALUES ($1,$2,$3,$4::catalog.review_event_kind,$5,$6)",
     )
     .bind(Uuid::now_v7())
-    .bind(merchant_account_id)
     .bind(store_id.as_uuid())
     .bind(review_id.as_uuid())
     .bind(kind)
@@ -499,7 +479,7 @@ async fn reserve(
 ) -> Result<Option<Uuid>, ApplicationError> {
     reserve_for_scope(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
     )
@@ -514,7 +494,7 @@ async fn reserve_machine(
 ) -> Result<Option<Uuid>, ApplicationError> {
     reserve_for_scope(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
+        &IdempotencyScope::Store(actor.store_id.as_uuid()),
         operation,
         request,
     )
@@ -548,7 +528,7 @@ async fn complete(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id().as_uuid()),
+        &IdempotencyScope::Store(actor.store_id().as_uuid()),
         operation,
         request,
         status,
@@ -567,7 +547,7 @@ async fn complete_machine(
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         tx,
-        &IdempotencyScope::MerchantAccount(actor.merchant_account_id.as_uuid()),
+        &IdempotencyScope::Store(actor.store_id.as_uuid()),
         operation,
         request,
         status,

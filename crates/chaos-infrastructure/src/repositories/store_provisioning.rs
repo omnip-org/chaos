@@ -5,7 +5,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{MerchantAccountId, SalesChannel, Store, StoreId},
+    merchant::{SalesChannel, Store, StoreId, StoreMembership},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -28,7 +28,7 @@ impl PostgresStoreProvisioningUnitOfWork {
 
 struct PostgresStoreProvisioningTransaction {
     transaction: Transaction<'static, Postgres>,
-    merchant_account_id: MerchantAccountId,
+    user_id: UserId,
 }
 
 #[async_trait]
@@ -36,7 +36,6 @@ impl StoreProvisioningUnitOfWork for PostgresStoreProvisioningUnitOfWork {
     async fn begin(
         &self,
         user_id: UserId,
-        merchant_account_id: MerchantAccountId,
     ) -> Result<Box<dyn StoreProvisioningTransaction>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         sqlx::query("SELECT set_config('app.user_id', $1, true)")
@@ -44,47 +43,22 @@ impl StoreProvisioningUnitOfWork for PostgresStoreProvisioningUnitOfWork {
             .execute(&mut *transaction)
             .await
             .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.merchant_account_id', $1, true)")
-            .bind(merchant_account_id.as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresStoreProvisioningTransaction {
             transaction,
-            merchant_account_id,
+            user_id,
         }))
     }
 }
 
 #[async_trait]
 impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
-    async fn can_create_store(&mut self, user_id: UserId) -> Result<bool, ApplicationError> {
-        sqlx::query_scalar(
-            "SELECT EXISTS (\
-                SELECT 1 \
-                FROM merchant.merchant_account_memberships AS membership \
-                INNER JOIN merchant.merchant_accounts AS account \
-                    ON account.id = membership.merchant_account_id \
-                WHERE membership.merchant_account_id = \
-                    nullif(current_setting('app.merchant_account_id', true), '')::uuid \
-                  AND membership.user_id = $1 \
-                  AND membership.role IN ('owner', 'administrator') \
-                  AND account.status = 'active'\
-             )",
-        )
-        .bind(user_id.as_uuid())
-        .fetch_one(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)
-    }
-
     async fn reserve_store_creation(
         &mut self,
         request: &IdempotencyRequest,
     ) -> Result<Option<StoreId>, ApplicationError> {
         let Some(body) = idempotency::reserve(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::User(self.user_id.as_uuid()),
             CREATE_STORE_OPERATION,
             request,
         )
@@ -107,13 +81,17 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
     }
 
     async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError> {
+        sqlx::query("SELECT set_config('app.store_id', $1, true)")
+            .bind(store.id().as_uuid().to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(unexpected_database_error)?;
         sqlx::query(
             "INSERT INTO merchant.stores \
-             (id, merchant_account_id, code, name, default_region, default_currency, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'draft')",
+             (id, code, name, default_region, default_currency, status) \
+             VALUES ($1, $2, $3, $4, $5, 'inactive')",
         )
         .bind(store.id().as_uuid())
-        .bind(store.merchant_account_id().as_uuid())
         .bind(store.code().as_str())
         .bind(store.name())
         .bind(store.default_region().as_str())
@@ -124,13 +102,29 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         Ok(())
     }
 
+    async fn insert_owner_membership(
+        &mut self,
+        membership: &StoreMembership,
+    ) -> Result<(), ApplicationError> {
+        sqlx::query(
+            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, $3::merchant.store_role)",
+        )
+        .bind(membership.store_id().as_uuid())
+        .bind(membership.user_id().as_uuid())
+        .bind(membership.role().as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(unexpected_database_error)?;
+        Ok(())
+    }
+
     async fn insert_default_currency(&mut self, store: &Store) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO merchant.store_currencies \
-             (merchant_account_id, store_id, currency, enabled) \
-             VALUES ($1, $2, $3, true)",
+             (store_id, currency, enabled) \
+             VALUES ($1, $2, true)",
         )
-        .bind(store.merchant_account_id().as_uuid())
         .bind(store.id().as_uuid())
         .bind(store.default_currency().as_str())
         .execute(&mut *self.transaction)
@@ -145,13 +139,12 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO merchant.sales_channels \
-             (id, merchant_account_id, store_id, code, name, kind, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5, \
-                     $6::merchant.sales_channel_kind, \
-                     $7::merchant.sales_channel_status, $8)",
+             (id, store_id, code, name, kind, status, is_default) \
+             VALUES ($1, $2, $3, $4, \
+                     $5::merchant.sales_channel_kind, \
+                     $6::merchant.sales_channel_status, $7)",
         )
         .bind(channel.id().as_uuid())
-        .bind(channel.merchant_account_id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
@@ -171,7 +164,7 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         idempotency::complete(
             &mut self.transaction,
-            &IdempotencyScope::MerchantAccount(self.merchant_account_id.as_uuid()),
+            &IdempotencyScope::User(self.user_id.as_uuid()),
             CREATE_STORE_OPERATION,
             request,
             201,
@@ -190,11 +183,11 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
 
 fn map_store_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("stores_merchant_account_id_code_key")
+        && database_error.constraint() == Some("stores_code_key")
     {
         return ApplicationError::Conflict {
             code: "store_code_taken",
-            message: "the store code is already in use for this merchant account",
+            message: "the store code is already in use",
         };
     }
     unexpected_database_error(error)
@@ -215,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn provisions_a_store_with_authorization_currency_and_idempotency() {
+    async fn provisions_a_store_with_owner_membership_currency_and_idempotency() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -237,49 +230,22 @@ mod tests {
             .await
             .unwrap();
         let owner_user_id = UserId::new();
-        let support_user_id = UserId::new();
-        let merchant_account_id = MerchantAccountId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string();
         let idempotency_key = format!("store-{unique_suffix}");
 
-        for (user_id, label) in [(owner_user_id, "owner"), (support_user_id, "support")] {
-            sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
-                .bind(user_id.as_uuid())
-                .bind(format!("store-{label}-{unique_suffix}@example.com"))
-                .execute(&owner_pool)
-                .await
-                .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO merchant.merchant_accounts (id, slug, display_name) \
-             VALUES ($1, $2, 'Store Provisioning Test')",
-        )
-        .bind(merchant_account_id.as_uuid())
-        .bind(format!("store-test-{unique_suffix}"))
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        for (user_id, role) in [(owner_user_id, "owner"), (support_user_id, "support")] {
-            sqlx::query(
-                "INSERT INTO merchant.merchant_account_memberships \
-                 (merchant_account_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.merchant_role)",
-            )
-            .bind(merchant_account_id.as_uuid())
-            .bind(user_id.as_uuid())
-            .bind(role)
+        sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
+            .bind(owner_user_id.as_uuid())
+            .bind(format!("store-owner-{unique_suffix}@example.com"))
             .execute(&owner_pool)
             .await
             .unwrap();
-        }
 
         let service = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             runtime_pool,
         )));
-        let make_input = |user_id, fingerprint| CreateStoreInput {
-            user_id,
-            merchant_account_id,
-            code: "primary".into(),
+        let make_input = |fingerprint| CreateStoreInput {
+            user_id: owner_user_id,
+            code: format!("primary-{unique_suffix}"),
             name: "Primary Store".into(),
             default_region: None,
             default_currency: None,
@@ -289,20 +255,11 @@ mod tests {
             },
         };
 
-        let forbidden = service.execute(make_input(support_user_id, [20; 32])).await;
-        assert!(matches!(forbidden, Err(ApplicationError::Forbidden)));
-
-        let output = service
-            .execute(make_input(owner_user_id, [21; 32]))
-            .await
-            .unwrap();
-        let replay = service
-            .execute(make_input(owner_user_id, [21; 32]))
-            .await
-            .unwrap();
+        let output = service.execute(make_input([21; 32])).await.unwrap();
+        let replay = service.execute(make_input([21; 32])).await.unwrap();
         assert_eq!(replay.store_id, output.store_id);
 
-        let mismatch = service.execute(make_input(owner_user_id, [22; 32])).await;
+        let mismatch = service.execute(make_input([22; 32])).await;
         assert!(matches!(
             mismatch,
             Err(ApplicationError::Conflict {
@@ -317,11 +274,9 @@ mod tests {
                     channel.code::text, channel.kind::text, channel.is_default \
              FROM merchant.stores AS store \
              INNER JOIN merchant.store_currencies AS currency \
-                 ON currency.merchant_account_id = store.merchant_account_id \
-                AND currency.store_id = store.id \
+                 ON currency.store_id = store.id \
              INNER JOIN merchant.sales_channels AS channel \
-                 ON channel.merchant_account_id = store.merchant_account_id \
-                AND channel.store_id = store.id \
+                 ON channel.store_id = store.id \
              WHERE store.id = $1",
         )
         .bind(output.store_id.as_uuid())
@@ -331,7 +286,7 @@ mod tests {
         assert_eq!(
             stored,
             (
-                "draft".into(),
+                "inactive".into(),
                 "US".into(),
                 "USD".into(),
                 true,
@@ -341,35 +296,32 @@ mod tests {
             )
         );
 
-        let store_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM merchant.stores WHERE merchant_account_id = $1",
+        let membership_role: String = sqlx::query_scalar(
+            "SELECT role::text FROM merchant.store_memberships \
+             WHERE store_id = $1 AND user_id = $2",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(output.store_id.as_uuid())
+        .bind(owner_user_id.as_uuid())
         .fetch_one(&owner_pool)
         .await
         .unwrap();
-        assert_eq!(store_count, 1);
+        assert_eq!(membership_role, "owner");
 
-        sqlx::query("DELETE FROM merchant.stores WHERE merchant_account_id = $1")
-            .bind(merchant_account_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM merchant.merchant_accounts WHERE id = $1")
-            .bind(merchant_account_id.as_uuid())
+        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+            .bind(output.store_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
         sqlx::query(
             "DELETE FROM integration.idempotency_records \
-             WHERE scope = 'merchant_account' AND scope_id = $1",
+             WHERE scope = 'user' AND scope_id = $1",
         )
-        .bind(merchant_account_id.as_uuid())
+        .bind(owner_user_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
-            .bind(vec![owner_user_id.as_uuid(), support_user_id.as_uuid()])
+        sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(owner_user_id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
