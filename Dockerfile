@@ -1,6 +1,3 @@
-# syntax=docker/dockerfile:1
-
-# --- Plan stage: compute a dependency recipe that changes only when deps change.
 FROM rust:1.94-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
@@ -10,11 +7,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo chef prepare --recipe-path recipe.json
 
-# --- Build stage: cook dependencies first (cached), then build the app.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-# This layer is cached as long as recipe.json (i.e. the dependency set) is
-# unchanged, so editing application code does not recompile dependencies.
 RUN cargo chef cook --locked --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
