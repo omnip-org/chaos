@@ -18,6 +18,7 @@ Run the language check before committing:
 ./scripts/check-language.sh
 ```
 
+
 Enable the repository-provided commit-message check once per clone:
 
 ```bash

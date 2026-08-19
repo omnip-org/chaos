@@ -4,14 +4,14 @@ set -eu
 COMMIT_MSG_FILE="$1"
 FIRST_LINE=$(head -n1 "$COMMIT_MSG_FILE")
 
-if perl -e 'exit(1) if $ARGV[0] =~ /[\x{4e00}-\x{9fff}]/' "$FIRST_LINE"; then
+if perl -e 'exit(0) if $ARGV[0] =~ /[\x{4e00}-\x{9fff}]/; exit(1)' "$FIRST_LINE"; then
     printf 'Error: Commit messages must be written in English.\n' >&2
     exit 1
 fi
 
 CONVENTIONAL_RE='^(feat|fix|docs|style|refactor|test|chore|ci|perf|revert)(\([^)]+\))?: .+$'
 if ! echo "$FIRST_LINE" | grep -Eq "$CONVENTIONAL_RE"; then
-    printf 'Error: Commit message line does not match the Conventional Commits specification.\n' >&2
+    printf 'Error: Commit message does not match Conventional Commits.\n' >&2
     printf 'Expected format: <type>(<scope>): <description>\n' >&2
     printf 'Example: chore(pencil): fix typo\n' >&2
     exit 1
