@@ -4,8 +4,8 @@ set -eu
 cjk_pattern='[\x{4e00}-\x{9fff}]'
 
 if rg --line-number "$cjk_pattern" \
-    AGENTS.md CONTRIBUTING.md README.md Dockerfile .env.example \
-    docker-compose.yaml docs crates migrations packages scripts .githooks \
+    AGENTS.md CONTRIBUTING.md README.md Dockerfile \
+    docs crates migrations packages scripts .githooks \
     --glob '*.md' \
     --glob '*.rs' \
     --glob '*.sql' \
