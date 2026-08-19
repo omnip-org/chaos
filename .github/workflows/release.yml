@@ -29,7 +29,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@main
         with:
-          node-version: "22"
+          node-version: latest
 
       - name: Install storefront SDK dependencies
         run: npm ci --prefix packages/js
@@ -96,7 +96,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@main
         with:
-          node-version: "22"
+          node-version: latest
           registry-url: "https://npm.pkg.github.com"
 
       - name: Install dependencies
