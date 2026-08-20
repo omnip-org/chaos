@@ -17,7 +17,7 @@ env:
 
 jobs:
   lint:
-    name: Format & Clippy
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@main
@@ -53,7 +53,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@master
         with:
-          shared-key: test
+          shared-key: ci
 
       - name: Run unit tests
         run: cargo test --workspace --locked
@@ -61,7 +61,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@main
         with:
-          node-version: "22"
+          node-version: latest
 
       - name: Install storefront SDK dependencies
         run: npm ci --prefix packages/js
@@ -135,7 +135,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@master
         with:
-          shared-key: test
+          shared-key: ci
 
       - name: Run database migrations
         env:
