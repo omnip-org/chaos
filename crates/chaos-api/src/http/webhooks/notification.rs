@@ -7,14 +7,15 @@ use axum::{
 };
 use serde::Serialize;
 
-use chaos_application::ApplicationError;
+use chaos_application::{ApplicationError, notifications::ReceiveNotificationWebhook};
+use chaos_domain::notifications::NotificationProviderAccountId;
 
 use super::{ApiError, ApiResponse, ApiState};
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route(
-            "/webhooks/v1/notifications/{provider}",
+            "/webhooks/v1/notifications/{provider}/{provider_account_id}",
             post(receive_webhook),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -27,7 +28,7 @@ struct WebhookReceiptData {
 
 async fn receive_webhook(
     State(state): State<ApiState>,
-    Path(provider): Path<String>,
+    Path((provider, provider_account_id)): Path<(String, uuid::Uuid)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<ApiResponse<WebhookReceiptData>, ApiError> {
@@ -36,14 +37,15 @@ async fn receive_webhook(
     let signature = required_header(&headers, "svix-signature")?;
     let accepted = state
         .notification_webhooks
-        .receive(
-            &provider,
+        .receive(ReceiveNotificationWebhook {
+            provider: &provider,
+            provider_account_id: NotificationProviderAccountId::from_uuid(provider_account_id),
             message_id,
             timestamp,
             signature,
-            &body,
-            state.clock.now(),
-        )
+            payload: &body,
+            received_at: state.clock.now(),
+        })
         .await?;
     Ok(ApiResponse::new(
         StatusCode::ACCEPTED,
@@ -69,8 +71,16 @@ mod tests {
         notifications::NotificationWebhooks,
         ports::{
             EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository,
-            EmailWebhookVerifier, VerifiedEmailWebhook,
+            EmailWebhookVerifier, IdempotencyRequest, NotificationProviderAccountConfiguration,
+            NotificationProviderAccountDetail, NotificationProviderAccountRepository,
+            NotificationSecretResolver, ResolvedNotificationWebhook, VerifiedEmailWebhook,
         },
+    };
+    use chaos_domain::{
+        notifications::{
+            NotificationProviderAccount, NotificationProviderAccountId, NotificationSecretReference,
+        },
+        store::StoreId,
     };
     use chaos_infrastructure::email::ResendWebhookVerifier;
     use hmac::{Hmac, KeyInit, Mac};
@@ -84,6 +94,18 @@ mod tests {
     use super::*;
 
     struct AcceptingRepository;
+
+    struct StaticSecrets(SecretString);
+
+    #[async_trait]
+    impl NotificationSecretResolver for StaticSecrets {
+        async fn resolve(
+            &self,
+            _reference: &NotificationSecretReference,
+        ) -> Result<SecretString, ApplicationError> {
+            Ok(self.0.clone())
+        }
+    }
 
     #[async_trait]
     impl EmailDeliveryRepository for AcceptingRepository {
@@ -103,9 +125,43 @@ mod tests {
 
         async fn record_webhook(
             &self,
+            _provider_account_id: NotificationProviderAccountId,
             _event: &VerifiedEmailWebhook,
         ) -> Result<bool, ApplicationError> {
             Ok(true)
+        }
+    }
+
+    #[async_trait]
+    impl NotificationProviderAccountRepository for AcceptingRepository {
+        async fn list(
+            &self,
+            _actor: chaos_application::ports::AdminActor,
+            _store_id: StoreId,
+        ) -> Result<Vec<NotificationProviderAccountDetail>, ApplicationError> {
+            unreachable!()
+        }
+
+        async fn configure(
+            &self,
+            _actor: chaos_application::ports::AdminActor,
+            _store_id: StoreId,
+            _account: &NotificationProviderAccount,
+            _configuration: &NotificationProviderAccountConfiguration,
+            _idempotency: &IdempotencyRequest,
+        ) -> Result<NotificationProviderAccountDetail, ApplicationError> {
+            unreachable!()
+        }
+
+        async fn resolve_webhook(
+            &self,
+            _account_id: NotificationProviderAccountId,
+        ) -> Result<Option<ResolvedNotificationWebhook>, ApplicationError> {
+            Ok(Some(ResolvedNotificationWebhook {
+                store_id: StoreId::new(),
+                provider: "resend".into(),
+                webhook_secret_reference: NotificationSecretReference::new("enc://webhook")?,
+            }))
         }
     }
 
@@ -113,10 +169,11 @@ mod tests {
     async fn resend_webhook_http_requires_and_verifies_svix_headers() {
         let key = b"0123456789abcdef0123456789abcdef";
         let secret = SecretString::from(format!("whsec_{}", STANDARD.encode(key)));
-        let verifier =
-            Arc::new(ResendWebhookVerifier::new(&secret).unwrap()) as Arc<dyn EmailWebhookVerifier>;
+        let verifier = Arc::new(ResendWebhookVerifier::new(Arc::new(StaticSecrets(secret))))
+            as Arc<dyn EmailWebhookVerifier>;
         let mut state = test_state();
         state.notification_webhooks = Arc::new(NotificationWebhooks::new(
+            Arc::new(AcceptingRepository),
             Arc::new(AcceptingRepository),
             vec![verifier],
         ));
@@ -131,13 +188,16 @@ mod tests {
         let accepted = app
             .clone()
             .oneshot(
-                Request::post("/webhooks/v1/notifications/resend")
-                    .header("content-type", "application/json")
-                    .header("svix-id", message_id)
-                    .header("svix-timestamp", &timestamp)
-                    .header("svix-signature", signature)
-                    .body(Body::from(payload))
-                    .unwrap(),
+                Request::post(format!(
+                    "/webhooks/v1/notifications/resend/{}",
+                    Uuid::now_v7()
+                ))
+                .header("content-type", "application/json")
+                .header("svix-id", message_id)
+                .header("svix-timestamp", &timestamp)
+                .header("svix-signature", signature)
+                .body(Body::from(payload))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -145,10 +205,13 @@ mod tests {
 
         let missing_headers = app
             .oneshot(
-                Request::post("/webhooks/v1/notifications/resend")
-                    .header("content-type", "application/json")
-                    .body(Body::from(payload))
-                    .unwrap(),
+                Request::post(format!(
+                    "/webhooks/v1/notifications/resend/{}",
+                    Uuid::now_v7()
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
             )
             .await
             .unwrap();

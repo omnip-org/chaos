@@ -95,7 +95,14 @@ curl --fail https://api.example.com/health/ready
 
 ## Deployment secrets and rotation
 
-The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, optional Commerce notification email, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Resend is disabled unless `EMAIL_FROM`, `RESEND_API_KEY`, and `RESEND_WEBHOOK_SECRET` are configured together. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Resend credentials, webhook secrets, and senders are Store-owned configuration managed through MCP and are not deployment environment variables. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+
+To enable order email for a Store, create `notification_credential` and
+`notification_webhook` secrets with `create_provider_secret`, then call
+`configure_notification_provider_account` with provider `resend`, the two returned
+references, a verified sender, and `enabled: true`. Configure Resend to deliver webhooks
+to the `webhook_path` returned by that tool. Repeating the operation with new secret
+references rotates the Store without restarting Chaos.
 
 ## Monitoring alerts
 

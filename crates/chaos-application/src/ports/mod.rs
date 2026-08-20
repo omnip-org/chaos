@@ -85,7 +85,9 @@ pub use media::{
 };
 pub use notification::{
     EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
-    EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
+    EmailProvider, EmailWebhookVerifier, NotificationProviderAccountConfiguration,
+    NotificationProviderAccountDetail, NotificationProviderAccountRepository,
+    NotificationSecretResolver, ResolvedNotificationWebhook, VerifiedEmailWebhook,
 };
 pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,

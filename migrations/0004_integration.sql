@@ -764,8 +764,10 @@ CREATE TABLE integration.email_deliveries (
     template_version         INTEGER                            NOT NULL,
     template_payload         JSONB                              NOT NULL,
     provider                 TEXT                               NOT NULL DEFAULT 'resend',
+    provider_account_id      UUID,
     provider_message_id      TEXT,
     delivery_status          integration.email_delivery_status  NOT NULL DEFAULT 'pending',
+    delivery_attempts        INTEGER                            NOT NULL DEFAULT 0,
     pgmq_message_id          BIGINT                             NOT NULL UNIQUE,
     sent_at                  TIMESTAMPTZ,
     delivered_at             TIMESTAMPTZ,
@@ -774,10 +776,12 @@ CREATE TABLE integration.email_deliveries (
     updated_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, semantic_event_id),
-    UNIQUE (provider, provider_message_id),
+    UNIQUE (provider_account_id, provider_message_id),
     UNIQUE (store_id, id),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (store_id, provider_account_id)
+        REFERENCES commerce.notification_provider_accounts(store_id, id),
     CONSTRAINT email_deliveries_semantic_event_type_check CHECK (
         semantic_event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
     ),
@@ -788,6 +792,7 @@ CREATE TABLE integration.email_deliveries (
         template_key ~ '^[a-z][a-z0-9_]{0,63}$'
     ),
     CONSTRAINT email_deliveries_template_version_check CHECK (template_version > 0),
+    CONSTRAINT email_deliveries_attempts_check CHECK (delivery_attempts >= 0),
     CONSTRAINT email_deliveries_template_payload_check CHECK (
         jsonb_typeof(template_payload) = 'object'
         AND octet_length(template_payload::text) <= 16384
@@ -832,6 +837,7 @@ CREATE TABLE integration.webhook_events (
     id                    UUID                     NOT NULL PRIMARY KEY,
     store_id              UUID                     NOT NULL,
     delivery_id           UUID                     NOT NULL,
+    provider_account_id   UUID                     NOT NULL,
     provider              TEXT                     NOT NULL,
     provider_event_id     TEXT                     NOT NULL,
     provider_event_type   TEXT                     NOT NULL,
@@ -840,9 +846,11 @@ CREATE TABLE integration.webhook_events (
     processed_at          TIMESTAMPTZ,
     created_at            TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (provider, provider_event_id),
+    UNIQUE (provider_account_id, provider_event_id),
     FOREIGN KEY (store_id, delivery_id)
         REFERENCES integration.email_deliveries(store_id, id),
+    FOREIGN KEY (store_id, provider_account_id)
+        REFERENCES commerce.notification_provider_accounts(store_id, id),
     CONSTRAINT notification_webhook_events_provider_check CHECK (
         length(trim(provider)) BETWEEN 1 AND 50
     ),
@@ -931,6 +939,9 @@ RETURNS TABLE (
     template_version INTEGER,
     template_payload JSONB,
     provider TEXT,
+    provider_account_id UUID,
+    credential_secret_reference TEXT,
+    sender TEXT,
     attempts INTEGER
 )
 LANGUAGE plpgsql
@@ -974,6 +985,20 @@ BEGIN
             PERFORM pgmq.delete('chaos_email', message.msg_id);
             CONTINUE;
         END IF;
+        SELECT account.id, account.credential_secret_reference, account.sender
+          INTO provider_account_id, credential_secret_reference, sender
+          FROM commerce.notification_provider_accounts AS account
+         WHERE account.store_id = delivery.store_id
+           AND account.provider = delivery.provider
+           AND account.enabled;
+        IF NOT FOUND THEN
+            CONTINUE;
+        END IF;
+        UPDATE integration.email_deliveries AS candidate
+           SET provider_account_id = claim_email_deliveries.provider_account_id,
+               delivery_attempts = candidate.delivery_attempts + 1,
+               updated_at = CURRENT_TIMESTAMP
+         WHERE candidate.id = delivery.id;
         id := delivery.id;
         store_id := delivery.store_id;
         recipient_email := delivery.recipient_email::text;
@@ -981,7 +1006,7 @@ BEGIN
         template_version := delivery.template_version;
         template_payload := delivery.template_payload;
         provider := delivery.provider;
-        attempts := message.read_ct;
+        attempts := delivery.delivery_attempts + 1;
         RETURN NEXT;
     END LOOP;
 END;
@@ -1052,6 +1077,7 @@ END;
 $$;
 
 CREATE FUNCTION integration.record_resend_webhook(
+    provider_account_id UUID,
     provider_event_id TEXT,
     provider_message_id TEXT,
     provider_event_type TEXT,
@@ -1073,6 +1099,7 @@ BEGIN
       INTO target
       FROM integration.email_deliveries AS delivery
      WHERE delivery.provider = 'resend'
+       AND delivery.provider_account_id = record_resend_webhook.provider_account_id
        AND delivery.provider_message_id = record_resend_webhook.provider_message_id
      FOR UPDATE;
     IF NOT FOUND THEN
@@ -1081,13 +1108,13 @@ BEGIN
 
     webhook_id := uuidv7();
     INSERT INTO integration.webhook_events (
-        id, store_id, delivery_id, provider, provider_event_id,
+        id, store_id, delivery_id, provider_account_id, provider, provider_event_id,
         provider_event_type, payload, received_at, processed_at
     ) VALUES (
-        webhook_id, target.store_id, target.id, 'resend',
+        webhook_id, target.store_id, target.id, record_resend_webhook.provider_account_id, 'resend',
         record_resend_webhook.provider_event_id, record_resend_webhook.provider_event_type,
         payload, received_at, received_at
-    ) ON CONFLICT ON CONSTRAINT webhook_events_provider_provider_event_id_key DO NOTHING;
+    ) ON CONFLICT ON CONSTRAINT webhook_events_provider_account_id_provider_event_id_key DO NOTHING;
     IF NOT FOUND THEN
         RETURN false;
     END IF;
@@ -1202,7 +1229,7 @@ REVOKE ALL ON FUNCTION integration.finish_email_delivery(
 REVOKE ALL ON FUNCTION integration.enqueue_email_delivery() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.record_resend_webhook(
-    TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
+    UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.email_delivery_metrics() FROM PUBLIC;
@@ -1216,7 +1243,7 @@ GRANT EXECUTE ON FUNCTION integration.finish_email_delivery(
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.record_resend_webhook(
-    TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
+    UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.email_delivery_metrics() TO chaos_runtime;

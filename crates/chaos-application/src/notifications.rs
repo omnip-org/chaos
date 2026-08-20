@@ -1,19 +1,25 @@
 use std::{collections::HashMap, sync::Arc};
 
+use chaos_domain::{
+    notifications::{
+        NotificationProviderAccount, NotificationProviderAccountId, NotificationSecretReference,
+    },
+    store::{StoreId, StoreRole},
+};
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
     ports::{
-        EmailDeliveryFailure, EmailDeliveryRepository, EmailMessage, EmailProvider,
-        EmailWebhookVerifier,
+        AdminActor, EmailDeliveryFailure, EmailDeliveryRepository, EmailMessage, EmailProvider,
+        EmailWebhookVerifier, IdempotencyRequest, NotificationProviderAccountConfiguration,
+        NotificationProviderAccountDetail, NotificationProviderAccountRepository,
     },
 };
 
 pub struct NotificationWorkers {
     repository: Arc<dyn EmailDeliveryRepository>,
     providers: HashMap<String, Arc<dyn EmailProvider>>,
-    email_from: String,
     storefront_public_base_url: String,
 }
 
@@ -21,7 +27,6 @@ impl NotificationWorkers {
     pub fn new(
         repository: Arc<dyn EmailDeliveryRepository>,
         providers: impl IntoIterator<Item = Arc<dyn EmailProvider>>,
-        email_from: String,
         storefront_public_base_url: String,
     ) -> Self {
         Self {
@@ -30,7 +35,6 @@ impl NotificationWorkers {
                 .into_iter()
                 .map(|provider| (provider.name().to_owned(), provider))
                 .collect(),
-            email_from,
             storefront_public_base_url,
         }
     }
@@ -54,14 +58,17 @@ impl NotificationWorkers {
                     &self.storefront_public_base_url,
                 ) {
                     Ok((subject, text)) => provider
-                        .send(EmailMessage {
-                            from: self.email_from.clone(),
-                            to: job.recipient_email,
-                            subject,
-                            text,
-                            html: None,
-                            idempotency_key: format!("notification-{}", job.id),
-                        })
+                        .send(
+                            &job.credential_secret_reference,
+                            EmailMessage {
+                                from: job.sender,
+                                to: job.recipient_email,
+                                subject,
+                                text,
+                                html: None,
+                                idempotency_key: format!("notification-{}", job.id),
+                            },
+                        )
                         .await
                         .map_err(classify_failure),
                     Err(error) => Err(EmailDeliveryFailure {
@@ -84,16 +91,29 @@ impl NotificationWorkers {
 
 pub struct NotificationWebhooks {
     repository: Arc<dyn EmailDeliveryRepository>,
+    accounts: Arc<dyn NotificationProviderAccountRepository>,
     verifiers: HashMap<String, Arc<dyn EmailWebhookVerifier>>,
+}
+
+pub struct ReceiveNotificationWebhook<'a> {
+    pub provider: &'a str,
+    pub provider_account_id: NotificationProviderAccountId,
+    pub message_id: &'a str,
+    pub timestamp: &'a str,
+    pub signature: &'a str,
+    pub payload: &'a [u8],
+    pub received_at: OffsetDateTime,
 }
 
 impl NotificationWebhooks {
     pub fn new(
         repository: Arc<dyn EmailDeliveryRepository>,
+        accounts: Arc<dyn NotificationProviderAccountRepository>,
         verifiers: impl IntoIterator<Item = Arc<dyn EmailWebhookVerifier>>,
     ) -> Self {
         Self {
             repository,
+            accounts,
             verifiers: verifiers
                 .into_iter()
                 .map(|verifier| (verifier.name().to_owned(), verifier))
@@ -103,24 +123,105 @@ impl NotificationWebhooks {
 
     pub async fn receive(
         &self,
-        provider: &str,
-        message_id: &str,
-        timestamp: &str,
-        signature: &str,
-        payload: &[u8],
-        received_at: OffsetDateTime,
+        request: ReceiveNotificationWebhook<'_>,
     ) -> Result<bool, ApplicationError> {
+        let configuration = self
+            .accounts
+            .resolve_webhook(request.provider_account_id)
+            .await?
+            .filter(|value| value.provider == request.provider)
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "notification_provider_account",
+                id: request.provider_account_id.as_uuid().to_string(),
+            })?;
         let verifier = self
             .verifiers
-            .get(provider)
+            .get(request.provider)
             .ok_or(ApplicationError::NotFound {
                 resource: "notification_provider",
-                id: provider.to_owned(),
+                id: request.provider.to_owned(),
             })?;
         let event = verifier
-            .verify(message_id, timestamp, signature, payload, received_at)
+            .verify(
+                &configuration.webhook_secret_reference,
+                request.message_id,
+                request.timestamp,
+                request.signature,
+                request.payload,
+                request.received_at,
+            )
             .await?;
-        self.repository.record_webhook(&event).await
+        self.repository
+            .record_webhook(request.provider_account_id, &event)
+            .await
+    }
+}
+
+pub struct ConfigureNotificationProviderInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub provider: String,
+    pub display_name: String,
+    pub sender: String,
+    pub credential_secret_reference: String,
+    pub webhook_secret_reference: String,
+    pub enabled: bool,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct NotificationProviderAdministration {
+    repository: Arc<dyn NotificationProviderAccountRepository>,
+}
+
+impl NotificationProviderAdministration {
+    pub fn new(repository: Arc<dyn NotificationProviderAccountRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn list(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+    ) -> Result<Vec<NotificationProviderAccountDetail>, ApplicationError> {
+        require_owner(&actor)?;
+        self.repository.list(actor, store_id).await
+    }
+
+    pub async fn configure(
+        &self,
+        input: ConfigureNotificationProviderInput,
+    ) -> Result<NotificationProviderAccountDetail, ApplicationError> {
+        require_owner(&input.actor)?;
+        let account = NotificationProviderAccount::create(
+            input.provider,
+            input.display_name,
+            input.sender,
+            input.enabled,
+        )?;
+        let configuration = NotificationProviderAccountConfiguration {
+            credential_secret_reference: NotificationSecretReference::new(
+                input.credential_secret_reference,
+            )?,
+            webhook_secret_reference: NotificationSecretReference::new(
+                input.webhook_secret_reference,
+            )?,
+        };
+        self.repository
+            .configure(
+                input.actor,
+                input.store_id,
+                &account,
+                &configuration,
+                &input.idempotency,
+            )
+            .await
+    }
+}
+
+fn require_owner(actor: &AdminActor) -> Result<(), ApplicationError> {
+    match actor {
+        AdminActor::Store(actor) if actor.role() == StoreRole::Owner => Ok(()),
+        _ => Err(ApplicationError::Forbidden),
     }
 }
 

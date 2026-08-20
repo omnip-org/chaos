@@ -78,13 +78,13 @@ address.
 
 ## Commerce notifications
 
-Order email is an optional Commerce capability implemented through Resend. The API key
-sends transactional messages, while the webhook secret authenticates delivery, delay,
-bounce, complaint, and suppression callbacks. `EMAIL_FROM`, `RESEND_API_KEY`, and
-`RESEND_WEBHOOK_SECRET` are platform bootstrap settings for the initial deployment, not
-Identity settings. Without them, API and Worker processes still start and queued email
-deliveries remain unclaimed. Store-owned notification provider configuration may replace
-these platform settings when per-Store customization is required.
+Order email is an optional, Store-owned Commerce capability implemented through Resend.
+Each Store configures its sender plus encrypted API-key and webhook-secret references
+through MCP. The Worker resolves the enabled configuration by the delivery's `store_id`;
+without one, that Store's queued deliveries remain unclaimed. Webhook URLs include the
+Notification Provider Account ID, and delivery lookup is bound to that account before a
+signed delivery, delay, bounce, complaint, or suppression event is accepted. Identity has
+no Resend configuration.
 
 ## Request authorization
 

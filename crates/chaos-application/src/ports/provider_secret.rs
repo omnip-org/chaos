@@ -10,6 +10,8 @@ pub enum ProviderSecretKind {
     PaymentWebhook,
     ShippingCredential,
     AnalyticsCredential,
+    NotificationCredential,
+    NotificationWebhook,
 }
 
 impl ProviderSecretKind {
@@ -19,6 +21,8 @@ impl ProviderSecretKind {
             Self::PaymentWebhook => "payment-webhook",
             Self::ShippingCredential => "shipping-credential",
             Self::AnalyticsCredential => "analytics-credential",
+            Self::NotificationCredential => "notification-credential",
+            Self::NotificationWebhook => "notification-webhook",
         }
     }
 
@@ -28,6 +32,8 @@ impl ProviderSecretKind {
             "payment_webhook" => Some(Self::PaymentWebhook),
             "shipping_credential" => Some(Self::ShippingCredential),
             "analytics_credential" => Some(Self::AnalyticsCredential),
+            "notification_credential" => Some(Self::NotificationCredential),
+            "notification_webhook" => Some(Self::NotificationWebhook),
             _ => None,
         }
     }

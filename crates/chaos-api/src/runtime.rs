@@ -88,26 +88,17 @@ impl WorkerRuntime {
             payment_onboarding,
         );
 
-        let email_providers = settings
-            .resend_api_key
-            .as_ref()
-            .map(|api_key| {
-                ResendEmailProvider::new(
-                    settings.resend_api_base_url.clone(),
-                    api_key.clone(),
-                    settings.dependency_timeout,
-                )
-                .map(|provider| Arc::new(provider) as Arc<dyn EmailProvider>)
-            })
-            .transpose()?
-            .into_iter();
+        let resend_provider = Arc::new(ResendEmailProvider::new(
+            settings.resend_api_base_url.clone(),
+            dynamic_secrets.clone(),
+            settings.dependency_timeout,
+        )?) as Arc<dyn EmailProvider>;
         let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
             infrastructure.runtime_pool(),
         ));
         let notification_workers = NotificationWorkers::new(
             notification_repository,
-            email_providers,
-            settings.email_from.clone(),
+            [resend_provider],
             settings.storefront_public_base_url.to_string(),
         );
 

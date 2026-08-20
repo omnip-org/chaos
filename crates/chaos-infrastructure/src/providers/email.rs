@@ -1,14 +1,18 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        EmailDelivery, EmailMessage, EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
+        EmailDelivery, EmailMessage, EmailProvider, EmailWebhookVerifier,
+        NotificationSecretResolver, VerifiedEmailWebhook,
     },
 };
+use chaos_domain::notifications::NotificationSecretReference;
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{Client, StatusCode, Url, header};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use time::{Duration, OffsetDateTime};
@@ -17,13 +21,13 @@ use time::{Duration, OffsetDateTime};
 pub struct ResendEmailProvider {
     client: Client,
     api_base_url: Url,
-    api_key: SecretString,
+    secrets: Arc<dyn NotificationSecretResolver>,
 }
 
 impl ResendEmailProvider {
     pub fn new(
         api_base_url: Url,
-        api_key: SecretString,
+        secrets: Arc<dyn NotificationSecretResolver>,
         timeout: std::time::Duration,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
@@ -35,7 +39,7 @@ impl ResendEmailProvider {
         Ok(Self {
             client,
             api_base_url,
-            api_key,
+            secrets,
         })
     }
 }
@@ -57,23 +61,12 @@ struct ResendSendResponse {
 
 #[derive(Clone)]
 pub struct ResendWebhookVerifier {
-    signing_key: Vec<u8>,
+    secrets: Arc<dyn NotificationSecretResolver>,
 }
 
 impl ResendWebhookVerifier {
-    pub fn new(secret: &SecretString) -> anyhow::Result<Self> {
-        let encoded = secret
-            .expose_secret()
-            .strip_prefix("whsec_")
-            .unwrap_or_else(|| secret.expose_secret());
-        let signing_key = STANDARD
-            .decode(encoded)
-            .map_err(|error| anyhow::anyhow!("invalid RESEND_WEBHOOK_SECRET: {error}"))?;
-        anyhow::ensure!(
-            signing_key.len() >= 16,
-            "RESEND_WEBHOOK_SECRET must contain at least 128 bits"
-        );
-        Ok(Self { signing_key })
+    pub fn new(secrets: Arc<dyn NotificationSecretResolver>) -> Self {
+        Self { secrets }
     }
 }
 
@@ -97,12 +90,24 @@ impl EmailWebhookVerifier for ResendWebhookVerifier {
 
     async fn verify(
         &self,
+        webhook_secret_reference: &NotificationSecretReference,
         message_id: &str,
         timestamp: &str,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<VerifiedEmailWebhook, ApplicationError> {
+        let secret = self.secrets.resolve(webhook_secret_reference).await?;
+        let encoded = secret
+            .expose_secret()
+            .strip_prefix("whsec_")
+            .unwrap_or_else(|| secret.expose_secret());
+        let signing_key = STANDARD
+            .decode(encoded)
+            .map_err(|_| ApplicationError::Unauthorized)?;
+        if signing_key.len() < 16 {
+            return Err(ApplicationError::Unauthorized);
+        }
         if payload.len() > 64 * 1024 || message_id.is_empty() || message_id.len() > 255 {
             return Err(ApplicationError::Unauthorized);
         }
@@ -129,7 +134,7 @@ impl EmailWebhookVerifier for ResendWebhookVerifier {
             let Ok(expected) = STANDARD.decode(encoded) else {
                 return false;
             };
-            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&self.signing_key) else {
+            let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&signing_key) else {
                 return false;
             };
             mac.update(&signed);
@@ -181,7 +186,12 @@ impl EmailProvider for ResendEmailProvider {
         "resend"
     }
 
-    async fn send(&self, message: EmailMessage) -> Result<EmailDelivery, ApplicationError> {
+    async fn send(
+        &self,
+        credential: &NotificationSecretReference,
+        message: EmailMessage,
+    ) -> Result<EmailDelivery, ApplicationError> {
+        let api_key = self.secrets.resolve(credential).await?;
         if message.idempotency_key.is_empty() || message.idempotency_key.len() > 256 {
             return Err(ApplicationError::Conflict {
                 code: "invalid_email_idempotency_key",
@@ -200,7 +210,7 @@ impl EmailProvider for ResendEmailProvider {
             html: message.html.as_deref(),
         };
         let mut authorization =
-            header::HeaderValue::from_str(&format!("Bearer {}", self.api_key.expose_secret()))
+            header::HeaderValue::from_str(&format!("Bearer {}", api_key.expose_secret()))
                 .map_err(|error| ApplicationError::Unexpected(error.into()))?;
         authorization.set_sensitive(true);
         let response = self
@@ -259,10 +269,27 @@ mod tests {
         http::{HeaderMap, StatusCode},
         routing::post,
     };
+    use secrecy::SecretString;
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
 
     use super::*;
+
+    struct StaticSecrets(SecretString);
+
+    #[async_trait]
+    impl NotificationSecretResolver for StaticSecrets {
+        async fn resolve(
+            &self,
+            _reference: &NotificationSecretReference,
+        ) -> Result<SecretString, ApplicationError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn reference() -> NotificationSecretReference {
+        NotificationSecretReference::new("enc://test-secret").expect("reference")
+    }
 
     #[derive(Clone, Default)]
     struct RecordedRequest {
@@ -313,7 +340,7 @@ mod tests {
         });
         let provider = ResendEmailProvider::new(
             Url::parse(&format!("http://localhost:{}/", address.port())).expect("URL"),
-            SecretString::from("re_test_secret"),
+            Arc::new(StaticSecrets(SecretString::from("re_test_secret"))),
             std::time::Duration::from_secs(1),
         )
         .expect("provider");
@@ -341,7 +368,10 @@ mod tests {
         )
         .await;
 
-        let delivery = provider.send(message()).await.expect("delivery");
+        let delivery = provider
+            .send(&reference(), message())
+            .await
+            .expect("delivery");
 
         assert_eq!(delivery.provider_message_id, "email_123");
         let recorded = recorded.lock().expect("request lock").clone();
@@ -357,7 +387,10 @@ mod tests {
         let (provider, server) =
             provider_for(Router::new().route("/emails", post(rate_limited))).await;
 
-        let error = provider.send(message()).await.expect_err("rate limit");
+        let error = provider
+            .send(&reference(), message())
+            .await
+            .expect_err("rate limit");
 
         assert!(matches!(error, ApplicationError::Unavailable { .. }));
         server.abort();
@@ -367,7 +400,10 @@ mod tests {
     async fn resend_classifies_invalid_requests_as_permanent() {
         let (provider, server) = provider_for(Router::new().route("/emails", post(rejected))).await;
 
-        let error = provider.send(message()).await.expect_err("rejection");
+        let error = provider
+            .send(&reference(), message())
+            .await
+            .expect_err("rejection");
 
         assert!(matches!(
             error,
@@ -383,7 +419,7 @@ mod tests {
     async fn resend_webhook_verifies_raw_body_signature_and_timestamp() {
         let key = b"0123456789abcdef0123456789abcdef";
         let secret = SecretString::from(format!("whsec_{}", STANDARD.encode(key)));
-        let verifier = ResendWebhookVerifier::new(&secret).expect("verifier");
+        let verifier = ResendWebhookVerifier::new(Arc::new(StaticSecrets(secret)));
         let received_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time");
         let timestamp = received_at.unix_timestamp().to_string();
         let message_id = "msg_019123";
@@ -397,7 +433,14 @@ mod tests {
         let signature = format!("v1,{}", STANDARD.encode(mac.finalize().into_bytes()));
 
         let event = verifier
-            .verify(message_id, &timestamp, &signature, payload, received_at)
+            .verify(
+                &reference(),
+                message_id,
+                &timestamp,
+                &signature,
+                payload,
+                received_at,
+            )
             .await
             .expect("verified webhook");
 
@@ -406,13 +449,21 @@ mod tests {
         assert_eq!(event.provider_event_type, "email.delivered");
         assert!(
             verifier
-                .verify(message_id, &timestamp, "v1,AAAAAAAA", payload, received_at,)
+                .verify(
+                    &reference(),
+                    message_id,
+                    &timestamp,
+                    "v1,AAAAAAAA",
+                    payload,
+                    received_at,
+                )
                 .await
                 .is_err()
         );
         assert!(
             verifier
                 .verify(
+                    &reference(),
                     message_id,
                     &timestamp,
                     &signature,

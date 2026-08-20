@@ -25,10 +25,7 @@ pub struct Settings {
     pub mcp_allowed_hosts: Vec<String>,
     pub google_client_id: Option<String>,
     pub apple_client_id: Option<String>,
-    pub email_from: String,
     pub storefront_public_base_url: Url,
-    pub resend_api_key: Option<SecretString>,
-    pub resend_webhook_secret: Option<SecretString>,
     pub resend_api_base_url: Url,
     pub payment_webhook_secret: String,
     pub stripe_api_base_url: Url,
@@ -94,7 +91,6 @@ impl Settings {
         let database_url = required("DATABASE_URL")?;
         let database_identity_url =
             optional("DATABASE_IDENTITY_URL").unwrap_or_else(|| database_url.clone());
-        let email_from = optional("EMAIL_FROM");
         let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
             database_url,
@@ -123,13 +119,10 @@ impl Settings {
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
-            email_from: email_from.clone().unwrap_or_default(),
             storefront_public_base_url: parse_or(
                 "STOREFRONT_PUBLIC_BASE_URL",
                 "http://localhost:4321/",
             )?,
-            resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
-            resend_webhook_secret: optional("RESEND_WEBHOOK_SECRET").map(SecretString::from),
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
             payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
@@ -159,12 +152,6 @@ impl Settings {
                 .unwrap_or_else(|_| "chaos=debug,chaos_api=debug,tower_http=info".into()),
             log_json: parse_or("LOG_JSON", "false")?,
         };
-        if settings.resend_api_key.is_some() != settings.resend_webhook_secret.is_some() {
-            bail!("RESEND_API_KEY and RESEND_WEBHOOK_SECRET must be set together");
-        }
-        if settings.resend_api_key.is_some() && email_from.is_none() {
-            bail!("EMAIL_FROM must be set when Resend is enabled");
-        }
         if settings.dependency_timeout.is_zero()
             || settings.dependency_timeout > Duration::from_secs(10)
         {

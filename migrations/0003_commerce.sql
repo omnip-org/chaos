@@ -4343,6 +4343,66 @@ CREATE POLICY store_isolation ON commerce.return_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
+-- === Notification Providers ===
+
+CREATE TABLE commerce.notification_provider_accounts (
+    id                          UUID        NOT NULL PRIMARY KEY,
+    store_id                    UUID        NOT NULL,
+    provider                    TEXT        NOT NULL,
+    display_name                TEXT        NOT NULL,
+    sender                      TEXT        NOT NULL,
+    credential_secret_reference TEXT        NOT NULL,
+    webhook_secret_reference    TEXT        NOT NULL,
+    enabled                     BOOLEAN     NOT NULL DEFAULT false,
+    created_by_user_id          UUID        NOT NULL,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (store_id, provider),
+    UNIQUE (store_id, id),
+    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT notification_provider_accounts_provider_check CHECK (provider = 'resend'),
+    CONSTRAINT notification_provider_accounts_display_name_check CHECK (
+        length(trim(display_name)) BETWEEN 1 AND 120
+    ),
+    CONSTRAINT notification_provider_accounts_sender_check CHECK (
+        length(sender) BETWEEN 3 AND 320 AND sender LIKE '%@%'
+    ),
+    CONSTRAINT notification_provider_accounts_credential_reference_check CHECK (
+        length(credential_secret_reference) BETWEEN 8 AND 32768
+    ),
+    CONSTRAINT notification_provider_accounts_webhook_reference_check CHECK (
+        length(webhook_secret_reference) BETWEEN 8 AND 32768
+    )
+);
+
+CREATE INDEX notification_provider_accounts_store_enabled_idx
+    ON commerce.notification_provider_accounts (store_id, provider)
+    WHERE enabled;
+
+ALTER TABLE commerce.notification_provider_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.notification_provider_accounts FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY store_isolation ON commerce.notification_provider_accounts
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE FUNCTION commerce.resolve_notification_webhook(provider_account_id UUID)
+RETURNS TABLE (store_id UUID, provider TEXT, webhook_secret_reference TEXT)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT account.store_id, account.provider, account.webhook_secret_reference
+     FROM commerce.notification_provider_accounts AS account
+     WHERE account.id = provider_account_id;
+$$;
+
+REVOKE ALL ON FUNCTION commerce.resolve_notification_webhook(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION commerce.resolve_notification_webhook(UUID) TO chaos_runtime;
+
 COMMENT ON INDEX commerce.checkouts_expiry_claim_idx IS
     'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
 

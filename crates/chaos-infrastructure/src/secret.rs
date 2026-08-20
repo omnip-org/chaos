@@ -9,13 +9,13 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        MetaDeliveryError, PaymentSecretResolver, ProviderSecretKind, ProviderSecretWriter,
-        ShippingSecretResolver,
+        MetaDeliveryError, NotificationSecretResolver, PaymentSecretResolver, ProviderSecretKind,
+        ProviderSecretWriter, ShippingSecretResolver,
     },
 };
 use chaos_domain::{
-    fulfillment::ShippingSecretReference, identity::UserId, payments::PaymentSecretReference,
-    store::StoreId,
+    fulfillment::ShippingSecretReference, identity::UserId,
+    notifications::NotificationSecretReference, payments::PaymentSecretReference, store::StoreId,
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -98,6 +98,21 @@ impl ShippingSecretResolver for DynamicSecretResolver {
             .map_err(|_| ApplicationError::Conflict {
                 code: "shipping_provider_credentials_unavailable",
                 message: "The shipping provider credentials are unavailable",
+            })
+    }
+}
+
+#[async_trait]
+impl NotificationSecretResolver for DynamicSecretResolver {
+    async fn resolve(
+        &self,
+        reference: &NotificationSecretReference,
+    ) -> Result<SecretString, ApplicationError> {
+        self.resolve_reference(reference.expose_reference(), "CHAOS_NOTIFICATION_SECRET_")
+            .await
+            .map_err(|_| ApplicationError::Unavailable {
+                service: "notification_secret_manager",
+                source: anyhow::anyhow!("Notification Provider credentials are unavailable"),
             })
     }
 }

@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
+pub mod notifications;
 pub mod payments;
 pub mod pricing;
 pub mod sales;

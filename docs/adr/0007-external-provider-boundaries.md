@@ -51,11 +51,11 @@ A separate `logistics` bounded context is deferred. It becomes justified only wh
 
 Notifications are an integration capability, not the source of truth for authentication, Orders, Payments, or Fulfillments. Domain and application workflows emit semantic events such as `order.confirmed`, `fulfillment.shipped`, or `refund.succeeded`. Notification policy decides whether an event produces email, SMS, push, or no delivery.
 
-The notification application boundary owns delivery requests, templates and template versions, recipient policy, suppression state, and delivery status. An `EmailProvider` port is implemented by a Resend adapter. Ordinary business transactions write notification requests or semantic events atomically to an outbox; notification workers render an approved template and send with a stable provider idempotency key.
+The notification application boundary owns Store-scoped Provider Accounts, delivery requests, templates and template versions, recipient policy, suppression state, and delivery status. An `EmailProvider` port is implemented by a Resend adapter. Store Owners configure encrypted credential and webhook-secret references through MCP. Ordinary business transactions write notification requests or semantic events atomically to an outbox; notification workers resolve the enabled Provider Account by Store, render an approved template, and send with a stable provider idempotency key.
 
 Identity authentication is delegated to external OIDC providers and does not use email links. Commerce notification email remains asynchronous and contains only non-secret semantic references in its durable outbox.
 
-Resend webhook requests are verified from the raw body, deduplicated by delivery identity, and may update delivery status or suppression records. Delivery, bounce, and complaint events never reverse the business transaction that requested the message. Provider credentials must not be written to logs, metrics, general event payloads, or reusable templates.
+Resend webhook requests use a Provider-Account-specific URL and encrypted signing secret, are verified from the raw body, deduplicated within that Provider Account, and may update only deliveries bound to that account. Delivery, bounce, and complaint events never reverse the business transaction that requested the message. Provider credentials must not be written to logs, metrics, general event payloads, or reusable templates.
 
 ### Reliability and worker ownership
 

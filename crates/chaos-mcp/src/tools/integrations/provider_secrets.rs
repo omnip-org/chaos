@@ -19,7 +19,7 @@ use crate::{
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateProviderSecretParams {
     /// One of: payment_credential, payment_webhook, shipping_credential,
-    /// analytics_credential.
+    /// analytics_credential, notification_credential, notification_webhook.
     pub kind: String,
     /// The secret value to store, e.g. an Publishable Key or webhook signing secret.
     /// Returned as an opaque reference, never in plaintext, from any read path.
@@ -31,7 +31,7 @@ pub struct CreateProviderSecretParams {
 #[tool_router(router = provider_secrets_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Store a provider secret (payment/shipping/analytics credential) in the \
+        description = "Store a provider secret (payment/shipping/analytics/notification credential) in the \
                         selected Store. The value is encrypted at rest and \
                         referenced by an opaque string thereafter; it cannot be read back. \
                         This tool has no idempotency_key parameter because the underlying \
@@ -64,7 +64,8 @@ impl ChaosMcp {
                 return Ok(CallToolResult::structured_error(json!({
                     "code": "invalid_params",
                     "message": "kind must be one of: payment_credential, payment_webhook, \
-                                shipping_credential, analytics_credential",
+                                shipping_credential, analytics_credential, notification_credential, \
+                                notification_webhook",
                 })));
             }
         };
