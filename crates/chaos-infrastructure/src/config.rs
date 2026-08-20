@@ -25,7 +25,6 @@ pub struct Settings {
     pub mcp_allowed_hosts: Vec<String>,
     pub google_client_id: Option<String>,
     pub apple_client_id: Option<String>,
-    pub smtp_url: Option<String>,
     pub email_from: String,
     pub storefront_public_base_url: Url,
     pub resend_api_key: Option<SecretString>,
@@ -95,6 +94,7 @@ impl Settings {
         let database_url = required("DATABASE_URL")?;
         let database_identity_url =
             optional("DATABASE_IDENTITY_URL").unwrap_or_else(|| database_url.clone());
+        let email_from = optional("EMAIL_FROM");
         let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
             database_url,
@@ -123,8 +123,7 @@ impl Settings {
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
-            smtp_url: optional("SMTP_URL"),
-            email_from: required("EMAIL_FROM")?,
+            email_from: email_from.clone().unwrap_or_default(),
             storefront_public_base_url: parse_or(
                 "STOREFRONT_PUBLIC_BASE_URL",
                 "http://localhost:4321/",
@@ -163,8 +162,8 @@ impl Settings {
         if settings.resend_api_key.is_some() != settings.resend_webhook_secret.is_some() {
             bail!("RESEND_API_KEY and RESEND_WEBHOOK_SECRET must be set together");
         }
-        if settings.resend_api_key.is_none() && settings.smtp_url.is_none() {
-            bail!("either SMTP_URL or RESEND_API_KEY (with RESEND_WEBHOOK_SECRET) must be set");
+        if settings.resend_api_key.is_some() && email_from.is_none() {
+            bail!("EMAIL_FROM must be set when Resend is enabled");
         }
         if settings.dependency_timeout.is_zero()
             || settings.dependency_timeout > Duration::from_secs(10)

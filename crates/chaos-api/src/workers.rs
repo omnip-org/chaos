@@ -6,6 +6,11 @@ pub async fn run(
     lifecycle: Lifecycle,
     worker_shutdown_timeout: std::time::Duration,
 ) {
+    let heartbeat_worker = tokio::spawn(heartbeat_worker_loop(
+        runtime.infrastructure.clone(),
+        runtime.clock.clone(),
+        lifecycle.clone(),
+    ));
     let payment_worker = tokio::spawn(payment_worker_loop(
         runtime.payment_workers.clone(),
         runtime.clock.clone(),
@@ -49,7 +54,25 @@ pub async fn run(
             checkout_expiry_worker,
             worker_shutdown_timeout
         ),
+        drain_worker("heartbeat", heartbeat_worker, worker_shutdown_timeout),
     );
+}
+
+async fn heartbeat_worker_loop(
+    infrastructure: chaos_infrastructure::state::AppState,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let instance_id = Uuid::now_v7();
+    while lifecycle.is_accepting_traffic() {
+        if let Err(error) = infrastructure
+            .record_worker_heartbeat(instance_id, clock.now())
+            .await
+        {
+            tracing::warn!(%instance_id, %error, "Worker heartbeat failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
 }
 
 struct PollBackoff {

@@ -95,6 +95,14 @@ curl --fail https://api.example.com/health/ready
 
 ## Deployment secrets and rotation
 
-The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, email, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. It is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, optional Commerce notification email, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Resend is disabled unless `EMAIL_FROM`, `RESEND_API_KEY`, and `RESEND_WEBHOOK_SECRET` are configured together. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+
+## Monitoring alerts
+
+The API `/metrics` endpoint exports dependency, Worker heartbeat, queue backlog, and
+dead-letter gauges. Load `deploy/monitoring/alerts.yml` into an existing
+Prometheus-compatible ruler after configuring it to scrape that endpoint. Chaos does not
+deploy a monitoring stack or notification receiver; the rule file is the minimal alerting
+contract for the surrounding platform.
 
 Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

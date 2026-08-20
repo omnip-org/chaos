@@ -40,6 +40,9 @@ REVOKE DELETE
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
     ON integration.event_consumer_registry FROM chaos_runtime;
 
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE
+    ON integration.worker_heartbeats FROM chaos_runtime;
+
 REVOKE UPDATE, DELETE
     ON integration.webhook_inbox,
        integration.outbox_events,

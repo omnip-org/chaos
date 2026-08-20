@@ -34,26 +34,22 @@ mod storefront_sales;
 #[path = "shared/test_support.rs"]
 mod test_support;
 
-use anyhow::Context as _;
 use axum::Router;
 use chaos_application::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsWorkers},
+    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy},
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
         CreateProduct, MediaAdministration, ReviewAdministration, StorefrontCollections,
         StorefrontReviews,
     },
-    fulfillment::{
-        FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
-        ShippingProviderAdministration,
-    },
+    fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
-    notifications::{NotificationWebhooks, NotificationWorkers},
-    payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
+    notifications::NotificationWebhooks,
+    payments::{PaymentProviderAdministration, PaymentService},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
-    sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
+    sales::{CustomerService, OrderManagement, StorefrontSales},
     store::{
         CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
         PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
@@ -67,13 +63,12 @@ use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
     easypost::EasyPostShippingProvider,
-    email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
+    email::ResendWebhookVerifier,
     identity::{
         JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
         PostgresAccessKeyRepository, PostgresIdentityRepository, SecureAccessKeyMaterialGenerator,
     },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
-    meta::MetaConversionsDestination,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
         PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
@@ -83,11 +78,11 @@ use chaos_infrastructure::{
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
-        PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStoreReadRepository,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresTaxRuleRepository, SandboxPaymentProvider, SecurePublishableKeyMaterialGenerator,
+        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        SecurePublishableKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
@@ -144,22 +139,16 @@ pub struct ApiState {
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
-    pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
     pub customer_service: Arc<CustomerService>,
-    pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
-    pub payment_workers: Arc<PaymentWorkers>,
-    pub notification_workers: Arc<NotificationWorkers>,
     pub notification_webhooks: Arc<NotificationWebhooks>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
-    pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub shipping_management: Arc<ShippingManagement>,
     pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
-    pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
 }
@@ -171,20 +160,6 @@ impl ApiState {
         settings: &Settings,
     ) -> anyhow::Result<Self> {
         let metrics = crate::telemetry::init_metrics()?;
-        let email_provider: Arc<dyn chaos_application::ports::EmailProvider> =
-            if let Some(api_key) = &settings.resend_api_key {
-                Arc::new(ResendEmailProvider::new(
-                    settings.resend_api_base_url.clone(),
-                    api_key.clone(),
-                    settings.dependency_timeout,
-                )?)
-            } else {
-                let smtp_url = settings
-                    .smtp_url
-                    .as_deref()
-                    .context("SMTP_URL must be set when RESEND_API_KEY is not")?;
-                Arc::new(SmtpEmailProvider::new(smtp_url)?)
-            };
         let identity_providers = [
             settings
                 .google_client_id
@@ -333,28 +308,20 @@ impl ApiState {
             analytics_repository.clone(),
             analytics_repository.clone(),
         );
-        let analytics_privacy = AnalyticsPrivacy::new(analytics_repository.clone());
+        let analytics_privacy = AnalyticsPrivacy::new(analytics_repository);
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =
             ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());
-        let meta_destination = Arc::new(MetaConversionsDestination::new(
-            settings.analytics_meta_api_base_url.clone(),
-            settings.dependency_timeout,
-            dynamic_secrets.clone(),
-        )?);
-        let analytics_workers = AnalyticsWorkers::new(analytics_repository, meta_destination);
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
-        let storefront_sales_repository = Arc::new(PostgresStorefrontSalesRepository::new(
-            infrastructure.runtime_pool(),
+        let storefront_sales = StorefrontSales::new(Arc::new(
+            PostgresStorefrontSalesRepository::new(infrastructure.runtime_pool()),
         ));
-        let storefront_sales = StorefrontSales::new(storefront_sales_repository.clone());
         let customer_service = CustomerService::new(Arc::new(PostgresCustomerRepository::new(
             infrastructure.runtime_pool(),
             infrastructure.identity_pool(),
         )));
-        let checkout_expiry_workers = CheckoutExpiryWorkers::new(storefront_sales_repository);
         let order_management = OrderManagement::new(Arc::new(
             PostgresOrderManagementRepository::new(infrastructure.runtime_pool()),
         ));
@@ -409,27 +376,9 @@ impl ApiState {
             payment_repository.clone(),
             payment_onboarding.clone(),
         );
-        let payment_workers = PaymentWorkers::new(
-            payment_repository.clone(),
-            payment_repository.clone(),
-            payment_repository,
-            providers,
-            payment_onboarding,
-        );
         let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let notification_providers = if email_provider.name() == "resend" {
-            vec![email_provider]
-        } else {
-            Vec::new()
-        };
-        let notification_workers = NotificationWorkers::new(
-            notification_repository.clone(),
-            notification_providers,
-            settings.email_from.clone(),
-            settings.storefront_public_base_url.to_string(),
-        );
         let notification_verifiers = settings
             .resend_webhook_secret
             .as_ref()
@@ -444,7 +393,7 @@ impl ApiState {
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let fulfillment_management = FulfillmentManagement::new(fulfillment_repository.clone());
+        let fulfillment_management = FulfillmentManagement::new(fulfillment_repository);
         let shipping_repository = Arc::new(PostgresShippingServiceRepository::new(
             infrastructure.runtime_pool(),
         ));
@@ -457,15 +406,9 @@ impl ApiState {
             )?);
         let shipping_provider_administration = ShippingProviderAdministration::new(
             shipping_repository.clone(),
-            shipping_repository.clone(),
-            [shipping_provider.clone()],
-        );
-        let fulfillment_workers = FulfillmentWorkers::new(
-            fulfillment_repository,
             shipping_repository,
             [shipping_provider],
         );
-        let search_indexer = PostgresSearchIndexer::new(infrastructure.runtime_pool());
         let shopper_credentials = HmacShopperCredentialCodec::new(
             settings.shopper_token_active_key_id.clone(),
             settings.shopper_token_active_secret.as_bytes().to_vec(),
@@ -506,22 +449,16 @@ impl ApiState {
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
             analytics_privacy: Arc::new(analytics_privacy),
-            analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
             customer_service: Arc::new(customer_service),
-            checkout_expiry_workers: Arc::new(checkout_expiry_workers),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             payment_provider_administration: Arc::new(payment_provider_administration),
-            payment_workers: Arc::new(payment_workers),
-            notification_workers: Arc::new(notification_workers),
             notification_webhooks: Arc::new(notification_webhooks),
             fulfillment_management: Arc::new(fulfillment_management),
-            fulfillment_workers: Arc::new(fulfillment_workers),
             shipping_management: Arc::new(shipping_management),
             shipping_provider_administration: Arc::new(shipping_provider_administration),
-            search_indexer: Arc::new(search_indexer),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),
         })
@@ -619,7 +556,6 @@ mod tests {
             mcp_allowed_hosts: vec!["localhost".into()],
             google_client_id: Some("test-google-client".into()),
             apple_client_id: None,
-            smtp_url: Some("smtp://localhost:1025".into()),
             email_from: "Chaos <no-reply@localhost>".into(),
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             resend_api_key: None,

@@ -455,11 +455,12 @@ mod tests {
         let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
-            state
-                .search_indexer
-                .run_batch(100, state.clock.now())
-                .await
-                .unwrap()
+            chaos_infrastructure::repositories::PostgresSearchIndexer::new(
+                state.infrastructure.runtime_pool(),
+            )
+            .run_batch(100, state.clock.now())
+            .await
+            .unwrap()
                 >= 2
         );
         let authorize = format!("Bearer {}", material.plaintext.expose_secret());

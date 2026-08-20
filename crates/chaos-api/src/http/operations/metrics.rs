@@ -35,6 +35,15 @@ async fn scrape(State(state): State<ApiState>) -> impl IntoResponse {
         ::metrics::gauge!("chaos_outbox_dead_letter").set(dead_letter as f64);
         ::metrics::gauge!("chaos_outbox_oldest_pending_seconds").set(oldest);
     }
+    if let Ok((heartbeat_age, healthy)) = sqlx::query_as::<_, (f64, bool)>(
+        "SELECT heartbeat_age_seconds, healthy FROM integration.worker_health()",
+    )
+    .fetch_one(&pool)
+    .await
+    {
+        ::metrics::gauge!("chaos_worker_heartbeat_age_seconds").set(heartbeat_age);
+        ::metrics::gauge!("chaos_worker_healthy").set(f64::from(healthy));
+    }
     if let Ok((due, retrying, expiring, action_required)) =
         sqlx::query_as::<_, (i64, i64, i64, i64)>(
             "SELECT * FROM commerce.provider_readiness_metrics()",

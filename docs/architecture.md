@@ -72,6 +72,20 @@ Identity uses a dedicated non-owner database role because sign-in and Access Key
 
 Automatic account linking by email is not supported. A different Provider presenting an email already assigned to a User receives a conflict. Explicit Provider linking can be added later as an authenticated use case.
 
+Identity does not send authentication email. A verified Provider email is profile and
+account-conflict data only; Google or Apple remains responsible for authenticating the
+address.
+
+## Commerce notifications
+
+Order email is an optional Commerce capability implemented through Resend. The API key
+sends transactional messages, while the webhook secret authenticates delivery, delay,
+bounce, complaint, and suppression callbacks. `EMAIL_FROM`, `RESEND_API_KEY`, and
+`RESEND_WEBHOOK_SECRET` are platform bootstrap settings for the initial deployment, not
+Identity settings. Without them, API and Worker processes still start and queued email
+deliveries remain unclaimed. Store-owned notification provider configuration may replace
+these platform settings when per-Store customization is required.
+
 ## Request authorization
 
 Every Store-owned table includes `store_id`. Every Store transaction sets transaction-local `app.store_id`; User directory reads additionally set `app.user_id`. PostgreSQL RLS is defense in depth, and the runtime role neither owns tables nor bypasses RLS.

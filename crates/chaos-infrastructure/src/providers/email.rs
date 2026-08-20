@@ -7,65 +7,11 @@ use chaos_application::{
     },
 };
 use hmac::{Hmac, KeyInit, Mac};
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{Mailbox, header::ContentType},
-};
 use reqwest::{Client, StatusCode, Url, header};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use time::{Duration, OffsetDateTime};
-
-#[derive(Clone)]
-pub struct SmtpEmailProvider {
-    mailer: AsyncSmtpTransport<Tokio1Executor>,
-}
-
-impl SmtpEmailProvider {
-    pub fn new(smtp_url: &str) -> anyhow::Result<Self> {
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::from_url(smtp_url)
-            .map_err(|error| anyhow::anyhow!("invalid SMTP_URL: {error}"))?
-            .build();
-        Ok(Self { mailer })
-    }
-}
-
-#[async_trait]
-impl EmailProvider for SmtpEmailProvider {
-    fn name(&self) -> &'static str {
-        "smtp"
-    }
-
-    async fn send(&self, message: EmailMessage) -> Result<EmailDelivery, ApplicationError> {
-        let mut builder = Message::builder()
-            .from(parse_mailbox(&message.from)?)
-            .to(parse_mailbox(&message.to)?)
-            .subject(message.subject);
-        let email = if let Some(html) = message.html {
-            builder
-                .multipart(lettre::message::MultiPart::alternative_plain_html(
-                    message.text,
-                    html,
-                ))
-                .map_err(unexpected_email_error)?
-        } else {
-            builder = builder.header(ContentType::TEXT_PLAIN);
-            builder.body(message.text).map_err(unexpected_email_error)?
-        };
-        let response =
-            self.mailer
-                .send(email)
-                .await
-                .map_err(|error| ApplicationError::Unavailable {
-                    service: "email",
-                    source: error.into(),
-                })?;
-        Ok(EmailDelivery {
-            provider_message_id: response.message().next().unwrap_or("accepted").to_owned(),
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct ResendEmailProvider {
@@ -300,16 +246,6 @@ impl EmailProvider for ResendEmailProvider {
             provider_message_id: response.id,
         })
     }
-}
-
-fn parse_mailbox(value: &str) -> Result<Mailbox, ApplicationError> {
-    value
-        .parse::<Mailbox>()
-        .map_err(|error| ApplicationError::Unexpected(anyhow::anyhow!(error)))
-}
-
-fn unexpected_email_error(error: lettre::error::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

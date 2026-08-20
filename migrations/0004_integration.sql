@@ -50,6 +50,60 @@ CREATE TABLE integration.idempotency_records (
     )
 );
 
+CREATE TABLE integration.worker_heartbeats (
+    component       TEXT        NOT NULL PRIMARY KEY,
+    instance_id     UUID        NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL,
+    heartbeat_at    TIMESTAMPTZ NOT NULL,
+
+    CONSTRAINT worker_heartbeats_component_check CHECK (
+        component = 'worker'
+    ),
+    CONSTRAINT worker_heartbeats_time_check CHECK (
+        heartbeat_at >= started_at
+    )
+);
+
+CREATE FUNCTION integration.record_worker_heartbeat(
+    worker_instance_id UUID,
+    observed_at TIMESTAMPTZ
+)
+RETURNS VOID
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    INSERT INTO integration.worker_heartbeats (
+        component, instance_id, started_at, heartbeat_at
+    ) VALUES (
+        'worker', worker_instance_id, observed_at, observed_at
+    )
+    ON CONFLICT (component) DO UPDATE
+       SET instance_id = EXCLUDED.instance_id,
+           started_at = CASE
+               WHEN integration.worker_heartbeats.instance_id = EXCLUDED.instance_id
+                   THEN integration.worker_heartbeats.started_at
+               ELSE EXCLUDED.started_at
+           END,
+           heartbeat_at = EXCLUDED.heartbeat_at;
+$$;
+
+CREATE FUNCTION integration.worker_health()
+RETURNS TABLE (heartbeat_age_seconds DOUBLE PRECISION, healthy BOOLEAN)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT COALESCE(
+               extract(epoch FROM CURRENT_TIMESTAMP - max(heartbeat_at)),
+               1000000000
+           )::DOUBLE PRECISION,
+           COALESCE(max(heartbeat_at) >= CURRENT_TIMESTAMP - INTERVAL '30 seconds', false)
+      FROM integration.worker_heartbeats;
+$$;
+
 CREATE TABLE integration.webhook_inbox (
     id                         UUID        NOT NULL PRIMARY KEY,
     store_id                   UUID        NOT NULL,
@@ -592,6 +646,12 @@ REVOKE ALL ON FUNCTION integration.enqueue_outbox_event() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event() FROM PUBLIC;
 
+REVOKE ALL ON FUNCTION integration.record_worker_heartbeat(
+    UUID, TIMESTAMPTZ
+) FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION integration.worker_health() FROM PUBLIC;
+
 REVOKE ALL ON FUNCTION integration.claim_routed_outbox_events(
     TEXT, INTEGER
 ) FROM PUBLIC;
@@ -645,11 +705,20 @@ GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
 
+GRANT EXECUTE ON FUNCTION integration.record_worker_heartbeat(
+    UUID, TIMESTAMPTZ
+) TO chaos_runtime;
+
+GRANT EXECUTE ON FUNCTION integration.worker_health() TO chaos_runtime;
+
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
     ON integration.event_consumer_registry FROM chaos_runtime;
+
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE
+    ON integration.worker_heartbeats FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
     ON integration.webhook_inbox, integration.outbox_events FROM chaos_runtime;

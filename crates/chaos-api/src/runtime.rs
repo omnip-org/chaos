@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Context as _;
 use chaos_application::{
     analytics::AnalyticsWorkers,
     fulfillment::FulfillmentWorkers,
@@ -17,7 +16,7 @@ use chaos_infrastructure::{
     meta::MetaConversionsDestination,
     providers::{
         easypost::EasyPostShippingProvider,
-        email::{ResendEmailProvider, SmtpEmailProvider},
+        email::ResendEmailProvider,
         stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider},
     },
     repositories::{
@@ -33,6 +32,7 @@ use chaos_infrastructure::{
 /// Dependencies used by durable polling loops, without HTTP or MCP state.
 #[derive(Clone)]
 pub struct WorkerRuntime {
+    pub infrastructure: AppState,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub notification_workers: Arc<NotificationWorkers>,
@@ -88,31 +88,25 @@ impl WorkerRuntime {
             payment_onboarding,
         );
 
-        let email_provider: Arc<dyn EmailProvider> = if let Some(api_key) = &settings.resend_api_key
-        {
-            Arc::new(ResendEmailProvider::new(
-                settings.resend_api_base_url.clone(),
-                api_key.clone(),
-                settings.dependency_timeout,
-            )?)
-        } else {
-            let smtp_url = settings
-                .smtp_url
-                .as_deref()
-                .context("SMTP_URL must be set when RESEND_API_KEY is not")?;
-            Arc::new(SmtpEmailProvider::new(smtp_url)?)
-        };
+        let email_providers = settings
+            .resend_api_key
+            .as_ref()
+            .map(|api_key| {
+                ResendEmailProvider::new(
+                    settings.resend_api_base_url.clone(),
+                    api_key.clone(),
+                    settings.dependency_timeout,
+                )
+                .map(|provider| Arc::new(provider) as Arc<dyn EmailProvider>)
+            })
+            .transpose()?
+            .into_iter();
         let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let notification_providers = if email_provider.name() == "resend" {
-            vec![email_provider]
-        } else {
-            Vec::new()
-        };
         let notification_workers = NotificationWorkers::new(
             notification_repository,
-            notification_providers,
+            email_providers,
             settings.email_from.clone(),
             settings.storefront_public_base_url.to_string(),
         );
@@ -139,6 +133,7 @@ impl WorkerRuntime {
         ));
 
         Ok(Self {
+            infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
             fulfillment_workers: Arc::new(fulfillment_workers),
             notification_workers: Arc::new(notification_workers),

@@ -56,7 +56,6 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         mcp_allowed_hosts: vec!["localhost".into()],
         google_client_id: Some("test-google-client".into()),
         apple_client_id: None,
-        smtp_url: Some("smtp://localhost:1025".into()),
         email_from: "Chaos <no-reply@localhost>".into(),
         storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
         resend_api_key: None,
