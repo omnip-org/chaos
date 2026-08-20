@@ -15,7 +15,7 @@ The initial schema migration activates all three extensions. Their objects remai
 ## Activation requirements
 
 - `pg_cron` is preloaded for the `chaos` database and uses PostgreSQL background workers. Scheduling permissions require a dedicated migration and a reviewed job-execution role.
-- `pgmq` does not require a background worker. Its future queues will create tables in the `pgmq` schema and require an explicit retention, retry, and dead-letter policy.
+- `pgmq` does not require a background worker. Integration migrations create the queues listed in ADR 0029. Runtime roles do not receive direct access to the `pgmq` schema; narrowly granted `integration` routines claim and finish messages while updating authoritative records in the same transaction.
 - `pg_partman` builds on native declarative partitioning and is installed in the dedicated `partman` schema. Partition ownership and maintenance permissions require a dedicated role before the first managed partition set is created.
 
 Extensions must not bypass bounded-context ownership. Business code accesses extension APIs through application ports, and extension-owned schemas are never used as substitutes for Store isolation.

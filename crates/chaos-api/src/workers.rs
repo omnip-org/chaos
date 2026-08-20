@@ -94,7 +94,7 @@ async fn analytics_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0usize;
-        match workers.run_server_event_batch(worker_id, now, 100).await {
+        match workers.run_server_event_batch(now, 100).await {
             Ok(count) => {
                 ::metrics::counter!("chaos_analytics_server_events_claimed_total")
                     .increment(count as u64);
@@ -104,7 +104,7 @@ async fn analytics_worker_loop(
                 tracing::warn!(%worker_id, %error, "analytics server event batch failed");
             }
         }
-        match workers.run_meta_delivery_batch(worker_id, now, 100).await {
+        match workers.run_meta_delivery_batch(now, 10).await {
             Ok(count) => {
                 ::metrics::counter!("chaos_analytics_meta_deliveries_claimed_total")
                     .increment(count as u64);
@@ -155,13 +155,12 @@ async fn notification_worker_loop(
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
-    let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let processed = match workers.run_batch(worker_id, clock.now(), 50).await {
+        let processed = match workers.run_batch(clock.now(), 10).await {
             Ok(count) => count,
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "notification delivery batch failed");
+                tracing::warn!(%error, "notification delivery batch failed");
                 0
             }
         };
@@ -196,13 +195,12 @@ async fn search_worker_loop(
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
-    let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let processed = match indexer.run_batch(worker_id, 100, clock.now()).await {
+        let processed = match indexer.run_batch(100, clock.now()).await {
             Ok(count) => count as usize,
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "search indexing batch failed");
+                tracing::warn!(%error, "search indexing batch failed");
                 0
             }
         };
@@ -220,13 +218,13 @@ async fn payment_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0usize;
-        match workers.run_outbox_batch(worker_id, now, 50).await {
+        match workers.run_outbox_batch(now, 10).await {
             Ok(count) => processed += count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "payment outbox batch failed");
             }
         }
-        match workers.run_webhook_batch(worker_id, now, 50).await {
+        match workers.run_webhook_batch(now, 50).await {
             Ok(count) => processed += count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "payment webhook batch failed");
@@ -252,7 +250,7 @@ async fn fulfillment_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0usize;
-        match workers.run_batch(worker_id, now, 50).await {
+        match workers.run_batch(now, 50).await {
             Ok(count) => processed += count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "fulfillment event batch failed");

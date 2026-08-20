@@ -94,14 +94,10 @@ impl FulfillmentWorkers {
 
     pub async fn run_batch(
         &self,
-        worker_id: Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .queue
-            .claim_events(worker_id, limit, now, now - Duration::minutes(1))
-            .await?;
+        let jobs = self.queue.claim_events(limit).await?;
         for job in &jobs {
             let result = self
                 .queue
@@ -109,7 +105,7 @@ impl FulfillmentWorkers {
                 .await
                 .map_err(|error| error.to_string());
             self.queue
-                .finish_event(worker_id, job.id, result, now)
+                .finish_event(job.id, job.attempts, result, now)
                 .await?;
         }
         Ok(jobs.len())

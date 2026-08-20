@@ -71,13 +71,6 @@ ID. After observing the confirmed Order, the Storefront SDK projects the same
 ID and server-returned amount, currency, and lines to Meta Pixel and GA4. It
 does not append a second browser Purchase to the ledger, and local browser
 deduplication prevents success-page refreshes from projecting it twice.
-
-Purchase is authoritative only after the payment Provider confirms capture.
-The server ledger and Meta CAPI use the Order ID as the stable Purchase event
-ID. After observing the confirmed Order, the Storefront SDK projects the same
-ID and server-returned amount, currency, and lines to Meta Pixel and GA4. It
-does not append a second browser Purchase to the ledger, and local browser
-deduplication prevents success-page refreshes from projecting it twice.
 AddPaymentInfo follows the same projection pattern using the Payment Attempt
 ID after the server creates the attempt.
 
@@ -112,7 +105,7 @@ reports.
 
 Meta is the only outbound Analytics integration in this phase. Its connection
 stores a Dataset ID, encrypted credential reference, optional test event code,
-and enabled state. Delivery rows use leases, bounded retries, idempotency, and
+and enabled state. Delivery rows use PGMQ visibility, bounded retries, idempotency, and
 record only bounded Provider responses. A failed Meta call never affects a
 commerce transaction.
 

@@ -10,7 +10,15 @@ COMMENT ON SCHEMA integration IS
 
 CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 
-CREATE TYPE integration.queue_status AS ENUM ('pending', 'processing', 'processed', 'dead_letter');
+CREATE TYPE integration.delivery_status AS ENUM ('pending', 'processed', 'dead_letter');
+
+SELECT pgmq.create('chaos_payment_commands');
+SELECT pgmq.create('chaos_fulfillment_events');
+SELECT pgmq.create('chaos_search_events');
+SELECT pgmq.create('chaos_analytics_events');
+SELECT pgmq.create('chaos_webhooks');
+SELECT pgmq.create('chaos_email');
+SELECT pgmq.create('chaos_meta');
 
 CREATE TABLE integration.idempotency_records (
     id                   UUID                             NOT NULL PRIMARY KEY,
@@ -43,35 +51,26 @@ CREATE TABLE integration.idempotency_records (
 );
 
 CREATE TABLE integration.webhook_inbox (
-    id                         UUID                     NOT NULL PRIMARY KEY,
-    store_id                   UUID                     NOT NULL,
-    provider                   TEXT                     NOT NULL,
-    provider_event_id          TEXT                     NOT NULL,
-    event_type                 TEXT                     NOT NULL,
-    external_account_reference TEXT                     NOT NULL,
-    payload                    JSONB                    NOT NULL,
-    status                     integration.queue_status NOT NULL DEFAULT 'pending',
-    attempts                   INTEGER                  NOT NULL DEFAULT 0,
-    available_at               TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    locked_by                  UUID,
-    locked_at                  TIMESTAMPTZ,
+    id                         UUID        NOT NULL PRIMARY KEY,
+    store_id                   UUID        NOT NULL,
+    provider                   TEXT        NOT NULL,
+    provider_event_id          TEXT        NOT NULL,
+    event_type                 TEXT        NOT NULL,
+    external_account_reference TEXT        NOT NULL,
+    payload                    JSONB       NOT NULL,
+    pgmq_message_id            BIGINT      NOT NULL UNIQUE,
     processed_at               TIMESTAMPTZ,
+    failed_at                  TIMESTAMPTZ,
     last_error                 TEXT,
-    verified_at                TIMESTAMPTZ              NOT NULL,
-    created_at                 TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    verified_at                TIMESTAMPTZ NOT NULL,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (provider, provider_event_id),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id),
-    CONSTRAINT webhook_inbox_attempts_nonnegative_check CHECK (attempts >= 0),
     CONSTRAINT webhook_inbox_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT webhook_inbox_processed_shape_check CHECK (
-        (status = 'processed' AND processed_at IS NOT NULL)
-        OR (status <> 'processed' AND processed_at IS NULL)
-    ),
-    CONSTRAINT webhook_inbox_lease_shape_check CHECK (
-        (status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
-        OR (status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
+    CONSTRAINT webhook_inbox_completion_check CHECK (
+        processed_at IS NULL OR failed_at IS NULL
     )
 );
 
@@ -93,58 +92,71 @@ CREATE TABLE integration.event_consumer_registry (
 );
 
 CREATE TABLE integration.outbox_events (
-    id                   UUID                     NOT NULL PRIMARY KEY,
-    store_id             UUID                     NOT NULL,
-    aggregate_type       TEXT                     NOT NULL,
-    aggregate_id         UUID                     NOT NULL,
-    event_type           TEXT                     NOT NULL,
-    payload              JSONB                    NOT NULL,
-    status               integration.queue_status NOT NULL DEFAULT 'pending',
-    attempts             INTEGER                  NOT NULL DEFAULT 0,
-    available_at         TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    locked_by            UUID,
-    locked_at            TIMESTAMPTZ,
+    id                   UUID        NOT NULL PRIMARY KEY,
+    store_id             UUID        NOT NULL,
+    aggregate_type       TEXT        NOT NULL,
+    aggregate_id         UUID        NOT NULL,
+    event_type           TEXT        NOT NULL,
+    payload              JSONB       NOT NULL,
+    pgmq_message_id      BIGINT      NOT NULL UNIQUE,
     processed_at         TIMESTAMPTZ,
+    failed_at            TIMESTAMPTZ,
     last_error           TEXT,
-    created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (event_type)
         REFERENCES integration.event_consumer_registry(event_type),
-    CONSTRAINT outbox_events_attempts_nonnegative_check CHECK (attempts >= 0),
     CONSTRAINT outbox_events_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT outbox_events_processed_shape_check CHECK (
-        (status = 'processed' AND processed_at IS NOT NULL)
-        OR (status <> 'processed' AND processed_at IS NULL)
-    ),
-    CONSTRAINT outbox_events_lease_shape_check CHECK (
-        (status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
-        OR (status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
+    CONSTRAINT outbox_events_completion_check CHECK (
+        processed_at IS NULL OR failed_at IS NULL
     )
 );
 
 CREATE INDEX webhook_inbox_claim_idx
-    ON integration.webhook_inbox (status, available_at, created_at, id)
-    WHERE status IN ('pending', 'processing');
+    ON integration.webhook_inbox (created_at, id)
+    WHERE processed_at IS NULL AND failed_at IS NULL;
 
-CREATE INDEX outbox_events_claim_idx
-    ON integration.outbox_events (status, available_at, created_at, id)
-    WHERE status IN ('pending', 'processing');
+CREATE INDEX outbox_events_pending_idx
+    ON integration.outbox_events (created_at, id)
+    WHERE processed_at IS NULL AND failed_at IS NULL;
 
 CREATE FUNCTION integration.queue_metrics()
 RETURNS TABLE (pending BIGINT, dead_letter BIGINT, oldest_pending_seconds DOUBLE PRECISION)
-LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-    SELECT count(*) FILTER (WHERE status = 'pending'),
-           count(*) FILTER (WHERE status = 'dead_letter'),
-           COALESCE(
-               extract(
-                   epoch FROM CURRENT_TIMESTAMP -
-                       min(created_at) FILTER (WHERE status = 'pending')
-               ),
-               0
-           )
-      FROM integration.outbox_events;
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    RETURN QUERY
+    WITH configured_queues(queue_name) AS (
+        VALUES
+            ('chaos_payment_commands'::TEXT),
+            ('chaos_fulfillment_events'::TEXT),
+            ('chaos_search_events'::TEXT),
+            ('chaos_analytics_events'::TEXT),
+            ('chaos_webhooks'::TEXT),
+            ('chaos_email'::TEXT),
+            ('chaos_meta'::TEXT)
+    ), queue_state AS (
+        SELECT COALESCE(sum(metrics.queue_length), 0)::BIGINT AS pending,
+               COALESCE(max(metrics.oldest_msg_age_sec), 0)::DOUBLE PRECISION
+                   AS oldest_pending_seconds
+          FROM pgmq.metrics_all() AS metrics
+          INNER JOIN configured_queues AS configured
+            ON configured.queue_name = metrics.queue_name
+    ), dead_state AS (
+        SELECT
+            (SELECT count(*) FROM integration.outbox_events WHERE failed_at IS NOT NULL)
+            + (SELECT count(*) FROM integration.webhook_inbox WHERE failed_at IS NOT NULL)
+            + (SELECT count(*) FROM integration.email_deliveries
+                WHERE delivery_status = 'dead_letter')
+            + (SELECT count(*) FROM integration.meta_event_deliveries
+                WHERE delivery_status = 'dead_letter') AS dead_letter
+    )
+    SELECT queue_state.pending,
+           dead_state.dead_letter,
+           queue_state.oldest_pending_seconds
+      FROM queue_state CROSS JOIN dead_state;
+END;
 $$;
 
 CREATE FUNCTION integration.event_consumer_backlog()
@@ -159,10 +171,12 @@ RETURNS TABLE (
 LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
     SELECT registry.event_type,
            registry.consumer_owner,
-           count(event.id) FILTER (WHERE event.status = 'pending'),
-           count(event.id) FILTER (WHERE event.status = 'processing'),
-           count(event.id) FILTER (WHERE event.status = 'dead_letter'),
-           count(event.id) FILTER (WHERE event.status = 'processed')
+           count(event.id) FILTER (
+               WHERE event.processed_at IS NULL AND event.failed_at IS NULL
+           ),
+           0,
+           count(event.id) FILTER (WHERE event.failed_at IS NOT NULL),
+           count(event.id) FILTER (WHERE event.processed_at IS NOT NULL)
       FROM integration.event_consumer_registry AS registry
       LEFT JOIN integration.outbox_events AS event
         ON event.event_type = registry.event_type
@@ -170,11 +184,135 @@ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
      ORDER BY registry.event_type;
 $$;
 
+CREATE FUNCTION integration.event_queue_name(event_type TEXT)
+RETURNS TEXT
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT CASE registry.consumer_owner
+        WHEN 'payments.provider_dispatch' THEN 'chaos_payment_commands'
+        WHEN 'fulfillment.operations' THEN 'chaos_fulfillment_events'
+        WHEN 'search.product_indexer' THEN 'chaos_search_events'
+        WHEN 'analytics.event_ingestor' THEN 'chaos_analytics_events'
+    END
+      FROM integration.event_consumer_registry AS registry
+     WHERE registry.event_type = event_queue_name.event_type;
+$$;
+
+CREATE FUNCTION integration.enqueue_outbox_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    queue_name TEXT;
+BEGIN
+    queue_name := integration.event_queue_name(NEW.event_type);
+    IF queue_name IS NULL THEN
+        RAISE EXCEPTION 'event type % has no queue owner', NEW.event_type
+            USING ERRCODE = '23514';
+    END IF;
+    SELECT message_id
+      INTO NEW.pgmq_message_id
+      FROM pgmq.send(
+          queue_name,
+          jsonb_build_object('version', 1, 'event_id', NEW.id)
+      ) AS message_id;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION integration.enqueue_webhook_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    SELECT message_id
+      INTO NEW.pgmq_message_id
+      FROM pgmq.send(
+          'chaos_webhooks',
+          jsonb_build_object('version', 1, 'webhook_event_id', NEW.id)
+      ) AS message_id;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION integration.claim_routed_outbox_events(
+    queue_name TEXT,
+    batch_size INTEGER
+)
+RETURNS TABLE (
+    id UUID,
+    store_id UUID,
+    event_type TEXT,
+    aggregate_id UUID,
+    payload JSONB,
+    occurred_at TIMESTAMPTZ,
+    attempts INTEGER
+)
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    message RECORD;
+    target RECORD;
+BEGIN
+    IF queue_name NOT IN (
+        'chaos_payment_commands',
+        'chaos_fulfillment_events',
+        'chaos_search_events',
+        'chaos_analytics_events'
+    ) THEN
+        RAISE EXCEPTION 'unsupported outbox queue %', queue_name
+            USING ERRCODE = '22023';
+    END IF;
+
+    FOR message IN
+        SELECT queued.msg_id, queued.read_ct
+          FROM pgmq.read(
+                   queue_name,
+                   120,
+                   greatest(least(batch_size, 100), 1),
+                   '{}'::jsonb
+               ) AS queued
+    LOOP
+        SELECT event.id,
+               event.store_id,
+               event.event_type,
+               event.aggregate_id,
+               event.payload,
+               event.created_at
+          INTO target
+          FROM integration.outbox_events AS event
+         WHERE event.pgmq_message_id = message.msg_id
+           AND event.processed_at IS NULL
+           AND event.failed_at IS NULL;
+        IF NOT FOUND THEN
+            PERFORM pgmq.delete(queue_name, message.msg_id);
+            CONTINUE;
+        END IF;
+
+        id := target.id;
+        store_id := target.store_id;
+        event_type := target.event_type;
+        aggregate_id := target.aggregate_id;
+        payload := target.payload;
+        occurred_at := target.created_at;
+        attempts := message.read_ct;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
 CREATE FUNCTION integration.claim_outbox_events(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
 RETURNS TABLE (
     id UUID,
@@ -188,49 +326,14 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH expired AS (
-        UPDATE integration.outbox_events AS event
-           SET status = 'dead_letter',
-               locked_by = NULL,
-               locked_at = NULL,
-               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
-          FROM integration.event_consumer_registry AS registry
-         WHERE registry.event_type = event.event_type
-           AND registry.consumer_owner = 'payments.provider_dispatch'
-           AND event.status = 'processing' AND event.locked_at <= stale_before
-           AND event.attempts >= 8
-        RETURNING event.id
-    ), claimable AS (
-        SELECT event.id
-        FROM integration.outbox_events AS event
-        INNER JOIN integration.event_consumer_registry AS registry
-          ON registry.event_type = event.event_type
-         AND registry.consumer_owner = 'payments.provider_dispatch'
-        WHERE (
-                (event.status = 'pending' AND event.available_at <= claimed_at)
-                OR (event.status = 'processing' AND event.locked_at <= stale_before)
-              )
-          AND event.attempts < 8
-        ORDER BY event.available_at, event.created_at, event.id
-        FOR UPDATE OF event SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE integration.outbox_events AS event
-       SET status = 'processing',
-           attempts = event.attempts + 1,
-           locked_by = worker_id,
-           locked_at = claimed_at
-      FROM claimable
-     WHERE event.id = claimable.id
-    RETURNING event.id, event.store_id,
-              event.event_type, event.payload, event.attempts;
+    SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
+      FROM integration.claim_routed_outbox_events(
+               'chaos_payment_commands', batch_size
+           ) AS event;
 $$;
 
 CREATE FUNCTION integration.claim_fulfillment_events(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
 RETURNS TABLE (
     id UUID,
@@ -244,49 +347,14 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH expired AS (
-        UPDATE integration.outbox_events AS event
-           SET status = 'dead_letter',
-               locked_by = NULL,
-               locked_at = NULL,
-               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
-          FROM integration.event_consumer_registry AS registry
-         WHERE registry.event_type = event.event_type
-           AND registry.consumer_owner = 'fulfillment.operations'
-           AND event.status = 'processing' AND event.locked_at <= stale_before
-           AND event.attempts >= 8
-        RETURNING event.id
-    ), claimable AS (
-        SELECT event.id
-        FROM integration.outbox_events AS event
-        INNER JOIN integration.event_consumer_registry AS registry
-          ON registry.event_type = event.event_type
-         AND registry.consumer_owner = 'fulfillment.operations'
-        WHERE (
-                (event.status = 'pending' AND event.available_at <= claimed_at)
-                OR (event.status = 'processing' AND event.locked_at <= stale_before)
-              )
-          AND event.attempts < 8
-        ORDER BY event.available_at, event.created_at, event.id
-        FOR UPDATE OF event SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE integration.outbox_events AS event
-       SET status = 'processing',
-           attempts = event.attempts + 1,
-           locked_by = worker_id,
-           locked_at = claimed_at
-      FROM claimable
-     WHERE event.id = claimable.id
-    RETURNING event.id, event.store_id,
-              event.event_type, event.payload, event.attempts;
+    SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
+      FROM integration.claim_routed_outbox_events(
+               'chaos_fulfillment_events', batch_size
+           ) AS event;
 $$;
 
 CREATE FUNCTION integration.claim_webhook_events(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
 RETURNS TABLE (
     id UUID,
@@ -296,111 +364,147 @@ RETURNS TABLE (
     payload JSONB,
     attempts INTEGER
 )
-LANGUAGE SQL
+LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH expired AS (
-        UPDATE integration.webhook_inbox AS event
-           SET status = 'dead_letter',
-               locked_by = NULL,
-               locked_at = NULL,
-               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
-         WHERE event.status = 'processing' AND event.locked_at <= stale_before
-           AND event.attempts >= 8
-        RETURNING event.id
-    ), claimable AS (
-        SELECT event.id
-        FROM integration.webhook_inbox AS event
-        WHERE (
-                (event.status = 'pending' AND event.available_at <= claimed_at)
-                OR (event.status = 'processing' AND event.locked_at <= stale_before)
-              )
-          AND event.attempts < 8
-        ORDER BY event.available_at, event.created_at, event.id
-        FOR UPDATE SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE integration.webhook_inbox AS event
-       SET status = 'processing',
-           attempts = event.attempts + 1,
-           locked_by = worker_id,
-           locked_at = claimed_at
-      FROM claimable
-     WHERE event.id = claimable.id
-    RETURNING event.id, event.store_id, event.provider,
-              event.event_type, event.payload, event.attempts;
+DECLARE
+    message RECORD;
+    target RECORD;
+BEGIN
+    FOR message IN
+        SELECT queued.msg_id, queued.read_ct
+          FROM pgmq.read(
+                   'chaos_webhooks',
+                   120,
+                   greatest(least(batch_size, 100), 1),
+                   '{}'::jsonb
+               ) AS queued
+    LOOP
+        SELECT event.id,
+               event.store_id,
+               event.provider,
+               event.event_type,
+               event.payload
+          INTO target
+          FROM integration.webhook_inbox AS event
+         WHERE event.pgmq_message_id = message.msg_id
+           AND event.processed_at IS NULL
+           AND event.failed_at IS NULL;
+        IF NOT FOUND THEN
+            PERFORM pgmq.delete('chaos_webhooks', message.msg_id);
+            CONTINUE;
+        END IF;
+
+        id := target.id;
+        store_id := target.store_id;
+        provider := target.provider;
+        event_type := target.event_type;
+        payload := target.payload;
+        attempts := message.read_ct;
+        RETURN NEXT;
+    END LOOP;
+END;
 $$;
 
 CREATE FUNCTION integration.finish_outbox_event(
     event_id UUID,
-    worker_id UUID,
+    attempts INTEGER,
     succeeded BOOLEAN,
     failure TEXT,
     max_attempts INTEGER,
     finished_at TIMESTAMPTZ
 )
 RETURNS BOOLEAN
-LANGUAGE SQL
+LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    UPDATE integration.outbox_events AS event
-       SET status = CASE
-               WHEN succeeded THEN 'processed'::integration.queue_status
-               WHEN event.attempts >= greatest(max_attempts, 1)
-                   THEN 'dead_letter'::integration.queue_status
-               ELSE 'pending'::integration.queue_status
-           END,
-           available_at = CASE
-               WHEN succeeded THEN event.available_at
-               ELSE finished_at + make_interval(
-                   secs => least(power(2, greatest(event.attempts - 1, 0))::integer, 256)
-               )
-           END,
-           locked_by = NULL,
-           locked_at = NULL,
-           processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
-           last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
-     WHERE event.id = event_id AND event.status = 'processing' AND event.locked_by = worker_id
-    RETURNING true;
+DECLARE
+    message_id BIGINT;
+    queue_name TEXT;
+BEGIN
+    SELECT event.pgmq_message_id,
+           integration.event_queue_name(event.event_type)
+      INTO message_id, queue_name
+      FROM integration.outbox_events AS event
+     WHERE event.id = event_id
+       AND event.processed_at IS NULL
+       AND event.failed_at IS NULL
+     FOR UPDATE;
+    IF message_id IS NULL OR queue_name IS NULL THEN
+        RETURN false;
+    END IF;
+
+    IF succeeded OR attempts >= greatest(max_attempts, 1) THEN
+        UPDATE integration.outbox_events AS event
+           SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
+               failed_at = CASE WHEN succeeded THEN NULL ELSE finished_at END,
+               last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
+         WHERE event.id = event_id;
+        PERFORM pgmq.delete(queue_name, message_id);
+    ELSE
+        UPDATE integration.outbox_events AS event
+           SET last_error = left(failure, 2000)
+         WHERE event.id = event_id;
+        PERFORM pgmq.set_vt(
+            queue_name,
+            message_id,
+            least(power(2, greatest(attempts - 1, 0))::integer, 300)
+        );
+    END IF;
+    RETURN true;
+END;
 $$;
 
 CREATE FUNCTION integration.finish_webhook_event(
     event_id UUID,
-    worker_id UUID,
+    attempts INTEGER,
     succeeded BOOLEAN,
     failure TEXT,
     max_attempts INTEGER,
     finished_at TIMESTAMPTZ
 )
 RETURNS BOOLEAN
-LANGUAGE SQL
+LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    UPDATE integration.webhook_inbox AS event
-       SET status = CASE
-               WHEN succeeded THEN 'processed'::integration.queue_status
-               WHEN event.attempts >= greatest(max_attempts, 1)
-                   THEN 'dead_letter'::integration.queue_status
-               ELSE 'pending'::integration.queue_status
-           END,
-           available_at = CASE
-               WHEN succeeded THEN event.available_at
-               ELSE finished_at + make_interval(
-                   secs => least(power(2, greatest(event.attempts - 1, 0))::integer, 256)
-               )
-           END,
-           locked_by = NULL,
-           locked_at = NULL,
-           processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
-           last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
-     WHERE event.id = event_id AND event.status = 'processing' AND event.locked_by = worker_id
-    RETURNING true;
+DECLARE
+    message_id BIGINT;
+BEGIN
+    SELECT event.pgmq_message_id
+      INTO message_id
+      FROM integration.webhook_inbox AS event
+     WHERE event.id = event_id
+       AND event.processed_at IS NULL
+       AND event.failed_at IS NULL
+     FOR UPDATE;
+    IF message_id IS NULL THEN
+        RETURN false;
+    END IF;
+    IF succeeded OR attempts >= greatest(max_attempts, 1) THEN
+        UPDATE integration.webhook_inbox AS event
+           SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
+               failed_at = CASE WHEN succeeded THEN NULL ELSE finished_at END,
+               last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
+         WHERE event.id = event_id;
+        PERFORM pgmq.delete('chaos_webhooks', message_id);
+    ELSE
+        UPDATE integration.webhook_inbox AS event
+           SET last_error = left(failure, 2000)
+         WHERE event.id = event_id;
+        PERFORM pgmq.set_vt(
+            'chaos_webhooks',
+            message_id,
+            least(power(2, greatest(attempts - 1, 0))::integer, 300)
+        );
+    END IF;
+    RETURN true;
+END;
 $$;
 
 ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
@@ -474,49 +578,67 @@ VALUES
     ('analytics.refund.succeeded', 'analytics.event_ingestor',
      'Records an authoritative Refund event in the Commerce Event ledger');
 
+CREATE TRIGGER outbox_events_enqueue
+BEFORE INSERT ON integration.outbox_events
+FOR EACH ROW EXECUTE FUNCTION integration.enqueue_outbox_event();
+
+CREATE TRIGGER webhook_inbox_enqueue
+BEFORE INSERT ON integration.webhook_inbox
+FOR EACH ROW EXECUTE FUNCTION integration.enqueue_webhook_event();
+
+REVOKE ALL ON FUNCTION integration.event_queue_name(TEXT) FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION integration.enqueue_outbox_event() FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION integration.enqueue_webhook_event() FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION integration.claim_routed_outbox_events(
+    TEXT, INTEGER
+) FROM PUBLIC;
+
 REVOKE ALL ON FUNCTION integration.claim_outbox_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.claim_fulfillment_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.claim_webhook_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.finish_outbox_event(
-    UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.finish_webhook_event(
-    UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 )
     TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.claim_fulfillment_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 )
     TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.claim_webhook_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 )
     TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.finish_outbox_event(
-    UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(
-    UUID, UUID, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
@@ -547,7 +669,6 @@ GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 
 CREATE TYPE integration.email_delivery_status AS ENUM (
     'pending',
-    'processing',
     'sent',
     'delivered',
     'bounced',
@@ -576,10 +697,7 @@ CREATE TABLE integration.email_deliveries (
     provider                 TEXT                               NOT NULL DEFAULT 'resend',
     provider_message_id      TEXT,
     delivery_status          integration.email_delivery_status  NOT NULL DEFAULT 'pending',
-    attempts                 INTEGER                            NOT NULL DEFAULT 0,
-    available_at             TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    locked_by                UUID,
-    locked_at                TIMESTAMPTZ,
+    pgmq_message_id          BIGINT                             NOT NULL UNIQUE,
     sent_at                  TIMESTAMPTZ,
     delivered_at             TIMESTAMPTZ,
     last_error               TEXT,
@@ -610,11 +728,6 @@ CREATE TABLE integration.email_deliveries (
     ),
     CONSTRAINT email_deliveries_provider_message_id_check CHECK (
         provider_message_id IS NULL OR length(provider_message_id) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT email_deliveries_attempts_check CHECK (attempts >= 0),
-    CONSTRAINT email_deliveries_lease_check CHECK (
-        (delivery_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
-        OR (delivery_status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
     ),
     CONSTRAINT email_deliveries_sent_check CHECK (
         (delivery_status IN ('sent', 'delivered', 'bounced', 'complained')
@@ -676,8 +789,8 @@ CREATE TABLE integration.webhook_events (
 );
 
 CREATE INDEX email_deliveries_claim_idx
-    ON integration.email_deliveries (delivery_status, available_at, created_at, id)
-    WHERE delivery_status IN ('pending', 'processing');
+    ON integration.email_deliveries (created_at, id)
+    WHERE delivery_status = 'pending';
 
 CREATE INDEX email_deliveries_recipient_idx
     ON integration.email_deliveries (store_id,
@@ -693,6 +806,23 @@ CREATE INDEX notification_webhook_events_delivery_idx
         id
     );
 
+CREATE FUNCTION integration.enqueue_email_delivery()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    SELECT message_id
+      INTO NEW.pgmq_message_id
+      FROM pgmq.send(
+          'chaos_email',
+          jsonb_build_object('version', 1, 'delivery_id', NEW.id)
+      ) AS message_id;
+    RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION integration.email_delivery_metrics()
 RETURNS TABLE (
     pending BIGINT,
@@ -707,7 +837,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT count(*) FILTER (WHERE delivery.delivery_status = 'pending'),
-           count(*) FILTER (WHERE delivery.delivery_status = 'processing'),
+           0,
            count(*) FILTER (WHERE delivery.delivery_status = 'dead_letter'),
            count(*) FILTER (WHERE delivery.delivery_status = 'suppressed'),
            COALESCE(
@@ -722,10 +852,7 @@ AS $$
 $$;
 
 CREATE FUNCTION integration.claim_email_deliveries(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
 RETURNS TABLE (
     id UUID,
@@ -737,72 +864,63 @@ RETURNS TABLE (
     provider TEXT,
     attempts INTEGER
 )
-LANGUAGE SQL
+LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH suppress AS (
-        UPDATE integration.email_deliveries AS delivery
-           SET delivery_status = 'suppressed',
-               locked_by = NULL,
-               locked_at = NULL,
-               last_error = 'recipient is suppressed',
-               updated_at = claimed_at
-         WHERE delivery.delivery_status IN ('pending', 'processing')
-           AND EXISTS (
-               SELECT 1
-                 FROM integration.email_suppressions AS suppression
-                WHERE suppression.store_id = delivery.store_id
-                  AND suppression.recipient_email = delivery.recipient_email
-           )
-        RETURNING delivery.id
-    ), expired AS (
-        UPDATE integration.email_deliveries AS delivery
-           SET delivery_status = 'dead_letter',
-               locked_by = NULL,
-               locked_at = NULL,
-               last_error = COALESCE(delivery.last_error, 'worker lease expired after final attempt'),
-               updated_at = claimed_at
-         WHERE delivery.delivery_status = 'processing'
-           AND delivery.locked_at <= stale_before
-           AND delivery.attempts >= 8
-        RETURNING delivery.id
-    ), claimable AS (
-        SELECT delivery.id
-          FROM integration.email_deliveries AS delivery
-         WHERE (
-                 (delivery.delivery_status = 'pending' AND delivery.available_at <= claimed_at)
-                 OR (delivery.delivery_status = 'processing' AND delivery.locked_at <= stale_before)
-               )
-           AND delivery.attempts < 8
-           AND NOT EXISTS (
-               SELECT 1
-                 FROM integration.email_suppressions AS suppression
-                WHERE suppression.store_id = delivery.store_id
-                  AND suppression.recipient_email = delivery.recipient_email
-           )
-         ORDER BY delivery.available_at, delivery.created_at, delivery.id
-         FOR UPDATE SKIP LOCKED
-         LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE integration.email_deliveries AS delivery
-       SET delivery_status = 'processing',
-           attempts = delivery.attempts + 1,
-           locked_by = worker_id,
-           locked_at = claimed_at,
-           updated_at = claimed_at
-      FROM claimable
-     WHERE delivery.id = claimable.id
-    RETURNING delivery.id, delivery.store_id,
-              delivery.recipient_email::text, delivery.template_key,
-              delivery.template_version, delivery.template_payload,
-              delivery.provider, delivery.attempts;
+DECLARE
+    message RECORD;
+    delivery RECORD;
+BEGIN
+    FOR message IN
+        SELECT *
+          FROM pgmq.read(
+              'chaos_email',
+              120,
+              greatest(least(batch_size, 100), 1),
+              '{}'::jsonb
+          )
+    LOOP
+        SELECT candidate.*
+          INTO delivery
+          FROM integration.email_deliveries AS candidate
+         WHERE candidate.pgmq_message_id = message.msg_id
+           AND candidate.delivery_status = 'pending';
+        IF NOT FOUND THEN
+            PERFORM pgmq.delete('chaos_email', message.msg_id);
+            CONTINUE;
+        END IF;
+        IF EXISTS (
+            SELECT 1
+              FROM integration.email_suppressions AS suppression
+             WHERE suppression.store_id = delivery.store_id
+               AND suppression.recipient_email = delivery.recipient_email
+        ) THEN
+            UPDATE integration.email_deliveries AS candidate
+               SET delivery_status = 'suppressed',
+                   last_error = 'recipient is suppressed',
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE candidate.id = delivery.id;
+            PERFORM pgmq.delete('chaos_email', message.msg_id);
+            CONTINUE;
+        END IF;
+        id := delivery.id;
+        store_id := delivery.store_id;
+        recipient_email := delivery.recipient_email::text;
+        template_key := delivery.template_key;
+        template_version := delivery.template_version;
+        template_payload := delivery.template_payload;
+        provider := delivery.provider;
+        attempts := message.read_ct;
+        RETURN NEXT;
+    END LOOP;
+END;
 $$;
 
 CREATE FUNCTION integration.finish_email_delivery(
     delivery_id UUID,
-    worker_id UUID,
+    attempts INTEGER,
     succeeded BOOLEAN,
     retryable BOOLEAN,
     provider_message_id TEXT,
@@ -810,40 +928,58 @@ CREATE FUNCTION integration.finish_email_delivery(
     finished_at TIMESTAMPTZ
 )
 RETURNS BOOLEAN
-LANGUAGE SQL
+LANGUAGE plpgsql
 VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    UPDATE integration.email_deliveries AS delivery
-       SET delivery_status = CASE
-               WHEN succeeded THEN 'sent'::integration.email_delivery_status
-               WHEN NOT retryable THEN 'failed'::integration.email_delivery_status
-               WHEN delivery.attempts >= 8 THEN 'dead_letter'::integration.email_delivery_status
-               ELSE 'pending'::integration.email_delivery_status
-           END,
-           provider_message_id = CASE
-               WHEN succeeded THEN $5 ELSE delivery.provider_message_id
-           END,
-           available_at = CASE
-               WHEN succeeded OR NOT retryable THEN delivery.available_at
-               ELSE finished_at + make_interval(
-                   secs => least(power(2, greatest(delivery.attempts - 1, 0))::integer, 256)
-               )
-           END,
-           locked_by = NULL,
-           locked_at = NULL,
-           sent_at = CASE WHEN succeeded THEN finished_at ELSE delivery.sent_at END,
-           template_payload = CASE WHEN succeeded THEN '{}'::jsonb ELSE delivery.template_payload END,
-           last_error = CASE
-               WHEN succeeded THEN NULL
-               ELSE COALESCE(NULLIF(left(failure, 2000), ''), 'email delivery failed')
-           END,
-           updated_at = finished_at
-     WHERE delivery.id = $1
-       AND delivery.delivery_status = 'processing'
-       AND delivery.locked_by = $2
-    RETURNING true;
+DECLARE
+    message_id BIGINT;
+BEGIN
+    SELECT delivery.pgmq_message_id
+      INTO message_id
+      FROM integration.email_deliveries AS delivery
+     WHERE delivery.id = delivery_id
+       AND delivery.delivery_status = 'pending'
+     FOR UPDATE;
+    IF message_id IS NULL THEN
+        RETURN false;
+    END IF;
+    IF succeeded OR NOT retryable OR attempts >= 8 THEN
+        UPDATE integration.email_deliveries AS delivery
+           SET delivery_status = CASE
+                   WHEN succeeded THEN 'sent'::integration.email_delivery_status
+                   WHEN NOT retryable THEN 'failed'::integration.email_delivery_status
+                   ELSE 'dead_letter'::integration.email_delivery_status
+               END,
+               provider_message_id = CASE
+                   WHEN succeeded THEN finish_email_delivery.provider_message_id
+                   ELSE delivery.provider_message_id
+               END,
+               sent_at = CASE WHEN succeeded THEN finished_at ELSE delivery.sent_at END,
+               template_payload = CASE
+                   WHEN succeeded THEN '{}'::jsonb ELSE delivery.template_payload
+               END,
+               last_error = CASE
+                   WHEN succeeded THEN NULL
+                   ELSE COALESCE(NULLIF(left(failure, 2000), ''), 'email delivery failed')
+               END,
+               updated_at = finished_at
+         WHERE delivery.id = delivery_id;
+        PERFORM pgmq.delete('chaos_email', message_id);
+    ELSE
+        UPDATE integration.email_deliveries AS delivery
+           SET last_error = COALESCE(NULLIF(left(failure, 2000), ''), 'email delivery failed'),
+               updated_at = finished_at
+         WHERE delivery.id = delivery_id;
+        PERFORM pgmq.set_vt(
+            'chaos_email',
+            message_id,
+            least(power(2, greatest(attempts - 1, 0))::integer, 300)
+        );
+    END IF;
+    RETURN true;
+END;
 $$;
 
 CREATE FUNCTION integration.record_resend_webhook(
@@ -888,7 +1024,7 @@ BEGIN
     END IF;
 
     IF provider_event_type = 'email.sent'
-       AND target.delivery_status IN ('pending', 'processing', 'sent') THEN
+       AND target.delivery_status IN ('pending', 'sent') THEN
         UPDATE integration.email_deliveries
            SET delivery_status = 'sent', updated_at = received_at
          WHERE id = target.id;
@@ -946,6 +1082,10 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER email_deliveries_enqueue
+BEFORE INSERT ON integration.email_deliveries
+FOR EACH ROW EXECUTE FUNCTION integration.enqueue_email_delivery();
+
 ALTER TABLE integration.email_deliveries ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE integration.email_suppressions ENABLE ROW LEVEL SECURITY;
@@ -983,12 +1123,14 @@ CREATE POLICY store_isolation ON integration.webhook_events
     );
 
 REVOKE ALL ON FUNCTION integration.claim_email_deliveries(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.finish_email_delivery(
-    UUID, UUID, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
 ) FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION integration.enqueue_email_delivery() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.record_resend_webhook(
     TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
@@ -997,11 +1139,11 @@ REVOKE ALL ON FUNCTION integration.record_resend_webhook(
 REVOKE ALL ON FUNCTION integration.email_delivery_metrics() FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION integration.claim_email_deliveries(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.finish_email_delivery(
-    UUID, UUID, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
+    UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
 ) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION integration.record_resend_webhook(
@@ -1220,11 +1362,8 @@ CREATE TABLE integration.meta_event_deliveries (
     id                  UUID                     NOT NULL PRIMARY KEY,
     store_id            UUID                     NOT NULL,
     commerce_event_id   UUID                     NOT NULL,
-    delivery_status     integration.queue_status NOT NULL DEFAULT 'pending',
-    attempts            INTEGER                  NOT NULL DEFAULT 0,
-    available_at        TIMESTAMPTZ              NOT NULL,
-    locked_by           UUID,
-    locked_at           TIMESTAMPTZ,
+    delivery_status     integration.delivery_status NOT NULL DEFAULT 'pending',
+    pgmq_message_id     BIGINT                   NOT NULL UNIQUE,
     delivered_at        TIMESTAMPTZ,
     provider_reference  TEXT,
     last_error          TEXT,
@@ -1236,11 +1375,6 @@ CREATE TABLE integration.meta_event_deliveries (
     UNIQUE (store_id, commerce_event_id),
     FOREIGN KEY (store_id, commerce_event_id)
         REFERENCES integration.commerce_events(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT meta_event_deliveries_attempts_check CHECK (attempts BETWEEN 0 AND 31),
-    CONSTRAINT meta_event_deliveries_lease_check CHECK (
-        (delivery_status = 'processing' AND locked_by IS NOT NULL AND locked_at IS NOT NULL)
-        OR (delivery_status <> 'processing' AND locked_by IS NULL AND locked_at IS NULL)
-    ),
     CONSTRAINT meta_event_deliveries_completion_check CHECK (
         (delivery_status = 'processed' AND delivered_at IS NOT NULL)
         OR (delivery_status <> 'processed' AND delivered_at IS NULL)
@@ -1343,8 +1477,8 @@ CREATE INDEX visitor_customer_links_retention_idx
     ON integration.visitor_customer_links (retention_expires_at, id);
 
 CREATE INDEX meta_event_deliveries_claim_idx
-    ON integration.meta_event_deliveries (delivery_status, available_at, created_at, id)
-    WHERE delivery_status IN ('pending', 'processing');
+    ON integration.meta_event_deliveries (created_at, id)
+    WHERE delivery_status = 'pending';
 
 CREATE INDEX provider_metric_snapshots_query_idx
     ON integration.provider_metric_snapshots (
@@ -1356,54 +1490,117 @@ CREATE INDEX analytics_erasure_requests_pending_idx
     WHERE status = 'pending';
 
 CREATE FUNCTION integration.claim_meta_event_deliveries(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
-RETURNS TABLE (id UUID, store_id UUID, commerce_event_id UUID)
-LANGUAGE sql
+RETURNS TABLE (id UUID, store_id UUID, commerce_event_id UUID, attempts INTEGER)
+LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, integration
+SET search_path = pg_catalog
 AS $$
-    WITH expired AS (
-        UPDATE integration.meta_event_deliveries AS delivery
-           SET delivery_status = 'dead_letter', locked_by = NULL, locked_at = NULL,
-               last_error = COALESCE(delivery.last_error, 'worker lease expired after final attempt'),
-               updated_at = claimed_at
-         WHERE delivery.delivery_status = 'processing'
-           AND delivery.locked_at < stale_before AND delivery.attempts >= 8
-        RETURNING delivery.id
-    ), candidates AS (
-        SELECT delivery.id
+DECLARE
+    message RECORD;
+    target RECORD;
+BEGIN
+    FOR message IN
+        SELECT queued.msg_id, queued.read_ct
+          FROM pgmq.read(
+                   'chaos_meta',
+                   120,
+                   greatest(least(batch_size, 100), 1),
+                   '{}'::jsonb
+               ) AS queued
+    LOOP
+        SELECT delivery.id, delivery.store_id, delivery.commerce_event_id
+          INTO target
           FROM integration.meta_event_deliveries AS delivery
-         WHERE ((
-             delivery.delivery_status = 'pending'
-             AND delivery.available_at <= claimed_at
-         ) OR (
-             delivery.delivery_status = 'processing'
-             AND delivery.locked_at < stale_before
-         )) AND delivery.attempts < 8
-         ORDER BY delivery.available_at, delivery.created_at, delivery.id
-         FOR UPDATE SKIP LOCKED
-         LIMIT greatest(least(batch_size, 100), 1)
-    ), claimed AS (
+         WHERE delivery.pgmq_message_id = message.msg_id
+           AND delivery.delivery_status = 'pending';
+        IF NOT FOUND THEN
+            PERFORM pgmq.delete('chaos_meta', message.msg_id);
+            CONTINUE;
+        END IF;
+
+        id := target.id;
+        store_id := target.store_id;
+        commerce_event_id := target.commerce_event_id;
+        attempts := message.read_ct;
+        RETURN NEXT;
+    END LOOP;
+END;
+$$;
+
+CREATE FUNCTION integration.enqueue_meta_delivery()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    SELECT message_id
+      INTO NEW.pgmq_message_id
+      FROM pgmq.send(
+          'chaos_meta',
+          jsonb_build_object('version', 1, 'delivery_id', NEW.id)
+      ) AS message_id;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION integration.finish_meta_delivery(
+    delivery_id UUID,
+    attempts INTEGER,
+    succeeded BOOLEAN,
+    retryable BOOLEAN,
+    provider_reference TEXT,
+    failure TEXT,
+    finished_at TIMESTAMPTZ
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    message_id BIGINT;
+BEGIN
+    SELECT delivery.pgmq_message_id
+      INTO message_id
+      FROM integration.meta_event_deliveries AS delivery
+     WHERE delivery.id = delivery_id
+       AND delivery.delivery_status = 'pending'
+     FOR UPDATE;
+    IF message_id IS NULL THEN
+        RETURN false;
+    END IF;
+    IF succeeded OR NOT retryable OR attempts >= 8 THEN
         UPDATE integration.meta_event_deliveries AS delivery
-           SET delivery_status = 'processing', attempts = delivery.attempts + 1,
-               locked_by = worker_id, locked_at = claimed_at,
-               last_error = NULL, updated_at = claimed_at
-          FROM candidates
-         WHERE delivery.id = candidates.id
-        RETURNING delivery.id, delivery.store_id, delivery.commerce_event_id
-    )
-    SELECT claimed.id, claimed.store_id, claimed.commerce_event_id FROM claimed;
+           SET delivery_status = CASE
+                   WHEN succeeded THEN 'processed'::integration.delivery_status
+                   ELSE 'dead_letter'::integration.delivery_status
+               END,
+               delivered_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
+               provider_reference = finish_meta_delivery.provider_reference,
+               last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2048) END,
+               updated_at = finished_at
+         WHERE delivery.id = delivery_id;
+        PERFORM pgmq.delete('chaos_meta', message_id);
+    ELSE
+        UPDATE integration.meta_event_deliveries AS delivery
+           SET last_error = left(failure, 2048), updated_at = finished_at
+         WHERE delivery.id = delivery_id;
+        PERFORM pgmq.set_vt(
+            'chaos_meta',
+            message_id,
+            least(power(2, greatest(attempts - 1, 0))::integer, 300)
+        );
+    END IF;
+    RETURN true;
+END;
 $$;
 
 CREATE FUNCTION integration.claim_analytics_events(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
+    batch_size INTEGER
 )
 RETURNS TABLE (
     id UUID,
@@ -1411,42 +1608,23 @@ RETURNS TABLE (
     event_type TEXT,
     aggregate_id UUID,
     payload JSONB,
-    occurred_at TIMESTAMPTZ
+    occurred_at TIMESTAMPTZ,
+    attempts INTEGER
 )
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    WITH expired AS (
-        UPDATE integration.outbox_events AS event
-           SET status = 'dead_letter', locked_by = NULL, locked_at = NULL,
-               last_error = COALESCE(event.last_error, 'worker lease expired after final attempt')
-          FROM integration.event_consumer_registry AS registry
-         WHERE registry.event_type = event.event_type
-           AND registry.consumer_owner = 'analytics.event_ingestor'
-           AND event.status = 'processing' AND event.locked_at <= stale_before
-           AND event.attempts >= 8
-        RETURNING event.id
-    ), claimable AS (
-        SELECT event.id
-          FROM integration.outbox_events AS event
-          JOIN integration.event_consumer_registry AS registry
-            ON registry.event_type = event.event_type
-           AND registry.consumer_owner = 'analytics.event_ingestor'
-         WHERE ((event.status = 'pending' AND event.available_at <= claimed_at)
-             OR (event.status = 'processing' AND event.locked_at <= stale_before))
-           AND event.attempts < 8
-         ORDER BY event.available_at, event.created_at, event.id
-         FOR UPDATE OF event SKIP LOCKED
-         LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE integration.outbox_events AS event
-       SET status = 'processing', attempts = event.attempts + 1,
-           locked_by = worker_id, locked_at = claimed_at
-      FROM claimable
-     WHERE event.id = claimable.id
-    RETURNING event.id, event.store_id, event.event_type,
-              event.aggregate_id, event.payload, event.created_at;
+    SELECT event.id,
+           event.store_id,
+           event.event_type,
+           event.aggregate_id,
+           event.payload,
+           event.occurred_at,
+           event.attempts
+      FROM integration.claim_routed_outbox_events(
+               'chaos_analytics_events', batch_size
+           ) AS event;
 $$;
 
 CREATE FUNCTION integration.purge_expired_analytics_data(
@@ -1540,6 +1718,10 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER meta_event_deliveries_enqueue
+BEFORE INSERT ON integration.meta_event_deliveries
+FOR EACH ROW EXECUTE FUNCTION integration.enqueue_meta_delivery();
+
 ALTER TABLE integration.analytics_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.analytics_settings FORCE ROW LEVEL SECURITY;
 ALTER TABLE integration.visitor_customer_links ENABLE ROW LEVEL SECURITY;
@@ -1578,10 +1760,14 @@ CREATE POLICY store_isolation ON integration.analytics_erasure_requests
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 REVOKE ALL ON FUNCTION integration.claim_meta_event_deliveries(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.finish_meta_delivery(
+    UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.enqueue_meta_delivery() FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_analytics_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.purge_expired_analytics_data(
     INTEGER, TIMESTAMPTZ
@@ -1590,10 +1776,13 @@ REVOKE ALL ON FUNCTION integration.process_analytics_erasure_requests(
     INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION integration.claim_meta_event_deliveries(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
+) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.finish_meta_delivery(
+    UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
 ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_analytics_events(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
+    INTEGER
 ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.purge_expired_analytics_data(
     INTEGER, TIMESTAMPTZ

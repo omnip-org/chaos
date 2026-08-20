@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use time::{Duration, OffsetDateTime};
-use uuid::Uuid;
+use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
@@ -10,8 +9,6 @@ use crate::{
         EmailWebhookVerifier,
     },
 };
-
-const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 
 pub struct NotificationWorkers {
     repository: Arc<dyn EmailDeliveryRepository>,
@@ -40,17 +37,13 @@ impl NotificationWorkers {
 
     pub async fn run_batch(
         &self,
-        worker_id: Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
         if self.providers.is_empty() {
             return Ok(0);
         }
-        let jobs = self
-            .repository
-            .claim(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
-            .await?;
+        let jobs = self.repository.claim(limit).await?;
         let count = jobs.len();
         for job in jobs {
             let result = match self.providers.get(&job.provider) {
@@ -82,7 +75,7 @@ impl NotificationWorkers {
                 }),
             };
             self.repository
-                .finish(worker_id, job.id, result, now)
+                .finish(job.id, job.attempts, result, now)
                 .await?;
         }
         Ok(count)

@@ -196,6 +196,7 @@ pub struct MetaDeliveryJob {
     pub id: Uuid,
     pub store_id: StoreId,
     pub commerce_event_id: Uuid,
+    pub attempts: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -242,6 +243,7 @@ pub struct ServerCommerceEventJob {
     pub aggregate_id: Uuid,
     pub payload: Value,
     pub occurred_at: OffsetDateTime,
+    pub attempts: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -261,10 +263,7 @@ pub struct AnalyticsErasureBatchResult {
 pub trait AnalyticsWorkerRepository: Send + Sync {
     async fn claim_server_events(
         &self,
-        worker_id: Uuid,
         limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
     ) -> Result<Vec<ServerCommerceEventJob>, ApplicationError>;
     async fn ingest_server_event(
         &self,
@@ -273,17 +272,13 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
     ) -> Result<(), ApplicationError>;
     async fn finish_server_event(
         &self,
-        worker_id: Uuid,
         job: &ServerCommerceEventJob,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
     async fn claim_meta_deliveries(
         &self,
-        worker_id: Uuid,
         limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
     ) -> Result<Vec<MetaDeliveryJob>, ApplicationError>;
     async fn load_meta_delivery(
         &self,
@@ -291,7 +286,6 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
     ) -> Result<MetaDeliveryCommand, ApplicationError>;
     async fn finish_meta_delivery(
         &self,
-        worker_id: Uuid,
         job: &MetaDeliveryJob,
         result: Result<MetaDeliveryReceipt, MetaDeliveryError>,
         now: OffsetDateTime,

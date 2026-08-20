@@ -323,34 +323,22 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
 
 #[async_trait]
 pub trait IntegrationQueue: Send + Sync {
-    async fn claim_outbox(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<QueueJob>, ApplicationError>;
+    async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError>;
 
-    async fn claim_webhooks(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<QueueJob>, ApplicationError>;
+    async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError>;
 
     async fn finish_outbox(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 
     async fn finish_webhook(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;

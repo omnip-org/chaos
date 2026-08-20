@@ -1,7 +1,6 @@
 use chaos_application::ApplicationError;
 use sqlx::PgPool;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct PostgresSearchIndexer {
@@ -15,12 +14,10 @@ impl PostgresSearchIndexer {
 
     pub async fn run_batch(
         &self,
-        worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<u64, ApplicationError> {
-        let processed: i64 = sqlx::query_scalar("SELECT commerce.process_events($1, $2, $3)")
-            .bind(worker_id)
+        let processed: i64 = sqlx::query_scalar("SELECT commerce.process_events($1, $2)")
             .bind(i32::from(limit.clamp(1, 100)))
             .bind(now)
             .fetch_one(&self.pool)

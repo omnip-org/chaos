@@ -337,14 +337,10 @@ impl AnalyticsWorkers {
 
     pub async fn run_server_event_batch(
         &self,
-        worker_id: uuid::Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .repository
-            .claim_server_events(worker_id, limit, now, now - Duration::minutes(1))
-            .await?;
+        let jobs = self.repository.claim_server_events(limit).await?;
         for job in &jobs {
             let result = self
                 .repository
@@ -352,7 +348,7 @@ impl AnalyticsWorkers {
                 .await
                 .map_err(|error| error.to_string());
             self.repository
-                .finish_server_event(worker_id, job, result, now)
+                .finish_server_event(job, result, now)
                 .await?;
         }
         Ok(jobs.len())
@@ -360,14 +356,10 @@ impl AnalyticsWorkers {
 
     pub async fn run_meta_delivery_batch(
         &self,
-        worker_id: uuid::Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .repository
-            .claim_meta_deliveries(worker_id, limit, now, now - Duration::minutes(1))
-            .await?;
+        let jobs = self.repository.claim_meta_deliveries(limit).await?;
         for job in &jobs {
             let result = match self.repository.load_meta_delivery(job).await {
                 Ok(command) => self.meta.send(&command).await,
@@ -377,7 +369,7 @@ impl AnalyticsWorkers {
                 }),
             };
             self.repository
-                .finish_meta_delivery(worker_id, job, result, now)
+                .finish_meta_delivery(job, result, now)
                 .await?;
         }
         Ok(jobs.len())

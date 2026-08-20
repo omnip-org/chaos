@@ -166,6 +166,11 @@ impl Settings {
         if settings.resend_api_key.is_none() && settings.smtp_url.is_none() {
             bail!("either SMTP_URL or RESEND_API_KEY (with RESEND_WEBHOOK_SECRET) must be set");
         }
+        if settings.dependency_timeout.is_zero()
+            || settings.dependency_timeout > Duration::from_secs(10)
+        {
+            bail!("DEPENDENCY_TIMEOUT_MS must be between 1 and 10000");
+        }
         Ok(settings)
     }
 }

@@ -249,20 +249,6 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if target_status == FulfillmentStatus::Shipped {
-            sqlx::query(
-                "INSERT INTO integration.outbox_events \
-                 (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-                 VALUES ($1, $2, 'fulfillment', $3, 'analytics.fulfillment.shipped', $4)",
-            )
-            .bind(Uuid::now_v7())
-            .bind(store_id.as_uuid())
-            .bind(fulfillment_id.as_uuid())
-            .bind(serde_json::json!({ "fulfillment_id": fulfillment_id.as_uuid() }))
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        }
         let detail = load_fulfillment(&mut transaction, account_id, store_id, fulfillment_id)
             .await?
             .ok_or_else(|| fulfillment_not_found(fulfillment_id))?;
@@ -447,21 +433,12 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
 
 #[async_trait]
 impl FulfillmentEventQueue for PostgresFulfillmentRepository {
-    async fn claim_events(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<FulfillmentEventJob>, ApplicationError> {
+    async fn claim_events(&self, limit: u16) -> Result<Vec<FulfillmentEventJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
             "SELECT id, store_id, event_type, payload, attempts \
-             FROM integration.claim_fulfillment_events($1, $2, $3, $4)",
+             FROM integration.claim_fulfillment_events($1)",
         )
-        .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
-        .bind(now)
-        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
@@ -498,8 +475,8 @@ impl FulfillmentEventQueue for PostgresFulfillmentRepository {
 
     async fn finish_event(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
@@ -510,7 +487,7 @@ impl FulfillmentEventQueue for PostgresFulfillmentRepository {
         let finished: Option<bool> =
             sqlx::query_scalar("SELECT integration.finish_outbox_event($1, $2, $3, $4, $5, $6)")
                 .bind(job_id)
-                .bind(worker_id)
+                .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
                 .bind(succeeded)
                 .bind(failure)
                 .bind(8_i32)
@@ -1303,18 +1280,6 @@ async fn insert_return_outbox(
         "return_id": return_id.as_uuid(),
         "order_id": order_id.as_uuid(),
     }))
-    .execute(&mut **tx)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "INSERT INTO integration.outbox_events \
-         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, 'return', $3, 'analytics.return.completed', $4)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(return_id.as_uuid())
-    .bind(serde_json::json!({ "return_id": return_id.as_uuid() }))
     .execute(&mut **tx)
     .await
     .map_err(database_error)?;

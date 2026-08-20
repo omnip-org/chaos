@@ -23,22 +23,13 @@ impl PostgresEmailDeliveryRepository {
 
 #[async_trait]
 impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
-    async fn claim(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<EmailDeliveryJob>, ApplicationError> {
+    async fn claim(&self, limit: u16) -> Result<Vec<EmailDeliveryJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, Value, String, i32)>(
             "SELECT id, store_id, recipient_email, template_key, \
                     template_version, template_payload, provider, attempts \
-             FROM integration.claim_email_deliveries($1, $2, $3, $4)",
+             FROM integration.claim_email_deliveries($1)",
         )
-        .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
-        .bind(now)
-        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
@@ -62,8 +53,8 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
 
     async fn finish(
         &self,
-        worker_id: Uuid,
         delivery_id: Uuid,
+        attempts: u32,
         result: Result<chaos_application::ports::EmailDelivery, EmailDeliveryFailure>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
@@ -80,7 +71,7 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
             "SELECT integration.finish_email_delivery($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(delivery_id)
-        .bind(worker_id)
+        .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
         .bind(succeeded)
         .bind(retryable)
         .bind(provider_message_id)
@@ -93,8 +84,8 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
             Ok(())
         } else {
             Err(ApplicationError::Conflict {
-                code: "email_delivery_lease_lost",
-                message: "The email delivery lease is no longer owned by this worker",
+                code: "email_delivery_not_pending",
+                message: "The email delivery is no longer pending",
             })
         }
     }
@@ -129,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn delivery_leases_webhooks_and_suppressions_are_recoverable_and_isolated() {
+    async fn delivery_queue_webhooks_and_suppressions_are_recoverable_and_isolated() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -157,6 +148,10 @@ mod tests {
         .execute(&owner_pool)
         .await
         .expect("clean notification fixture");
+        sqlx::query("SELECT pgmq.purge_queue('chaos_email')")
+            .execute(&owner_pool)
+            .await
+            .expect("clean email queue");
         let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
@@ -209,52 +204,24 @@ mod tests {
         .execute(&owner_pool)
         .await
         .expect("suppression");
-        let dead_delivery = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO integration.email_deliveries \
-             (id, store_id, semantic_event_id, semantic_event_type, \
-              recipient_email, template_key, template_version, template_payload, \
-              delivery_status, attempts, locked_by, locked_at) \
-             VALUES ($1, $2, $3, 'order.confirmed', 'dead@example.com', \
-                     'order_confirmation', 1, $4, 'processing', 8, $5, \
-                     CURRENT_TIMESTAMP - INTERVAL '10 minutes')",
-        )
-        .bind(dead_delivery)
-        .bind(store_a)
-        .bind(Uuid::now_v7())
-        .bind(json!({
-            "order_id": Uuid::now_v7(),
-            "total_amount_minor": 1200,
-            "currency": "USD"
-        }))
-        .bind(Uuid::now_v7())
-        .execute(&owner_pool)
-        .await
-        .expect("exhausted delivery");
-
         let repository = PostgresEmailDeliveryRepository::new(runtime_pool.clone());
-        let worker_a = Uuid::now_v7();
-        // Keep the claim boundary strictly after database-generated availability timestamps.
         let now = OffsetDateTime::now_utc() + Duration::seconds(1);
-        let jobs = repository
-            .claim(worker_a, 10, now, now - Duration::minutes(1))
-            .await
-            .expect("claim");
+        let jobs = repository.claim(10).await.expect("claim");
         assert_eq!(jobs.len(), 2);
         assert!(jobs.iter().any(|job| job.store_id == store_a));
         assert!(jobs.iter().any(|job| job.store_id == store_b));
-        let dead_state: String = sqlx::query_scalar(
+        let suppressed_state: String = sqlx::query_scalar(
             "SELECT delivery_status::text FROM integration.email_deliveries WHERE id = $1",
         )
-        .bind(dead_delivery)
+        .bind(suppressed_delivery)
         .fetch_one(&owner_pool)
         .await
-        .expect("dead delivery state");
-        assert_eq!(dead_state, "dead_letter");
+        .expect("suppressed delivery state");
+        assert_eq!(suppressed_state, "suppressed");
         repository
             .finish(
-                worker_a,
                 delivery_a,
+                1,
                 Ok(EmailDelivery {
                     provider_message_id: "email_a".into(),
                 }),
@@ -262,41 +229,37 @@ mod tests {
             )
             .await
             .expect("finish sent delivery");
-
-        let worker_b = Uuid::now_v7();
-        let recovered = repository
-            .claim(
-                worker_b,
-                10,
-                now + Duration::minutes(2),
-                now + Duration::minutes(1),
-            )
-            .await
-            .expect("recover stale lease");
-        assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].id, delivery_b);
-        assert_eq!(recovered[0].attempts, 2);
-        assert!(
-            repository
-                .finish(
-                    worker_a,
-                    delivery_b,
-                    Err(EmailDeliveryFailure {
-                        retryable: true,
-                        message: "stale owner".into(),
-                    }),
-                    now + Duration::minutes(2),
-                )
-                .await
-                .is_err()
-        );
+        let delivery_b_job = jobs.iter().find(|job| job.id == delivery_b).unwrap();
         repository
             .finish(
-                worker_b,
                 delivery_b,
+                delivery_b_job.attempts,
                 Err(EmailDeliveryFailure {
                     retryable: true,
                     message: "temporary outage".into(),
+                }),
+                now,
+            )
+            .await
+            .expect("reschedule retry");
+        sqlx::query(
+            "SELECT pgmq.set_vt('chaos_email', pgmq_message_id, 0) \
+             FROM integration.email_deliveries WHERE id = $1",
+        )
+        .bind(delivery_b)
+        .execute(&owner_pool)
+        .await
+        .expect("make retry visible");
+        let recovered = repository.claim(10).await.expect("claim retry");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, delivery_b);
+        assert_eq!(recovered[0].attempts, 2);
+        repository
+            .finish(
+                delivery_b,
+                2,
+                Ok(EmailDelivery {
+                    provider_message_id: "email_b".into(),
                 }),
                 now + Duration::minutes(2),
             )
@@ -371,7 +334,7 @@ mod tests {
             .fetch_one(&mut *transaction)
             .await
             .expect("visible deliveries");
-        assert_eq!(visible, 3);
+        assert_eq!(visible, 2);
         transaction.rollback().await.expect("rollback");
     }
 }

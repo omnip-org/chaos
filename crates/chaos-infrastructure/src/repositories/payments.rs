@@ -1138,21 +1138,12 @@ impl PaymentRepository for PostgresPaymentRepository {
 
 #[async_trait]
 impl IntegrationQueue for PostgresPaymentRepository {
-    async fn claim_outbox(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<QueueJob>, ApplicationError> {
+    async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
             "SELECT id, store_id, event_type, payload, attempts \
-             FROM integration.claim_outbox_events($1, $2, $3, $4)",
+             FROM integration.claim_outbox_events($1)",
         )
-        .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
-        .bind(now)
-        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
@@ -1161,21 +1152,12 @@ impl IntegrationQueue for PostgresPaymentRepository {
         .collect()
     }
 
-    async fn claim_webhooks(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<QueueJob>, ApplicationError> {
+    async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, Value, i32)>(
             "SELECT id, store_id, provider, event_type, payload, attempts \
-             FROM integration.claim_webhook_events($1, $2, $3, $4)",
+             FROM integration.claim_webhook_events($1)",
         )
-        .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
-        .bind(now)
-        .bind(stale_before)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
@@ -1186,22 +1168,22 @@ impl IntegrationQueue for PostgresPaymentRepository {
 
     async fn finish_outbox(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        finish_job(&self.pool, false, worker_id, job_id, result, now).await
+        finish_outbox_job(&self.pool, job_id, attempts, result, now).await
     }
 
     async fn finish_webhook(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        finish_job(&self.pool, true, worker_id, job_id, result, now).await
+        finish_webhook_job(&self.pool, job_id, attempts, result, now).await
     }
 }
 
@@ -1622,11 +1604,10 @@ async fn apply_refund_event(
     Ok(())
 }
 
-async fn finish_job(
+async fn finish_webhook_job(
     pool: &PgPool,
-    webhook: bool,
-    worker_id: Uuid,
     job_id: Uuid,
+    attempts: u32,
     result: Result<(), String>,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
@@ -1634,29 +1615,46 @@ async fn finish_job(
         Ok(()) => (true, String::new()),
         Err(failure) => (false, failure),
     };
-    let finished: Option<bool> = if webhook {
+    let finished: Option<bool> =
         sqlx::query_scalar("SELECT integration.finish_webhook_event($1, $2, $3, $4, $5, $6)")
             .bind(job_id)
-            .bind(worker_id)
+            .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)
             .bind(&failure)
             .bind(MAX_QUEUE_ATTEMPTS)
             .bind(now)
             .fetch_one(pool)
             .await
-            .map_err(database_error)?
+            .map_err(database_error)?;
+    if finished == Some(true) {
+        Ok(())
     } else {
+        Err(queue_job_not_found())
+    }
+}
+
+async fn finish_outbox_job(
+    pool: &PgPool,
+    job_id: Uuid,
+    attempts: u32,
+    result: Result<(), String>,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    let (succeeded, failure) = match result {
+        Ok(()) => (true, String::new()),
+        Err(failure) => (false, failure),
+    };
+    let finished: Option<bool> =
         sqlx::query_scalar("SELECT integration.finish_outbox_event($1, $2, $3, $4, $5, $6)")
             .bind(job_id)
-            .bind(worker_id)
+            .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)
             .bind(&failure)
             .bind(MAX_QUEUE_ATTEMPTS)
             .bind(now)
             .fetch_one(pool)
             .await
-            .map_err(database_error)?
-    };
+            .map_err(database_error)?;
     if finished == Some(true) {
         Ok(())
     } else {

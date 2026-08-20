@@ -457,7 +457,7 @@ mod tests {
         assert!(
             state
                 .search_indexer
-                .run_batch(Uuid::now_v7(), 100, state.clock.now())
+                .run_batch(100, state.clock.now())
                 .await
                 .unwrap()
                 >= 2

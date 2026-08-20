@@ -4,7 +4,7 @@
 
 Cloudflare terminates public TLS and proxies to the host gateway. The gateway load-balances the blue and green API replicas. One independently restartable Worker service runs background consumers and has no public listener. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL, Redis, and metrics must not be publicly reachable.
 
-API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because queue claims, leases, retries, and idempotency are designed for concurrent consumers.
+API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because PGMQ visibility timeouts, retry counters, and idempotent consumers coordinate concurrent claims.
 
 ## Host bootstrap
 

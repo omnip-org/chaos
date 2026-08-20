@@ -87,20 +87,14 @@ mod tests {
 
     #[async_trait]
     impl EmailDeliveryRepository for AcceptingRepository {
-        async fn claim(
-            &self,
-            _worker_id: Uuid,
-            _limit: u16,
-            _now: OffsetDateTime,
-            _stale_before: OffsetDateTime,
-        ) -> Result<Vec<EmailDeliveryJob>, ApplicationError> {
+        async fn claim(&self, _limit: u16) -> Result<Vec<EmailDeliveryJob>, ApplicationError> {
             unreachable!()
         }
 
         async fn finish(
             &self,
-            _worker_id: Uuid,
             _delivery_id: Uuid,
+            _attempts: u32,
             _result: Result<EmailDelivery, EmailDeliveryFailure>,
             _now: OffsetDateTime,
         ) -> Result<(), ApplicationError> {

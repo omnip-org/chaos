@@ -381,21 +381,17 @@ impl PaymentWorkers {
 
     pub async fn run_outbox_batch(
         &self,
-        worker_id: Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .queue
-            .claim_outbox(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
-            .await?;
+        let jobs = self.queue.claim_outbox(limit).await?;
         for job in &jobs {
             let result = self
                 .execute_provider_job(job, now)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
-                .finish_outbox(worker_id, job.id, result, now)
+                .finish_outbox(job.id, job.attempts, result, now)
                 .await?;
         }
         Ok(jobs.len())
@@ -403,14 +399,10 @@ impl PaymentWorkers {
 
     pub async fn run_webhook_batch(
         &self,
-        worker_id: Uuid,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .queue
-            .claim_webhooks(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
-            .await?;
+        let jobs = self.queue.claim_webhooks(limit).await?;
         for job in &jobs {
             let result = self
                 .repository
@@ -418,7 +410,7 @@ impl PaymentWorkers {
                 .await
                 .map_err(|error| error.to_string());
             self.queue
-                .finish_webhook(worker_id, job.id, result, now)
+                .finish_webhook(job.id, job.attempts, result, now)
                 .await?;
         }
         Ok(jobs.len())

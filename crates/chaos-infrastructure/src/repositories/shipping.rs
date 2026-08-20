@@ -947,18 +947,6 @@ async fn complete_label_purchase(
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
-    sqlx::query(
-        "INSERT INTO integration.outbox_events \
-         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-         VALUES ($1, $2, 'fulfillment', $3, 'analytics.fulfillment.shipped', $4)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(row.1)
-    .bind(json!({ "fulfillment_id": row.1 }))
-    .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
     let detail = load_label(&mut transaction, store_id, label_id)
         .await?
         .ok_or_else(corrupt_provider_state)?;

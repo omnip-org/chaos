@@ -373,13 +373,7 @@ pub trait FulfillmentRepository: Send + Sync {
 
 #[async_trait]
 pub trait FulfillmentEventQueue: Send + Sync {
-    async fn claim_events(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<FulfillmentEventJob>, ApplicationError>;
+    async fn claim_events(&self, limit: u16) -> Result<Vec<FulfillmentEventJob>, ApplicationError>;
 
     async fn process_event(
         &self,
@@ -389,8 +383,8 @@ pub trait FulfillmentEventQueue: Send + Sync {
 
     async fn finish_event(
         &self,
-        worker_id: Uuid,
         job_id: Uuid,
+        attempts: u32,
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;

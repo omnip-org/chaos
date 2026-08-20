@@ -10,6 +10,14 @@ Do not create a schema merely because a Rust module exists. A new schema require
 
 Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
 
+Durable integration work uses PGMQ for message visibility and retry attempts. An
+authoritative integration row stores the bounded business payload and outcome;
+its insertion trigger enqueues only the row identifier and records the returned
+PGMQ message identifier. Runtime code accesses queues through schema-qualified,
+security-definer routines rather than receiving direct access to extension-owned
+tables. Scheduled scans derived from current business state are not queues and
+may use short, recoverable row leases.
+
 ## Names and identifiers
 
 - Use lowercase `snake_case` ASCII identifiers and plural table names.

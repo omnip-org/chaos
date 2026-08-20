@@ -112,7 +112,7 @@ records whether explicit consent or Store policy was its basis. The default
 and stops them after a shopper opt-out. Meta Pixel shares stable event IDs with
 CAPI for deduplication. See ADR 0026.
 
-API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. Every queue claim must remain safe with multiple Worker replicas; deployment may begin with one replica for cost, but correctness must not depend on singleton execution. Adaptive polling backoff limits idle database work, while leases, idempotency, retries, and bounded shutdown provide crash recovery.
+API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
 
 ## Incremental refactoring rule
 

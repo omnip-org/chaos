@@ -47,18 +47,12 @@ pub struct VerifiedEmailWebhook {
 
 #[async_trait]
 pub trait EmailDeliveryRepository: Send + Sync {
-    async fn claim(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<EmailDeliveryJob>, ApplicationError>;
+    async fn claim(&self, limit: u16) -> Result<Vec<EmailDeliveryJob>, ApplicationError>;
 
     async fn finish(
         &self,
-        worker_id: Uuid,
         delivery_id: Uuid,
+        attempts: u32,
         result: Result<EmailDelivery, EmailDeliveryFailure>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;

@@ -867,7 +867,7 @@ mod tests {
         let indexer = crate::repositories::PostgresSearchIndexer::new(runtime_pool.clone());
         assert!(
             indexer
-                .run_batch(Uuid::now_v7(), 100, time::OffsetDateTime::now_utc())
+                .run_batch(100, time::OffsetDateTime::now_utc())
                 .await
                 .unwrap()
                 >= 6

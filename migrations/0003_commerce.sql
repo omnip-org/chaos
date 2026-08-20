@@ -1879,34 +1879,32 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commerce.process_events(UUID, INTEGER, TIMESTAMPTZ)
+CREATE FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ)
 RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE event RECORD; processed BIGINT := 0;
 BEGIN
     FOR event IN
-        SELECT outbox.id, outbox.store_id, outbox.aggregate_id
-          FROM integration.outbox_events AS outbox
-          INNER JOIN integration.event_consumer_registry AS registry
-            ON registry.event_type = outbox.event_type
-           AND registry.consumer_owner = 'search.product_indexer'
-         WHERE outbox.status = 'pending' AND outbox.event_type = 'search.product.changed'
-           AND outbox.available_at <= $3
-         ORDER BY outbox.available_at, outbox.created_at, outbox.id
-         FOR UPDATE OF outbox SKIP LOCKED
-         LIMIT greatest(least($2, 100), 1)
+        SELECT outbox.id,
+               outbox.store_id,
+               outbox.aggregate_id,
+               outbox.attempts
+          FROM integration.claim_routed_outbox_events(
+                   'chaos_search_events', $1
+               ) AS outbox
     LOOP
-        UPDATE integration.outbox_events
-           SET status = 'processing', attempts = attempts + 1,
-               locked_by = $1, locked_at = $3
-         WHERE id = event.id;
-        PERFORM commerce.refresh_product_document(
-            event.store_id, event.aggregate_id
-        );
-        UPDATE integration.outbox_events
-           SET status = 'processed', processed_at = $3,
-               locked_by = NULL, locked_at = NULL
-         WHERE id = event.id AND locked_by = $1;
-        processed := processed + 1;
+        BEGIN
+            PERFORM commerce.refresh_product_document(
+                event.store_id, event.aggregate_id
+            );
+            PERFORM integration.finish_outbox_event(
+                event.id, event.attempts, true, '', 8, $2
+            );
+            processed := processed + 1;
+        EXCEPTION WHEN OTHERS THEN
+            PERFORM integration.finish_outbox_event(
+                event.id, event.attempts, false, SQLERRM, 8, $2
+            );
+        END;
     END LOOP;
     RETURN processed;
 END;
@@ -1936,7 +1934,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION commerce.process_events(UUID, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT SELECT ON TABLES TO chaos_runtime;

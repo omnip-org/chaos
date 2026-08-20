@@ -477,12 +477,9 @@ impl MetaConnectionRepository for PostgresAnalyticsEventRepository {
 impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     async fn claim_server_events(
         &self,
-        worker: Uuid,
         limit: u16,
-        now: OffsetDateTime,
-        stale: OffsetDateTime,
     ) -> Result<Vec<ServerCommerceEventJob>, ApplicationError> {
-        let rows:Vec<(Uuid,Uuid,String,Uuid,Value,OffsetDateTime)>=sqlx::query_as("SELECT id,store_id,event_type,aggregate_id,payload,occurred_at FROM integration.claim_analytics_events($1,$2,$3,$4)").bind(worker).bind(i32::from(limit)).bind(now).bind(stale).fetch_all(&self.pool).await.map_err(db)?;
+        let rows:Vec<(Uuid,Uuid,String,Uuid,Value,OffsetDateTime,i32)>=sqlx::query_as("SELECT id,store_id,event_type,aggregate_id,payload,occurred_at,attempts FROM integration.claim_analytics_events($1)").bind(i32::from(limit)).fetch_all(&self.pool).await.map_err(db)?;
         Ok(rows
             .into_iter()
             .map(|r| ServerCommerceEventJob {
@@ -492,6 +489,7 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
                 aggregate_id: r.3,
                 payload: r.4,
                 occurred_at: r.5,
+                attempts: u32::try_from(r.6).unwrap_or(u32::MAX),
             })
             .collect())
     }
@@ -513,7 +511,6 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     }
     async fn finish_server_event(
         &self,
-        worker: Uuid,
         job: &ServerCommerceEventJob,
         result: Result<(), String>,
         now: OffsetDateTime,
@@ -522,7 +519,7 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
         let done: Option<bool> =
             sqlx::query_scalar("SELECT integration.finish_outbox_event($1,$2,$3,$4,8,$5)")
                 .bind(job.id)
-                .bind(worker)
+                .bind(i32::try_from(job.attempts).unwrap_or(i32::MAX))
                 .bind(ok)
                 .bind(e)
                 .bind(now)
@@ -540,17 +537,15 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     }
     async fn claim_meta_deliveries(
         &self,
-        worker: Uuid,
         limit: u16,
-        now: OffsetDateTime,
-        stale: OffsetDateTime,
     ) -> Result<Vec<MetaDeliveryJob>, ApplicationError> {
-        let r:Vec<(Uuid,Uuid,Uuid)>=sqlx::query_as("SELECT id,store_id,commerce_event_id FROM integration.claim_meta_event_deliveries($1,$2,$3,$4)").bind(worker).bind(i32::from(limit)).bind(now).bind(stale).fetch_all(&self.pool).await.map_err(db)?;
+        let r:Vec<(Uuid,Uuid,Uuid,i32)>=sqlx::query_as("SELECT id,store_id,commerce_event_id,attempts FROM integration.claim_meta_event_deliveries($1)").bind(i32::from(limit)).fetch_all(&self.pool).await.map_err(db)?;
         Ok(r.into_iter()
             .map(|r| MetaDeliveryJob {
                 id: r.0,
                 store_id: StoreId::from_uuid(r.1),
                 commerce_event_id: r.2,
+                attempts: u32::try_from(r.3).unwrap_or(u32::MAX),
             })
             .collect())
     }
@@ -560,7 +555,7 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     ) -> Result<MetaDeliveryCommand, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let r:(Uuid,String,String,Option<String>,String,OffsetDateTime,Option<Uuid>,Option<Uuid>,Option<String>,Option<i64>,Option<String>,Value)=sqlx::query_as("SELECT e.event_id,c.dataset_id,c.credential_secret_reference,c.test_event_code,e.event_name::text,e.occurred_at,e.visitor_id,e.customer_id,e.properties->>'source_url',e.value_minor,e.currency,e.properties || jsonb_strip_nulls(jsonb_build_object('content_ids',CASE WHEN e.product_variant_id IS NOT NULL THEN jsonb_build_array(e.product_variant_id::text) WHEN e.product_id IS NOT NULL THEN jsonb_build_array(e.product_id::text) END,'path',e.path,'order_id',e.order_id,'payment_attempt_id',e.payment_attempt_id,'refund_id',e.refund_id)) FROM integration.meta_event_deliveries d JOIN integration.commerce_events e ON e.store_id=d.store_id AND e.id=d.commerce_event_id JOIN integration.meta_connections c ON c.store_id=d.store_id WHERE d.store_id=$1 AND d.id=$2 AND d.delivery_status='processing' AND c.capi_enabled").bind(job.store_id.as_uuid()).bind(job.id).fetch_one(&mut *tx).await.map_err(db)?;
+        let r:(Uuid,String,String,Option<String>,String,OffsetDateTime,Option<Uuid>,Option<Uuid>,Option<String>,Option<i64>,Option<String>,Value)=sqlx::query_as("SELECT e.event_id,c.dataset_id,c.credential_secret_reference,c.test_event_code,e.event_name::text,e.occurred_at,e.visitor_id,e.customer_id,e.properties->>'source_url',e.value_minor,e.currency,e.properties || jsonb_strip_nulls(jsonb_build_object('content_ids',CASE WHEN e.product_variant_id IS NOT NULL THEN jsonb_build_array(e.product_variant_id::text) WHEN e.product_id IS NOT NULL THEN jsonb_build_array(e.product_id::text) END,'path',e.path,'order_id',e.order_id,'payment_attempt_id',e.payment_attempt_id,'refund_id',e.refund_id)) FROM integration.meta_event_deliveries d JOIN integration.commerce_events e ON e.store_id=d.store_id AND e.id=d.commerce_event_id JOIN integration.meta_connections c ON c.store_id=d.store_id WHERE d.store_id=$1 AND d.id=$2 AND d.delivery_status='pending' AND c.capi_enabled").bind(job.store_id.as_uuid()).bind(job.id).fetch_one(&mut *tx).await.map_err(db)?;
         tx.commit().await.map_err(db)?;
         Ok(MetaDeliveryCommand {
             delivery_id: job.id,
@@ -580,7 +575,6 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     }
     async fn finish_meta_delivery(
         &self,
-        worker: Uuid,
         job: &MetaDeliveryJob,
         result: Result<MetaDeliveryReceipt, MetaDeliveryError>,
         now: OffsetDateTime,
@@ -589,16 +583,24 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
             Ok(r) => (true, r.provider_reference, None, false),
             Err(e) => (false, None, Some(e.message), e.retryable),
         };
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let n=sqlx::query("UPDATE integration.meta_event_deliveries SET delivery_status=CASE WHEN $3 THEN 'processed'::integration.queue_status WHEN $6 AND attempts<8 THEN 'pending'::integration.queue_status ELSE 'dead_letter'::integration.queue_status END,available_at=CASE WHEN $3 THEN available_at ELSE $5+make_interval(secs=>least(power(2,greatest(attempts-1,0))::integer,256)) END,locked_by=NULL,locked_at=NULL,delivered_at=CASE WHEN $3 THEN $5 ELSE NULL END,provider_reference=$4,last_error=$7,updated_at=$5 WHERE id=$1 AND store_id=$2 AND delivery_status='processing' AND locked_by=$8").bind(job.id).bind(job.store_id.as_uuid()).bind(ok).bind(reference).bind(now).bind(retry).bind(error).bind(worker).execute(&mut *tx).await.map_err(db)?.rows_affected();
-        tx.commit().await.map_err(db)?;
-        if n == 1 {
+        let finished: Option<bool> =
+            sqlx::query_scalar("SELECT integration.finish_meta_delivery($1,$2,$3,$4,$5,$6,$7)")
+                .bind(job.id)
+                .bind(i32::try_from(job.attempts).unwrap_or(i32::MAX))
+                .bind(ok)
+                .bind(retry)
+                .bind(reference)
+                .bind(error)
+                .bind(now)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db)?;
+        if finished == Some(true) {
             Ok(())
         } else {
             Err(ApplicationError::Conflict {
-                code: "meta_delivery_lease_lost",
-                message: "the Meta delivery lease is no longer owned by this worker",
+                code: "meta_delivery_not_pending",
+                message: "the Meta delivery is no longer pending",
             })
         }
     }
@@ -633,7 +635,7 @@ async fn enqueue_meta(
     event: Uuid,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO integration.meta_event_deliveries(id,store_id,commerce_event_id,available_at,created_at,updated_at) VALUES(uuidv7(),$1,$2,$3,$3,$3) ON CONFLICT(store_id,commerce_event_id) DO NOTHING").bind(store.as_uuid()).bind(event).bind(now).execute(&mut **tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO integration.meta_event_deliveries(id,store_id,commerce_event_id,created_at,updated_at) VALUES(uuidv7(),$1,$2,$3,$3) ON CONFLICT(store_id,commerce_event_id) DO NOTHING").bind(store.as_uuid()).bind(event).bind(now).execute(&mut **tx).await.map_err(db)?;
     Ok(())
 }
 async fn insert_server(
@@ -1151,23 +1153,15 @@ mod tests {
             1
         );
 
-        let worker_a = Uuid::now_v7();
-        let jobs = repository
-            .claim_meta_deliveries(worker_a, 10, now, now - Duration::minutes(1))
-            .await
-            .unwrap();
+        let jobs = repository.claim_meta_deliveries(10).await.unwrap();
         let job = jobs
             .iter()
             .find(|job| job.store_id == store_id)
             .expect("the consented event must create one Meta delivery");
-        let competing = repository
-            .claim_meta_deliveries(Uuid::now_v7(), 10, now, now - Duration::minutes(1))
-            .await
-            .unwrap();
+        let competing = repository.claim_meta_deliveries(10).await.unwrap();
         assert!(competing.iter().all(|job| job.store_id != store_id));
         repository
             .finish_meta_delivery(
-                worker_a,
                 job,
                 Ok(MetaDeliveryReceipt {
                     provider_reference: Some("trace".into()),
@@ -1267,6 +1261,7 @@ mod tests {
             .unwrap();
 
         let first_capture = ServerCommerceEventJob {
+            attempts: 1,
             id: Uuid::now_v7(),
             store_id,
             event_type: "analytics.payment.captured".into(),
@@ -1296,6 +1291,7 @@ mod tests {
         assert_eq!(first, (true, Some(visitor_id), Some("meta".into())));
 
         let replayed_capture = ServerCommerceEventJob {
+            attempts: 1,
             id: Uuid::now_v7(),
             ..first_capture.clone()
         };
@@ -1313,6 +1309,7 @@ mod tests {
         assert_eq!(purchase_count, 1);
 
         let payment_info = ServerCommerceEventJob {
+            attempts: 1,
             id: Uuid::now_v7(),
             event_type: "analytics.payment.initiated".into(),
             ..first_capture
