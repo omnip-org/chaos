@@ -7,18 +7,18 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationCode, InventoryLocationId, InventoryReservation,
         InventoryReservationId, InventoryReservationLine, StockItemId,
     },
-    merchant::{ApiKeyScope, StoreId},
+    store::{PublishableKeyScope, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
         InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
         StockItemItem,
     },
+    store::StoreActor,
 };
 
 pub struct CreateInventoryLocationInput {
@@ -159,7 +159,7 @@ impl InventoryManagement {
         &self,
         input: ReserveInventoryInput,
     ) -> Result<InventoryReservationId, ApplicationError> {
-        require_machine_scope(&input.actor, ApiKeyScope::CheckoutWrite)?;
+        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
         if input.actor.sales_channel_id.is_none() {
             return Err(validation(
                 "sales_channel_id",
@@ -188,7 +188,7 @@ impl InventoryManagement {
         &self,
         input: TransitionInventoryReservationInput,
     ) -> Result<InventoryReservationDetail, ApplicationError> {
-        require_machine_scope(&input.actor, ApiKeyScope::CheckoutWrite)?;
+        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
         self.repository
             .transition_reservation(
                 &input.actor,
@@ -204,7 +204,7 @@ impl InventoryManagement {
         &self,
         input: TransitionInventoryReservationInput,
     ) -> Result<InventoryReservationDetail, ApplicationError> {
-        require_machine_scope(&input.actor, ApiKeyScope::CheckoutWrite)?;
+        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
         self.repository
             .transition_reservation(
                 &input.actor,
@@ -239,7 +239,7 @@ fn require_inventory_writer(actor: &AdminActor) -> Result<(), ApplicationError> 
 
 fn require_machine_scope(
     actor: &MachineActor,
-    required: ApiKeyScope,
+    required: PublishableKeyScope,
 ) -> Result<(), ApplicationError> {
     if actor.scopes.contains(&required) {
         Ok(())

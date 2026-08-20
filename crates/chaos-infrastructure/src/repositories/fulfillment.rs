@@ -15,10 +15,10 @@ use chaos_domain::{
         ReturnDisposition, ReturnId, ReturnStatus, calculate_return_refund_amount,
     },
     inventory::{InventoryLocationId, StockBalance},
-    merchant::StoreId,
     payments::{PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, Refund, RefundId},
     pricing::Money,
     sales::{OrderId, reconcile_fulfillment_statuses},
+    store::StoreId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -126,7 +126,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO fulfillment.fulfillments \
+            "INSERT INTO commerce.fulfillments \
              (id, store_id, order_id) VALUES ($1, $2, $3)",
         )
         .bind(fulfillment.id().as_uuid())
@@ -137,7 +137,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .map_err(database_error)?;
         for line in fulfillment.allocations() {
             sqlx::query(
-                "INSERT INTO fulfillment.fulfillment_lines \
+                "INSERT INTO commerce.fulfillment_lines \
                  (store_id, fulfillment_id, product_variant_id, quantity) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -188,7 +188,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             return replay_fulfillment(value);
         }
         let row = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT order_id, status::text FROM fulfillment.fulfillments \
+            "SELECT order_id, status::text FROM commerce.fulfillments \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -215,7 +215,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             FulfillmentStatus::Pending => return Err(invalid_target()),
         }
         sqlx::query(
-            "UPDATE fulfillment.fulfillments SET status = $3::fulfillment.fulfillment_status, \
+            "UPDATE commerce.fulfillments SET status = $3::commerce.fulfillment_status, \
                     carrier = COALESCE($4, carrier), tracking_number = COALESCE($5, tracking_number), \
                     shipped_at = CASE WHEN $3 = 'shipped' THEN $6 ELSE shipped_at END, \
                     delivered_at = CASE WHEN $3 = 'delivered' THEN $6 ELSE delivered_at END, \
@@ -303,7 +303,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
                 .await?;
         let returned = Return::create(order_id);
         sqlx::query(
-            "INSERT INTO fulfillment.returns \
+            "INSERT INTO commerce.returns \
              (id, store_id, order_id, refund_amount_minor, currency, \
               requested_at) VALUES ($1, $2, $3, $4, $5, $6)",
         )
@@ -318,7 +318,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .map_err(database_error)?;
         for line in &refund_lines {
             sqlx::query(
-                "INSERT INTO fulfillment.return_lines \
+                "INSERT INTO commerce.return_lines \
                  (store_id, return_id, product_variant_id, quantity, \
                   refund_amount_minor) VALUES ($1, $2, $3, $4, $5)",
             )
@@ -371,7 +371,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             return replay_return(value);
         }
         let row = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT order_id, status::text FROM fulfillment.returns \
+            "SELECT order_id, status::text FROM commerce.returns \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -415,7 +415,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
             ReturnStatus::Requested => return Err(invalid_target()),
         }
         sqlx::query(
-            "UPDATE fulfillment.returns SET status = $3::fulfillment.return_status, \
+            "UPDATE commerce.returns SET status = $3::commerce.return_status, \
                     authorized_at = CASE WHEN $3 = 'authorized' THEN $4 ELSE authorized_at END, \
                     received_at = CASE WHEN $3 = 'received' THEN $4 ELSE received_at END, \
                     completed_at = CASE WHEN $3 = 'completed' THEN $4 ELSE completed_at END, \
@@ -538,7 +538,7 @@ async fn reconcile_order_fulfillment(
     let payload_order_id = payload_uuid(&job.payload, "order_id")?;
     let store_id = StoreId::from_uuid(job.store_id);
     let order_id: Uuid = sqlx::query_scalar(
-        "SELECT order_id FROM fulfillment.fulfillments WHERE store_id = $1 AND id = $2",
+        "SELECT order_id FROM commerce.fulfillments WHERE store_id = $1 AND id = $2",
     )
     .bind(job.store_id)
     .bind(fulfillment_id)
@@ -555,7 +555,7 @@ async fn reconcile_order_fulfillment(
         ));
     }
     let current = sqlx::query_as::<_, (String, String)>(
-        "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
+        "SELECT fulfillment_status::text, delivery_status::text FROM commerce.orders \
          WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(job.store_id)
@@ -570,19 +570,19 @@ async fn reconcile_order_fulfillment(
     let quantities = sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT \
            (SELECT COALESCE(sum(order_line.quantity), 0)::bigint \
-              FROM sales.order_lines AS order_line \
+              FROM commerce.order_lines AS order_line \
              WHERE order_line.store_id = $1 \
                AND order_line.order_id = $2 AND order_line.requires_shipping), \
            (SELECT COALESCE(sum(fulfillment_line.quantity), 0)::bigint \
-              FROM fulfillment.fulfillment_lines AS fulfillment_line \
-              INNER JOIN fulfillment.fulfillments AS fulfillment_record \
+              FROM commerce.fulfillment_lines AS fulfillment_line \
+              INNER JOIN commerce.fulfillments AS fulfillment_record \
                 ON fulfillment_record.store_id = fulfillment_line.store_id \
                AND fulfillment_record.id = fulfillment_line.fulfillment_id \
              WHERE fulfillment_record.store_id = $1 AND fulfillment_record.order_id = $2 \
                AND fulfillment_record.status IN ('shipped', 'delivered')), \
            (SELECT COALESCE(sum(fulfillment_line.quantity), 0)::bigint \
-              FROM fulfillment.fulfillment_lines AS fulfillment_line \
-              INNER JOIN fulfillment.fulfillments AS fulfillment_record \
+              FROM commerce.fulfillment_lines AS fulfillment_line \
+              INNER JOIN commerce.fulfillments AS fulfillment_record \
                 ON fulfillment_record.store_id = fulfillment_line.store_id \
                AND fulfillment_record.id = fulfillment_line.fulfillment_id \
              WHERE fulfillment_record.store_id = $1 AND fulfillment_record.order_id = $2 \
@@ -599,11 +599,11 @@ async fn reconcile_order_fulfillment(
         u64::try_from(quantities.2).map_err(unexpected_conversion)?,
     )?;
     sqlx::query(
-        "UPDATE sales.orders SET fulfillment_status = $3::sales.order_fulfillment_status, \
-                delivery_status = $4::sales.order_delivery_status, updated_at = $5 \
+        "UPDATE commerce.orders SET fulfillment_status = $3::commerce.order_fulfillment_status, \
+                delivery_status = $4::commerce.order_delivery_status, updated_at = $5 \
          WHERE store_id = $1 AND id = $2 \
-           AND (fulfillment_status IS DISTINCT FROM $3::sales.order_fulfillment_status \
-             OR delivery_status IS DISTINCT FROM $4::sales.order_delivery_status)",
+           AND (fulfillment_status IS DISTINCT FROM $3::commerce.order_fulfillment_status \
+             OR delivery_status IS DISTINCT FROM $4::commerce.order_delivery_status)",
     )
     .bind(store_id.as_uuid())
     .bind(order_id)
@@ -614,13 +614,13 @@ async fn reconcile_order_fulfillment(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO sales.order_fulfillment_transitions \
+        "INSERT INTO commerce.order_fulfillment_transitions \
          (id, store_id, order_id, source_event_id, \
           from_fulfillment_status, to_fulfillment_status, from_delivery_status, \
           to_delivery_status, occurred_at) \
-         VALUES ($1,$2,$3,$4,$5::sales.order_fulfillment_status, \
-                 $6::sales.order_fulfillment_status,$7::sales.order_delivery_status, \
-                 $8::sales.order_delivery_status,$9) ON CONFLICT (source_event_id) DO NOTHING",
+         VALUES ($1,$2,$3,$4,$5::commerce.order_fulfillment_status, \
+                 $6::commerce.order_fulfillment_status,$7::commerce.order_delivery_status, \
+                 $8::commerce.order_delivery_status,$9) ON CONFLICT (source_event_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())
     .bind(job.store_id)
@@ -645,7 +645,7 @@ async fn coordinate_return_refund(
     let payload_order_id = payload_uuid(&job.payload, "order_id")?;
     let returned = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, i64, String)>(
         "SELECT order_id, status::text, refund_id, refund_amount_minor, currency::text \
-         FROM fulfillment.returns WHERE store_id = $1 \
+         FROM commerce.returns WHERE store_id = $1 \
          AND id = $2 FOR UPDATE",
     )
     .bind(job.store_id)
@@ -668,8 +668,8 @@ async fn coordinate_return_refund(
     let attempt_row = sqlx::query_as::<_, (Uuid, i64, String, Option<String>, String)>(
         "SELECT attempt.id, attempt.amount_minor, attempt.status::text, \
                 attempt.provider_reference, account.provider \
-         FROM payments.payment_attempts AS attempt \
-         INNER JOIN payments.provider_accounts AS account \
+         FROM commerce.payment_attempts AS attempt \
+         INNER JOIN commerce.provider_accounts AS account \
            ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
          WHERE attempt.store_id = $1 \
            AND attempt.order_id = $2 AND attempt.status = 'captured' \
@@ -694,7 +694,7 @@ async fn coordinate_return_refund(
         attempt_row.3,
     );
     let already_refunded: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM payments.refunds \
+        "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM commerce.refunds \
          WHERE store_id = $1 AND payment_attempt_id = $2 \
            AND status IN ('pending', 'succeeded')",
     )
@@ -705,7 +705,7 @@ async fn coordinate_return_refund(
     .map_err(database_error)?;
     let refund = Refund::create(&attempt, Money::new(returned.3, currency), already_refunded)?;
     sqlx::query(
-        "INSERT INTO payments.refunds \
+        "INSERT INTO commerce.refunds \
          (id, store_id, payment_attempt_id, amount_minor, currency) \
          VALUES ($1,$2,$3,$4,$5)",
     )
@@ -718,7 +718,7 @@ async fn coordinate_return_refund(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "UPDATE fulfillment.returns SET refund_id = $3, updated_at = CURRENT_TIMESTAMP \
+        "UPDATE commerce.returns SET refund_id = $3, updated_at = CURRENT_TIMESTAMP \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(job.store_id)
@@ -775,7 +775,7 @@ async fn lock_confirmed_order(
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
     let status: Option<String> = sqlx::query_scalar(
-        "SELECT status::text FROM sales.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
+        "SELECT status::text FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -806,11 +806,11 @@ async fn validate_fulfillment_quantities(
         let quantities = sqlx::query_as::<_, (i64, i64)>(
             "SELECT order_line.quantity::bigint, COALESCE(sum(fulfillment_line.quantity) \
                     FILTER (WHERE fulfillment_record.status <> 'cancelled'), 0)::bigint \
-             FROM sales.order_lines AS order_line \
-             LEFT JOIN fulfillment.fulfillments AS fulfillment_record \
+             FROM commerce.order_lines AS order_line \
+             LEFT JOIN commerce.fulfillments AS fulfillment_record \
                ON fulfillment_record.store_id = order_line.store_id \
               AND fulfillment_record.order_id = $2 \
-             LEFT JOIN fulfillment.fulfillment_lines AS fulfillment_line \
+             LEFT JOIN commerce.fulfillment_lines AS fulfillment_line \
                ON fulfillment_line.store_id = fulfillment_record.store_id \
               AND fulfillment_line.fulfillment_id = fulfillment_record.id \
               AND fulfillment_line.product_variant_id = order_line.product_variant_id \
@@ -849,8 +849,8 @@ async fn validate_return_quantities(
     for line in lines {
         let delivered: i64 = sqlx::query_scalar(
             "SELECT COALESCE(sum(fulfillment_line.quantity), 0)::bigint \
-             FROM fulfillment.fulfillment_lines AS fulfillment_line \
-             INNER JOIN fulfillment.fulfillments AS fulfillment_record \
+             FROM commerce.fulfillment_lines AS fulfillment_line \
+             INNER JOIN commerce.fulfillments AS fulfillment_record \
                ON fulfillment_record.store_id = fulfillment_line.store_id \
               AND fulfillment_record.id = fulfillment_line.fulfillment_id \
              WHERE fulfillment_record.store_id = $1 \
@@ -865,8 +865,8 @@ async fn validate_return_quantities(
         .map_err(database_error)?;
         let returned: i64 = sqlx::query_scalar(
             "SELECT COALESCE(sum(return_line.quantity), 0)::bigint \
-             FROM fulfillment.return_lines AS return_line \
-             INNER JOIN fulfillment.returns AS return_record \
+             FROM commerce.return_lines AS return_line \
+             INNER JOIN commerce.returns AS return_record \
                ON return_record.store_id = return_line.store_id AND return_record.id = return_line.return_id \
              WHERE return_record.store_id = $1 \
                AND return_record.order_id = $2 AND return_record.status <> 'rejected' \
@@ -902,7 +902,7 @@ async fn allocate_return_refund(
     lines: &[ReturnLineInput],
 ) -> Result<(CurrencyCode, Vec<ReturnRefundLine>, i64), ApplicationError> {
     let currency_text: String = sqlx::query_scalar(
-        "SELECT currency::text FROM sales.orders \
+        "SELECT currency::text FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -915,7 +915,7 @@ async fn allocate_return_refund(
     let mut total = 0_i64;
     for line in lines {
         let order_line = sqlx::query_as::<_, (i32, i64)>(
-            "SELECT quantity, total_amount_minor FROM sales.order_lines \
+            "SELECT quantity, total_amount_minor FROM commerce.order_lines \
              WHERE store_id = $1 AND order_id = $2 \
                AND product_variant_id = $3",
         )
@@ -932,8 +932,8 @@ async fn allocate_return_refund(
         let reserved = sqlx::query_as::<_, (i64, i64)>(
             "SELECT COALESCE(sum(return_line.quantity), 0)::bigint, \
                     COALESCE(sum(return_line.refund_amount_minor), 0)::bigint \
-             FROM fulfillment.return_lines AS return_line \
-             INNER JOIN fulfillment.returns AS return_record \
+             FROM commerce.return_lines AS return_line \
+             INNER JOIN commerce.returns AS return_record \
                ON return_record.store_id = return_line.store_id \
               AND return_record.id = return_line.return_id \
              WHERE return_record.store_id = $1 \
@@ -993,7 +993,7 @@ async fn receive_return(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let expected: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT product_variant_id FROM fulfillment.return_lines \
+        "SELECT product_variant_id FROM commerce.return_lines \
          WHERE store_id = $1 AND return_id = $2 \
          ORDER BY product_variant_id",
     )
@@ -1021,7 +1021,7 @@ async fn receive_return(
             ));
         }
         sqlx::query(
-            "UPDATE fulfillment.return_lines SET disposition = $3::fulfillment.return_disposition, \
+            "UPDATE commerce.return_lines SET disposition = $3::commerce.return_disposition, \
                     inventory_location_id = $4 WHERE store_id = $1 \
                     AND return_id = $2 AND product_variant_id = $5",
         )
@@ -1062,7 +1062,7 @@ async fn restock_return_line(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let quantity: i64 = sqlx::query_scalar(
-        "SELECT quantity::bigint FROM fulfillment.return_lines WHERE store_id = $1 AND return_id = $2 AND product_variant_id = $3",
+        "SELECT quantity::bigint FROM commerce.return_lines WHERE store_id = $1 AND return_id = $2 AND product_variant_id = $3",
     )
     .bind(store_id.as_uuid())
     .bind(return_id.as_uuid())
@@ -1071,7 +1071,7 @@ async fn restock_return_line(
     .await
     .map_err(database_error)?;
     let stock = sqlx::query_as::<_, (Uuid, i64, i64)>(
-        "SELECT id, on_hand_quantity, reserved_quantity FROM inventory.stock_items \
+        "SELECT id, on_hand_quantity, reserved_quantity FROM commerce.stock_items \
          WHERE store_id = $1 AND inventory_location_id = $2 \
            AND product_variant_id = $3 FOR UPDATE",
     )
@@ -1085,7 +1085,7 @@ async fn restock_return_line(
         Some((id, on_hand, reserved)) => (id, StockBalance::new(on_hand, reserved)?),
         None => {
             let active: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM inventory.inventory_locations WHERE \
+                "SELECT EXISTS (SELECT 1 FROM commerce.inventory_locations WHERE \
                  store_id = $1 AND id = $2 AND status = 'active')",
             )
             .bind(store_id.as_uuid())
@@ -1101,7 +1101,7 @@ async fn restock_return_line(
             }
             let id = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO inventory.stock_items \
+                "INSERT INTO commerce.stock_items \
                  (id, store_id, inventory_location_id, product_variant_id) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -1117,7 +1117,7 @@ async fn restock_return_line(
     };
     let updated = current.adjust(quantity)?;
     sqlx::query(
-        "UPDATE inventory.stock_items SET on_hand_quantity = $2, updated_at = $3 WHERE id = $1",
+        "UPDATE commerce.stock_items SET on_hand_quantity = $2, updated_at = $3 WHERE id = $1",
     )
     .bind(stock_id)
     .bind(updated.on_hand())
@@ -1126,7 +1126,7 @@ async fn restock_return_line(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO inventory.stock_ledger_entries \
+        "INSERT INTO commerce.stock_ledger_entries \
          (id, store_id, stock_item_id, kind, on_hand_delta_quantity, \
           reserved_delta_quantity, resulting_on_hand_quantity, resulting_reserved_quantity, \
           note, actor_user_id, created_at) \
@@ -1154,7 +1154,7 @@ async fn load_allocations(
     fulfillment_id: FulfillmentId,
 ) -> Result<Vec<FulfillmentAllocation>, ApplicationError> {
     sqlx::query_as::<_, (Uuid, i32)>(
-        "SELECT product_variant_id, quantity FROM fulfillment.fulfillment_lines \
+        "SELECT product_variant_id, quantity FROM commerce.fulfillment_lines \
          WHERE store_id = $1 AND fulfillment_id = $2 \
          ORDER BY product_variant_id",
     )
@@ -1191,7 +1191,7 @@ async fn load_fulfillment(
         ),
     >(
         "SELECT order_id, status::text, carrier, tracking_number, created_at, updated_at \
-         FROM fulfillment.fulfillments WHERE store_id = $1 AND id = $2",
+         FROM commerce.fulfillments WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(fulfillment_id.as_uuid())
@@ -1240,7 +1240,7 @@ async fn load_return(
         ),
     >(
         "SELECT order_id, status::text, refund_id, refund_amount_minor, currency::text, \
-                created_at, updated_at FROM fulfillment.returns \
+                created_at, updated_at FROM commerce.returns \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -1254,7 +1254,7 @@ async fn load_return(
         return Ok(None);
     };
     let lines = sqlx::query_as::<_, (Uuid, i32)>(
-        "SELECT product_variant_id, quantity FROM fulfillment.return_lines \
+        "SELECT product_variant_id, quantity FROM commerce.return_lines \
          WHERE store_id = $1 AND return_id = $2 \
          ORDER BY product_variant_id",
     )

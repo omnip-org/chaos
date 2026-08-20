@@ -74,13 +74,13 @@ impl PostgresStorefrontCatalogRepository {
         >(
             "WITH selected_price_list AS ( \
                  SELECT price_list.id, price_list.currency::text, price_list.tax_inclusive \
-                 FROM pricing.price_lists AS price_list \
-                 INNER JOIN merchant.stores AS store \
+                 FROM commerce.price_lists AS price_list \
+                 INNER JOIN commerce.stores AS store \
                    ON store.id = price_list.store_id \
-                 INNER JOIN merchant.sales_channels AS channel \
+                 INNER JOIN commerce.sales_channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
-                 INNER JOIN merchant.store_currencies AS store_currency \
+                 INNER JOIN commerce.store_currencies AS store_currency \
                    ON store_currency.store_id = store.id \
                   AND store_currency.currency = price_list.currency \
                  WHERE price_list.store_id = $1 \
@@ -97,9 +97,9 @@ impl PostgresStorefrontCatalogRepository {
              SELECT variant.id, variant.title, variant.sku::text, variant.requires_shipping, \
                     price.amount_minor, selected.currency, selected.tax_inclusive, \
                     variant.metadata \
-             FROM catalog.product_variants AS variant \
+             FROM commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
-             INNER JOIN pricing.prices AS price \
+             INNER JOIN commerce.prices AS price \
                ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
@@ -157,7 +157,7 @@ impl PostgresStorefrontCatalogRepository {
     ) -> Result<Vec<StorefrontProductOption>, ApplicationError> {
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
             "SELECT id, name::text, position \
-             FROM catalog.product_options \
+             FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY position ASC",
         )
@@ -168,7 +168,7 @@ impl PostgresStorefrontCatalogRepository {
         .map_err(database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
-             FROM catalog.product_option_values \
+             FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY option_id ASC, position ASC",
         )
@@ -222,7 +222,7 @@ impl PostgresStorefrontCatalogRepository {
         locale: &ResolvedLocale,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
-            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM catalog.media_assets WHERE store_id=$1 AND product_id=$2 AND status='ready' ORDER BY position,id",
+            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM commerce.media_assets WHERE store_id=$1 AND product_id=$2 AND status='ready' ORDER BY position,id",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -264,11 +264,11 @@ impl PostgresStorefrontCatalogRepository {
     ) -> Result<Vec<StorefrontProductCollection>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, String, String)>(
             "SELECT collection.id, collection.handle::text, collection.title \
-             FROM catalog.collection_products AS member \
-             INNER JOIN catalog.collections AS collection \
+             FROM commerce.collection_products AS member \
+             INNER JOIN commerce.collections AS collection \
                ON collection.store_id = member.store_id \
               AND collection.id = member.collection_id \
-             INNER JOIN catalog.collection_publications AS publication \
+             INNER JOIN commerce.collection_publications AS publication \
                ON publication.store_id = collection.store_id \
               AND publication.collection_id = collection.id \
               AND publication.sales_channel_id = $2 \
@@ -317,17 +317,17 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             >(
                 "SELECT product.id, product.handle::text, product.title, product.description, \
                         product.metadata \
-                 FROM catalog.products AS product \
-                 INNER JOIN merchant.stores AS store \
+                 FROM commerce.products AS product \
+                 INNER JOIN commerce.stores AS store \
                    ON store.id = product.store_id \
-                 INNER JOIN merchant.sales_channels AS channel \
+                 INNER JOIN commerce.sales_channels AS channel \
                    ON channel.store_id = product.store_id \
                   AND channel.id = $2 \
-                 INNER JOIN catalog.product_publications AS publication \
+                 INNER JOIN commerce.product_publications AS publication \
                    ON publication.store_id = product.store_id \
                   AND publication.product_id = product.id \
                   AND publication.sales_channel_id = channel.id \
-                 INNER JOIN search.product_documents AS search_document \
+                 INNER JOIN commerce.product_documents AS search_document \
                    ON search_document.store_id = product.store_id \
                   AND search_document.product_id = product.id \
                  WHERE product.store_id = $1 \
@@ -336,12 +336,12 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                    AND product.status = 'active' \
                    AND ($4::text IS NULL OR search_document.document @@ websearch_to_tsquery('simple', $4)) \
                    AND ($5::text IS NULL OR EXISTS ( \
-                       SELECT 1 FROM catalog.collections AS collection \
-                       INNER JOIN catalog.collection_products AS member \
+                       SELECT 1 FROM commerce.collections AS collection \
+                       INNER JOIN commerce.collection_products AS member \
                          ON member.store_id = collection.store_id \
                         AND member.collection_id = collection.id \
                         AND member.product_id = product.id \
-                       INNER JOIN catalog.collection_publications AS collection_publication \
+                       INNER JOIN commerce.collection_publications AS collection_publication \
                          ON collection_publication.store_id = collection.store_id \
                         AND collection_publication.collection_id = collection.id \
                         AND collection_publication.sales_channel_id = channel.id \
@@ -352,16 +352,16 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                        OR ($5::text IS NULL AND product.id > $3) \
                        OR ($5::text IS NOT NULL AND ( \
                            SELECT member.position \
-                           FROM catalog.collections AS collection \
-                           INNER JOIN catalog.collection_products AS member \
+                           FROM commerce.collections AS collection \
+                           INNER JOIN commerce.collection_products AS member \
                              ON member.store_id = collection.store_id \
                             AND member.collection_id = collection.id \
                            WHERE collection.store_id = product.store_id \
                              AND collection.handle = $5 AND member.product_id = product.id \
                        ) > ( \
                            SELECT anchor.position \
-                           FROM catalog.collections AS collection \
-                           INNER JOIN catalog.collection_products AS anchor \
+                           FROM commerce.collections AS collection \
+                           INNER JOIN commerce.collection_products AS anchor \
                              ON anchor.store_id = collection.store_id \
                             AND anchor.collection_id = collection.id \
                            WHERE collection.store_id = product.store_id \
@@ -370,8 +370,8 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                    ) \
                  ORDER BY CASE WHEN $5::text IS NOT NULL THEN ( \
                      SELECT member.position \
-                     FROM catalog.collections AS collection \
-                     INNER JOIN catalog.collection_products AS member \
+                     FROM commerce.collections AS collection \
+                     INNER JOIN commerce.collection_products AS member \
                        ON member.store_id = collection.store_id \
                       AND member.collection_id = collection.id \
                      WHERE collection.store_id = product.store_id \
@@ -446,13 +446,13 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
             "SELECT product.id, product.handle::text, product.title, product.description, \
                     product.metadata \
-             FROM catalog.products AS product \
-             INNER JOIN merchant.stores AS store \
+             FROM commerce.products AS product \
+             INNER JOIN commerce.stores AS store \
                ON store.id = product.store_id \
-             INNER JOIN merchant.sales_channels AS channel \
+             INNER JOIN commerce.sales_channels AS channel \
                ON channel.store_id = product.store_id \
               AND channel.id = $2 \
-             INNER JOIN catalog.product_publications AS publication \
+             INNER JOIN commerce.product_publications AS publication \
                ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
               AND publication.sales_channel_id = channel.id \
@@ -505,7 +505,7 @@ async fn resolve_locale(
     requested: Option<Locale>,
 ) -> Result<ResolvedLocale, ApplicationError> {
     let default: Option<String> =
-        sqlx::query_scalar("SELECT default_locale FROM merchant.stores WHERE id=$1")
+        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
             .bind(actor.store_id.as_uuid())
             .fetch_optional(&mut **transaction)
             .await
@@ -517,7 +517,7 @@ async fn resolve_locale(
     let selected = requested.unwrap_or(Locale::parse(&default)?);
     if selected.as_str() != default {
         let enabled: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
+            "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
         )
         .bind(actor.store_id.as_uuid())
         .bind(selected.as_str())
@@ -537,7 +537,7 @@ async fn resolve_locale(
     let language = selected.language();
     let language_translation = if language != default && language != selected.as_str() {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM merchant.store_locales WHERE store_id=$1 AND locale=$2)",
+            "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
         )
         .bind(actor.store_id.as_uuid())
         .bind(language)
@@ -567,7 +567,7 @@ async fn localized_product_content(
         return Ok((canonical_title, canonical_description));
     };
     let translated: Option<(String, String)> = sqlx::query_as(
-        "SELECT title,description FROM catalog.product_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 0 ELSE 1 END LIMIT 1",
+        "SELECT title,description FROM commerce.product_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 0 ELSE 1 END LIMIT 1",
     )
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
@@ -589,7 +589,7 @@ async fn variant_translations(
         return Ok(HashMap::new());
     };
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT product_variant_id,title,locale FROM catalog.product_variant_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
+        "SELECT product_variant_id,title,locale FROM commerce.product_variant_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
     )
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
@@ -608,8 +608,8 @@ async fn variant_selected_options(
 ) -> Result<HashMap<Uuid, Vec<StorefrontSelectedOption>>, ApplicationError> {
     let rows: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
         "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
-         FROM catalog.variant_selected_options AS selection \
-         INNER JOIN catalog.product_options AS option \
+         FROM commerce.variant_selected_options AS selection \
+         INNER JOIN commerce.product_options AS option \
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
@@ -645,7 +645,7 @@ async fn media_translations(
         return Ok(HashMap::new());
     };
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT media_asset_id,alt_text,locale FROM catalog.media_asset_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
+        "SELECT media_asset_id,alt_text,locale FROM commerce.media_asset_translations WHERE store_id=$1 AND product_id=$2 AND (locale=$3 OR locale=$4) ORDER BY CASE WHEN locale=$3 THEN 1 ELSE 0 END",
     )
     .bind(actor.store_id.as_uuid())
     .bind(product_id.as_uuid())
@@ -669,7 +669,7 @@ mod tests {
     use chaos_application::ports::{MachineActor, StorefrontCatalogRepository};
     use chaos_domain::{
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -717,7 +717,7 @@ mod tests {
             (other_store_id, format!("other-storefront-{suffix}")),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores \
+                "INSERT INTO commerce.stores \
                  (id, code, name, status) \
                  VALUES ($1, $2, 'Storefront Test', 'active')",
             )
@@ -727,7 +727,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO merchant.store_currencies \
+                "INSERT INTO commerce.store_currencies \
                  (store_id, currency) VALUES ($1, 'USD')",
             )
             .bind(id.as_uuid())
@@ -740,7 +740,7 @@ mod tests {
             (other_channel_id, other_store_id, "other-web"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.sales_channels \
+                "INSERT INTO commerce.sales_channels \
                  (id, store_id, code, name, kind, is_default) \
                  VALUES ($1, $2, $3, 'Web', 'web', true)",
             )
@@ -775,10 +775,10 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.products \
+                "INSERT INTO commerce.products \
                  (id, store_id, handle, title, description, status) \
                  VALUES ($1, $2, $3, 'Shirt', 'Safe description', \
-                         $4::catalog.product_status)",
+                         $4::commerce.product_status)",
             )
             .bind(product.as_uuid())
             .bind(store.as_uuid())
@@ -788,7 +788,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO catalog.product_variants \
+                "INSERT INTO commerce.product_variants \
                  (id, store_id, product_id, title, status) \
                  VALUES ($1, $2, $3, 'Default', 'active')",
             )
@@ -805,7 +805,7 @@ mod tests {
             (other_product_id, other_store_id, other_channel_id),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.product_publications \
+                "INSERT INTO commerce.product_publications \
                  (store_id, product_id, sales_channel_id) \
                  VALUES ($1, $2, $3)",
             )
@@ -821,7 +821,7 @@ mod tests {
             (other_price_list_id, other_store_id, "other-retail"),
         ] {
             sqlx::query(
-                "INSERT INTO pricing.price_lists \
+                "INSERT INTO commerce.price_lists \
                  (id, store_id, code, name, currency, status) \
                  VALUES ($1, $2, $3, 'Retail', 'USD', 'active')",
             )
@@ -843,7 +843,7 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO pricing.prices \
+                "INSERT INTO commerce.prices \
                  (id, store_id, price_list_id, \
                   product_variant_id, amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
@@ -859,11 +859,10 @@ mod tests {
         }
 
         let actor = MachineActor {
-            api_key_id: ApiKeyId::new(),
+            publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            class: ApiKeyClass::Publishable,
-            scopes: vec![ApiKeyScope::CatalogRead],
+            scopes: vec![PublishableKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         };
         let indexer = crate::repositories::PostgresSearchIndexer::new(runtime_pool.clone());
@@ -896,14 +895,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let rebuilt: i64 = sqlx::query_scalar("SELECT search.rebuild_store_products($1)")
+        let rebuilt: i64 = sqlx::query_scalar("SELECT commerce.rebuild_store_products($1)")
             .bind(store_id.as_uuid())
             .fetch_one(&owner_pool)
             .await
             .unwrap();
         assert_eq!(rebuilt, 2);
         let indexed: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM search.product_documents \
+            "SELECT count(*) FROM commerce.product_documents \
              WHERE store_id = $1",
         )
         .bind(store_id.as_uuid())

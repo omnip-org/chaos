@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     identity::UserId,
-    merchant::{SalesChannel, Store, StoreId, StoreMembership},
+    store::{SalesChannel, Store, StoreId, StoreMembership},
 };
 
 use crate::ApplicationError;

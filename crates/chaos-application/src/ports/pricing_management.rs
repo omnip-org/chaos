@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode,
     catalog::ProductVariantId,
-    merchant::StoreId,
     pricing::{PriceList, PriceListId, PriceListStatus},
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

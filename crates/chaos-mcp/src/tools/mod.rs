@@ -1,5 +1,4 @@
 mod analytics;
-mod api_keys;
 mod collections;
 mod fulfillment;
 mod inventory;
@@ -12,6 +11,7 @@ mod price_lists;
 mod products;
 mod promotions;
 mod provider_secrets;
+mod publishable_keys;
 mod reviews;
 mod store_admin;
 mod stores;
@@ -30,14 +30,14 @@ use chaos_application::{
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::AccessKeyAuthentication,
     inventory::InventoryManagement,
-    merchant::{
-        ApiKeyManagement, CreateStore, MerchantQueries, ProviderSecretManagement,
-        StoreAdministration, StoreMembershipManagement,
-    },
     payments::{PaymentProviderAdministration, PaymentService},
     ports::Clock,
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::OrderManagement,
+    store::{
+        CreateStore, ProviderSecretManagement, PublishableKeyManagement, StoreAdministration,
+        StoreMembershipManagement, StoreQueries,
+    },
 };
 use rmcp::{handler::server::router::tool::ToolRouter, tool_handler};
 
@@ -46,7 +46,7 @@ use rmcp::{handler::server::router::tool::ToolRouter, tool_handler};
 #[derive(Clone)]
 pub struct McpState {
     pub access_key_authentication: Arc<AccessKeyAuthentication>,
-    pub merchant_queries: Arc<MerchantQueries>,
+    pub store_queries: Arc<StoreQueries>,
     pub store_membership_management: Arc<StoreMembershipManagement>,
     pub create_store: Arc<CreateStore>,
     pub catalog_queries: Arc<CatalogQueries>,
@@ -68,7 +68,7 @@ pub struct McpState {
     pub media_administration: Arc<MediaAdministration>,
     pub catalog_localization: Arc<CatalogLocalization>,
     pub review_administration: Arc<ReviewAdministration>,
-    pub api_key_management: Arc<ApiKeyManagement>,
+    pub publishable_key_management: Arc<PublishableKeyManagement>,
     pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
@@ -102,7 +102,7 @@ impl ChaosMcp {
                 + Self::media_tool_router()
                 + Self::localization_tool_router()
                 + Self::reviews_tool_router()
-                + Self::api_keys_tool_router()
+                + Self::publishable_keys_tool_router()
                 + Self::analytics_tool_router()
                 + Self::provider_secrets_tool_router(),
         }

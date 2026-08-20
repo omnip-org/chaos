@@ -9,9 +9,9 @@ use chaos_domain::{
         ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
-    merchant::StoreId,
     payments::RefundId,
     sales::OrderId,
+    store::StoreId,
 };
 use secrecy::SecretString;
 use serde_json::Value;

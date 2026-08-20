@@ -1,10 +1,10 @@
 use chaos_application::{
     ApplicationError,
     identity::AccessKeyAuthentication,
-    merchant::MerchantQueries,
     ports::{AdminActor, McpPrincipal},
+    store::StoreQueries,
 };
-use chaos_domain::merchant::StoreId;
+use chaos_domain::store::StoreId;
 use rmcp::model::CallToolResult;
 use secrecy::SecretString;
 
@@ -19,12 +19,12 @@ use crate::error::tool_error;
 /// readable tool output rather than an opaque protocol error.
 pub async fn authenticate_mcp(
     access_key_authentication: &AccessKeyAuthentication,
-    merchant_queries: &MerchantQueries,
+    store_queries: &StoreQueries,
     parts: &http::request::Parts,
 ) -> Result<AdminActor, CallToolResult> {
     let principal = authenticate_principal(access_key_authentication, parts).await?;
     let store_id = store_id(parts).map_err(tool_error)?;
-    let actor = merchant_queries
+    let actor = store_queries
         .authorize(principal.user_id, store_id)
         .await
         .map_err(tool_error)?
@@ -98,15 +98,15 @@ mod tests {
     use async_trait::async_trait;
     use chaos_application::{
         identity::AccessKeyAuthentication,
-        merchant::MerchantQueries,
         ports::{
             AccessKeyListItem, AccessKeyRepository, GeneratedAccessKeyMaterial, McpPrincipal,
-            MerchantReadRepository, StoreListItem,
+            StoreListItem, StoreReadRepository,
         },
+        store::StoreQueries,
     };
     use chaos_domain::{
         identity::{AccessKey, AccessKeyId, UserId},
-        merchant::{StoreId, StoreRole},
+        store::{StoreId, StoreRole},
     };
     use secrecy::SecretString;
 
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl MerchantReadRepository for FixedMembership {
+    impl StoreReadRepository for FixedMembership {
         async fn membership_role(
             &self,
             user_id: UserId,
@@ -184,7 +184,7 @@ mod tests {
                 key_id,
                 user_id,
             })));
-        let queries = MerchantQueries::new(Arc::new(FixedMembership { user_id, store_id }));
+        let queries = StoreQueries::new(Arc::new(FixedMembership { user_id, store_id }));
         let request = http::Request::builder()
             .header(
                 http::header::AUTHORIZATION,
@@ -215,7 +215,7 @@ mod tests {
                 key_id: AccessKeyId::new(),
                 user_id,
             })));
-        let queries = MerchantQueries::new(Arc::new(FixedMembership {
+        let queries = StoreQueries::new(Arc::new(FixedMembership {
             user_id,
             store_id: allowed_store_id,
         }));

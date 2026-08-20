@@ -1,16 +1,16 @@
 use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode,
-    merchant::StoreId,
     payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     sales::OrderId,
+    store::StoreId,
 };
 use secrecy::SecretString;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::StoreActor};
+use crate::{ApplicationError, store::StoreActor};
 
 use super::{AdminActor, IdempotencyRequest, ShopperActor};
 

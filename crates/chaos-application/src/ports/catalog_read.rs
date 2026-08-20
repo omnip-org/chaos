@@ -4,7 +4,7 @@ use chaos_domain::{
         ProductId, ProductOptionId, ProductOptionValueId, ProductStatus, ProductVariantId,
         VariantStatus,
     },
-    merchant::StoreId,
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

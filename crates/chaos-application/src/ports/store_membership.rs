@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use chaos_domain::{
     identity::UserId,
-    merchant::{StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::StoreActor};
+use crate::{ApplicationError, store::StoreActor};
 
 use super::IdempotencyRequest;
 

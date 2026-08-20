@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     Locale,
     catalog::{CollectionContent, CollectionId, CollectionStatus, ProductId},
-    merchant::{SalesChannelId, StoreId},
+    store::{SalesChannelId, StoreId},
 };
 use time::OffsetDateTime;
 

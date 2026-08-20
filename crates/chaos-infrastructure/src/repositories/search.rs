@@ -19,7 +19,7 @@ impl PostgresSearchIndexer {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<u64, ApplicationError> {
-        let processed: i64 = sqlx::query_scalar("SELECT search.process_events($1, $2, $3)")
+        let processed: i64 = sqlx::query_scalar("SELECT commerce.process_events($1, $2, $3)")
             .bind(worker_id)
             .bind(i32::from(limit.clamp(1, 100)))
             .bind(now)

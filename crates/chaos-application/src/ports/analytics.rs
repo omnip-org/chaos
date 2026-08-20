@@ -5,13 +5,13 @@ use chaos_domain::{
         BrowserEvent, BrowserEventName, ConsentSnapshot, SessionEventContribution,
     },
     identity::UserId,
-    merchant::{SalesChannelId, StoreId},
     sales::CustomerId,
+    store::{SalesChannelId, StoreId},
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{ApplicationError, merchant::StoreActor};
+use crate::{ApplicationError, store::StoreActor};
 
 use super::{CustomerActor, IdempotencyRequest};
 

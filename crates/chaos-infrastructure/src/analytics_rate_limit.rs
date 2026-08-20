@@ -3,7 +3,7 @@ use chaos_application::{
     ApplicationError,
     ports::{AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision},
 };
-use chaos_domain::merchant::{SalesChannelId, StoreId};
+use chaos_domain::store::{SalesChannelId, StoreId};
 use redis::{Client as RedisClient, Script};
 use uuid::Uuid;
 
@@ -92,7 +92,7 @@ fn redis_error(error: redis::RedisError) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use chaos_domain::merchant::{SalesChannelId, StoreId};
+    use chaos_domain::store::{SalesChannelId, StoreId};
 
     use super::*;
 

@@ -1,20 +1,37 @@
+#[path = "storefront/analytics.rs"]
 mod analytics;
+#[path = "identity/auth.rs"]
 mod auth;
+#[path = "storefront/collections.rs"]
 mod collection;
+#[path = "storefront/customers.rs"]
 mod customer;
+#[path = "shared/error.rs"]
 mod error;
+#[path = "shared/extract.rs"]
 mod extract;
+#[path = "operations/health.rs"]
 mod health;
+#[path = "operations/metrics.rs"]
 mod metrics;
+#[path = "webhooks/notification.rs"]
 mod notification;
+#[path = "shared/openapi.rs"]
 mod openapi;
+#[path = "shared/pagination.rs"]
 mod pagination;
+#[path = "storefront/payments.rs"]
 mod payment;
+#[path = "shared/response.rs"]
 mod response;
+#[path = "storefront/reviews.rs"]
 mod review;
+#[path = "storefront/catalog.rs"]
 mod storefront;
+#[path = "storefront/sales.rs"]
 mod storefront_sales;
 #[cfg(test)]
+#[path = "shared/test_support.rs"]
 mod test_support;
 
 use anyhow::Context as _;
@@ -35,15 +52,15 @@ use chaos_application::{
     },
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
-    merchant::{
-        ApiKeyAuthentication, ApiKeyManagement, CreateStore, MerchantQueries,
-        ProviderSecretManagement, StoreAdministration, StoreMembershipManagement,
-    },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
+    store::{
+        CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
+        PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
+    },
     storefront::StorefrontCatalog,
 };
 use std::sync::Arc;
@@ -62,19 +79,19 @@ use chaos_infrastructure::{
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
-        PostgresAnalyticsReportingRepository, PostgresApiKeyRepository,
-        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
-        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
-        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresMerchantReadRepository, PostgresOrderManagementRepository,
-        PostgresPaymentRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository,
-        PostgresReviewRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresAnalyticsReportingRepository, PostgresCatalogLocalizationRepository,
+        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
+        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
+        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresOrderManagementRepository, PostgresPaymentRepository,
+        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
+        PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
+        PostgresSearchIndexer, PostgresShippingServiceRepository,
         PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
-        SecureApiKeyMaterialGenerator,
+        PostgresStoreProvisioningUnitOfWork, PostgresStoreReadRepository,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresTaxRuleRepository, SandboxPaymentProvider, SecurePublishableKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
@@ -123,10 +140,10 @@ pub struct ApiState {
     pub pricing_management: Arc<PricingManagement>,
     pub tax_management: Arc<TaxManagement>,
     pub promotion_management: Arc<PromotionManagement>,
-    pub merchant_queries: Arc<MerchantQueries>,
+    pub store_queries: Arc<StoreQueries>,
     pub store_membership_management: Arc<StoreMembershipManagement>,
-    pub api_key_management: Arc<ApiKeyManagement>,
-    pub api_key_authentication: Arc<ApiKeyAuthentication>,
+    pub publishable_key_management: Arc<PublishableKeyManagement>,
+    pub publishable_key_authentication: Arc<PublishableKeyAuthentication>,
     pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
@@ -294,19 +311,21 @@ impl ApiState {
         let promotion_management = PromotionManagement::new(Arc::new(
             PostgresPromotionRepository::new(infrastructure.runtime_pool()),
         ));
-        let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let store_queries = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             infrastructure.runtime_pool(),
         )));
         let store_membership_management = StoreMembershipManagement::new(Arc::new(
             PostgresStoreMembershipRepository::new(infrastructure.runtime_pool()),
         ));
-        let api_key_repository =
-            Arc::new(PostgresApiKeyRepository::new(infrastructure.runtime_pool()));
-        let api_key_management = ApiKeyManagement::new(
-            api_key_repository.clone(),
-            Arc::new(SecureApiKeyMaterialGenerator),
+        let publishable_key_repository = Arc::new(PostgresPublishableKeyRepository::new(
+            infrastructure.runtime_pool(),
+        ));
+        let publishable_key_management = PublishableKeyManagement::new(
+            publishable_key_repository.clone(),
+            Arc::new(SecurePublishableKeyMaterialGenerator),
         );
-        let api_key_authentication = ApiKeyAuthentication::new(api_key_repository);
+        let publishable_key_authentication =
+            PublishableKeyAuthentication::new(publishable_key_repository);
         let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
             infrastructure.runtime_pool(),
         ));
@@ -500,10 +519,10 @@ impl ApiState {
             pricing_management: Arc::new(pricing_management),
             tax_management: Arc::new(tax_management),
             promotion_management: Arc::new(promotion_management),
-            merchant_queries: Arc::new(merchant_queries),
+            store_queries: Arc::new(store_queries),
             store_membership_management: Arc::new(store_membership_management),
-            api_key_management: Arc::new(api_key_management),
-            api_key_authentication: Arc::new(api_key_authentication),
+            publishable_key_management: Arc::new(publishable_key_management),
+            publishable_key_authentication: Arc::new(publishable_key_authentication),
             provider_secret_management: Arc::new(provider_secret_management),
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
@@ -536,7 +555,7 @@ pub fn router(state: ApiState) -> Router {
     let mcp_router = chaos_mcp::router(
         chaos_mcp::McpState {
             access_key_authentication: state.access_key_authentication.clone(),
-            merchant_queries: state.merchant_queries.clone(),
+            store_queries: state.store_queries.clone(),
             store_membership_management: state.store_membership_management.clone(),
             create_store: state.create_store.clone(),
             catalog_queries: state.catalog_queries.clone(),
@@ -558,7 +577,7 @@ pub fn router(state: ApiState) -> Router {
             media_administration: state.media_administration.clone(),
             catalog_localization: state.catalog_localization.clone(),
             review_administration: state.review_administration.clone(),
-            api_key_management: state.api_key_management.clone(),
+            publishable_key_management: state.publishable_key_management.clone(),
             provider_secret_management: state.provider_secret_management.clone(),
             analytics_administration: state.analytics_administration.clone(),
             analytics_privacy: state.analytics_privacy.clone(),

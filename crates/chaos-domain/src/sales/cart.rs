@@ -6,8 +6,8 @@ use crate::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
-    merchant::{SalesChannelId, StoreId},
     pricing::{Money, PriceListId, PromotionSnapshot, TaxRuleSnapshot},
+    store::{SalesChannelId, StoreId},
 };
 
 use super::CheckoutIdentity;

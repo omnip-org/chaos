@@ -4,8 +4,8 @@ use chaos_application::{
     ports::{AdminActor, IdempotencyRequest, TaxRuleDetail, TaxRuleRepository},
 };
 use chaos_domain::{
-    merchant::StoreId,
     pricing::{TaxRule, TaxRuleId, TaxRuleStatus},
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -77,9 +77,9 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
         }
         require_store(&mut transaction, store_id).await?;
         sqlx::query(
-            "INSERT INTO pricing.tax_rules \
+            "INSERT INTO commerce.tax_rules \
              (id, store_id, code, name, country_code, rate_basis_points, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::pricing.tax_rule_status)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7::commerce.tax_rule_status)",
         )
         .bind(rule.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -115,7 +115,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
         require_store(&mut transaction, store_id).await?;
         let rows = sqlx::query_as::<_, TaxRuleRow>(
             "SELECT id, code, name, country_code::text, rate_basis_points, status::text, \
-                    created_at, updated_at FROM pricing.tax_rules \
+                    created_at, updated_at FROM commerce.tax_rules \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -144,7 +144,7 @@ impl TaxRuleRepository for PostgresTaxRuleRepository {
             .is_none()
         {
             let result = sqlx::query(
-                "UPDATE pricing.tax_rules SET status = $3::pricing.tax_rule_status, updated_at = CURRENT_TIMESTAMP \
+                "UPDATE commerce.tax_rules SET status = $3::commerce.tax_rule_status, updated_at = CURRENT_TIMESTAMP \
                  WHERE store_id = $1 AND id = $2",
             ).bind(store_id.as_uuid())
               .bind(rule_id.as_uuid()).bind(status.as_str())
@@ -169,7 +169,7 @@ async fn load(
 ) -> Result<Option<TaxRuleDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, TaxRuleRow>(
         "SELECT id, code, name, country_code::text, rate_basis_points, status::text, \
-                created_at, updated_at FROM pricing.tax_rules \
+                created_at, updated_at FROM commerce.tax_rules \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -200,7 +200,7 @@ async fn require_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
             .bind(store_id.as_uuid())
             .fetch_one(&mut **transaction)
             .await

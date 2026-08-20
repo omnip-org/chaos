@@ -5,11 +5,11 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationId, InventoryLocationStatus, InventoryReservation,
         InventoryReservationId, InventoryReservationStatus, StockItemId,
     },
-    merchant::StoreId,
+    store::StoreId,
 };
 use time::OffsetDateTime;
 
-use crate::{ApplicationError, merchant::StoreActor};
+use crate::{ApplicationError, store::StoreActor};
 
 use super::{AdminActor, IdempotencyRequest, MachineActor};
 

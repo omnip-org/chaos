@@ -3,9 +3,7 @@ use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    CurrencyCode, DomainError, FieldViolation, catalog::ProductVariantId, merchant::StoreId,
-};
+use crate::{CurrencyCode, DomainError, FieldViolation, catalog::ProductVariantId, store::StoreId};
 
 use super::Money;
 

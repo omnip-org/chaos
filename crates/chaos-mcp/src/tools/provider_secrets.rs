@@ -1,4 +1,4 @@
-use chaos_application::merchant::CreateProviderSecretInput;
+use chaos_application::store::CreateProviderSecretInput;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -21,7 +21,7 @@ pub struct CreateProviderSecretParams {
     /// One of: payment_credential, payment_webhook, shipping_credential,
     /// analytics_credential.
     pub kind: String,
-    /// The secret value to store, e.g. an API key or webhook signing secret.
+    /// The secret value to store, e.g. an Publishable Key or webhook signing secret.
     /// Returned as an opaque reference, never in plaintext, from any read path.
     pub value: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -47,7 +47,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await

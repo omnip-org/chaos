@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     catalog::{Product, ProductId},
-    merchant::StoreId,
+    store::StoreId,
 };
 
 use super::{AdminActor, IdempotencyRequest};

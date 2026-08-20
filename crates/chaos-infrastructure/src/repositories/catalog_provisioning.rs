@@ -8,7 +8,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CatalogMetadata, Product, ProductId},
-    merchant::StoreId,
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -63,7 +63,7 @@ impl CatalogProvisioningUnitOfWork for PostgresCatalogProvisioningUnitOfWork {
 impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
     async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1 AND status = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1 AND status = 'active')",
         )
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
@@ -109,9 +109,9 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
 
     async fn insert_product(&mut self, product: &Product) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO catalog.products \
+            "INSERT INTO commerce.products \
              (id, store_id, handle, title, description, status, metadata) \
-             VALUES ($1, $2, $3, $4, $5, $6::catalog.product_status, $7::jsonb)",
+             VALUES ($1, $2, $3, $4, $5, $6::commerce.product_status, $7::jsonb)",
         )
         .bind(product.id().as_uuid())
         .bind(product.store_id().as_uuid())
@@ -126,7 +126,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
 
         for option in product.options() {
             sqlx::query(
-                "INSERT INTO catalog.product_options \
+                "INSERT INTO commerce.product_options \
                  (id, store_id, product_id, name, position) \
                  VALUES ($1, $2, $3, $4, $5)",
             )
@@ -140,7 +140,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             .map_err(map_catalog_write_error)?;
             for value in option.values() {
                 sqlx::query(
-                    "INSERT INTO catalog.product_option_values \
+                    "INSERT INTO commerce.product_option_values \
                      (id, store_id, product_id, option_id, value, position) \
                      VALUES ($1, $2, $3, $4, $5, $6)",
                 )
@@ -158,10 +158,10 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
 
         for variant in product.variants() {
             sqlx::query(
-                "INSERT INTO catalog.product_variants \
+                "INSERT INTO commerce.product_variants \
                  (id, store_id, product_id, title, sku, status, \
                   requires_shipping, track_inventory, metadata) \
-                 VALUES ($1, $2, $3, $4, $5, $6::catalog.variant_status, $7, $8, $9::jsonb)",
+                 VALUES ($1, $2, $3, $4, $5, $6::commerce.variant_status, $7, $8, $9::jsonb)",
             )
             .bind(variant.id().as_uuid())
             .bind(product.store_id().as_uuid())
@@ -177,7 +177,7 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
             .map_err(map_catalog_write_error)?;
             for selection in variant.selected_options() {
                 sqlx::query(
-                    "INSERT INTO catalog.variant_selected_options \
+                    "INSERT INTO commerce.variant_selected_options \
                      (store_id, product_id, variant_id, option_id, \
                       option_value_id) \
                      VALUES ($1, $2, $3, $4, $5)",
@@ -249,16 +249,16 @@ mod tests {
             CreateProduct, CreateProductInput, CreateProductOptionInput,
             CreateProductSelectedOptionInput, CreateProductVariantInput,
         },
-        merchant::MerchantQueries,
         ports::{AdminActor, IdempotencyRequest},
+        store::StoreQueries,
     };
     use chaos_domain::{
         identity::UserId,
-        merchant::{StoreId, StoreRole},
+        store::{StoreId, StoreRole},
     };
     use sqlx::postgres::PgPoolOptions;
 
-    use crate::repositories::PostgresMerchantReadRepository;
+    use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
 
@@ -299,7 +299,7 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores \
+            "INSERT INTO commerce.stores \
             (id, code, name, default_region, default_currency, status) \
              VALUES ($1, $2, 'Catalog Store', 'US', 'USD', 'active')",
         )
@@ -310,9 +310,9 @@ mod tests {
         .unwrap();
         for (user_id, role) in [(owner_user_id, "owner"), (member_user_id, "member")] {
             sqlx::query(
-                "INSERT INTO merchant.store_memberships \
+                "INSERT INTO commerce.store_memberships \
                  (store_id, user_id, role) \
-                 VALUES ($1, $2, $3::merchant.store_role)",
+                 VALUES ($1, $2, $3::commerce.store_role)",
             )
             .bind(store_id.as_uuid())
             .bind(user_id.as_uuid())
@@ -322,7 +322,7 @@ mod tests {
             .unwrap();
         }
 
-        let queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let queries = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             runtime_pool.clone(),
         )));
         let owner = queries.authorize(owner_user_id, store_id).await.unwrap();
@@ -331,7 +331,7 @@ mod tests {
             runtime_pool,
         )));
         let idempotency_key = format!("product-{suffix}");
-        let make_input = |actor: chaos_application::merchant::StoreActor,
+        let make_input = |actor: chaos_application::store::StoreActor,
                           fingerprint,
                           key: String,
                           handle: &str,
@@ -444,11 +444,11 @@ mod tests {
 
         let counts: (i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT \
-                (SELECT count(*) FROM catalog.products WHERE id = $1), \
-                (SELECT count(*) FROM catalog.product_options WHERE product_id = $1), \
-                (SELECT count(*) FROM catalog.product_option_values WHERE product_id = $1), \
-                (SELECT count(*) FROM catalog.product_variants WHERE product_id = $1), \
-                (SELECT count(*) FROM catalog.variant_selected_options WHERE product_id = $1)",
+                (SELECT count(*) FROM commerce.products WHERE id = $1), \
+                (SELECT count(*) FROM commerce.product_options WHERE product_id = $1), \
+                (SELECT count(*) FROM commerce.product_option_values WHERE product_id = $1), \
+                (SELECT count(*) FROM commerce.product_variants WHERE product_id = $1), \
+                (SELECT count(*) FROM commerce.variant_selected_options WHERE product_id = $1)",
         )
         .bind(output.product_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -456,14 +456,14 @@ mod tests {
         .unwrap();
         assert_eq!(counts, (1, 2, 4, 1, 2));
         let status: String =
-            sqlx::query_scalar("SELECT status::text FROM catalog.products WHERE id = $1")
+            sqlx::query_scalar("SELECT status::text FROM commerce.products WHERE id = $1")
                 .bind(output.product_id.as_uuid())
                 .fetch_one(&owner_pool)
                 .await
                 .unwrap();
         assert_eq!(status, "draft");
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await

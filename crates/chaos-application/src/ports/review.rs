@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     catalog::{ProductId, ReviewContent, ReviewId, ReviewStatus, StaffReplyContent},
-    merchant::StoreId,
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

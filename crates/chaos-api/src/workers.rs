@@ -1,39 +1,39 @@
-use crate::{http::ApiState, lifecycle::Lifecycle};
+use crate::{lifecycle::Lifecycle, runtime::WorkerRuntime};
 use uuid::Uuid;
 
 pub async fn run(
-    state: ApiState,
+    runtime: WorkerRuntime,
     lifecycle: Lifecycle,
     worker_shutdown_timeout: std::time::Duration,
 ) {
     let payment_worker = tokio::spawn(payment_worker_loop(
-        state.payment_workers.clone(),
-        state.clock.clone(),
+        runtime.payment_workers.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let fulfillment_worker = tokio::spawn(fulfillment_worker_loop(
-        state.fulfillment_workers.clone(),
-        state.clock.clone(),
+        runtime.fulfillment_workers.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let notification_worker = tokio::spawn(notification_worker_loop(
-        state.notification_workers.clone(),
-        state.clock.clone(),
+        runtime.notification_workers.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let analytics_worker = tokio::spawn(analytics_worker_loop(
-        state.analytics_workers.clone(),
-        state.clock.clone(),
+        runtime.analytics_workers.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let search_worker = tokio::spawn(search_worker_loop(
-        state.search_indexer.clone(),
-        state.clock.clone(),
+        runtime.search_indexer.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     let checkout_expiry_worker = tokio::spawn(checkout_expiry_worker_loop(
-        state.checkout_expiry_workers.clone(),
-        state.clock.clone(),
+        runtime.checkout_expiry_workers.clone(),
+        runtime.clock.clone(),
         lifecycle.clone(),
     ));
     tracing::info!("background worker started");

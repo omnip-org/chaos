@@ -4,8 +4,8 @@ use anyhow::Context;
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-use crate::{config::Settings, merchant::StoreTransaction};
-use chaos_domain::merchant::StoreId;
+use crate::{config::Settings, store::StoreTransaction};
+use chaos_domain::store::StoreId;
 
 #[derive(Clone)]
 pub struct AppState {

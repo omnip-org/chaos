@@ -261,7 +261,7 @@ pub trait OrderManagementRepository: Send + Sync {
     async fn list_orders(
         &self,
         actor: AdminActor,
-        store_id: chaos_domain::merchant::StoreId,
+        store_id: chaos_domain::store::StoreId,
         after: Option<Uuid>,
         limit: u16,
         filter: &OrderListFilter,
@@ -270,14 +270,14 @@ pub trait OrderManagementRepository: Send + Sync {
     async fn get_order(
         &self,
         actor: AdminActor,
-        store_id: chaos_domain::merchant::StoreId,
+        store_id: chaos_domain::store::StoreId,
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 
     async fn transition_order(
         &self,
         actor: AdminActor,
-        store_id: chaos_domain::merchant::StoreId,
+        store_id: chaos_domain::store::StoreId,
         order_id: OrderId,
         target_status: OrderStatus,
         now: OffsetDateTime,

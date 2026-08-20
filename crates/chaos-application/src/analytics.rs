@@ -4,13 +4,12 @@ use std::sync::Arc;
 use chaos_domain::{
     FieldViolation,
     analytics::{AnalyticsPolicy, BrowserEvent, ConsentSnapshot, SessionEventContribution},
-    merchant::{ApiKeyClass, ApiKeyScope, StoreId, StoreRole},
+    store::{PublishableKeyScope, StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{
         AnalyticsAttributionQueue, AnalyticsCollectionRateLimiter, AnalyticsCommerceFactQueue,
         AnalyticsDestination, AnalyticsDestinationAccount, AnalyticsDestinationConfiguration,
@@ -20,6 +19,7 @@ use crate::{
         AnalyticsSessionizationQueue, CustomerActor, IdempotencyRequest, MachineActor,
         StoreAnalyticsPolicy,
     },
+    store::StoreActor,
 };
 
 const MAX_BATCH_SIZE: usize = 20;
@@ -88,9 +88,10 @@ impl AnalyticsPrivacy {
         input: LinkAnalyticsIdentityInput,
     ) -> Result<AnalyticsIdentityLink, ApplicationError> {
         let machine = &input.actor.machine;
-        if machine.class != ApiKeyClass::Publishable
-            || machine.sales_channel_id.is_none()
-            || !machine.scopes.contains(&ApiKeyScope::AnalyticsWrite)
+        if machine.sales_channel_id.is_none()
+            || !machine
+                .scopes
+                .contains(&PublishableKeyScope::AnalyticsWrite)
         {
             return Err(ApplicationError::Forbidden);
         }
@@ -449,7 +450,7 @@ impl AnalyticsCollection {
         &self,
         input: CollectBrowserEventsInput,
     ) -> Result<BrowserEventCollectionResult, ApplicationError> {
-        if input.actor.class != ApiKeyClass::Publishable || input.actor.sales_channel_id.is_none() {
+        if input.actor.sales_channel_id.is_none() {
             return Err(ApplicationError::Forbidden);
         }
         if input.events.is_empty() || input.events.len() > MAX_BATCH_SIZE {
@@ -620,7 +621,7 @@ mod tests {
     use chaos_domain::{
         analytics::{BrowserEventProperties, ConsentSnapshot},
         identity::UserId,
-        merchant::{ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
     };
     use uuid::Uuid;
 
@@ -679,11 +680,10 @@ mod tests {
 
     fn actor() -> MachineActor {
         MachineActor {
-            api_key_id: ApiKeyId::new(),
+            publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            class: ApiKeyClass::Publishable,
-            scopes: vec![ApiKeyScope::AnalyticsWrite],
+            scopes: vec![PublishableKeyScope::AnalyticsWrite],
             created_by_user_id: UserId::new(),
         }
     }

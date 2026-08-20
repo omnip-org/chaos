@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{ProductContent, ProductHandle, ProductId, ProductLifecycle},
-    merchant::{SalesChannelId, StoreId},
+    store::{SalesChannelId, StoreId},
 };
 
 use crate::{

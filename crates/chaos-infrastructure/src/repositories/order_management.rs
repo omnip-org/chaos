@@ -11,7 +11,6 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
-    merchant::StoreId,
     pricing::{
         Money, PriceListId, PromotionId, PromotionSnapshot, PromotionTrigger, PromotionValue,
         TaxRuleId, TaxRuleSnapshot,
@@ -20,6 +19,7 @@ use chaos_domain::{
         CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderDeliveryStatus,
         OrderFulfillmentStatus, OrderId, OrderStatus, PostalAddress, ShopperId,
     },
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -121,10 +121,10 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
     ) -> Result<OrderPage, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT DISTINCT o.id FROM sales.orders o \
-             JOIN sales.order_contacts contact ON contact.store_id = o.store_id \
+            "SELECT DISTINCT o.id FROM commerce.orders o \
+             JOIN commerce.order_contacts contact ON contact.store_id = o.store_id \
                AND contact.order_id = o.id \
-             LEFT JOIN sales.customer_shopper_links link ON link.store_id = o.store_id \
+             LEFT JOIN commerce.customer_shopper_links link ON link.store_id = o.store_id \
                AND link.shopper_id = o.shopper_id \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
@@ -202,7 +202,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                 .ok_or_else(|| order_not_found(replay_id));
         }
         let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>)>(
-            "SELECT checkout_id, status::text, inventory_reservation_id FROM sales.orders \
+            "SELECT checkout_id, status::text, inventory_reservation_id FROM commerce.orders \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -234,7 +234,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         }
         let transition_id = Uuid::now_v7();
         sqlx::query(
-            "UPDATE sales.orders SET status = $3::sales.order_status, updated_at = $4 \
+            "UPDATE commerce.orders SET status = $3::commerce.order_status, updated_at = $4 \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -245,11 +245,11 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "INSERT INTO sales.order_transitions \
+            "INSERT INTO commerce.order_transitions \
              (id, store_id, order_id, from_status, to_status, kind, \
               actor_user_id, occurred_at) \
-             VALUES ($1, $2, $3, $4::sales.order_status, $5::sales.order_status, \
-                     $6::sales.order_transition_kind, $7, $8)",
+             VALUES ($1, $2, $3, $4::commerce.order_status, $5::commerce.order_status, \
+                     $6::commerce.order_transition_kind, $7, $8)",
         )
         .bind(transition_id)
         .bind(store_id.as_uuid())
@@ -264,7 +264,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
             sqlx::query(
-                "INSERT INTO notification.email_deliveries \
+                "INSERT INTO integration.email_deliveries \
                  (id, store_id, semantic_event_id, semantic_event_type, \
                   recipient_email, template_key, template_version, template_payload, provider) \
                  SELECT $1, order_row.store_id, $2, \
@@ -274,8 +274,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                             'total_amount_minor', order_row.total_amount_minor, \
                             'currency', order_row.currency::text \
                         ), 'resend' \
-                   FROM sales.orders AS order_row \
-                   INNER JOIN sales.order_contacts AS contact \
+                   FROM commerce.orders AS order_row \
+                   INNER JOIN commerce.order_contacts AS contact \
                      ON contact.store_id = order_row.store_id \
                     AND contact.order_id = order_row.id \
                   WHERE order_row.store_id = $3 AND order_row.id = $4 \
@@ -314,7 +314,7 @@ async fn load_order(
     let row = sqlx::query_as::<_, HeaderRow>(
         "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM sales.orders \
+                tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -326,7 +326,7 @@ async fn load_order(
         return Ok(None);
     };
     let locale = sqlx::query_scalar::<_, String>(
-        "SELECT locale FROM sales.orders \
+        "SELECT locale FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -335,7 +335,7 @@ async fn load_order(
     .await
     .map_err(database_error)?;
     let derived_statuses = sqlx::query_as::<_, (String, String)>(
-        "SELECT fulfillment_status::text, delivery_status::text FROM sales.orders \
+        "SELECT fulfillment_status::text, delivery_status::text FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -351,7 +351,7 @@ async fn load_order(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
                 subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                total_amount_minor, tax_inclusive FROM sales.order_lines \
+                total_amount_minor, tax_inclusive FROM commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
     .bind(store_id.as_uuid())
@@ -371,7 +371,7 @@ async fn load_order(
         ),
     >(
         "SELECT id, from_status::text, to_status::text, kind::text, actor_user_id, occurred_at \
-         FROM sales.order_transitions WHERE store_id = $1 \
+         FROM commerce.order_transitions WHERE store_id = $1 \
            AND order_id = $2 ORDER BY occurred_at, id",
     )
     .bind(store_id.as_uuid())
@@ -455,7 +455,7 @@ async fn load_order_shipping(
     let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
         "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
                 estimated_min_days, estimated_max_days \
-         FROM sales.order_shipping_selections \
+         FROM commerce.order_shipping_selections \
          WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
@@ -484,7 +484,7 @@ async fn load_order_tax(
 ) -> Result<TaxRuleSnapshot, ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
         "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
-         FROM sales.order_tax_calculations \
+         FROM commerce.order_tax_calculations \
          WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
@@ -530,7 +530,7 @@ async fn load_order_promotion(
         "SELECT promotion_id, handle, name, trigger::text, redemption_code, value_kind::text, \
                 rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
                 minimum_subtotal_amount_minor, priority, starts_at, ends_at \
-         FROM sales.order_promotion_calculations \
+         FROM commerce.order_promotion_calculations \
          WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
@@ -574,7 +574,7 @@ async fn load_order_identity(
     order_id: OrderId,
 ) -> Result<CheckoutIdentity, ApplicationError> {
     let contact = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT email::text, phone FROM sales.order_contacts \
+        "SELECT email::text, phone FROM commerce.order_contacts \
          WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
@@ -586,7 +586,7 @@ async fn load_order_identity(
     let addresses = sqlx::query_as::<_, AddressRow>(
         "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
                 administrative_area, postal_code, country_code::text \
-         FROM sales.order_addresses \
+         FROM commerce.order_addresses \
          WHERE store_id = $1 AND order_id = $2 ORDER BY kind",
     )
     .bind(store_id.as_uuid())

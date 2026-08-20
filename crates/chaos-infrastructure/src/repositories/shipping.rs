@@ -19,8 +19,8 @@ use chaos_domain::{
         ShippingQuoteRequestId, ShippingRateQuoteId, ShippingSecretReference, ShippingService,
         ShippingServiceId, ShippingServiceStatus,
     },
-    merchant::StoreId,
     pricing::Money,
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -213,10 +213,10 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO fulfillment.shipping_services \
+            "INSERT INTO commerce.shipping_services \
              (id, store_id, code, name, amount_minor, currency, \
               estimated_min_days, estimated_max_days, status) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::fulfillment.shipping_service_status)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::commerce.shipping_service_status)",
         )
         .bind(service.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -232,7 +232,7 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         .map_err(map_create_error)?;
         for country in service.destination_countries() {
             sqlx::query(
-                "INSERT INTO fulfillment.shipping_service_regions \
+                "INSERT INTO commerce.shipping_service_regions \
                  (store_id, shipping_service_id, country_code) \
                  VALUES ($1, $2, $3)",
             )
@@ -268,7 +268,7 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
         let rows = sqlx::query_as::<_, ServiceRow>(
             "SELECT id, code, name, amount_minor, currency::text, estimated_min_days, \
                     estimated_max_days, status::text, created_at, updated_at \
-             FROM fulfillment.shipping_services \
+             FROM commerce.shipping_services \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -301,7 +301,7 @@ impl ShippingServiceRepository for PostgresShippingServiceRepository {
             .is_none()
         {
             let result = sqlx::query(
-                "UPDATE fulfillment.shipping_services SET status = $1::fulfillment.shipping_service_status, \
+                "UPDATE commerce.shipping_services SET status = $1::commerce.shipping_service_status, \
                         updated_at = CURRENT_TIMESTAMP \
                  WHERE store_id = $2 AND id = $3",
             )
@@ -337,7 +337,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
                     origin_name, origin_company, origin_address_line_1, origin_address_line_2, \
                     origin_city, origin_region, origin_postal_code, origin_country_code::text, \
                     origin_phone, origin_email, credential_rotation_expires_at, created_at, updated_at \
-             FROM fulfillment.shipping_provider_accounts \
+             FROM commerce.shipping_provider_accounts \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -394,7 +394,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         }
         let origin = &configuration.origin;
         sqlx::query(
-            "INSERT INTO fulfillment.shipping_provider_accounts \
+            "INSERT INTO commerce.shipping_provider_accounts \
              (id, store_id, provider, display_name, credential_secret_reference, \
               origin_name, origin_company, origin_address_line_1, origin_address_line_2, origin_city, \
               origin_region, origin_postal_code, origin_country_code, origin_phone, origin_email, \
@@ -465,7 +465,7 @@ impl ShippingProviderAccountRepository for PostgresShippingServiceRepository {
         }
         let origin = &configuration.origin;
         let result = sqlx::query(
-            "UPDATE fulfillment.shipping_provider_accounts SET display_name = $1, \
+            "UPDATE commerce.shipping_provider_accounts SET display_name = $1, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS DISTINCT FROM $2 \
                         THEN credential_secret_reference ELSE previous_credential_secret_reference END, \
@@ -531,7 +531,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         validate_parcel(parcel)?;
         let mut transaction = self.begin(&actor).await?;
         if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
-            "SELECT id, request_fingerprint, state FROM fulfillment.shipping_quote_requests \
+            "SELECT id, request_fingerprint, state FROM commerce.shipping_quote_requests \
              WHERE store_id = $1 AND idempotency_key = $2 \
              FOR UPDATE",
         )
@@ -559,7 +559,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         )
         .await?;
         let inserted = sqlx::query_scalar::<_, Uuid>(
-            "INSERT INTO fulfillment.shipping_quote_requests \
+            "INSERT INTO commerce.shipping_quote_requests \
              (id, store_id, fulfillment_id, provider_account_id, \
               idempotency_key, request_fingerprint, length_millimetres, width_millimetres, \
               height_millimetres, weight_grams) \
@@ -582,15 +582,15 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
             Some(id) => ShippingQuoteRequestId::from_uuid(id),
             None => {
                 let row = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
-                "SELECT id, request_fingerprint, state FROM fulfillment.shipping_quote_requests \
+                    "SELECT id, request_fingerprint, state FROM commerce.shipping_quote_requests \
                  WHERE store_id = $1 AND idempotency_key = $2 \
                  FOR UPDATE",
-            )
-            .bind(store_id.as_uuid())
-            .bind(&request.key)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+                )
+                .bind(store_id.as_uuid())
+                .bind(&request.key)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_error)?;
                 if row.1.as_slice() != request.request_fingerprint {
                     return Err(idempotency_reused());
                 }
@@ -635,7 +635,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         }
         let mut transaction = self.begin(&actor).await?;
         let state = sqlx::query_scalar::<_, String>(
-            "SELECT state FROM fulfillment.shipping_quote_requests \
+            "SELECT state FROM commerce.shipping_quote_requests \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -652,7 +652,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
         let expires_at = completed_at + time::Duration::hours(24);
         for rate in rates {
             sqlx::query(
-                "INSERT INTO fulfillment.shipping_rate_quotes \
+                "INSERT INTO commerce.shipping_rate_quotes \
                  (id, store_id, quote_request_id, \
                   provider_shipment_reference, provider_rate_reference, carrier, service, \
                   amount_minor, currency, estimated_delivery_days, guaranteed, expires_at) \
@@ -679,7 +679,7 @@ impl ShippingOperationRepository for PostgresShippingServiceRepository {
             .map_err(database_error)?;
         }
         sqlx::query(
-            "UPDATE fulfillment.shipping_quote_requests \
+            "UPDATE commerce.shipping_quote_requests \
              SET state = 'completed', expires_at = $1, updated_at = $2 \
              WHERE store_id = $3 AND id = $4",
         )
@@ -762,7 +762,7 @@ async fn prepare_label_purchase(
     let mut transaction = repository.begin(&actor).await?;
     if let Some(row) = sqlx::query_as::<_, (Uuid, Vec<u8>, String)>(
         "SELECT id, purchase_request_fingerprint, purchase_state \
-         FROM fulfillment.shipping_labels \
+         FROM commerce.shipping_labels \
          WHERE store_id = $1 AND fulfillment_id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -791,22 +791,22 @@ async fn prepare_label_purchase(
     }
     let label_id = ShippingLabelId::new();
     let inserted = sqlx::query(
-        "INSERT INTO fulfillment.shipping_labels \
+        "INSERT INTO commerce.shipping_labels \
          (id, store_id, fulfillment_id, provider_account_id, rate_quote_id, \
           purchase_idempotency_key, purchase_request_fingerprint, \
           provider_shipment_reference, provider_rate_reference) \
          SELECT $1, $2, $3, request.provider_account_id, rate.id, $4, $5, \
                 rate.provider_shipment_reference, rate.provider_rate_reference \
-         FROM fulfillment.shipping_rate_quotes AS rate \
-         INNER JOIN fulfillment.shipping_quote_requests AS request \
+         FROM commerce.shipping_rate_quotes AS rate \
+         INNER JOIN commerce.shipping_quote_requests AS request \
             ON request.store_id = rate.store_id AND request.id = rate.quote_request_id \
-         INNER JOIN fulfillment.fulfillments AS fulfillment \
-            ON fulfillment.store_id = rate.store_id AND fulfillment.id = $6 \
-         INNER JOIN fulfillment.shipping_provider_accounts AS account \
+         INNER JOIN commerce.fulfillments AS fulfillment \
+            ON commerce.store_id = rate.store_id AND commerce.id = $6 \
+         INNER JOIN commerce.shipping_provider_accounts AS account \
             ON account.store_id = request.store_id AND account.id = request.provider_account_id \
          WHERE rate.store_id = $7 AND rate.id = $8 \
            AND request.fulfillment_id = $9 AND rate.expires_at > $10 \
-           AND fulfillment.status = 'pending' AND account.enabled",
+           AND commerce.status = 'pending' AND account.enabled",
     )
     .bind(label_id.as_uuid())
     .bind(store_id.as_uuid())
@@ -840,8 +840,8 @@ async fn load_pending_label(
     let row = sqlx::query_as::<_, (String, String, String, String)>(
         "SELECT account.provider, label.provider_shipment_reference, \
                 label.provider_rate_reference, account.credential_secret_reference \
-         FROM fulfillment.shipping_labels AS label \
-         INNER JOIN fulfillment.shipping_provider_accounts AS account \
+         FROM commerce.shipping_labels AS label \
+         INNER JOIN commerce.shipping_provider_accounts AS account \
             ON account.store_id = label.store_id AND account.id = label.provider_account_id \
          WHERE label.store_id = $1 AND label.id = $2 \
         ",
@@ -873,7 +873,7 @@ async fn complete_label_purchase(
     let mut transaction = repository.begin(&actor).await?;
     let row = sqlx::query_as::<_, (String, Uuid, String)>(
         "SELECT purchase_state, fulfillment_id, provider_shipment_reference \
-         FROM fulfillment.shipping_labels \
+         FROM commerce.shipping_labels \
          WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -896,7 +896,7 @@ async fn complete_label_purchase(
         });
     }
     sqlx::query(
-        "UPDATE fulfillment.shipping_labels SET purchase_state = 'purchased', carrier = $3, \
+        "UPDATE commerce.shipping_labels SET purchase_state = 'purchased', carrier = $3, \
                 tracking_number = $4, provider_tracker_reference = $5, label_url = $6, \
                 label_media_type = $7, purchased_at = $8, \
                 next_tracking_refresh_at = CASE WHEN $5::text IS NULL THEN NULL ELSE $8 END, \
@@ -915,7 +915,7 @@ async fn complete_label_purchase(
     .await
     .map_err(database_error)?;
     let order_id = sqlx::query_scalar::<_, Uuid>(
-        "UPDATE fulfillment.fulfillments SET status = 'shipped', carrier = $1, \
+        "UPDATE commerce.fulfillments SET status = 'shipped', carrier = $1, \
                 tracking_number = $2, shipped_at = $3, updated_at = $3 \
          WHERE store_id = $4 AND id = $5 AND status = 'pending' \
          RETURNING order_id",
@@ -978,7 +978,7 @@ async fn prepare_label_cancellation(
     let row = sqlx::query_as::<_, (Uuid, Option<String>, Option<Vec<u8>>, Option<String>)>(
         "SELECT id, cancellation_idempotency_key, cancellation_request_fingerprint, \
                 cancellation_status \
-         FROM fulfillment.shipping_labels \
+         FROM commerce.shipping_labels \
          WHERE store_id = $1 AND fulfillment_id = $2 \
            AND purchase_state = 'purchased' FOR UPDATE",
     )
@@ -1010,7 +1010,7 @@ async fn prepare_label_cancellation(
         }
     } else {
         sqlx::query(
-            "UPDATE fulfillment.shipping_labels \
+            "UPDATE commerce.shipping_labels \
              SET cancellation_idempotency_key = $1, cancellation_request_fingerprint = $2, \
                  cancellation_status = 'submitted', cancellation_requested_at = $3, updated_at = $4 \
              WHERE store_id = $5 AND id = $6",
@@ -1038,8 +1038,8 @@ async fn load_pending_cancellation(
     let row = sqlx::query_as::<_, (String, String, String)>(
         "SELECT account.provider, label.provider_shipment_reference, \
                 account.credential_secret_reference \
-         FROM fulfillment.shipping_labels AS label \
-         INNER JOIN fulfillment.shipping_provider_accounts AS account \
+         FROM commerce.shipping_labels AS label \
+         INNER JOIN commerce.shipping_provider_accounts AS account \
             ON account.store_id = label.store_id AND account.id = label.provider_account_id \
          WHERE label.store_id = $1 AND label.id = $2 \
         ",
@@ -1068,7 +1068,7 @@ async fn complete_label_cancellation(
 ) -> Result<ShippingLabelDetail, ApplicationError> {
     let mut transaction = repository.begin(&actor).await?;
     let result = sqlx::query(
-        "UPDATE fulfillment.shipping_labels SET cancellation_status = $1, \
+        "UPDATE commerce.shipping_labels SET cancellation_status = $1, \
                 cancellation_reconcile_at = CASE WHEN $2 = 'submitted' \
                     THEN $3 + INTERVAL '15 minutes' ELSE NULL END, \
                 cancellation_locked_by = NULL, cancellation_locked_at = NULL, \
@@ -1107,8 +1107,8 @@ async fn load_label(
                 label.cancellation_status, label.tracking_status, label.tracking_status_detail, \
                 label.estimated_delivery_at, label.tracking_observed_at, label.purchased_at, \
                 label.updated_at \
-         FROM fulfillment.shipping_labels AS label \
-         INNER JOIN fulfillment.shipping_provider_accounts AS account \
+         FROM commerce.shipping_labels AS label \
+         INNER JOIN commerce.shipping_provider_accounts AS account \
             ON account.store_id = label.store_id AND account.id = label.provider_account_id \
          WHERE label.store_id = $1 AND label.id = $2 \
            AND label.purchase_state = 'purchased'",
@@ -1168,7 +1168,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         let rows = sqlx::query_as::<_, TrackingClaimRow>(
             "SELECT label_id, store_id, fulfillment_id, provider, \
                     provider_tracker_reference, credential_secret_reference, attempts \
-             FROM fulfillment.claim_shipping_tracking($1, $2, $3, $4)",
+             FROM commerce.claim_shipping_tracking($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit))
@@ -1214,7 +1214,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                     chaos_application::ports::ProviderTrackingStatus::Delivered
                 );
                 let result = sqlx::query(
-                    "UPDATE fulfillment.shipping_labels SET tracking_status = $1, \
+                    "UPDATE commerce.shipping_labels SET tracking_status = $1, \
                             tracking_status_detail = $2, estimated_delivery_at = $3, \
                             tracking_observed_at = $4, next_tracking_refresh_at = CASE \
                                 WHEN $5 THEN NULL ELSE $6 + INTERVAL '15 minutes' END, \
@@ -1241,7 +1241,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                 }
                 if terminal {
                     let order_id = sqlx::query_scalar::<_, Uuid>(
-                        "UPDATE fulfillment.fulfillments SET status = 'delivered', \
+                        "UPDATE commerce.fulfillments SET status = 'delivered', \
                                 delivered_at = $1, updated_at = $2 \
                          WHERE store_id = $3 AND id = $4 \
                            AND status = 'shipped' RETURNING order_id",
@@ -1277,7 +1277,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             Err(error) => {
                 let error = bounded_error(error);
                 let result = sqlx::query(
-                    "UPDATE fulfillment.shipping_labels SET next_tracking_refresh_at = CASE \
+                    "UPDATE commerce.shipping_labels SET next_tracking_refresh_at = CASE \
                             WHEN tracking_attempts >= 8 THEN NULL \
                             ELSE $1 + make_interval(secs => least(power(2, \
                                 greatest(tracking_attempts - 1, 0))::integer, 3600)) END, \
@@ -1312,7 +1312,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
         let rows = sqlx::query_as::<_, CancellationClaimRow>(
             "SELECT label_id, store_id, fulfillment_id, provider, \
                     provider_shipment_reference, credential_secret_reference, attempts \
-             FROM fulfillment.claim_shipping_cancellations($1, $2, $3, $4)",
+             FROM commerce.claim_shipping_cancellations($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit))
@@ -1353,7 +1353,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             .map_err(database_error)?;
         let updated = match result {
             Ok(status) => sqlx::query(
-                "UPDATE fulfillment.shipping_labels SET cancellation_status = $1, \
+                "UPDATE commerce.shipping_labels SET cancellation_status = $1, \
                         cancellation_reconcile_at = CASE WHEN $2 = 'submitted' \
                             THEN $3 + INTERVAL '15 minutes' ELSE NULL END, \
                         cancellation_locked_by = NULL, cancellation_locked_at = NULL, \
@@ -1372,7 +1372,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
             .await
             .map_err(database_error)?,
             Err(error) => sqlx::query(
-                "UPDATE fulfillment.shipping_labels SET cancellation_reconcile_at = CASE \
+                "UPDATE commerce.shipping_labels SET cancellation_reconcile_at = CASE \
                         WHEN cancellation_attempts >= 8 THEN NULL \
                         ELSE $1 + make_interval(secs => least(power(2, \
                             greatest(cancellation_attempts - 1, 0))::integer, 3600)) END, \
@@ -1418,16 +1418,16 @@ async fn load_quote_context(
                 address.postal_code AS destination_postal_code, \
                 address.country_code::text AS destination_country_code, \
                 contact.phone AS destination_phone, contact.email::text AS destination_email \
-         FROM fulfillment.fulfillments AS fulfillment \
-         INNER JOIN fulfillment.shipping_provider_accounts AS account \
-            ON account.store_id = fulfillment.store_id AND account.id = $1 \
-         INNER JOIN sales.order_addresses AS address \
-            ON address.store_id = fulfillment.store_id AND address.order_id = fulfillment.order_id \
+         FROM commerce.fulfillments AS fulfillment \
+         INNER JOIN commerce.shipping_provider_accounts AS account \
+            ON account.store_id = commerce.store_id AND account.id = $1 \
+         INNER JOIN commerce.order_addresses AS address \
+            ON address.store_id = commerce.store_id AND address.order_id = commerce.order_id \
            AND address.kind = 'shipping' \
-         INNER JOIN sales.order_contacts AS contact \
-            ON contact.store_id = fulfillment.store_id AND contact.order_id = fulfillment.order_id \
-         WHERE fulfillment.store_id = $2 \
-           AND fulfillment.id = $3 AND fulfillment.status = 'pending' \
+         INNER JOIN commerce.order_contacts AS contact \
+            ON contact.store_id = commerce.store_id AND contact.order_id = commerce.order_id \
+         WHERE commerce.store_id = $2 \
+           AND commerce.id = $3 AND commerce.status = 'pending' \
            AND account.enabled AND address.postal_code IS NOT NULL",
     )
     .bind(provider_account_id.as_uuid())
@@ -1451,7 +1451,7 @@ async fn load_rates(
         "SELECT id, quote_request_id, provider_shipment_reference, provider_rate_reference, \
                 carrier, service, amount_minor, currency::text, estimated_delivery_days, \
                 guaranteed, expires_at \
-         FROM fulfillment.shipping_rate_quotes \
+         FROM commerce.shipping_rate_quotes \
          WHERE store_id = $1 AND quote_request_id = $2 \
          ORDER BY amount_minor, carrier, service, id",
     )
@@ -1629,7 +1629,7 @@ async fn load_provider_account(
                 origin_name, origin_company, origin_address_line_1, origin_address_line_2, \
                 origin_city, origin_region, origin_postal_code, origin_country_code::text, \
                 origin_phone, origin_email, credential_rotation_expires_at, created_at, updated_at \
-         FROM fulfillment.shipping_provider_accounts \
+         FROM commerce.shipping_provider_accounts \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -1679,7 +1679,7 @@ async fn load(
     let row = sqlx::query_as::<_, ServiceRow>(
         "SELECT id, code, name, amount_minor, currency::text, estimated_min_days, \
                 estimated_max_days, status::text, created_at, updated_at \
-         FROM fulfillment.shipping_services \
+         FROM commerce.shipping_services \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -1700,7 +1700,7 @@ async fn detail(
     row: ServiceRow,
 ) -> Result<ShippingServiceDetail, ApplicationError> {
     let countries = sqlx::query_scalar::<_, String>(
-        "SELECT country_code::text FROM fulfillment.shipping_service_regions \
+        "SELECT country_code::text FROM commerce.shipping_service_regions \
          WHERE store_id = $1 AND shipping_service_id = $2 \
          ORDER BY country_code",
     )
@@ -1735,8 +1735,8 @@ async fn require_store_currency(
     currency: CurrencyCode,
 ) -> Result<(), ApplicationError> {
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores s \
-         JOIN merchant.store_currencies c ON c.store_id = s.id \
+        "SELECT EXISTS (SELECT 1 FROM commerce.stores s \
+         JOIN commerce.store_currencies c ON c.store_id = s.id \
          WHERE s.id = $1 \
            AND c.currency = $2 AND c.enabled)",
     )
@@ -1763,7 +1763,7 @@ async fn require_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
             .bind(store_id.as_uuid())
             .fetch_one(&mut **transaction)
             .await

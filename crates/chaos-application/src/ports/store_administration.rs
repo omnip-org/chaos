@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, RegionCode,
-    merchant::{
+    store::{
         SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
         Store, StoreCode, StoreId, StoreStatus,
     },

@@ -5,7 +5,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{ProductId, ReviewId, ReviewStatus, StaffReplyContent},
-    merchant::StoreId,
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -90,7 +90,7 @@ impl ReviewRepository for PostgresReviewRepository {
         }
         let content = record.content;
         sqlx::query(
-            "INSERT INTO catalog.reviews \
+            "INSERT INTO commerce.reviews \
              (id, store_id, product_id, rating, title, content, \
               author_name, author_email, status, created_at, updated_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$9)",
@@ -154,8 +154,8 @@ impl ReviewRepository for PostgresReviewRepository {
             "SELECT id, parent_review_id, rating, title, content, author_name, \
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
                     created_at, updated_at, product_id \
-             FROM catalog.reviews \
-             WHERE store_id=$1 AND status=$2::catalog.review_status \
+             FROM commerce.reviews \
+             WHERE store_id=$1 AND status=$2::commerce.review_status \
                AND ($3::uuid IS NULL OR id < $3) \
              ORDER BY id DESC LIMIT $4",
         )
@@ -227,11 +227,11 @@ impl ReviewRepository for PostgresReviewRepository {
         }
         let approved = status == ReviewStatus::Approved;
         let changed = sqlx::query(
-            "UPDATE catalog.reviews \
-             SET status=$3::catalog.review_status, \
+            "UPDATE commerce.reviews \
+             SET status=$3::commerce.review_status, \
                  verified_buyer=$4, \
-                 approved_at=CASE WHEN $3::catalog.review_status='approved' THEN $5 ELSE NULL END, \
-                 approved_by_user_id=CASE WHEN $3::catalog.review_status='approved' THEN $6 ELSE NULL END, \
+                 approved_at=CASE WHEN $3::commerce.review_status='approved' THEN $5 ELSE NULL END, \
+                 approved_by_user_id=CASE WHEN $3::commerce.review_status='approved' THEN $6 ELSE NULL END, \
                  updated_at=$5 \
              WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
@@ -278,7 +278,7 @@ impl ReviewRepository for PostgresReviewRepository {
             return Ok(ReviewId::from_uuid(id));
         }
         let product_id: Option<Uuid> = sqlx::query_scalar(
-            "SELECT product_id FROM catalog.reviews \
+            "SELECT product_id FROM commerce.reviews \
              WHERE store_id=$1 AND id=$2 AND status='approved' \
                AND parent_review_id IS NULL",
         )
@@ -295,7 +295,7 @@ impl ReviewRepository for PostgresReviewRepository {
         };
         let reply_id = ReviewId::new();
         sqlx::query(
-            "INSERT INTO catalog.reviews \
+            "INSERT INTO commerce.reviews \
              (id, store_id, product_id, parent_review_id, content, \
               author_name, status, is_staff_reply, approved_at, approved_by_user_id, \
               created_at, updated_at) \
@@ -337,7 +337,7 @@ impl ReviewRepository for PostgresReviewRepository {
             "SELECT id, parent_review_id, rating, title, content, author_name, \
                     author_email::text, status::text, is_staff_reply, verified_buyer, \
                     created_at, updated_at \
-             FROM catalog.reviews \
+             FROM commerce.reviews \
              WHERE store_id=$1 AND product_id=$2 \
                AND status='approved' AND parent_review_id IS NULL \
                AND ($3::uuid IS NULL OR id < $3) \
@@ -358,7 +358,7 @@ impl ReviewRepository for PostgresReviewRepository {
                 "SELECT id, parent_review_id, rating, title, content, author_name, \
                         author_email::text, status::text, is_staff_reply, verified_buyer, \
                         created_at, updated_at \
-                 FROM catalog.reviews \
+                 FROM commerce.reviews \
                  WHERE store_id=$1 AND status='approved' \
                    AND parent_review_id = ANY($2::uuid[]) \
                  ORDER BY parent_review_id, id ASC",
@@ -426,7 +426,7 @@ async fn store_exists(
     _actor: &AdminActor,
     store: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM merchant.stores WHERE id=$1)")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.stores WHERE id=$1)")
         .bind(store.as_uuid())
         .fetch_one(&mut **tx)
         .await
@@ -438,7 +438,7 @@ async fn review_exists(
     store: StoreId,
     id: ReviewId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM catalog.reviews WHERE store_id=$1 AND id=$2)")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2)")
         .bind(store.as_uuid())
         .bind(id.as_uuid())
         .fetch_one(&mut **tx)
@@ -455,9 +455,9 @@ async fn event(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO catalog.review_events \
+        "INSERT INTO commerce.review_events \
          (id, store_id, review_id, event_kind, actor_user_id, occurred_at) \
-         VALUES ($1,$2,$3,$4::catalog.review_event_kind,$5,$6)",
+         VALUES ($1,$2,$3,$4::commerce.review_event_kind,$5,$6)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())

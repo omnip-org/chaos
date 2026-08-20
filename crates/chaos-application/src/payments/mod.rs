@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chaos_domain::{
-    merchant::{ApiKeyClass, ApiKeyScope, StoreId, StoreRole},
     payments::{
         PaymentAttemptId, PaymentProviderAccount, PaymentProviderAccountId, PaymentSecretReference,
     },
     sales::OrderId,
+    store::{PublishableKeyScope, StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -14,7 +14,6 @@ const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 
 use crate::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
@@ -22,6 +21,7 @@ use crate::{
         PaymentProviderOnboarding, PaymentProviderReadinessQueue, PaymentRepository,
         PaymentWebhookVerifier, QueueJob, RefundDetail, ShopperActor,
     },
+    store::StoreActor,
 };
 
 pub struct CreatePaymentAttemptInput {
@@ -485,9 +485,8 @@ pub fn retry_at(now: OffsetDateTime, attempts: u32) -> OffsetDateTime {
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {
-    if actor.class == ApiKeyClass::Publishable
-        && actor.sales_channel_id.is_some()
-        && actor.scopes.contains(&ApiKeyScope::CheckoutWrite)
+    if actor.sales_channel_id.is_some()
+        && actor.scopes.contains(&PublishableKeyScope::CheckoutWrite)
     {
         Ok(())
     } else {

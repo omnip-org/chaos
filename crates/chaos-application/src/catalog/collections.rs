@@ -3,17 +3,17 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     Locale,
     catalog::{CollectionContent, CollectionHandle, CollectionId, CollectionStatus, ProductId},
-    merchant::{SalesChannelId, StoreId},
+    store::{SalesChannelId, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::Page,
     ports::{
         AdminActor, CollectionDetail, CollectionPublicationRecord, CollectionRepository,
         CreateCollectionRecord, IdempotencyRequest, MachineActor, StorefrontCollectionItem,
     },
+    store::Page,
 };
 
 pub struct CreateCollectionInput {

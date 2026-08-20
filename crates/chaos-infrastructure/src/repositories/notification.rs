@@ -33,7 +33,7 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, i32, Value, String, i32)>(
             "SELECT id, store_id, recipient_email, template_key, \
                     template_version, template_payload, provider, attempts \
-             FROM notification.claim_email_deliveries($1, $2, $3, $4)",
+             FROM integration.claim_email_deliveries($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
@@ -77,7 +77,7 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
             Err(failure) => (false, failure.retryable, None, failure.message),
         };
         let finished: Option<bool> = sqlx::query_scalar(
-            "SELECT notification.finish_email_delivery($1, $2, $3, $4, $5, $6, $7)",
+            "SELECT integration.finish_email_delivery($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(delivery_id)
         .bind(worker_id)
@@ -101,7 +101,7 @@ impl EmailDeliveryRepository for PostgresEmailDeliveryRepository {
 
     async fn record_webhook(&self, event: &VerifiedEmailWebhook) -> Result<bool, ApplicationError> {
         sqlx::query_scalar::<_, bool>(
-            "SELECT notification.record_resend_webhook($1, $2, $3, $4, $5)",
+            "SELECT integration.record_resend_webhook($1, $2, $3, $4, $5)",
         )
         .bind(&event.provider_event_id)
         .bind(&event.provider_message_id)
@@ -151,8 +151,8 @@ mod tests {
             .await
             .expect("runtime pool");
         sqlx::query(
-            "TRUNCATE notification.webhook_events, notification.email_suppressions, \
-                      notification.email_deliveries",
+            "TRUNCATE integration.webhook_events, integration.email_suppressions, \
+                      integration.email_deliveries",
         )
         .execute(&owner_pool)
         .await
@@ -162,7 +162,7 @@ mod tests {
         let store_b = Uuid::now_v7();
         for (store_id, code) in [(store_a, "na"), (store_b, "nb")] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name) \
+                "INSERT INTO commerce.stores (id, code, name) \
                  VALUES ($1, $2, 'Notification Store')",
             )
             .bind(store_id)
@@ -180,7 +180,7 @@ mod tests {
             (suppressed_delivery, store_a, "blocked@example.com"),
         ] {
             sqlx::query(
-                "INSERT INTO notification.email_deliveries \
+                "INSERT INTO integration.email_deliveries \
                  (id, store_id, semantic_event_id, semantic_event_type, \
                   recipient_email, template_key, template_version, template_payload) \
                  VALUES ($1, $2, $3, 'order.confirmed', $4, \
@@ -200,7 +200,7 @@ mod tests {
             .expect("delivery");
         }
         sqlx::query(
-            "INSERT INTO notification.email_suppressions \
+            "INSERT INTO integration.email_suppressions \
              (id, store_id, recipient_email, suppression_reason) \
              VALUES ($1, $2, 'blocked@example.com', 'manual')",
         )
@@ -211,7 +211,7 @@ mod tests {
         .expect("suppression");
         let dead_delivery = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO notification.email_deliveries \
+            "INSERT INTO integration.email_deliveries \
              (id, store_id, semantic_event_id, semantic_event_type, \
               recipient_email, template_key, template_version, template_payload, \
               delivery_status, attempts, locked_by, locked_at) \
@@ -244,7 +244,7 @@ mod tests {
         assert!(jobs.iter().any(|job| job.store_id == store_a));
         assert!(jobs.iter().any(|job| job.store_id == store_b));
         let dead_state: String = sqlx::query_scalar(
-            "SELECT delivery_status::text FROM notification.email_deliveries WHERE id = $1",
+            "SELECT delivery_status::text FROM integration.email_deliveries WHERE id = $1",
         )
         .bind(dead_delivery)
         .fetch_one(&owner_pool)
@@ -353,7 +353,7 @@ mod tests {
                 .expect("complaint")
         );
         let state: String = sqlx::query_scalar(
-            "SELECT delivery_status::text FROM notification.email_deliveries WHERE id = $1",
+            "SELECT delivery_status::text FROM integration.email_deliveries WHERE id = $1",
         )
         .bind(delivery_a)
         .fetch_one(&owner_pool)
@@ -367,7 +367,7 @@ mod tests {
             .execute(&mut *transaction)
             .await
             .expect("store context");
-        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM notification.email_deliveries")
+        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM integration.email_deliveries")
             .fetch_one(&mut *transaction)
             .await
             .expect("visible deliveries");

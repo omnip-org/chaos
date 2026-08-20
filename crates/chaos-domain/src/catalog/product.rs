@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, catalog::CatalogMetadata, merchant::StoreId};
+use crate::{DomainError, FieldViolation, catalog::CatalogMetadata, store::StoreId};
 
 macro_rules! catalog_id {
     ($name:ident) => {

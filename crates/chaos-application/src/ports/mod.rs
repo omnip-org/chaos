@@ -1,6 +1,5 @@
 mod actor;
 mod analytics;
-mod api_key;
 mod catalog;
 mod catalog_management;
 mod catalog_read;
@@ -12,19 +11,20 @@ mod identity;
 mod inventory;
 mod localization;
 mod media;
-mod merchant_query;
 mod notification;
 mod payments;
 mod pricing;
 mod pricing_management;
 mod promotion;
 mod provider_secret;
+mod publishable_key;
 mod review;
 mod sales;
 mod shopper;
 mod store;
 mod store_administration;
 mod store_membership;
+mod store_read;
 mod storefront_catalog;
 mod tax;
 
@@ -41,10 +41,6 @@ pub use analytics::{
     AnalyticsReportingRepository, AnalyticsRetentionPurgeResult, AnalyticsSessionizationJob,
     AnalyticsSessionizationQueue, DailyAttributionReport, DailyBehaviorReport, DailyCommerceReport,
     ResolvedAnalyticsPolicy, StoreAnalyticsPolicy,
-};
-pub use api_key::{
-    ApiKeyCreationStatus, ApiKeyListItem, ApiKeyMaterialGenerator, ApiKeyRepository,
-    GeneratedApiKeyMaterial, MachineActor,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use catalog_management::{
@@ -91,7 +87,6 @@ pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
 };
-pub use merchant_query::{MerchantReadRepository, StoreListItem};
 pub use notification::{
     EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
     EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
@@ -112,6 +107,10 @@ pub use pricing_management::{
 };
 pub use promotion::{PromotionDetail, PromotionRepository};
 pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
+pub use publishable_key::{
+    GeneratedPublishableKeyMaterial, MachineActor, PublishableKeyCreationStatus,
+    PublishableKeyListItem, PublishableKeyMaterialGenerator, PublishableKeyRepository,
+};
 pub use review::{ReviewRepository, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
@@ -124,6 +123,7 @@ pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
 };
 pub use store_membership::{StoreMembershipItem, StoreMembershipRepository};
+pub use store_read::{StoreListItem, StoreReadRepository};
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,

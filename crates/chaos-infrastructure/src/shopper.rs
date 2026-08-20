@@ -5,7 +5,7 @@ use chaos_application::{
     ApplicationError,
     ports::{MachineActor, ShopperCredentialCodec},
 };
-use chaos_domain::{merchant::SalesChannelId, sales::ShopperId};
+use chaos_domain::{sales::ShopperId, store::SalesChannelId};
 use hmac::{Hmac, KeyInit, Mac};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
@@ -147,8 +147,8 @@ mod tests {
     use chaos_application::ports::{MachineActor, ShopperCredentialCodec};
     use chaos_domain::{
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
         sales::ShopperId,
+        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
     };
     use secrecy::SecretString;
 
@@ -156,11 +156,10 @@ mod tests {
 
     fn actor() -> MachineActor {
         MachineActor {
-            api_key_id: ApiKeyId::new(),
+            publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            class: ApiKeyClass::Publishable,
-            scopes: vec![ApiKeyScope::CartsWrite],
+            scopes: vec![PublishableKeyScope::CartsWrite],
             created_by_user_id: UserId::new(),
         }
     }

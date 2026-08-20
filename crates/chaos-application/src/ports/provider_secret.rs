@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chaos_domain::{identity::UserId, merchant::StoreId};
+use chaos_domain::{identity::UserId, store::StoreId};
 use secrecy::SecretString;
 
 use crate::ApplicationError;

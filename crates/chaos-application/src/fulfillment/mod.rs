@@ -6,9 +6,9 @@ use chaos_domain::{
         FulfillmentId, FulfillmentStatus, ReturnId, ReturnStatus, ShippingProviderAccount,
         ShippingProviderAccountId, ShippingRateQuoteId, ShippingSecretReference,
     },
-    merchant::{StoreId, StoreRole},
     pricing::Money,
     sales::OrderId,
+    store::{StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;

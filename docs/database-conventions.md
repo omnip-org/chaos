@@ -2,9 +2,11 @@
 
 ## Schema ownership
 
-PostgreSQL schemas represent bounded-context ownership, not individual users or Stores. Current business schemas are `identity`, `merchant`, `catalog`, `pricing`, `inventory`, `sales`, `payments`, `fulfillment`, `notification`, `analytics`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
+PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-The legacy schema name `merchant` currently owns Stores, Store memberships, Sales Channels, Store locales, and Store API keys. Its name may be changed in a later Store-focused slice; it does not imply a merchant-account aggregate.
+`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and Publishable Keys. There is no merchant-account schema or aggregate. A User-owned MCP credential is an `identity.access_key`; a Storefront credential is a `commerce.publishable_key`.
+
+Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned transactional data and rebuildable Storefront read models. `integration` contains idempotency, inbox/outbox delivery, notifications, and analytical processing state.
 
 Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
 
@@ -51,7 +53,12 @@ Identity access uses the non-owner `chaos_identity` role. It can access only the
 
 ## Migrations
 
-Migration files use zero-padded sequence numbers and concise English names. Before the first shared or non-disposable environment, bootstrap migrations may be rewritten and every disposable database must be recreated. After that point, applied migrations are immutable and changes fix forward.
+Migration files use zero-padded sequence numbers and concise English names. Before `1.0`, bootstrap migrations may be rewritten only when every environment using them contains disposable data and the release includes a coordinated database recreation or migration-history reset. Otherwise, applied migrations are immutable and changes fix forward.
+
+The bootstrap uses one file per business schema: `0002_identity.sql`,
+`0003_commerce.sql`, and `0004_integration.sql`. Large schema files use
+`-- === Capability ===` section markers so humans and tools can jump directly
+to a capability without inferring schema ownership from multiple files.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.
 

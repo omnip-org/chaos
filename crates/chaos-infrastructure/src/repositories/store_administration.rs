@@ -8,7 +8,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     CurrencyCode, RegionCode,
-    merchant::{
+    store::{
         SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
         Store, StoreCode, StoreId, StoreStatus,
     },
@@ -90,7 +90,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         let row = sqlx::query_as::<_, StoreRow>(
             "SELECT id, code::text, name, default_region::text, default_currency::text, \
                     status::text, created_at, updated_at \
-             FROM merchant.stores WHERE id = $1",
+             FROM commerce.stores WHERE id = $1",
         )
         .bind(store_id.as_uuid())
         .fetch_optional(&mut *transaction)
@@ -113,7 +113,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(StoreId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE merchant.stores SET code = $2, name = $3, default_region = $4, \
+            "UPDATE commerce.stores SET code = $2, name = $3, default_region = $4, \
                     default_currency = $5, updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
@@ -129,7 +129,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Err(store_not_found(store_id));
         }
         sqlx::query(
-            "INSERT INTO merchant.store_currencies \
+            "INSERT INTO commerce.store_currencies \
              (store_id, currency, enabled) VALUES ($1, $2, true) \
              ON CONFLICT (store_id, currency) \
              DO UPDATE SET enabled = true",
@@ -167,7 +167,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(StoreId::from_uuid(id));
         }
         let default_currency = sqlx::query_scalar::<_, String>(
-            "SELECT default_currency::text FROM merchant.stores \
+            "SELECT default_currency::text FROM commerce.stores \
              WHERE id = $1 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -177,7 +177,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .ok_or_else(|| store_not_found(store_id))?;
         if status == StoreStatus::Active {
             let currency_enabled: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM merchant.store_currencies \
+                "SELECT EXISTS (SELECT 1 FROM commerce.store_currencies \
                  WHERE store_id = $1 \
                    AND currency = $2 AND enabled)",
             )
@@ -187,7 +187,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             .await
             .map_err(database_error)?;
             let active_default_channel: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM merchant.sales_channels \
+                "SELECT EXISTS (SELECT 1 FROM commerce.sales_channels \
                  WHERE store_id = $1 \
                    AND is_default AND status = 'active')",
             )
@@ -198,7 +198,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             Store::validate_activation(currency_enabled, active_default_channel)?;
         }
         sqlx::query(
-            "UPDATE merchant.stores SET status = $2::merchant.store_status, \
+            "UPDATE commerce.stores SET status = $2::commerce.store_status, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
@@ -232,7 +232,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, kind::text, status::text, is_default, \
-                    created_at, updated_at FROM merchant.sales_channels \
+                    created_at, updated_at FROM commerce.sales_channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -258,7 +258,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, kind::text, status::text, is_default, \
-                    created_at, updated_at FROM merchant.sales_channels \
+                    created_at, updated_at FROM commerce.sales_channels \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -284,9 +284,9 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
-            "INSERT INTO merchant.sales_channels \
+            "INSERT INTO commerce.sales_channels \
              (id, store_id, code, name, kind, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5::merchant.sales_channel_kind, 'active', false)",
+             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_kind, 'active', false)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
@@ -322,8 +322,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE merchant.sales_channels SET code = $3, name = $4, \
-                    kind = $5::merchant.sales_channel_kind, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.sales_channels SET code = $3, name = $4, \
+                    kind = $5::commerce.sales_channel_kind, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(replacement.store_id().as_uuid())
@@ -366,7 +366,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let is_default = sqlx::query_scalar::<_, bool>(
-            "SELECT is_default FROM merchant.sales_channels \
+            "SELECT is_default FROM commerce.sales_channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -379,8 +379,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             SalesChannel::validate_archival(is_default)?;
         }
         sqlx::query(
-            "UPDATE merchant.sales_channels \
-             SET status = $3::merchant.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.sales_channels \
+             SET status = $3::commerce.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -451,7 +451,7 @@ async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
@@ -463,7 +463,7 @@ async fn require_writable_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let writable: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
             .bind(store_id.as_uuid())
             .fetch_one(&mut **transaction)
             .await
@@ -554,12 +554,12 @@ mod tests {
     use std::sync::Arc;
 
     use chaos_application::{
-        merchant::{
-            ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
-            MerchantQueries, StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
-        },
         ports::AdminActor,
         ports::IdempotencyRequest,
+        store::{
+            ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
+            StoreAdministration, StoreQueries, UpdateSalesChannelInput, UpdateStoreInput,
+        },
     };
     use chaos_domain::identity::UserId;
     use sqlx::postgres::PgPoolOptions;
@@ -613,7 +613,7 @@ mod tests {
             (other_store_id, "other-admin-store"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name) \
+                "INSERT INTO commerce.stores (id, code, name) \
                  VALUES ($1, $2, 'Admin Store')",
             )
             .bind(id.as_uuid())
@@ -622,7 +622,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO merchant.store_currencies \
+                "INSERT INTO commerce.store_currencies \
                  (store_id, currency) VALUES ($1, 'USD')",
             )
             .bind(id.as_uuid())
@@ -631,7 +631,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -640,7 +640,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.sales_channels \
+            "INSERT INTO commerce.sales_channels \
              (id, store_id, code, name, kind, is_default) \
              VALUES ($1, $2, 'web', 'Online Store', 'web', true)",
         )
@@ -650,8 +650,8 @@ mod tests {
         .await
         .unwrap();
 
-        let queries = MerchantQueries::new(Arc::new(
-            crate::repositories::PostgresMerchantReadRepository::new(runtime_pool.clone()),
+        let queries = StoreQueries::new(Arc::new(
+            crate::repositories::PostgresStoreReadRepository::new(runtime_pool.clone()),
         ));
         let owner = queries.authorize(owner_id, store_id).await.unwrap();
         let service = StoreAdministration::new(Arc::new(

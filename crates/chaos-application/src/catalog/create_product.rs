@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     FieldViolation,
     catalog::{Product, ProductHandle, ProductId, ProductOptionValueId, Sku},
-    merchant::StoreId,
+    store::StoreId,
 };
 
 use crate::{
@@ -161,13 +161,13 @@ fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
 
 #[cfg(test)]
 mod tests {
-    use chaos_domain::{identity::UserId, merchant::StoreRole};
+    use chaos_domain::{identity::UserId, store::StoreRole};
 
     use super::*;
 
     fn input() -> CreateProductInput {
         CreateProductInput {
-            actor: AdminActor::Store(crate::merchant::StoreActor::new(
+            actor: AdminActor::Store(crate::store::StoreActor::new(
                 UserId::new(),
                 StoreId::new(),
                 StoreRole::Member,

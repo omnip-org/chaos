@@ -6,10 +6,10 @@ pub mod catalog;
 pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
-pub mod merchant;
 pub mod payments;
 pub mod pricing;
 pub mod sales;
+pub mod store;
 
 mod currency;
 mod locale;

@@ -3,14 +3,14 @@ use std::sync::Arc;
 use chaos_domain::{
     catalog::{ProductId, ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent},
     identity::Email,
-    merchant::{ApiKeyScope, StoreId},
+    store::{PublishableKeyScope, StoreId},
 };
 use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    merchant::Page,
     ports::{AdminActor, IdempotencyRequest, MachineActor, ReviewRepository, ReviewSummary},
+    store::Page,
 };
 
 pub struct SubmitReviewInput {
@@ -65,7 +65,7 @@ impl ReviewAdministration {
     /// behalf. The review always starts `pending` and is invisible until an
     /// administrator approves it.
     pub async fn submit(&self, input: SubmitReviewInput) -> Result<ReviewId, ApplicationError> {
-        require_storefront_scope(&input.actor, ApiKeyScope::ReviewsWrite)?;
+        require_storefront_scope(&input.actor, PublishableKeyScope::ReviewsWrite)?;
         let rating = ReviewRating::parse(input.rating)?;
         let author_email = input.author_email.map(Email::parse).transpose()?;
         let content = ReviewContent::new(
@@ -186,7 +186,7 @@ impl StorefrontReviews {
         after: Option<ReviewId>,
         limit: u16,
     ) -> Result<Page<ReviewSummary>, ApplicationError> {
-        require_storefront_scope(actor, ApiKeyScope::CatalogRead)?;
+        require_storefront_scope(actor, PublishableKeyScope::CatalogRead)?;
         let limit = limit.clamp(1, 100);
         let items = self
             .repository
@@ -220,12 +220,9 @@ fn require_moderator(actor: &AdminActor) -> Result<(), ApplicationError> {
 
 fn require_storefront_scope(
     actor: &MachineActor,
-    required_scope: ApiKeyScope,
+    required_scope: PublishableKeyScope,
 ) -> Result<(), ApplicationError> {
-    if actor.class == chaos_domain::merchant::ApiKeyClass::Publishable
-        && actor.sales_channel_id.is_some()
-        && actor.scopes.contains(&required_scope)
-    {
+    if actor.sales_channel_id.is_some() && actor.scopes.contains(&required_scope) {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

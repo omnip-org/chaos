@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chaos_domain::{catalog::ProductId, merchant::StoreId};
+use chaos_domain::{catalog::ProductId, store::StoreId};
 
 use crate::{
     ApplicationError,

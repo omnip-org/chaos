@@ -12,7 +12,7 @@ use chaos_domain::{
         ProductId, ProductOptionId, ProductOptionValueId, ProductStatus, ProductVariantId,
         VariantStatus,
     },
-    merchant::StoreId,
+    store::StoreId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -56,8 +56,8 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         >(
             "SELECT product.id, product.handle::text, product.title, product.status::text, \
                     count(variant.id), product.created_at, product.updated_at \
-             FROM catalog.products AS product \
-             LEFT JOIN catalog.product_variants AS variant \
+             FROM commerce.products AS product \
+             LEFT JOIN commerce.product_variants AS variant \
               ON variant.store_id = product.store_id \
               AND variant.product_id = product.id \
              WHERE product.store_id = $1 \
@@ -119,7 +119,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         >(
             "SELECT id, handle::text, title, description, status::text, metadata, \
                     created_at, updated_at \
-             FROM catalog.products \
+             FROM commerce.products \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -135,7 +135,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
 
         let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
             "SELECT id, name::text, position \
-             FROM catalog.product_options \
+             FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY position ASC",
         )
@@ -146,7 +146,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         .map_err(unexpected_database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
-             FROM catalog.product_option_values \
+             FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY option_id ASC, position ASC",
         )
@@ -171,7 +171,7 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         >(
             "SELECT id, title, sku::text, status::text, requires_shipping, track_inventory, \
                     metadata, created_at, updated_at \
-             FROM catalog.product_variants \
+             FROM commerce.product_variants \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY id ASC",
         )
@@ -183,12 +183,12 @@ impl CatalogReadRepository for PostgresCatalogReadRepository {
         let selection_rows = sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String)>(
             "SELECT selection.variant_id, selection.option_id, option.name::text, \
                     selection.option_value_id, value.value::text \
-             FROM catalog.variant_selected_options AS selection \
-             INNER JOIN catalog.product_options AS option \
+             FROM commerce.variant_selected_options AS selection \
+             INNER JOIN commerce.product_options AS option \
               ON option.store_id = selection.store_id \
               AND option.product_id = selection.product_id \
               AND option.id = selection.option_id \
-             INNER JOIN catalog.product_option_values AS value \
+             INNER JOIN commerce.product_option_values AS value \
               ON value.store_id = selection.store_id \
               AND value.product_id = selection.product_id \
               AND value.option_id = selection.option_id \
@@ -314,7 +314,7 @@ async fn store_exists(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
@@ -346,14 +346,14 @@ fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
 mod tests {
     use std::sync::Arc;
 
-    use chaos_application::{catalog::CatalogQueries, merchant::MerchantQueries};
+    use chaos_application::{catalog::CatalogQueries, store::StoreQueries};
     use chaos_domain::{
         catalog::{ProductOptionId, ProductOptionValueId, ProductVariantId},
         identity::UserId,
     };
     use sqlx::postgres::PgPoolOptions;
 
-    use crate::repositories::PostgresMerchantReadRepository;
+    use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
 
@@ -399,7 +399,7 @@ mod tests {
             .unwrap();
         for (id, code) in [(store_id, "catalog-read"), (other_store_id, "other-read")] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name) \
+                "INSERT INTO commerce.stores (id, code, name) \
                  VALUES ($1, $2, 'Catalog Read Store')",
             )
             .bind(id.as_uuid())
@@ -409,7 +409,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -422,7 +422,7 @@ mod tests {
             (product_ids[1], "second-shirt", "Second Shirt"),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.products \
+                "INSERT INTO commerce.products \
                  (id, store_id, handle, title, description) \
                  VALUES ($1, $2, $3, $4, 'Product description')",
             )
@@ -435,7 +435,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO catalog.product_options \
+            "INSERT INTO commerce.product_options \
              (id, store_id, product_id, name, position) \
              VALUES ($1, $2, $3, 'Color', 0)",
         )
@@ -446,7 +446,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.product_option_values \
+            "INSERT INTO commerce.product_option_values \
              (id, store_id, product_id, option_id, value, position) \
              VALUES ($1, $2, $3, $4, 'Blue', 0)",
         )
@@ -458,7 +458,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.product_variants \
+            "INSERT INTO commerce.product_variants \
              (id, store_id, product_id, title, sku) \
              VALUES ($1, $2, $3, 'Blue', 'READ-BLUE')",
         )
@@ -469,7 +469,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.variant_selected_options \
+            "INSERT INTO commerce.variant_selected_options \
              (store_id, product_id, variant_id, option_id, option_value_id) \
              VALUES ($1, $2, $3, $4, $5)",
         )
@@ -482,7 +482,7 @@ mod tests {
         .await
         .unwrap();
 
-        let memberships = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let memberships = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             runtime_pool.clone(),
         )));
         let owner = memberships.authorize(user_id, store_id).await.unwrap();
@@ -537,7 +537,7 @@ mod tests {
             })
         ));
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await

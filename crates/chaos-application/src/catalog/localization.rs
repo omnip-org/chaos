@@ -6,7 +6,7 @@ use chaos_domain::{
         CollectionId, LocalizedAltText, LocalizedContent, LocalizedTitle, MediaAssetId, ProductId,
         ProductVariantId,
     },
-    merchant::{StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use time::OffsetDateTime;
 

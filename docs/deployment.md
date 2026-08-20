@@ -45,6 +45,14 @@ Adding or changing an encrypted Provider Key takes effect on the next Provider o
 
 ## Deployment
 
+The pre-`1.0` bootstrap migrations describe the current clean database model
+and may be rewritten while deployed data remains disposable. A release that
+changes an already applied migration checksum must not run the normal rollout
+against that database. Back up any required Provider configuration, recreate
+the PostgreSQL data volume, and run the migration job before starting API or
+Worker containers. Once production data becomes non-disposable, migrations are
+immutable and every change must fix forward.
+
 The image build is automated; the rollout is not. Pushing a `v*` tag runs the Release workflow, which builds and publishes `ghcr.io/OWNER/chaos:VERSION` (and `:latest`). Nothing in CI has network access to the deploy host — there is no SSH step, and no deploy-related secret (database URL, `CHAOS_PROVIDER_SECRET_KEY`, etc.) is ever held by GitHub Actions. Rolling the new image out to the host is a deliberate, manual action taken by an operator with host access.
 
 To deploy, on the host itself (`/opt/chaos` by convention), pull the latest compose files and scripts, then run the rollout script:

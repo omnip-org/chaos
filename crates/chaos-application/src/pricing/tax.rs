@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::StoreId,
     pricing::{TaxRule, TaxRuleId, TaxRuleStatus},
+    store::StoreId,
 };
 
 use crate::{

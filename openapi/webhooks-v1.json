@@ -3,7 +3,7 @@
   "info": {
     "title": "Chaos Provider Webhooks API",
     "version": "1.0.0",
-    "description": "Provider callbacks authenticated before merchant resolution and durably deduplicated."
+    "description": "Provider callbacks authenticated before Store resolution and durably deduplicated."
   },
   "servers": [{ "url": "/webhooks/v1" }],
   "paths": {

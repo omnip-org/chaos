@@ -1,11 +1,11 @@
-use chaos_domain::{identity::UserId, merchant::StoreId};
+use chaos_domain::{identity::UserId, store::StoreId};
 
-use crate::merchant::StoreActor;
+use crate::store::StoreActor;
 
 use super::MachineActor;
 
 /// The caller of an admin-facing use case: either a human Store member
-/// (JWT access token) or a Store-scoped API key (MCP / machine client).
+/// (JWT access token) or a Store-scoped Publishable Key (MCP / machine client).
 ///
 /// Kept as a closed enum rather than a trait so it stays object-safe at
 /// `dyn` port boundaries (`CatalogManagementUnitOfWork`, etc.) without
@@ -27,7 +27,7 @@ impl AdminActor {
 
     /// User id for RLS/audit `app.user_id` and any audit column that hard-requires
     /// a real `identity.users` row (e.g. Collection events). For a human this is
-    /// the signed-in member; for a machine it is the API key's creator
+    /// the signed-in member; for a machine it is the Publishable Key's creator
     /// (`created_by_user_id`) — the most honest stand-in available, since the
     /// mutation is genuinely attributable to the key that person issued.
     pub const fn audit_user_id(&self) -> UserId {

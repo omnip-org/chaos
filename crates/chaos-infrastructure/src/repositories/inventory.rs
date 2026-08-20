@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
         InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
         StockItemItem,
     },
+    store::StoreActor,
 };
 use chaos_domain::{
     catalog::ProductVariantId,
@@ -14,7 +14,7 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationId, InventoryLocationStatus, InventoryReservation,
         InventoryReservationId, InventoryReservationStatus, StockBalance, StockItemId,
     },
-    merchant::StoreId,
+    store::StoreId,
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -104,7 +104,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         }
         require_store(&mut transaction, location.store_id()).await?;
         sqlx::query(
-            "INSERT INTO inventory.inventory_locations \
+            "INSERT INTO commerce.inventory_locations \
              (id, store_id, code, name, status) \
              VALUES ($1, $2, $3, $4, 'active')",
         )
@@ -140,7 +140,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         }
         let rows = sqlx::query_as::<_, LocationRow>(
             "SELECT id, code::text, name, status::text, created_at, updated_at \
-             FROM inventory.inventory_locations \
+             FROM commerce.inventory_locations \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -177,11 +177,11 @@ impl InventoryRepository for PostgresInventoryRepository {
         }
         require_store(&mut transaction, adjustment.store_id).await?;
         sqlx::query(
-            "INSERT INTO inventory.stock_items \
+            "INSERT INTO commerce.stock_items \
              (id, store_id, inventory_location_id, product_variant_id) \
              SELECT $1, $2, location.id, variant.id \
-             FROM inventory.inventory_locations AS location \
-             INNER JOIN catalog.product_variants AS variant \
+             FROM commerce.inventory_locations AS location \
+             INNER JOIN commerce.product_variants AS variant \
                ON variant.store_id = location.store_id \
               AND variant.id = $4 AND variant.track_inventory \
              WHERE location.store_id = $2 \
@@ -253,7 +253,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         }
         let rows = sqlx::query_as::<_, StockRow>(
             "SELECT id, inventory_location_id, product_variant_id, on_hand_quantity, \
-                    reserved_quantity, updated_at FROM inventory.stock_items \
+                    reserved_quantity, updated_at FROM commerce.stock_items \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -289,7 +289,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         }
         require_active_machine_context(&mut transaction, actor, channel_id.as_uuid()).await?;
         sqlx::query(
-            "INSERT INTO inventory.inventory_reservations \
+            "INSERT INTO commerce.inventory_reservations \
              (id, store_id, sales_channel_id, expires_at) \
              VALUES ($1, $2, $3, $4)",
         )
@@ -311,7 +311,7 @@ impl InventoryRepository for PostgresInventoryRepository {
             let balance = StockBalance::new(locked.2, locked.3)?.reserve(line.quantity())?;
             update_stock_balance(&mut transaction, locked.0, balance).await?;
             sqlx::query(
-                "INSERT INTO inventory.inventory_reservation_lines \
+                "INSERT INTO commerce.inventory_reservation_lines \
                  (store_id, reservation_id, stock_item_id, \
                   product_variant_id, quantity) VALUES ($1, $2, $3, $4, $5)",
             )
@@ -420,7 +420,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         let mut transaction = self.begin_for_store_actor(actor).await?;
         require_store(&mut transaction, store_id).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM inventory.inventory_reservations \
+            "SELECT id FROM commerce.inventory_reservations \
              WHERE store_id = $1 \
                AND status = 'active' AND expires_at <= $2 \
              ORDER BY expires_at ASC, id ASC FOR UPDATE SKIP LOCKED LIMIT $3",
@@ -509,7 +509,7 @@ async fn store_exists(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
@@ -522,8 +522,8 @@ async fn require_active_machine_context(
     sales_channel_id: Uuid,
 ) -> Result<(), ApplicationError> {
     let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.stores AS store \
-         INNER JOIN merchant.sales_channels AS channel \
+        "SELECT EXISTS (SELECT 1 FROM commerce.stores AS store \
+         INNER JOIN commerce.sales_channels AS channel \
            ON channel.store_id = store.id \
          WHERE store.id = $1 \
            AND store.status = 'active' AND channel.id = $2 AND channel.status = 'active')",
@@ -548,7 +548,7 @@ async fn lock_stock_by_location_variant(
 ) -> Result<Option<LockedStockRow>, ApplicationError> {
     sqlx::query_as(
         "SELECT id, on_hand_quantity, reserved_quantity \
-         FROM inventory.stock_items WHERE store_id = $1 \
+         FROM commerce.stock_items WHERE store_id = $1 \
            AND inventory_location_id = $2 AND product_variant_id = $3 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -566,8 +566,8 @@ async fn lock_stock_by_id(
 ) -> Result<Option<(Uuid, Uuid, i64, i64)>, ApplicationError> {
     sqlx::query_as(
         "SELECT stock.id, stock.product_variant_id, stock.on_hand_quantity, \
-                stock.reserved_quantity FROM inventory.stock_items AS stock \
-         INNER JOIN inventory.inventory_locations AS location \
+                stock.reserved_quantity FROM commerce.stock_items AS stock \
+         INNER JOIN commerce.inventory_locations AS location \
            ON location.store_id = stock.store_id \
           AND location.id = stock.inventory_location_id \
          WHERE stock.store_id = $1 AND stock.id = $2 \
@@ -586,7 +586,7 @@ async fn update_stock_balance(
     balance: StockBalance,
 ) -> Result<OffsetDateTime, ApplicationError> {
     sqlx::query_scalar(
-        "UPDATE inventory.stock_items SET on_hand_quantity = $2, reserved_quantity = $3, \
+        "UPDATE commerce.stock_items SET on_hand_quantity = $2, reserved_quantity = $3, \
                 updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING updated_at",
     )
     .bind(stock_item_id)
@@ -611,11 +611,11 @@ async fn insert_ledger(
     actor_user_id: Option<Uuid>,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO inventory.stock_ledger_entries \
+        "INSERT INTO commerce.stock_ledger_entries \
          (id, store_id, stock_item_id, reservation_id, kind, \
           on_hand_delta_quantity, reserved_delta_quantity, resulting_on_hand_quantity, \
           resulting_reserved_quantity, note, actor_user_id) \
-         VALUES ($1, $2, $3, $4, $5::inventory.stock_ledger_kind, $6, $7, $8, $9, $10, $11)",
+         VALUES ($1, $2, $3, $4, $5::commerce.stock_ledger_kind, $6, $7, $8, $9, $10, $11)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
@@ -641,7 +641,7 @@ async fn lock_reservation(
 ) -> Result<ReservationRow, ApplicationError> {
     sqlx::query_as(
         "SELECT status::text, expires_at, closed_at, sales_channel_id \
-         FROM inventory.inventory_reservations \
+         FROM commerce.inventory_reservations \
          WHERE store_id = $1 AND id = $2 \
            AND sales_channel_id = $3 FOR UPDATE",
     )
@@ -666,8 +666,8 @@ pub(super) async fn close_reservation(
 ) -> Result<(), ApplicationError> {
     let lines = sqlx::query_as::<_, (Uuid, i64, i64, i64)>(
         "SELECT stock.id, line.quantity, stock.on_hand_quantity, stock.reserved_quantity \
-         FROM inventory.inventory_reservation_lines AS line \
-         INNER JOIN inventory.stock_items AS stock \
+         FROM commerce.inventory_reservation_lines AS line \
+         INNER JOIN commerce.stock_items AS stock \
            ON stock.store_id = line.store_id AND stock.id = line.stock_item_id \
          WHERE line.store_id = $1 \
            AND line.reservation_id = $2 ORDER BY stock.id ASC FOR UPDATE OF stock",
@@ -706,8 +706,8 @@ pub(super) async fn close_reservation(
         .await?;
     }
     let result = sqlx::query(
-        "UPDATE inventory.inventory_reservations \
-         SET status = $3::inventory.inventory_reservation_status, closed_at = $4, updated_at = $4 \
+        "UPDATE commerce.inventory_reservations \
+         SET status = $3::commerce.inventory_reservation_status, closed_at = $4, updated_at = $4 \
          WHERE store_id = $1 AND id = $2 AND status = 'active'",
     )
     .bind(store_id.as_uuid())
@@ -948,13 +948,13 @@ mod tests {
             AdjustStockInput, CreateInventoryLocationInput, InventoryManagement,
             ReserveInventoryInput, ReserveInventoryLineInput, TransitionInventoryReservationInput,
         },
-        merchant::MerchantQueries,
         ports::IdempotencyRequest,
+        store::StoreQueries,
     };
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId},
+        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId},
     };
     use sqlx::postgres::PgPoolOptions;
     use time::Duration;
@@ -1019,7 +1019,7 @@ mod tests {
             (other_store_id, "other-inventory"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores \
+                "INSERT INTO commerce.stores \
                  (id, code, name, status) \
                  VALUES ($1, $2, 'Inventory Store', 'active')",
             )
@@ -1031,7 +1031,7 @@ mod tests {
         }
         for (store, user) in [(store_id, user_id), (other_store_id, other_user_id)] {
             sqlx::query(
-                "INSERT INTO merchant.store_memberships \
+                "INSERT INTO commerce.store_memberships \
                  (store_id, user_id, role) VALUES ($1, $2, 'owner')",
             )
             .bind(store.as_uuid())
@@ -1041,7 +1041,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.sales_channels \
+            "INSERT INTO commerce.sales_channels \
              (id, store_id, code, name, kind, is_default) \
              VALUES ($1, $2, 'web', 'Web', 'web', true)",
         )
@@ -1051,7 +1051,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.products \
+            "INSERT INTO commerce.products \
              (id, store_id, handle, title, status) \
              VALUES ($1, $2, 'inventory-product', 'Inventory Product', 'active')",
         )
@@ -1061,7 +1061,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.product_variants \
+            "INSERT INTO commerce.product_variants \
              (id, store_id, product_id, title, track_inventory) \
              VALUES ($1, $2, $3, 'Default', true)",
         )
@@ -1072,8 +1072,8 @@ mod tests {
         .await
         .unwrap();
 
-        let queries = MerchantQueries::new(Arc::new(
-            crate::repositories::PostgresMerchantReadRepository::new(runtime_pool.clone()),
+        let queries = StoreQueries::new(Arc::new(
+            crate::repositories::PostgresStoreReadRepository::new(runtime_pool.clone()),
         ));
         let actor = queries.authorize(user_id, store_id).await.unwrap();
         let other_actor = queries
@@ -1136,11 +1136,10 @@ mod tests {
         );
 
         let machine = MachineActor {
-            api_key_id: ApiKeyId::new(),
+            publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            class: ApiKeyClass::Publishable,
-            scopes: vec![ApiKeyScope::CheckoutWrite],
+            scopes: vec![PublishableKeyScope::CheckoutWrite],
             created_by_user_id: user_id,
         };
         let now = OffsetDateTime::now_utc();
@@ -1218,7 +1217,7 @@ mod tests {
             1
         );
         let expired_status: String = sqlx::query_scalar(
-            "SELECT status::text FROM inventory.inventory_reservations WHERE id = $1",
+            "SELECT status::text FROM commerce.inventory_reservations WHERE id = $1",
         )
         .bind(expiring_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -1239,7 +1238,7 @@ mod tests {
                 .is_err()
         );
         let ledger_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM inventory.stock_ledger_entries \
+            "SELECT count(*) FROM commerce.stock_ledger_entries \
              WHERE store_id = $1",
         )
         .bind(store_id.as_uuid())
@@ -1256,7 +1255,7 @@ mod tests {
             .unwrap();
         assert!(
             sqlx::query(
-                "UPDATE inventory.stock_ledger_entries SET note = 'tampered' \
+                "UPDATE commerce.stock_ledger_entries SET note = 'tampered' \
                  WHERE store_id = $1",
             )
             .bind(store_id.as_uuid())

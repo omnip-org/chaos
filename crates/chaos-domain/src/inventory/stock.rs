@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, catalog::ProductVariantId, merchant::StoreId};
+use crate::{DomainError, FieldViolation, catalog::ProductVariantId, store::StoreId};
 
 macro_rules! inventory_id {
     ($name:ident) => {

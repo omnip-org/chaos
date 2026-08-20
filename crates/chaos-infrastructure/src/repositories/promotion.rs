@@ -5,8 +5,8 @@ use chaos_application::{
 };
 use chaos_domain::{
     CurrencyCode,
-    merchant::StoreId,
     pricing::{Promotion, PromotionId, PromotionStatus, PromotionTrigger, PromotionValue},
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -86,12 +86,12 @@ impl PromotionRepository for PostgresPromotionRepository {
             return Ok(detail);
         }
         require_store(&mut transaction, store_id).await?;
-        sqlx::query("INSERT INTO pricing.promotions \
+        sqlx::query("INSERT INTO commerce.promotions \
             (id, store_id, handle, name, trigger, redemption_code, value_kind, \
              rate_basis_points, amount_minor, maximum_amount_minor, currency, minimum_subtotal_amount_minor, \
              priority, starts_at, ends_at, status) \
-            VALUES ($1,$2,$3,$4,$5::pricing.promotion_trigger,$6,$7::pricing.promotion_value_kind, \
-                    $8,$9,$10,$11,$12,$13,$14,$15,$16::pricing.promotion_status)")
+            VALUES ($1,$2,$3,$4,$5::commerce.promotion_trigger,$6,$7::commerce.promotion_value_kind, \
+                    $8,$9,$10,$11,$12,$13,$14,$15,$16::commerce.promotion_status)")
             .bind(promotion.id().as_uuid()).bind(store_id.as_uuid())
             .bind(promotion.handle()).bind(promotion.name()).bind(promotion.trigger().as_str())
             .bind(promotion.redemption_code()).bind(promotion.value().kind())
@@ -127,7 +127,7 @@ impl PromotionRepository for PostgresPromotionRepository {
             "SELECT id, handle, name, trigger::text, redemption_code::text, value_kind::text, \
              rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
              minimum_subtotal_amount_minor, priority, starts_at, ends_at, status::text, \
-             created_at, updated_at FROM pricing.promotions \
+             created_at, updated_at FROM commerce.promotions \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -156,7 +156,7 @@ impl PromotionRepository for PostgresPromotionRepository {
             .is_none()
         {
             let result = sqlx::query(
-                "UPDATE pricing.promotions SET status = $3::pricing.promotion_status, \
+                "UPDATE commerce.promotions SET status = $3::commerce.promotion_status, \
                 updated_at = CURRENT_TIMESTAMP WHERE store_id = $1 AND id = $2",
             )
             .bind(store_id.as_uuid())
@@ -187,7 +187,7 @@ async fn load(
         "SELECT id, handle, name, trigger::text, redemption_code::text, value_kind::text, \
          rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
          minimum_subtotal_amount_minor, priority, starts_at, ends_at, status::text, \
-         created_at, updated_at FROM pricing.promotions \
+         created_at, updated_at FROM commerce.promotions \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -236,7 +236,7 @@ async fn require_store(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1)")
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
             .bind(store_id.as_uuid())
             .fetch_one(&mut **transaction)
             .await

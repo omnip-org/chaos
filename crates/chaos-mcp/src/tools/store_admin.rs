@@ -1,11 +1,11 @@
 use chaos_application::{
-    merchant::{
+    ports::{SalesChannelAdminItem, StoreAdminItem},
+    store::{
         ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
         UpdateSalesChannelInput, UpdateStoreInput,
     },
-    ports::{SalesChannelAdminItem, StoreAdminItem},
 };
-use chaos_domain::merchant::SalesChannelId;
+use chaos_domain::store::SalesChannelId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -98,7 +98,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -130,7 +130,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -193,7 +193,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -225,7 +225,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -262,7 +262,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -305,7 +305,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -378,7 +378,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await
@@ -416,7 +416,7 @@ impl ChaosMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
-            &self.state.merchant_queries,
+            &self.state.store_queries,
             &parts,
         )
         .await

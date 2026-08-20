@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use chaos_domain::{
     CurrencyCode,
-    merchant::StoreId,
     pricing::{Promotion, PromotionId, PromotionStatus, PromotionTrigger, PromotionValue},
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

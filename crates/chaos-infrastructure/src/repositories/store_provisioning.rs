@@ -5,7 +5,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{SalesChannel, Store, StoreId, StoreMembership},
+    store::{SalesChannel, Store, StoreId, StoreMembership},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -87,7 +87,7 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
             .await
             .map_err(unexpected_database_error)?;
         sqlx::query(
-            "INSERT INTO merchant.stores \
+            "INSERT INTO commerce.stores \
              (id, code, name, default_region, default_currency, status) \
              VALUES ($1, $2, $3, $4, $5, 'inactive')",
         )
@@ -107,8 +107,8 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         membership: &StoreMembership,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
-             VALUES ($1, $2, $3::merchant.store_role)",
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
+             VALUES ($1, $2, $3::commerce.store_role)",
         )
         .bind(membership.store_id().as_uuid())
         .bind(membership.user_id().as_uuid())
@@ -121,7 +121,7 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
 
     async fn insert_default_currency(&mut self, store: &Store) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO merchant.store_currencies \
+            "INSERT INTO commerce.store_currencies \
              (store_id, currency, enabled) \
              VALUES ($1, $2, true)",
         )
@@ -138,11 +138,11 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         channel: &SalesChannel,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO merchant.sales_channels \
+            "INSERT INTO commerce.sales_channels \
              (id, store_id, code, name, kind, status, is_default) \
              VALUES ($1, $2, $3, $4, \
-                     $5::merchant.sales_channel_kind, \
-                     $6::merchant.sales_channel_status, $7)",
+                     $5::commerce.sales_channel_kind, \
+                     $6::commerce.sales_channel_status, $7)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
@@ -201,7 +201,7 @@ fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
 mod tests {
     use std::sync::Arc;
 
-    use chaos_application::merchant::{CreateStore, CreateStoreInput};
+    use chaos_application::store::{CreateStore, CreateStoreInput};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
@@ -272,10 +272,10 @@ mod tests {
             "SELECT store.status::text, store.default_region::text, \
                     currency.currency::text, currency.enabled, \
                     channel.code::text, channel.kind::text, channel.is_default \
-             FROM merchant.stores AS store \
-             INNER JOIN merchant.store_currencies AS currency \
+             FROM commerce.stores AS store \
+             INNER JOIN commerce.store_currencies AS currency \
                  ON currency.store_id = store.id \
-             INNER JOIN merchant.sales_channels AS channel \
+             INNER JOIN commerce.sales_channels AS channel \
                  ON channel.store_id = store.id \
              WHERE store.id = $1",
         )
@@ -297,7 +297,7 @@ mod tests {
         );
 
         let membership_role: String = sqlx::query_scalar(
-            "SELECT role::text FROM merchant.store_memberships \
+            "SELECT role::text FROM commerce.store_memberships \
              WHERE store_id = $1 AND user_id = $2",
         )
         .bind(output.store_id.as_uuid())
@@ -307,7 +307,7 @@ mod tests {
         .unwrap();
         assert_eq!(membership_role, "owner");
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
             .bind(output.store_id.as_uuid())
             .execute(&owner_pool)
             .await

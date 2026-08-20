@@ -3,7 +3,7 @@ use chaos_domain::{
     catalog::{
         MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductVariantId,
     },
-    merchant::StoreId,
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

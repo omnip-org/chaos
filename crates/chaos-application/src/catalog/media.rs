@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ProductVariantId},
-    merchant::StoreId,
+    store::StoreId,
 };
 use time::{Duration, OffsetDateTime};
 

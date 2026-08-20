@@ -3,7 +3,6 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation, Locale,
     catalog::{CollectionHandle, ProductId},
-    merchant::ApiKeyClass,
 };
 
 use crate::{
@@ -28,9 +27,6 @@ impl StorefrontCatalog {
     }
 
     pub fn context(actor: &MachineActor) -> Result<StorefrontContext, ApplicationError> {
-        if actor.class != ApiKeyClass::Publishable {
-            return Err(ApplicationError::Forbidden);
-        }
         Ok(StorefrontContext {
             store_id: actor.store_id,
             sales_channel_id: actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?,
@@ -126,7 +122,7 @@ mod tests {
     use async_trait::async_trait;
     use chaos_domain::{
         identity::UserId,
-        merchant::{ApiKeyClass, ApiKeyId, ApiKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
     };
 
     use super::*;
@@ -159,20 +155,19 @@ mod tests {
         }
     }
 
-    fn actor(class: ApiKeyClass) -> MachineActor {
+    fn actor() -> MachineActor {
         MachineActor {
-            api_key_id: ApiKeyId::new(),
+            publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            class,
-            scopes: vec![ApiKeyScope::CatalogRead],
+            scopes: vec![PublishableKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         }
     }
 
     #[test]
     fn storefront_context_contains_every_resolved_boundary() {
-        let actor = actor(ApiKeyClass::Publishable);
+        let actor = actor();
         let context = StorefrontCatalog::context(&actor).unwrap();
         assert_eq!(context.store_id, actor.store_id);
         assert_eq!(Some(context.sales_channel_id), actor.sales_channel_id);
@@ -181,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn publishable_keys_without_a_sales_channel_cannot_enter_storefront_catalog() {
         let catalog = StorefrontCatalog::new(Arc::new(EmptyRepository));
-        let mut key = actor(ApiKeyClass::Publishable);
+        let mut key = actor();
         key.sales_channel_id = None;
         let result = catalog
             .list_products(&key, None, None, None, None, None, 20)

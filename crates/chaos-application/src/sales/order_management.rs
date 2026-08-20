@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::StoreId,
     sales::{OrderId, OrderStatus},
+    store::StoreId,
 };
 use time::OffsetDateTime;
 

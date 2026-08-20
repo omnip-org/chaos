@@ -1,0 +1,70 @@
+# Repository Guide
+
+This page is the shortest path from a product change to the code that owns it.
+Keep product language consistent with [`product-model.md`](product-model.md), and
+preserve the dependency direction in
+[`adr/0001-ddd-workspace-boundaries.md`](adr/0001-ddd-workspace-boundaries.md).
+
+## Runtime entry points
+
+| Runtime | Entry point | Responsibility |
+| --- | --- | --- |
+| HTTP API | `crates/chaos-api/src/main.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, health, and metrics |
+| MCP | `crates/chaos-mcp/src/router.rs` | AI-operated Store administration authenticated by User Access Keys |
+| Worker | `crates/chaos-api/src/bin/chaos-worker.rs` | Durable polling and Provider reconciliation outside API replicas |
+| Migration job | `crates/chaos-api/src/bin/chaos-migrate.rs` | Applies SQL migrations before an application rollout |
+
+## Dependency layers
+
+| Crate | Look here for | Must not own |
+| --- | --- | --- |
+| `chaos-domain` | Business types, validation, and state transitions | HTTP, SQL, serialization, Provider SDKs |
+| `chaos-application` | Use cases and ports | Axum handlers and SQL queries |
+| `chaos-infrastructure` | PostgreSQL repositories and external Provider adapters | Transport DTOs and new business rules |
+| `chaos-api` | HTTP routes, DTOs, runtime composition, and Worker loops | Direct business persistence |
+| `chaos-mcp` | MCP tools and MCP transport | SQL queries |
+
+## Change routing
+
+| Product area | Domain and use cases | Delivery and adapters | Database ownership |
+| --- | --- | --- | --- |
+| Users, external identity, Access Keys | `identity` | HTTP auth and identity adapter | `identity` |
+| Stores, memberships, channels, Publishable Keys | `store` | MCP Store tools and Store repositories | `commerce` |
+| Products, variants, collections, media | `catalog` | MCP catalog tools and catalog repositories | `commerce` |
+| Prices, promotions, and tax | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
+| Stock and reservations | `inventory` | MCP inventory tools and inventory repository | `commerce` |
+| Carts, checkout, customers, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
+| Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
+| Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
+| Webhooks, outbox, and idempotency | application ports | Worker loops and integration repositories | `integration` |
+
+Rust business modules remain useful navigation boundaries; they do not require
+matching PostgreSQL schemas.
+
+HTTP delivery code is grouped by public responsibility under
+`crates/chaos-api/src/http/`:
+
+- `identity/` contains account bootstrap and User Access Key endpoints;
+- `storefront/` contains every publishable Store API surface;
+- `webhooks/` contains Provider callback endpoints;
+- `operations/` contains health and metrics;
+- `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
+
+## Contracts and operations
+
+- `openapi/` contains the generated or reviewed HTTP contracts.
+- `packages/js/` is the Storefront JavaScript client.
+- `packages/storefront-template/` is the end-to-end example Storefront.
+- `migrations/0002_identity.sql`, `0003_commerce.sql`, and
+  `0004_integration.sql` are the complete business-schema bootstrap files.
+  `0001_platform.sql` and `0005_runtime_hardening.sql` own platform setup and
+  final grants.
+- `deploy/` contains the production-equivalent Compose topology and origin TLS
+  certificate used behind Cloudflare.
+- `scripts/storefront-demo.mjs` exercises the supported commerce flow.
+
+## Required verification
+
+Run the commands listed in the root `README.md` and `CONTRIBUTING.md`. Database
+changes additionally require a disposable PostgreSQL migration run and Store
+isolation tests.

@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{IdempotencyRequest, StoreMembershipItem, StoreMembershipRepository},
+    store::StoreActor,
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -61,7 +61,7 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         let mut transaction = self.begin(actor).await?;
         let rows = sqlx::query_as::<_, MembershipRow>(
             "SELECT user_id, role::text, created_at, updated_at \
-             FROM merchant.store_memberships WHERE store_id = $1 \
+             FROM commerce.store_memberships WHERE store_id = $1 \
              ORDER BY created_at, user_id",
         )
         .bind(actor.store_id().as_uuid())
@@ -93,10 +93,10 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
             return membership_from_json(value);
         }
         let row = sqlx::query_as::<_, MembershipRow>(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'member') \
              ON CONFLICT (store_id, user_id) DO UPDATE SET updated_at = \
-                 merchant.store_memberships.updated_at \
+                 commerce.store_memberships.updated_at \
              RETURNING user_id, role::text, created_at, updated_at",
         )
         .bind(actor.store_id().as_uuid())
@@ -145,7 +145,7 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
             protect_last_owner(&mut transaction, actor.store_id(), user_id).await?;
         }
         let row = sqlx::query_as::<_, MembershipRow>(
-            "UPDATE merchant.store_memberships SET role = $3::merchant.store_role, \
+            "UPDATE commerce.store_memberships SET role = $3::commerce.store_role, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND user_id = $2 \
              RETURNING user_id, role::text, created_at, updated_at",
@@ -196,7 +196,7 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         if actor.role() == StoreRole::Owner {
             protect_last_owner(&mut transaction, actor.store_id(), actor.user_id()).await?;
         }
-        sqlx::query("DELETE FROM merchant.store_memberships WHERE store_id = $1 AND user_id = $2")
+        sqlx::query("DELETE FROM commerce.store_memberships WHERE store_id = $1 AND user_id = $2")
             .bind(actor.store_id().as_uuid())
             .bind(actor.user_id().as_uuid())
             .execute(&mut *transaction)
@@ -221,7 +221,7 @@ async fn lock_memberships(
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "SELECT user_id FROM merchant.store_memberships \
+        "SELECT user_id FROM commerce.store_memberships \
          WHERE store_id = $1 ORDER BY user_id FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -237,7 +237,7 @@ async fn protect_last_owner(
     user_id: UserId,
 ) -> Result<(), ApplicationError> {
     let target_is_owner: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM merchant.store_memberships \
+        "SELECT EXISTS (SELECT 1 FROM commerce.store_memberships \
          WHERE store_id = $1 AND user_id = $2 AND role = 'owner')",
     )
     .bind(store_id.as_uuid())
@@ -247,7 +247,7 @@ async fn protect_last_owner(
     .map_err(database_error)?;
     if target_is_owner {
         let owner_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM merchant.store_memberships \
+            "SELECT count(*) FROM commerce.store_memberships \
              WHERE store_id = $1 AND role = 'owner'",
         )
         .bind(store_id.as_uuid())
@@ -343,10 +343,10 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
 mod tests {
     use std::sync::Arc;
 
-    use chaos_application::merchant::{MerchantQueries, StoreMembershipManagement};
+    use chaos_application::store::{StoreMembershipManagement, StoreQueries};
     use sqlx::postgres::PgPoolOptions;
 
-    use crate::repositories::PostgresMerchantReadRepository;
+    use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
 
@@ -394,7 +394,7 @@ mod tests {
                 .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.stores (id, code, name, status) \
+            "INSERT INTO commerce.stores (id, code, name, status) \
              VALUES ($1, $2, 'Membership Store', 'active')",
         )
         .bind(store_id.as_uuid())
@@ -403,7 +403,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -412,7 +412,7 @@ mod tests {
         .await
         .unwrap();
 
-        let directory = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let directory = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             runtime_pool.clone(),
         )));
         let service = StoreMembershipManagement::new(Arc::new(
@@ -478,7 +478,7 @@ mod tests {
             })
         ));
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await

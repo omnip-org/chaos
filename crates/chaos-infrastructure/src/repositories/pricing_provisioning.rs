@@ -9,8 +9,8 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode,
     catalog::ProductVariantId,
-    merchant::StoreId,
     pricing::{PriceList, PriceListId},
+    store::StoreId,
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -65,7 +65,7 @@ impl PricingProvisioningUnitOfWork for PostgresPricingProvisioningUnitOfWork {
 impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     async fn require_writable_store(&mut self) -> Result<(), ApplicationError> {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM merchant.stores WHERE id = $1 AND status = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1 AND status = 'active')",
         )
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
@@ -87,7 +87,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         let enabled: bool = sqlx::query_scalar(
             "SELECT EXISTS (\
-                SELECT 1 FROM merchant.store_currencies \
+                SELECT 1 FROM commerce.store_currencies \
                 WHERE store_id = $1 \
                   AND currency = $2 AND enabled\
              )",
@@ -145,7 +145,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
             .map(|id| id.as_uuid())
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM catalog.product_variants \
+            "SELECT id FROM commerce.product_variants \
              WHERE store_id = $1 \
                AND id = ANY($2) AND status = 'active'",
         )
@@ -166,7 +166,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
             .map(|id| id.as_uuid())
             .collect::<Vec<_>>();
         let rows = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM catalog.product_variants \
+            "SELECT id FROM commerce.product_variants \
              WHERE store_id = $1 AND id = ANY($2)",
         )
         .bind(self.store_id.as_uuid())
@@ -179,10 +179,10 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
 
     async fn insert_price_list(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO pricing.price_lists \
+            "INSERT INTO commerce.price_lists \
              (id, store_id, code, name, currency, tax_inclusive, status, \
               starts_at, ends_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::pricing.price_list_status, $8, $9)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7::commerce.price_list_status, $8, $9)",
         )
         .bind(price_list.id().as_uuid())
         .bind(price_list.store_id().as_uuid())
@@ -198,7 +198,7 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
         .map_err(map_pricing_write_error)?;
         for price in price_list.prices() {
             sqlx::query(
-                "INSERT INTO pricing.prices \
+                "INSERT INTO commerce.prices \
                  (id, store_id, price_list_id, product_variant_id, \
                   amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
@@ -260,14 +260,14 @@ mod tests {
     use std::sync::Arc;
 
     use chaos_application::{
-        merchant::MerchantQueries,
         ports::AdminActor,
         pricing::{CreatePriceInput, CreatePriceList, CreatePriceListInput},
+        store::StoreQueries,
     };
     use chaos_domain::{catalog::ProductId, identity::UserId};
     use sqlx::postgres::PgPoolOptions;
 
-    use crate::repositories::PostgresMerchantReadRepository;
+    use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
 
@@ -314,7 +314,7 @@ mod tests {
             (other_store_id, format!("pricing-other-{suffix}")),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name, status) \
+                "INSERT INTO commerce.stores (id, code, name, status) \
                  VALUES ($1, $2, 'Pricing Store', 'active')",
             )
             .bind(id.as_uuid())
@@ -323,7 +323,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO merchant.store_currencies \
+                "INSERT INTO commerce.store_currencies \
                  (store_id, currency, enabled) \
                  VALUES ($1, 'USD', true)",
             )
@@ -333,7 +333,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -342,7 +342,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.store_currencies \
+            "INSERT INTO commerce.store_currencies \
              (store_id, currency, enabled) \
              VALUES ($1, 'EUR', false)",
         )
@@ -367,7 +367,7 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.products \
+                "INSERT INTO commerce.products \
                  (id, store_id, handle, title, status) \
                  VALUES ($1, $2, $3, 'Priced Product', 'active')",
             )
@@ -378,7 +378,7 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO catalog.product_variants \
+                "INSERT INTO commerce.product_variants \
                  (id, store_id, product_id, title, sku) \
                  VALUES ($1, $2, $3, 'Default', $4)",
             )
@@ -391,7 +391,7 @@ mod tests {
             .unwrap();
         }
 
-        let directory = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let directory = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             runtime_pool.clone(),
         )));
         let owner = directory.authorize(owner_id, store_id).await.unwrap();
@@ -399,7 +399,7 @@ mod tests {
             runtime_pool.clone(),
         )));
         let key = format!("price-list-{suffix}");
-        let input = |actor: chaos_application::merchant::StoreActor,
+        let input = |actor: chaos_application::store::StoreActor,
                      currency: &str,
                      variant,
                      fingerprint,
@@ -458,8 +458,8 @@ mod tests {
 
         let stored: (String, String, i64) = sqlx::query_as(
             "SELECT price_list.status::text, price_list.currency::text, price.amount_minor \
-             FROM pricing.price_lists AS price_list \
-             INNER JOIN pricing.prices AS price \
+             FROM commerce.price_lists AS price_list \
+             INNER JOIN commerce.prices AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.id = $1",
@@ -476,13 +476,13 @@ mod tests {
             .execute(&mut *isolated)
             .await
             .unwrap();
-        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM pricing.price_lists")
+        let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM commerce.price_lists")
             .fetch_one(&mut *isolated)
             .await
             .unwrap();
         assert_eq!(visible, 0);
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await

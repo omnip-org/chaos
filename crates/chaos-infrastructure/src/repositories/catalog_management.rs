@@ -8,7 +8,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::{CatalogMetadata, ProductContent, ProductId, ProductStatus},
-    merchant::{SalesChannelId, StoreId},
+    store::{SalesChannelId, StoreId},
 };
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -95,11 +95,11 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {
         let row = sqlx::query_as::<_, (String, i64)>(
             "SELECT product.status::text, (\
-                 SELECT count(*) FROM catalog.product_variants AS variant \
+                 SELECT count(*) FROM commerce.product_variants AS variant \
                  WHERE variant.store_id = product.store_id \
                    AND variant.product_id = product.id\
              ) \
-             FROM catalog.products AS product \
+             FROM commerce.products AS product \
              WHERE product.store_id = $1 AND product.id = $2 \
              FOR UPDATE",
         )
@@ -127,7 +127,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
 
     async fn update_content(&mut self, content: &ProductContent) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
-            "UPDATE catalog.products \
+            "UPDATE commerce.products \
              SET handle = $3, title = $4, description = $5, metadata = $6::jsonb, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
@@ -146,8 +146,8 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
 
     async fn set_status(&mut self, status: ProductStatus) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE catalog.products \
-             SET status = $3::catalog.product_status, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.products \
+             SET status = $3::commerce.product_status, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -171,7 +171,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         sqlx::query_scalar(
             "SELECT EXISTS (\
-                SELECT 1 FROM merchant.sales_channels \
+                SELECT 1 FROM commerce.sales_channels \
                 WHERE store_id = $1 AND id = $2 \
                   AND status = 'active'\
              )",
@@ -185,7 +185,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
 
     async fn publish(&mut self, sales_channel_id: SalesChannelId) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO catalog.product_publications \
+            "INSERT INTO commerce.product_publications \
              (store_id, product_id, sales_channel_id) \
              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
@@ -203,7 +203,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         sales_channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "DELETE FROM catalog.product_publications \
+            "DELETE FROM commerce.product_publications \
              WHERE store_id = $1 \
                AND product_id = $2 AND sales_channel_id = $3",
         )
@@ -266,13 +266,13 @@ mod tests {
             CatalogManagement, ChangeProductStatusInput, ProductPublicationInput,
             UpdateProductInput,
         },
-        merchant::MerchantQueries,
         ports::{AdminActor, IdempotencyRequest},
+        store::StoreQueries,
     };
-    use chaos_domain::{catalog::ProductVariantId, identity::UserId, merchant::SalesChannelId};
+    use chaos_domain::{catalog::ProductVariantId, identity::UserId, store::SalesChannelId};
     use sqlx::postgres::PgPoolOptions;
 
-    use crate::repositories::PostgresMerchantReadRepository;
+    use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
 
@@ -317,7 +317,7 @@ mod tests {
             .unwrap();
         for (id, code) in [(store_id, "manage"), (other_store_id, "manage-other")] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name) \
+                "INSERT INTO commerce.stores (id, code, name) \
                  VALUES ($1, $2, 'Managed Store')",
             )
             .bind(id.as_uuid())
@@ -327,7 +327,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO merchant.store_memberships (store_id, user_id, role) \
+            "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'owner')",
         )
         .bind(store_id.as_uuid())
@@ -340,7 +340,7 @@ mod tests {
             (other_channel_id, other_store_id, "other-web"),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.sales_channels \
+                "INSERT INTO commerce.sales_channels \
                  (id, store_id, code, name, kind) \
                  VALUES ($1, $2, $3, 'Web', 'web')",
             )
@@ -356,7 +356,7 @@ mod tests {
             (empty_product_id, "empty-product"),
         ] {
             sqlx::query(
-                "INSERT INTO catalog.products \
+                "INSERT INTO commerce.products \
                  (id, store_id, handle, title) \
                  VALUES ($1, $2, $3, 'Managed Product')",
             )
@@ -368,7 +368,7 @@ mod tests {
             .unwrap();
         }
         sqlx::query(
-            "INSERT INTO catalog.product_variants \
+            "INSERT INTO commerce.product_variants \
              (id, store_id, product_id, title, sku) \
              VALUES ($1, $2, $3, 'Default', 'MANAGED-SKU')",
         )
@@ -379,7 +379,7 @@ mod tests {
         .await
         .unwrap();
 
-        let directory = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
+        let directory = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             runtime_pool.clone(),
         )));
         let owner = directory.authorize(owner_id, store_id).await.unwrap();
@@ -491,8 +491,8 @@ mod tests {
         let stored: (String, String, String, i64) = sqlx::query_as(
             "SELECT product.handle::text, product.title, product.status::text, \
                     count(publication.product_id) \
-             FROM catalog.products AS product \
-             LEFT JOIN catalog.product_publications AS publication \
+             FROM commerce.products AS product \
+             LEFT JOIN commerce.product_publications AS publication \
               ON publication.store_id = product.store_id \
               AND publication.product_id = product.id \
              WHERE product.id = $1 GROUP BY product.id",
@@ -522,7 +522,7 @@ mod tests {
             .await
             .unwrap();
         let publications: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM catalog.product_publications WHERE product_id = $1",
+            "SELECT count(*) FROM commerce.product_publications WHERE product_id = $1",
         )
         .bind(product_id.as_uuid())
         .fetch_one(&owner_pool)
@@ -530,7 +530,7 @@ mod tests {
         .unwrap();
         assert_eq!(publications, 0);
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = ANY($1)")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = ANY($1)")
             .bind(vec![store_id.as_uuid(), other_store_id.as_uuid()])
             .execute(&owner_pool)
             .await
@@ -586,7 +586,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO merchant.stores (id, code, name) \
+            "INSERT INTO commerce.stores (id, code, name) \
              VALUES ($1, $2, 'Managed Store')",
         )
         .bind(store_id.as_uuid())
@@ -595,7 +595,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.products \
+            "INSERT INTO commerce.products \
              (id, store_id, handle, title) \
              VALUES ($1, $2, 'machine-managed-product', 'Machine Managed Product')",
         )
@@ -605,7 +605,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO catalog.product_variants \
+            "INSERT INTO commerce.product_variants \
              (id, store_id, product_id, title, sku) \
              VALUES ($1, $2, $3, 'Default', 'MACHINE-MANAGED-SKU')",
         )
@@ -624,11 +624,10 @@ mod tests {
             request_fingerprint: fingerprint,
         };
         let publishable_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
-            api_key_id: chaos_domain::merchant::ApiKeyId::new(),
+            publishable_key_id: chaos_domain::store::PublishableKeyId::new(),
             store_id,
             sales_channel_id: None,
-            class: chaos_domain::merchant::ApiKeyClass::Publishable,
-            scopes: vec![chaos_domain::merchant::ApiKeyScope::CatalogRead],
+            scopes: vec![chaos_domain::store::PublishableKeyScope::CatalogRead],
             created_by_user_id: owner_id,
         });
 
@@ -644,7 +643,7 @@ mod tests {
             Err(ApplicationError::Forbidden)
         ));
 
-        sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
+        sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)
             .await

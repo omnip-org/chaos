@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{CollectionId, ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
-    merchant::{SalesChannelId, StoreId},
+    store::{SalesChannelId, StoreId},
 };
 
 use crate::{ApplicationError, ports::MachineActor};

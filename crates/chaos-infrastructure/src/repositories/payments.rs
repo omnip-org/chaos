@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chaos_application::{
     ApplicationError,
-    merchant::StoreActor,
     ports::{
         AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
         PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
@@ -13,17 +12,18 @@ use chaos_application::{
         ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
         RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
+    store::StoreActor,
 };
 use chaos_domain::{
     CurrencyCode,
     inventory::InventoryReservationId,
-    merchant::{SalesChannelId, StoreId},
     payments::{
         PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, PaymentProviderAccount,
         PaymentProviderAccountId, PaymentSecretReference, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
     sales::{CheckoutId, Order, OrderId, OrderStatus},
+    store::{SalesChannelId, StoreId},
 };
 use hmac::{Hmac, KeyInit, Mac};
 use secrecy::SecretString;
@@ -286,7 +286,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                     COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                     credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
-             FROM payments.provider_accounts \
+             FROM commerce.provider_accounts \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
@@ -340,7 +340,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         }
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
-            "INSERT INTO payments.provider_accounts \
+            "INSERT INTO commerce.provider_accounts \
              (id, store_id, provider, display_name, \
               external_account_reference, credential_secret_reference, webhook_secret_reference, \
               readiness_status, readiness_snapshot, readiness_checked_at, \
@@ -412,7 +412,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         }
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
-            "UPDATE payments.provider_accounts SET display_name = $3, \
+            "UPDATE commerce.provider_accounts SET display_name = $3, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
                              AND credential_secret_reference IS DISTINCT FROM $4 \
@@ -512,7 +512,7 @@ impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
     ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT external_account_reference, secret_reference \
-             FROM payments.resolve_provider_webhook_secret_references($1, $2)",
+             FROM commerce.resolve_provider_webhook_secret_references($1, $2)",
         )
         .bind(provider)
         .bind(external_account_reference)
@@ -545,7 +545,7 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, String, i32)>(
             "SELECT provider_account_id, store_id, provider, \
                     external_account_reference, credential_secret_reference, attempts \
-             FROM payments.claim_provider_readiness_checks($1, $2, $3, $4)",
+             FROM commerce.claim_provider_readiness_checks($1, $2, $3, $4)",
         )
         .bind(worker_id)
         .bind(i32::from(limit.clamp(1, 100)))
@@ -590,7 +590,7 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
             Err(failure) => (false, false, Value::Null, now, failure),
         };
         let finished: Option<bool> = sqlx::query_scalar(
-            "SELECT payments.finish_provider_readiness_check($1, $2, $3, $4, $5, $6, $7)",
+            "SELECT commerce.finish_provider_readiness_check($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(provider_account_id.as_uuid())
         .bind(worker_id)
@@ -624,7 +624,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         let order = sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT total_amount_minor, currency::text, status::text FROM sales.orders \
+            "SELECT total_amount_minor, currency::text, status::text FROM commerce.orders \
              WHERE store_id = $1 AND sales_channel_id = $2 \
                AND id = $3 AND shopper_id = $4 FOR UPDATE",
         )
@@ -650,7 +650,7 @@ impl PaymentRepository for PostgresPaymentRepository {
             return replay_attempt(snapshot);
         }
         let provider_account_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM payments.provider_accounts \
+            "SELECT id FROM commerce.provider_accounts \
              WHERE store_id = $1 AND provider = $2 AND enabled \
                AND readiness_status = 'ready' AND readiness_valid_until > CURRENT_TIMESTAMP \
              ORDER BY id LIMIT 1",
@@ -662,7 +662,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         .map_err(database_error)?
         .ok_or_else(provider_unavailable)?;
         let active_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM payments.payment_attempts \
+            "SELECT EXISTS (SELECT 1 FROM commerce.payment_attempts \
              WHERE store_id = $1 AND order_id = $2 \
                AND status IN ('pending', 'authorized', 'captured'))",
         )
@@ -677,7 +677,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         let currency = CurrencyCode::parse(&order.1)?;
         let attempt = PaymentAttempt::create(order_id, Money::new(order.0, currency))?;
         sqlx::query(
-            "INSERT INTO payments.payment_attempts \
+            "INSERT INTO commerce.payment_attempts \
              (id, store_id, order_id, shopper_id, provider_account_id, \
               amount_minor, currency) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
@@ -766,8 +766,8 @@ impl PaymentRepository for PostgresPaymentRepository {
         let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>, String)>(
             "SELECT attempt.order_id, attempt.amount_minor, attempt.currency::text, \
                     attempt.status::text, attempt.provider_reference, account.provider \
-             FROM payments.payment_attempts AS attempt \
-             INNER JOIN payments.provider_accounts AS account \
+             FROM commerce.payment_attempts AS attempt \
+             INNER JOIN commerce.provider_accounts AS account \
                ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
              WHERE attempt.store_id = $1 \
                AND attempt.id = $2 FOR UPDATE OF attempt",
@@ -787,7 +787,7 @@ impl PaymentRepository for PostgresPaymentRepository {
             row.4,
         );
         let already_refunded: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM payments.refunds \
+            "SELECT COALESCE(sum(amount_minor), 0)::bigint FROM commerce.refunds \
              WHERE store_id = $1 AND payment_attempt_id = $2 \
                AND status IN ('pending', 'succeeded')",
         )
@@ -802,7 +802,7 @@ impl PaymentRepository for PostgresPaymentRepository {
             already_refunded,
         )?;
         sqlx::query(
-            "INSERT INTO payments.refunds \
+            "INSERT INTO commerce.refunds \
              (id, store_id, payment_attempt_id, amount_minor, currency) \
              VALUES ($1, $2, $3, $4, $5)",
         )
@@ -847,7 +847,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         let account = sqlx::query_as::<_, (Uuid, Uuid)>(
             "SELECT provider_account_id, store_id \
-             FROM payments.resolve_provider_account($1, $2)",
+             FROM commerce.resolve_provider_account($1, $2)",
         )
         .bind(&event.provider)
         .bind(&event.external_account_reference)
@@ -942,8 +942,8 @@ impl PaymentRepository for PostgresPaymentRepository {
                 "SELECT attempt.amount_minor, attempt.currency::text, \
                         account.external_account_reference, account.credential_secret_reference, \
                         NULL::text \
-                 FROM payments.payment_attempts AS attempt \
-                 INNER JOIN payments.provider_accounts AS account \
+                 FROM commerce.payment_attempts AS attempt \
+                 INNER JOIN commerce.provider_accounts AS account \
                    ON account.store_id = attempt.store_id \
                   AND account.id = attempt.provider_account_id \
                  WHERE attempt.store_id = $1 \
@@ -961,11 +961,11 @@ impl PaymentRepository for PostgresPaymentRepository {
                 "SELECT refund.amount_minor, refund.currency::text, \
                         account.external_account_reference, account.credential_secret_reference, \
                         attempt.provider_reference \
-                 FROM payments.refunds AS refund \
-                 INNER JOIN payments.payment_attempts AS attempt \
+                 FROM commerce.refunds AS refund \
+                 INNER JOIN commerce.payment_attempts AS attempt \
                    ON attempt.store_id = refund.store_id \
                   AND attempt.id = refund.payment_attempt_id \
-                 INNER JOIN payments.provider_accounts AS account \
+                 INNER JOIN commerce.provider_accounts AS account \
                    ON account.store_id = attempt.store_id \
                   AND account.id = attempt.provider_account_id \
                  WHERE refund.store_id = $1 \
@@ -1024,7 +1024,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let rows = if job.event_type == "payment.create_requested" {
             sqlx::query(
-                "UPDATE payments.payment_attempts \
+                "UPDATE commerce.payment_attempts \
                  SET provider_reference = COALESCE(provider_reference, $3), \
                      updated_at = CASE WHEN provider_reference IS NULL THEN $4 ELSE updated_at END \
                  WHERE store_id = $1 AND id = $2 \
@@ -1040,7 +1040,7 @@ impl PaymentRepository for PostgresPaymentRepository {
             .rows_affected()
         } else if job.event_type == "refund.create_requested" {
             sqlx::query(
-                "UPDATE payments.refunds \
+                "UPDATE commerce.refunds \
                  SET provider_reference = COALESCE(provider_reference, $3), \
                      updated_at = CASE WHEN provider_reference IS NULL THEN $4 ELSE updated_at END \
                  WHERE store_id = $1 AND id = $2 \
@@ -1075,10 +1075,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         let row = sqlx::query_as::<_, (String, String, String, String)>(
             "SELECT account.provider, attempt.provider_reference, \
                     account.external_account_reference, account.credential_secret_reference \
-             FROM payments.payment_attempts AS attempt \
-             INNER JOIN payments.provider_accounts AS account \
+             FROM commerce.payment_attempts AS attempt \
+             INNER JOIN commerce.provider_accounts AS account \
                ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
-             INNER JOIN sales.orders AS sales_order \
+             INNER JOIN commerce.orders AS sales_order \
                ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
              WHERE attempt.store_id = $1 \
                AND attempt.id = $2 AND attempt.shopper_id = $3 \
@@ -1240,10 +1240,10 @@ async fn load_attempt(
         "SELECT attempt.id, attempt.order_id, account.provider, attempt.amount_minor, \
                 attempt.currency::text, attempt.status::text, attempt.provider_reference, \
                 attempt.failure_code, attempt.created_at, attempt.updated_at \
-         FROM payments.payment_attempts AS attempt \
-         INNER JOIN payments.provider_accounts AS account \
+         FROM commerce.payment_attempts AS attempt \
+         INNER JOIN commerce.provider_accounts AS account \
            ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
-         INNER JOIN sales.orders AS sales_order \
+         INNER JOIN commerce.orders AS sales_order \
            ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
          WHERE attempt.store_id = $1 AND attempt.id = $2 \
            AND ($3::uuid IS NULL OR sales_order.sales_channel_id = $3) \
@@ -1294,7 +1294,7 @@ async fn load_refund(
     >(
         "SELECT id, payment_attempt_id, amount_minor, currency::text, status::text, \
                 provider_reference, failure_code, created_at, updated_at \
-         FROM payments.refunds WHERE store_id = $1 AND id = $2",
+         FROM commerce.refunds WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
@@ -1344,8 +1344,8 @@ async fn apply_payment_event(
                 attempt.status::text, attempt.provider_reference, \
                 sales_order.inventory_reservation_id, sales_order.status::text, \
                 sales_order.checkout_id \
-         FROM payments.payment_attempts AS attempt \
-         INNER JOIN sales.orders AS sales_order \
+         FROM commerce.payment_attempts AS attempt \
+         INNER JOIN commerce.orders AS sales_order \
            ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
          WHERE attempt.store_id = $1 AND attempt.id = $2 \
          FOR UPDATE OF attempt, sales_order",
@@ -1387,8 +1387,8 @@ async fn apply_payment_event(
         None
     };
     sqlx::query(
-        "UPDATE payments.payment_attempts \
-         SET status = $3::payments.payment_attempt_status, provider_reference = $4, \
+        "UPDATE commerce.payment_attempts \
+         SET status = $3::commerce.payment_attempt_status, provider_reference = $4, \
              failure_code = $5, updated_at = $6 \
          WHERE store_id = $1 AND id = $2",
     )
@@ -1455,7 +1455,7 @@ async fn confirm_paid_order(
         .await?;
     }
     sqlx::query(
-        "UPDATE sales.orders SET status = 'confirmed', updated_at = $3 \
+        "UPDATE commerce.orders SET status = 'confirmed', updated_at = $3 \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -1466,9 +1466,9 @@ async fn confirm_paid_order(
     .map_err(database_error)?;
     let transition_id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO sales.order_transitions \
+        "INSERT INTO commerce.order_transitions \
          (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-         VALUES ($1, $2, $3, $4::sales.order_status, 'confirmed', 'confirmed', $5)",
+         VALUES ($1, $2, $3, $4::commerce.order_status, 'confirmed', 'confirmed', $5)",
     )
     .bind(transition_id)
     .bind(store_id.as_uuid())
@@ -1479,7 +1479,7 @@ async fn confirm_paid_order(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO notification.email_deliveries \
+        "INSERT INTO integration.email_deliveries \
          (id, store_id, semantic_event_id, semantic_event_type, \
           recipient_email, template_key, template_version, template_payload, provider) \
          SELECT $1, order_row.store_id, $2, \
@@ -1489,8 +1489,8 @@ async fn confirm_paid_order(
                     'total_amount_minor', order_row.total_amount_minor, \
                     'currency', order_row.currency::text \
                 ), 'resend' \
-           FROM sales.orders AS order_row \
-           INNER JOIN sales.order_contacts AS contact \
+           FROM commerce.orders AS order_row \
+           INNER JOIN commerce.order_contacts AS contact \
              ON contact.store_id = order_row.store_id \
             AND contact.order_id = order_row.id \
           WHERE order_row.store_id = $3 AND order_row.id = $4 \
@@ -1518,7 +1518,7 @@ async fn apply_refund_event(
 ) -> Result<(), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>)>(
         "SELECT payment_attempt_id, amount_minor, currency::text, status::text, provider_reference \
-         FROM payments.refunds WHERE store_id = $1 AND id = $2 \
+         FROM commerce.refunds WHERE store_id = $1 AND id = $2 \
          FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -1548,8 +1548,8 @@ async fn apply_refund_event(
         None
     };
     sqlx::query(
-        "UPDATE payments.refunds \
-         SET status = $3::payments.refund_status, provider_reference = $4, \
+        "UPDATE commerce.refunds \
+         SET status = $3::commerce.refund_status, provider_reference = $4, \
              failure_code = $5, updated_at = $6 \
          WHERE store_id = $1 AND id = $2",
     )
@@ -1831,7 +1831,7 @@ async fn load_provider_account(
                 readiness_status, readiness_checked_at, readiness_valid_until, \
                 COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                 credential_rotation_expires_at, webhook_rotation_expires_at, \
-                created_at, updated_at FROM payments.provider_accounts \
+                created_at, updated_at FROM commerce.provider_accounts \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())

@@ -15,7 +15,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     analytics::AnalyticsDestinationSecretReference, fulfillment::ShippingSecretReference,
-    identity::UserId, merchant::StoreId, payments::PaymentSecretReference,
+    identity::UserId, payments::PaymentSecretReference, store::StoreId,
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};

@@ -50,6 +50,10 @@ chaos-worker ----------> chaos-application
 - `chaos-mcp` exposes commerce tools authenticated by User-owned Access Keys.
 - the `chaos-worker` binary runs durable background consumers independently of API replicas.
 
+External adapters live under `chaos-infrastructure::providers`. The API and
+Worker compose separate runtime dependency sets; starting a Worker does not
+construct HTTP routes, MCP state, OIDC verification, or JWT services.
+
 Bounded contexts may depend on another context only through an explicit application port. HTTP and MCP handlers do not execute SQL. Infrastructure records do not become domain entities.
 
 ## Identity

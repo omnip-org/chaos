@@ -1,10 +1,10 @@
 use chaos_application::{
-    merchant::CreateStoreInput,
     ports::{StoreListItem, StoreMembershipItem},
+    store::CreateStoreInput,
 };
 use chaos_domain::{
     identity::UserId,
-    merchant::{StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use rmcp::{
     ErrorData,
@@ -139,7 +139,7 @@ impl ChaosMcp {
         };
         match self
             .state
-            .merchant_queries
+            .store_queries
             .list_stores(principal.user_id, after, params.limit.unwrap_or(20))
             .await
         {
