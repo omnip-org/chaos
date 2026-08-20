@@ -9,13 +9,13 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        AnalyticsDestinationSecretResolver, PaymentSecretResolver, ProviderSecretKind,
-        ProviderSecretWriter, ShippingSecretResolver,
+        MetaDeliveryError, PaymentSecretResolver, ProviderSecretKind, ProviderSecretWriter,
+        ShippingSecretResolver,
     },
 };
 use chaos_domain::{
-    analytics::AnalyticsDestinationSecretReference, fulfillment::ShippingSecretReference,
-    identity::UserId, payments::PaymentSecretReference, store::StoreId,
+    fulfillment::ShippingSecretReference, identity::UserId, payments::PaymentSecretReference,
+    store::StoreId,
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -58,6 +58,18 @@ impl DynamicSecretResolver {
         }
         self.store.decrypt(reference)
     }
+
+    pub async fn resolve_analytics(
+        &self,
+        reference: &str,
+    ) -> Result<SecretString, MetaDeliveryError> {
+        self.resolve_reference(reference, "CHAOS_ANALYTICS_SECRET_")
+            .await
+            .map_err(|_| MetaDeliveryError {
+                retryable: true,
+                message: "Meta credentials are unavailable".into(),
+            })
+    }
 }
 
 #[async_trait]
@@ -86,21 +98,6 @@ impl ShippingSecretResolver for DynamicSecretResolver {
             .map_err(|_| ApplicationError::Conflict {
                 code: "shipping_provider_credentials_unavailable",
                 message: "The shipping provider credentials are unavailable",
-            })
-    }
-}
-
-#[async_trait]
-impl AnalyticsDestinationSecretResolver for DynamicSecretResolver {
-    async fn resolve(
-        &self,
-        reference: &AnalyticsDestinationSecretReference,
-    ) -> Result<SecretString, chaos_application::ports::AnalyticsDestinationError> {
-        self.resolve_reference(reference.expose_reference(), "CHAOS_ANALYTICS_SECRET_")
-            .await
-            .map_err(|_| chaos_application::ports::AnalyticsDestinationError {
-                retryable: true,
-                message: "Analytics destination credentials are unavailable".into(),
             })
     }
 }

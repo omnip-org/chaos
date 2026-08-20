@@ -1,0 +1,10 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import OrderTracking from "../../components/react/OrderTracking";
+---
+
+<BaseLayout title="Track your order" privatePage>
+  <div class="mx-auto max-w-2xl">
+    <OrderTracking client:load />
+  </div>
+</BaseLayout>

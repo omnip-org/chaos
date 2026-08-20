@@ -17,6 +17,7 @@ pub struct NotificationWorkers {
     repository: Arc<dyn EmailDeliveryRepository>,
     providers: HashMap<String, Arc<dyn EmailProvider>>,
     email_from: String,
+    storefront_public_base_url: String,
 }
 
 impl NotificationWorkers {
@@ -24,6 +25,7 @@ impl NotificationWorkers {
         repository: Arc<dyn EmailDeliveryRepository>,
         providers: impl IntoIterator<Item = Arc<dyn EmailProvider>>,
         email_from: String,
+        storefront_public_base_url: String,
     ) -> Self {
         Self {
             repository,
@@ -32,6 +34,7 @@ impl NotificationWorkers {
                 .map(|provider| (provider.name().to_owned(), provider))
                 .collect(),
             email_from,
+            storefront_public_base_url,
         }
     }
 
@@ -55,6 +58,7 @@ impl NotificationWorkers {
                     &job.template_key,
                     job.template_version,
                     &job.template_payload,
+                    &self.storefront_public_base_url,
                 ) {
                     Ok((subject, text)) => provider
                         .send(EmailMessage {
@@ -131,11 +135,12 @@ fn render(
     template_key: &str,
     template_version: u32,
     payload: &serde_json::Value,
+    storefront_public_base_url: &str,
 ) -> Result<(String, String), ApplicationError> {
     match (template_key, template_version) {
         ("order_confirmation", 1) => {
-            let order_id = payload
-                .get("order_id")
+            let order_number = payload
+                .get("order_number")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(invalid_template_payload)?;
             let amount = payload
@@ -146,10 +151,18 @@ fn render(
                 .get("currency")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(invalid_template_payload)?;
+            let tracking_key = payload
+                .get("tracking_key")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid_template_payload)?;
+            let tracking_url = format!(
+                "{}/orders/track#{tracking_key}",
+                storefront_public_base_url.trim_end_matches('/')
+            );
             Ok((
                 "Your order is confirmed".into(),
                 format!(
-                    "Your order {order_id} is confirmed. Total: {amount} minor units {currency}."
+                    "Your order {order_number} is confirmed. Total: {amount} minor units {currency}. Track your order: {tracking_url}"
                 ),
             ))
         }
@@ -174,5 +187,30 @@ fn invalid_template_payload() -> ApplicationError {
     ApplicationError::Conflict {
         code: "invalid_notification_template_payload",
         message: "The notification template payload is invalid",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::render;
+
+    #[test]
+    fn order_confirmation_uses_display_number_and_chaos_tracking_fragment() {
+        let (_, text) = render(
+            "order_confirmation",
+            1,
+            &json!({
+                "order_number": "W-20260820-7K4M9Q2D",
+                "tracking_key": "otk_secret",
+                "total_amount_minor": 1250,
+                "currency": "USD"
+            }),
+            "https://shop.example.com/",
+        )
+        .unwrap();
+        assert!(text.contains("W-20260820-7K4M9Q2D"));
+        assert!(text.contains("https://shop.example.com/orders/track#otk_secret"));
     }
 }

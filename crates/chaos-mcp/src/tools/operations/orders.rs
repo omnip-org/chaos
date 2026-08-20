@@ -28,6 +28,9 @@ pub struct ListOrdersParams {
     /// Filter by order status: pending, confirmed, or cancelled.
     #[serde(default)]
     pub status: Option<String>,
+    /// Exact customer-facing Order number, for example W-20260820-7K4M9Q2D.
+    #[serde(default)]
+    pub order_number: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -87,6 +90,7 @@ impl ChaosMcp {
                 after,
                 limit,
                 OrderListFilter {
+                    order_number: params.order_number,
                     status,
                     customer_id: None,
                     email: None,
@@ -228,6 +232,7 @@ impl ChaosMcp {
 fn order_summary(detail: chaos_application::ports::OrderDetail) -> serde_json::Value {
     json!({
         "id": detail.id.as_uuid(),
+        "order_number": detail.order_number.as_str(),
         "status": detail.status.as_str(),
         "fulfillment_status": detail.fulfillment_status.as_str(),
         "delivery_status": detail.delivery_status.as_str(),

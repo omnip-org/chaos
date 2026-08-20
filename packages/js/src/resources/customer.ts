@@ -15,13 +15,25 @@ export class CustomerResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
   /** Associates the current possession-bound shopper with the authenticated Customer. */
-  associate(idempotencyKey?: string): Promise<DataEnvelope<Customer>> {
-    return this.client.request("/customer/associate", {
+  async associate(idempotencyKey?: string): Promise<DataEnvelope<Customer>> {
+    const response = await this.client.request<DataEnvelope<Customer>>("/customer/associate", {
       method: "POST",
       requiresShopperToken: true,
       requiresCustomerSession: true,
       idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
     });
+    const identity = this.client.analytics?.identityLinkInput();
+    if (identity) {
+      void this.client
+        .request("/analytics/identity-links", {
+          method: "POST",
+          body: identity,
+          requiresCustomerSession: true,
+          idempotencyKey: this.client.randomUUID(),
+        })
+        .catch(() => {});
+    }
+    return response;
   }
 
   get(): Promise<DataEnvelope<Customer>> {

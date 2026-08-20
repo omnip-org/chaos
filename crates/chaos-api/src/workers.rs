@@ -94,55 +94,33 @@ async fn analytics_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0usize;
-        match workers.run_sessionization_batch(worker_id, now, 100).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
-            }
-        }
-        match workers.run_commerce_fact_batch(worker_id, now, 100).await {
+        match workers.run_server_event_batch(worker_id, now, 100).await {
             Ok(count) => {
-                ::metrics::counter!("chaos_analytics_commerce_fact_jobs_claimed_total")
+                ::metrics::counter!("chaos_analytics_server_events_claimed_total")
                     .increment(count as u64);
                 processed += count;
             }
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics commerce fact batch failed");
+                tracing::warn!(%worker_id, %error, "analytics server event batch failed");
             }
         }
-        match workers.run_attribution_batch(worker_id, now, 100).await {
+        match workers.run_meta_delivery_batch(worker_id, now, 100).await {
             Ok(count) => {
-                ::metrics::counter!("chaos_analytics_attribution_jobs_claimed_total")
+                ::metrics::counter!("chaos_analytics_meta_deliveries_claimed_total")
                     .increment(count as u64);
                 processed += count;
             }
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics attribution batch failed");
-            }
-        }
-        match workers.run_export_batch(worker_id, now, 100).await {
-            Ok(count) => {
-                ::metrics::counter!("chaos_analytics_export_jobs_claimed_total")
-                    .increment(count as u64);
-                processed += count;
-            }
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics export batch failed");
+                tracing::warn!(%worker_id, %error, "analytics Meta delivery batch failed");
             }
         }
         if now >= next_retention_at {
             match workers.run_retention_batch(now, 1000).await {
                 Ok(result) => {
-                    ::metrics::counter!("chaos_analytics_retention_behavior_events_deleted_total")
-                        .increment(result.behavior_events_deleted);
-                    ::metrics::counter!(
-                        "chaos_analytics_retention_attribution_results_deleted_total"
-                    )
-                    .increment(result.attribution_results_deleted);
-                    ::metrics::counter!("chaos_analytics_retention_sessions_deleted_total")
-                        .increment(result.sessions_deleted);
-                    ::metrics::counter!("chaos_analytics_retention_identity_links_deleted_total")
-                        .increment(result.identity_links_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_events_deleted_total")
+                        .increment(result.commerce_events_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_visitor_links_deleted_total")
+                        .increment(result.visitor_links_deleted);
                     next_retention_at = now + time::Duration::minutes(1);
                 }
                 Err(error) => {
@@ -156,16 +134,10 @@ async fn analytics_worker_loop(
                 Ok(result) => {
                     ::metrics::counter!("chaos_analytics_erasure_requests_completed_total")
                         .increment(result.requests_completed);
-                    ::metrics::counter!("chaos_analytics_erasure_behavior_events_deleted_total")
-                        .increment(result.behavior_events_deleted);
-                    ::metrics::counter!(
-                        "chaos_analytics_erasure_attribution_results_deleted_total"
-                    )
-                    .increment(result.attribution_results_deleted);
-                    ::metrics::counter!("chaos_analytics_erasure_sessions_deleted_total")
-                        .increment(result.sessions_deleted);
-                    ::metrics::counter!("chaos_analytics_erasure_identity_links_deleted_total")
-                        .increment(result.identity_links_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_events_deleted_total")
+                        .increment(result.commerce_events_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_visitor_links_deleted_total")
+                        .increment(result.visitor_links_deleted);
                     next_erasure_at = now + time::Duration::seconds(1);
                 }
                 Err(error) => {

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 const WINDOW_SECONDS: u32 = 60;
 const STORE_CHANNEL_EVENT_LIMIT: u16 = 1_200;
-const ANONYMOUS_EVENT_LIMIT: u16 = 120;
+const VISITOR_EVENT_LIMIT: u16 = 120;
 
 pub struct RedisAnalyticsCollectionRateLimiter {
     redis: RedisClient,
@@ -27,7 +27,7 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
         &self,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
-        anonymous_event_counts: &[(Uuid, u16)],
+        visitor_event_counts: &[(Uuid, u16)],
         event_count: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError> {
         let slot = format!("{}:{}", store_id.as_uuid(), sales_channel_id.as_uuid());
@@ -58,13 +58,13 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
             .arg(WINDOW_SECONDS)
             .arg(event_count)
             .arg(STORE_CHANNEL_EVENT_LIMIT);
-        for (anonymous_id, count) in anonymous_event_counts {
+        for (visitor_id, count) in visitor_event_counts {
             invocation
                 .key(format!(
-                    "chaos:analytics:rate:{{{slot}}}:anonymous:{anonymous_id}"
+                    "chaos:analytics:rate:{{{slot}}}:visitor:{visitor_id}"
                 ))
                 .arg(*count)
-                .arg(ANONYMOUS_EVENT_LIMIT);
+                .arg(VISITOR_EVENT_LIMIT);
         }
         let mut connection = self
             .redis
@@ -98,28 +98,28 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_REDIS_URL with a disposable Redis database"]
-    async fn atomically_limits_anonymous_and_store_channel_event_volume() {
+    async fn atomically_limits_visitor_and_store_channel_event_volume() {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .expect("TEST_REDIS_URL must identify a disposable Redis database");
         let client = RedisClient::open(redis_url).unwrap();
         let limiter = RedisAnalyticsCollectionRateLimiter::new(client);
         let store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
-        let anonymous_id = Uuid::now_v7();
+        let visitor_id = Uuid::now_v7();
 
         let allowed = limiter
             .consume(
                 store_id,
                 channel_id,
-                &[(anonymous_id, ANONYMOUS_EVENT_LIMIT)],
-                ANONYMOUS_EVENT_LIMIT,
+                &[(visitor_id, VISITOR_EVENT_LIMIT)],
+                VISITOR_EVENT_LIMIT,
             )
             .await
             .unwrap();
         assert!(allowed.allowed);
 
         let denied = limiter
-            .consume(store_id, channel_id, &[(anonymous_id, 1)], 1)
+            .consume(store_id, channel_id, &[(visitor_id, 1)], 1)
             .await
             .unwrap();
         assert!(!denied.allowed);

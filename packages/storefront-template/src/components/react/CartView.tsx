@@ -109,7 +109,6 @@ export default function CartView() {
           shipping_service_id: shippingOptions[0].service_id,
         }),
       });
-      chaos.analytics?.checkoutStarted({ cartId: cart.id, checkoutId: checkout.id });
       const { data: order } = await chaos.checkout.createOrder(checkout.id);
       const { data: attempt } = await chaos.payments.createAttempt(order.id, {
         provider: "stripe_checkout",

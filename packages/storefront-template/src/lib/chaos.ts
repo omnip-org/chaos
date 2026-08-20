@@ -18,6 +18,8 @@ import { createStorefrontClient, type ChaosStorefrontClient } from "@omnip-org/c
  *
  * The Store is determined entirely by the publishable key configured below.
  */
+let browserClient: ChaosStorefrontClient | undefined;
+
 export function createChaosClient(): ChaosStorefrontClient {
   const baseUrl = import.meta.env.PUBLIC_CHAOS_STORE_API_BASE_URL;
   if (import.meta.env.SSR && !baseUrl) {
@@ -25,9 +27,24 @@ export function createChaosClient(): ChaosStorefrontClient {
       "PUBLIC_CHAOS_STORE_API_BASE_URL is required for server-rendered pages (Node's fetch cannot resolve a relative URL). Set it to your Store API origin, e.g. https://shop.example.com/store/v1.",
     );
   }
-  return createStorefrontClient({
+  if (!import.meta.env.SSR && browserClient) return browserClient;
+  const privacyMode =
+    import.meta.env.PUBLIC_CHAOS_ANALYTICS_PRIVACY_MODE === "opt_in" ? "opt_in" : "opt_out";
+  const metaPixelId = import.meta.env.PUBLIC_META_PIXEL_ID;
+  const ga4MeasurementId = import.meta.env.PUBLIC_GA4_MEASUREMENT_ID;
+  const client = createStorefrontClient({
     publishableKey: import.meta.env.PUBLIC_CHAOS_PUBLISHABLE_KEY,
     baseUrl,
-    analytics: import.meta.env.SSR ? false : undefined,
+    analytics: import.meta.env.SSR
+      ? false
+      : {
+          privacyMode,
+          providers: {
+            ...(metaPixelId ? { metaPixel: { pixelId: metaPixelId } } : {}),
+            ...(ga4MeasurementId ? { ga4: { measurementId: ga4MeasurementId } } : {}),
+          },
+        },
   });
+  if (!import.meta.env.SSR) browserClient = client;
+  return client;
 }

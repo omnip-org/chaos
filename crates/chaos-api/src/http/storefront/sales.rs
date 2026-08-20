@@ -45,6 +45,8 @@ pub(super) fn routes() -> Router<ApiState> {
         .route("/checkouts/{checkout_id}", get(get_checkout))
         .route("/checkouts/{checkout_id}/order", post(create_order))
         .route("/orders/{order_id}", get(get_order))
+        .route("/order-tracking-sessions", post(exchange_tracking_key))
+        .route("/order-tracking-orders", post(get_tracked_order))
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
@@ -53,6 +55,25 @@ pub(super) fn routes() -> Router<ApiState> {
 struct CreateCartBody {
     currency: Option<String>,
     locale: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackingKeyBody {
+    tracking_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackingSessionBody {
+    access_token: String,
+}
+
+#[derive(Serialize)]
+struct OrderTrackingSessionData {
+    access_token: String,
+    expires_at: ApiDateTime,
+    order: OrderData,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -237,6 +258,7 @@ struct OrderTransitionData {
 #[derive(Serialize)]
 pub(super) struct OrderData {
     id: Uuid,
+    order_number: String,
     checkout_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     customer_id: Option<Uuid>,
@@ -505,12 +527,48 @@ async fn create_order(
 
 async fn get_order(
     State(state): State<ApiState>,
-    OrderLookupMachine(actor): OrderLookupMachine,
+    CheckoutShopper(actor): CheckoutShopper,
     ApiPath(path): ApiPath<OrderPath>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     let order = state
         .storefront_sales
-        .get_order_by_id(&actor, OrderId::from_uuid(path.order_id))
+        .get_order(&actor, OrderId::from_uuid(path.order_id))
+        .await?;
+    Ok(ApiResponse::ok(order_data(order)?))
+}
+
+async fn exchange_tracking_key(
+    State(state): State<ApiState>,
+    OrderLookupMachine(actor): OrderLookupMachine,
+    ApiJson(body): ApiJson<TrackingKeyBody>,
+) -> Result<ApiResponse<OrderTrackingSessionData>, ApiError> {
+    let session = state
+        .storefront_sales
+        .exchange_order_tracking_key(
+            &actor,
+            &secrecy::SecretString::from(body.tracking_key),
+            state.clock.now(),
+        )
+        .await?;
+    Ok(ApiResponse::created(OrderTrackingSessionData {
+        access_token: session.access_token.expose_secret().to_owned(),
+        expires_at: session.expires_at.into(),
+        order: order_data(session.order)?,
+    }))
+}
+
+async fn get_tracked_order(
+    State(state): State<ApiState>,
+    OrderLookupMachine(actor): OrderLookupMachine,
+    ApiJson(body): ApiJson<TrackingSessionBody>,
+) -> Result<ApiResponse<OrderData>, ApiError> {
+    let order = state
+        .storefront_sales
+        .get_tracked_order(
+            &actor,
+            &secrecy::SecretString::from(body.access_token),
+            state.clock.now(),
+        )
         .await?;
     Ok(ApiResponse::ok(order_data(order)?))
 }
@@ -695,6 +753,7 @@ fn checkout_line_data(line: CheckoutLineItem) -> CheckoutLineData {
 pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationError> {
     Ok(OrderData {
         id: order.id.as_uuid(),
+        order_number: order.order_number.as_str().into(),
         checkout_id: order.checkout_id.as_uuid(),
         customer_id: order.customer_id.map(|id| id.as_uuid()),
         inventory_reservation_id: order.inventory_reservation_id.map(|id| id.as_uuid()),

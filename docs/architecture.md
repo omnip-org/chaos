@@ -92,6 +92,26 @@ PostgreSQL is the source of truth for catalogs, inventory, orders, payments, ref
 
 Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, tax, discount, address, and Provider evidence required to preserve history. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
+Orders use an internal UUID for joins and idempotency, plus a random customer-facing
+`W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
+tracking uses a Chaos-hosted URL with a fragment capability. The browser exchanges the
+one-time-looking long-lived capability for a short-lived, store-bound session; only
+digests are stored after a successful confirmation email delivery.
+
+Analytics uses one append-only, Store-scoped Commerce Event ledger for the
+Storefront conversion path and authoritative server events. Meta delivery is a
+dedicated retryable projection of eligible events. External advertising and
+payment metrics are stored separately as Provider observations for future BI;
+Chaos does not precompute Sessions, attribution, or daily reports without a
+concrete product query. Browser events retain bounded first-touch,
+browser-session, and last-non-direct traffic facts so UTM conversion paths can
+be queried without introducing an attribution engine. A Store may authorize
+browser collection through an `opt_in` or `opt_out` Store policy; every event
+records whether explicit consent or Store policy was its basis. The default
+`opt_out` policy starts configured Meta Pixel and GA4 projections immediately
+and stops them after a shopper opt-out. Meta Pixel shares stable event IDs with
+CAPI for deduplication. See ADR 0026.
+
 API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. Every queue claim must remain safe with multiple Worker replicas; deployment may begin with one replica for cost, but correctness must not depend on singleton execution. Adaptive polling backoff limits idle database work, while leases, idempotency, retries, and bounded shutdown provide crash recovery.
 
 ## Incremental refactoring rule

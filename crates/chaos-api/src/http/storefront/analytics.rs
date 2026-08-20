@@ -9,11 +9,14 @@ use chaos_application::{
     analytics::{
         BrowserEventCollectionResult, CollectBrowserEventsInput, LinkAnalyticsIdentityInput,
     },
-    ports::{AnalyticsIdentityLink, IdempotencyRequest},
+    ports::{IdempotencyRequest, VisitorCustomerLink},
 };
 use chaos_domain::{
     FieldViolation,
-    analytics::{BrowserEvent, BrowserEventProperties, ConsentSnapshot},
+    analytics::{
+        BrowserCollectionBasis, BrowserEvent, BrowserEventProperties, ConsentSnapshot,
+        TrafficAttribution, TrafficTouchpoint,
+    },
     catalog::{ProductId, ProductVariantId},
     sales::{CartId, CheckoutId},
 };
@@ -36,17 +39,26 @@ pub(super) fn storefront_routes() -> Router<ApiState> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LinkIdentityBody {
-    anonymous_id: Uuid,
+    visitor_id: Uuid,
     consent: ConsentBody,
+    collection_basis: BrowserCollectionBasisBody,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BrowserCollectionBasisBody {
+    Consent,
+    StorePolicy,
 }
 
 #[derive(Serialize)]
 struct IdentityLinkData {
     id: Uuid,
     store_id: Uuid,
-    anonymous_id: Uuid,
+    visitor_id: Uuid,
     consent_policy_version: String,
-    collection_policy_version: String,
+    collection_basis: &'static str,
+    settings_revision: i32,
     linked_at: ApiDateTime,
     retention_expires_at: ApiDateTime,
 }
@@ -67,8 +79,12 @@ async fn link_identity(
         .analytics_privacy
         .link_identity(LinkAnalyticsIdentityInput {
             actor,
-            anonymous_id: body.anonymous_id,
+            visitor_id: body.visitor_id,
             consent,
+            collection_basis: match body.collection_basis {
+                BrowserCollectionBasisBody::Consent => BrowserCollectionBasis::Consent,
+                BrowserCollectionBasisBody::StorePolicy => BrowserCollectionBasis::StorePolicy,
+            },
             idempotency: request,
             now: state.clock.now(),
         })
@@ -76,13 +92,14 @@ async fn link_identity(
     Ok(ApiResponse::created(identity_link_data(link)))
 }
 
-fn identity_link_data(item: AnalyticsIdentityLink) -> IdentityLinkData {
+fn identity_link_data(item: VisitorCustomerLink) -> IdentityLinkData {
     IdentityLinkData {
         id: item.id,
         store_id: item.store_id.as_uuid(),
-        anonymous_id: item.anonymous_id,
+        visitor_id: item.visitor_id,
         consent_policy_version: item.consent_policy_version,
-        collection_policy_version: item.collection_policy_version,
+        collection_basis: item.collection_basis.as_str(),
+        settings_revision: item.settings_revision,
         linked_at: item.linked_at.into(),
         retention_expires_at: item.retention_expires_at.into(),
     }
@@ -114,11 +131,35 @@ struct BrowserEventBody {
     event_id: Uuid,
     schema_version: u16,
     occurred_at: String,
-    anonymous_id: Uuid,
+    visitor_id: Uuid,
     session_id: Uuid,
     consent: ConsentBody,
+    collection_basis: BrowserCollectionBasisBody,
+    traffic: Option<TrafficAttributionBody>,
     event_name: BrowserEventNameBody,
     properties: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrafficAttributionBody {
+    first: TrafficTouchpointBody,
+    session: TrafficTouchpointBody,
+    last_non_direct: Option<TrafficTouchpointBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrafficTouchpointBody {
+    source: Option<String>,
+    medium: Option<String>,
+    campaign: Option<String>,
+    campaign_id: Option<String>,
+    term: Option<String>,
+    content: Option<String>,
+    referrer_domain: Option<String>,
+    fbclid: Option<String>,
+    gclid: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -132,42 +173,39 @@ struct ConsentBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BrowserEventNameBody {
-    PageViewed,
-    ProductViewed,
-    SearchPerformed,
-    CartLineAdded,
-    CheckoutStarted,
-    EngagementHeartbeat,
+    PageView,
+    ViewContent,
+    Search,
+    AddToCart,
+    InitiateCheckout,
+    ViewDuration,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PageViewedProperties {
+struct PageViewProperties {
     path: String,
     title: Option<String>,
     referrer_domain: Option<String>,
-    campaign_source: Option<String>,
-    campaign_medium: Option<String>,
-    campaign_name: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProductViewedProperties {
+struct ViewContentProperties {
     product_id: Uuid,
     product_variant_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SearchPerformedProperties {
+struct SearchProperties {
     query: String,
     result_count: Option<u32>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CartLineAddedProperties {
+struct AddToCartProperties {
     cart_id: Uuid,
     product_variant_id: Uuid,
     quantity: u32,
@@ -175,14 +213,14 @@ struct CartLineAddedProperties {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CheckoutStartedProperties {
+struct InitiateCheckoutProperties {
     cart_id: Uuid,
     checkout_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EngagementHeartbeatProperties {
+struct ViewDurationProperties {
     page_view_event_id: Uuid,
     active_milliseconds: u32,
 }
@@ -193,8 +231,8 @@ struct CollectionResultData {
     stored: usize,
     duplicates: usize,
     discarded_for_consent: usize,
-    discarded_for_policy: usize,
-    collection_policy_version: String,
+    discarded_for_settings: usize,
+    settings_revision: i32,
 }
 
 async fn collect_events(
@@ -231,47 +269,41 @@ fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
         body.consent.advertising_storage,
         body.consent.policy_version,
     )?;
+    let traffic = body.traffic.map(traffic_attribution).transpose()?;
     let properties = match body.event_name {
-        BrowserEventNameBody::PageViewed => {
-            let value: PageViewedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::page_viewed(
-                value.path,
-                value.title,
-                value.referrer_domain,
-                value.campaign_source,
-                value.campaign_medium,
-                value.campaign_name,
-            )?
+        BrowserEventNameBody::PageView => {
+            let value: PageViewProperties = event_properties(body.properties)?;
+            BrowserEventProperties::page_view(value.path, value.title, value.referrer_domain)?
         }
-        BrowserEventNameBody::ProductViewed => {
-            let value: ProductViewedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::product_viewed(
+        BrowserEventNameBody::ViewContent => {
+            let value: ViewContentProperties = event_properties(body.properties)?;
+            BrowserEventProperties::view_content(
                 ProductId::from_uuid(value.product_id),
                 value.product_variant_id.map(ProductVariantId::from_uuid),
             )
         }
-        BrowserEventNameBody::SearchPerformed => {
-            let value: SearchPerformedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::search_performed(value.query, value.result_count)?
+        BrowserEventNameBody::Search => {
+            let value: SearchProperties = event_properties(body.properties)?;
+            BrowserEventProperties::search(value.query, value.result_count)?
         }
-        BrowserEventNameBody::CartLineAdded => {
-            let value: CartLineAddedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::cart_line_added(
+        BrowserEventNameBody::AddToCart => {
+            let value: AddToCartProperties = event_properties(body.properties)?;
+            BrowserEventProperties::add_to_cart(
                 CartId::from_uuid(value.cart_id),
                 ProductVariantId::from_uuid(value.product_variant_id),
                 value.quantity,
             )?
         }
-        BrowserEventNameBody::CheckoutStarted => {
-            let value: CheckoutStartedProperties = event_properties(body.properties)?;
-            BrowserEventProperties::checkout_started(
+        BrowserEventNameBody::InitiateCheckout => {
+            let value: InitiateCheckoutProperties = event_properties(body.properties)?;
+            BrowserEventProperties::initiate_checkout(
                 CartId::from_uuid(value.cart_id),
                 value.checkout_id.map(CheckoutId::from_uuid),
             )
         }
-        BrowserEventNameBody::EngagementHeartbeat => {
-            let value: EngagementHeartbeatProperties = event_properties(body.properties)?;
-            BrowserEventProperties::engagement_heartbeat(
+        BrowserEventNameBody::ViewDuration => {
+            let value: ViewDurationProperties = event_properties(body.properties)?;
+            BrowserEventProperties::view_duration(
                 value.page_view_event_id,
                 value.active_milliseconds,
             )?
@@ -281,10 +313,37 @@ fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
         body.event_id,
         body.schema_version,
         occurred_at,
-        body.anonymous_id,
+        body.visitor_id,
         body.session_id,
         consent,
+        match body.collection_basis {
+            BrowserCollectionBasisBody::Consent => BrowserCollectionBasis::Consent,
+            BrowserCollectionBasisBody::StorePolicy => BrowserCollectionBasis::StorePolicy,
+        },
+        traffic,
         properties,
+    )?)
+}
+
+fn traffic_attribution(value: TrafficAttributionBody) -> Result<TrafficAttribution, ApiError> {
+    Ok(TrafficAttribution::new(
+        traffic_touchpoint(value.first)?,
+        traffic_touchpoint(value.session)?,
+        value.last_non_direct.map(traffic_touchpoint).transpose()?,
+    ))
+}
+
+fn traffic_touchpoint(value: TrafficTouchpointBody) -> Result<TrafficTouchpoint, ApiError> {
+    Ok(TrafficTouchpoint::new(
+        value.source,
+        value.medium,
+        value.campaign,
+        value.campaign_id,
+        value.term,
+        value.content,
+        value.referrer_domain,
+        value.fbclid,
+        value.gclid,
     )?)
 }
 
@@ -301,8 +360,8 @@ fn collection_result_data(result: BrowserEventCollectionResult) -> CollectionRes
         stored: result.stored,
         duplicates: result.duplicates,
         discarded_for_consent: result.discarded_for_consent,
-        discarded_for_policy: result.discarded_for_policy,
-        collection_policy_version: result.collection_policy_version,
+        discarded_for_settings: result.discarded_for_settings,
+        settings_revision: result.settings_revision,
     }
 }
 

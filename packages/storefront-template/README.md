@@ -18,7 +18,10 @@ This is a private template to copy and adapt, not a published package.
    its client secret and mounts Stripe's Embedded Checkout component.
 5. A verified Stripe webhook confirms the payment. The return page polls the
    Chaos order until that server-side confirmation arrives.
-6. MCP creates a fulfillment, marks it shipped, and marks it delivered.
+6. Chaos emails a stable `/orders/track#...` link. The page removes the capability
+   from browser history, exchanges it for a short-lived session, and displays the
+   customer-facing order number and current status.
+7. MCP creates a fulfillment, marks it shipped, and marks it delivered.
 
 Payment success is never inferred from the browser return URL. The order changes
 only after Chaos verifies and processes the Stripe webhook.
@@ -64,6 +67,14 @@ npm run dev -- --mode demo
 
 `PUBLIC_CHAOS_STORE_API_BASE_URL` must be absolute, including locally, because
 the server-rendered pages use Node `fetch`, which cannot resolve a relative URL.
+
+The browser optionally loads GA4 and Meta Pixel through
+`PUBLIC_GA4_MEASUREMENT_ID` and `PUBLIC_META_PIXEL_ID`. The Meta Pixel ID must
+match the Dataset ID configured for CAPI so Chaos can reuse each stable event
+ID for Provider deduplication. `PUBLIC_CHAOS_ANALYTICS_PRIVACY_MODE=opt_out` is
+the default: Chaos, Meta Pixel, and GA4 start immediately when configured and
+stop after an explicit shopper opt-out. Use `opt_in` only for a Storefront that
+must wait for a prior choice.
 
 ## Stripe webhook
 

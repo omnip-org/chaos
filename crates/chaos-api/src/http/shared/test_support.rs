@@ -58,6 +58,7 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         apple_client_id: None,
         smtp_url: Some("smtp://localhost:1025".into()),
         email_from: "Chaos <no-reply@localhost>".into(),
+        storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
         resend_api_key: None,
         resend_webhook_secret: None,
         resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
@@ -65,7 +66,6 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
         easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
         analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
-        analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
         provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
             "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
         )

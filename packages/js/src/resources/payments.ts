@@ -12,11 +12,19 @@ export class PaymentsResource {
     body: CreatePaymentAttemptRequest,
     idempotencyKey?: string,
   ): Promise<DataEnvelope<PaymentAttempt>> {
-    return this.client.request(`/orders/${encodeURIComponent(orderId)}/payment-attempts`, {
+    return this.client.request<DataEnvelope<PaymentAttempt>>(`/orders/${encodeURIComponent(orderId)}/payment-attempts`, {
       method: "POST",
       body,
       requiresShopperToken: true,
       idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
+    }).then((response) => {
+      this.client.analytics?.addPaymentInfo({
+        paymentAttemptId: response.data.id,
+        orderId: response.data.order_id,
+        valueMinor: response.data.amount_minor,
+        currency: response.data.currency,
+      });
+      return response;
     });
   }
 

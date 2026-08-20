@@ -84,6 +84,7 @@ export class ChaosStorefrontClient {
     if (options.analytics !== false) {
       this.analytics = new ChaosStorefrontAnalytics({
         ...options.analytics,
+        endpoint: options.analytics?.endpoint ?? `${this.baseUrl}/analytics/events`,
         publishableKey: this.publishableKey,
         fetch: this.fetchImpl,
         randomUUID: this.randomUUID,

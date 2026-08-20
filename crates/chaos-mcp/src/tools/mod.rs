@@ -7,9 +7,7 @@ mod store;
 use std::sync::Arc;
 
 use chaos_application::{
-    analytics::{
-        AnalyticsAdministration, AnalyticsDestinations, AnalyticsPrivacy, AnalyticsReporting,
-    },
+    analytics::{AnalyticsAdministration, AnalyticsPrivacy},
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
         CreateProduct, MediaAdministration, ReviewAdministration,
@@ -59,8 +57,6 @@ pub struct McpState {
     pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
-    pub analytics_reporting: Arc<AnalyticsReporting>,
-    pub analytics_destinations: Arc<AnalyticsDestinations>,
     pub clock: Arc<dyn Clock>,
 }
 

@@ -222,6 +222,7 @@ export interface OrderTransition {
 
 export interface Order {
   id: UUID;
+  order_number: string;
   checkout_id: UUID;
   customer_id?: UUID;
   inventory_reservation_id?: UUID;
@@ -247,6 +248,12 @@ export interface Order {
   transitions: OrderTransition[];
   created_at: string;
   updated_at: string;
+}
+
+export interface OrderTrackingSession {
+  access_token: string;
+  expires_at: string;
+  order: Order;
 }
 
 export interface UpdateCustomerRequest {
@@ -355,22 +362,42 @@ export interface AnalyticsConsent {
   policy_version: string;
 }
 
+export interface TrafficTouchpoint {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  campaign_id?: string;
+  term?: string;
+  content?: string;
+  referrer_domain?: string;
+  fbclid?: string;
+  gclid?: string;
+}
+
+export interface TrafficAttribution {
+  first: TrafficTouchpoint;
+  session: TrafficTouchpoint;
+  last_non_direct?: TrafficTouchpoint;
+}
+
 export type BrowserAnalyticsEventName =
-  | "page_viewed"
-  | "product_viewed"
-  | "search_performed"
-  | "cart_line_added"
-  | "checkout_started"
-  | "engagement_heartbeat";
+  | "page_view"
+  | "view_content"
+  | "search"
+  | "add_to_cart"
+  | "initiate_checkout"
+  | "view_duration";
 
 export interface BrowserAnalyticsEvent {
   event_id: UUID;
   event_name: BrowserAnalyticsEventName;
   schema_version: 1;
   occurred_at: string;
-  anonymous_id: UUID;
+  visitor_id: UUID;
   session_id: UUID;
   consent: AnalyticsConsent;
+  collection_basis: "consent" | "store_policy";
+  traffic?: TrafficAttribution;
   properties: Record<string, unknown>;
 }
 
@@ -379,8 +406,8 @@ export interface AnalyticsCollectionResult {
   stored: number;
   duplicates: number;
   discarded_for_consent: number;
-  discarded_for_policy: number;
-  collection_policy_version: string;
+  discarded_for_settings: number;
+  settings_revision: number;
 }
 
 // Pagination query shared by list endpoints.

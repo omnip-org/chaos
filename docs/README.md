@@ -48,6 +48,7 @@ preserve the dependency direction in
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
 | Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
 | Webhooks, outbox, and idempotency | application ports | Worker loops and integration repositories | `integration` |
+| Commerce events, Meta reporting, Provider metrics | `analytics` | Storefront collection, MCP settings, and Worker delivery | `integration` |
 
 Rust business modules remain useful navigation boundaries; they do not require
 matching PostgreSQL schemas.

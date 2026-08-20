@@ -1,0 +1,240 @@
+//! Meta Conversions API delivery adapter.
+
+use std::{sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use chaos_application::ports::{
+    MetaDeliveryCommand, MetaDeliveryError, MetaDeliveryReceipt, MetaEventDestination,
+};
+use reqwest::{Client, StatusCode, Url};
+use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::secret::DynamicSecretResolver;
+
+pub struct MetaConversionsDestination {
+    client: Client,
+    api_base_url: Url,
+    secrets: Arc<DynamicSecretResolver>,
+}
+
+impl MetaConversionsDestination {
+    pub fn new(
+        api_base_url: Url,
+        timeout: Duration,
+        secrets: Arc<DynamicSecretResolver>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            api_base_url.scheme() == "https" || api_base_url.host_str() == Some("127.0.0.1"),
+            "Meta API URL must use HTTPS or loopback HTTP"
+        );
+        Ok(Self {
+            client: Client::builder().timeout(timeout).build()?,
+            api_base_url,
+            secrets,
+        })
+    }
+}
+
+#[async_trait]
+impl MetaEventDestination for MetaConversionsDestination {
+    async fn send(
+        &self,
+        command: &MetaDeliveryCommand,
+    ) -> Result<MetaDeliveryReceipt, MetaDeliveryError> {
+        let token = self
+            .secrets
+            .resolve_analytics(&command.credential_secret_reference)
+            .await?;
+        let endpoint = self
+            .api_base_url
+            .join(&format!("{}/events", command.dataset_id))
+            .map_err(|_| invalid_command())?;
+        let payload = MetaRequest {
+            data: [MetaEvent {
+                event_name: meta_event_name(&command.event_name),
+                event_time: command.occurred_at.unix_timestamp(),
+                event_id: command.event_id.to_string(),
+                action_source: "website",
+                event_source_url: command.source_url.as_deref(),
+                user_data: MetaUserData {
+                    external_id: command
+                        .customer_id
+                        .map(|id| vec![sha256_hex(id.as_uuid().as_bytes())])
+                        .or_else(|| command.visitor_id.map(|id| vec![sha256_hex(id.as_bytes())]))
+                        .unwrap_or_default(),
+                },
+                custom_data: custom_data(command),
+            }],
+            test_event_code: command.test_event_code.as_deref(),
+        };
+        let response = self
+            .client
+            .post(endpoint)
+            .query(&[("access_token", token.expose_secret())])
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|error| MetaDeliveryError {
+                retryable: true,
+                message: format!("Meta request failed: {error}"),
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(MetaDeliveryError {
+                retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+                message: format!("Meta returned HTTP {status}"),
+            });
+        }
+        let receipt: MetaResponse = response.json().await.map_err(|_| MetaDeliveryError {
+            retryable: true,
+            message: "Meta returned an invalid response".into(),
+        })?;
+        if receipt.events_received != 1 {
+            return Err(MetaDeliveryError {
+                retryable: true,
+                message: "Meta did not acknowledge the event".into(),
+            });
+        }
+        Ok(MetaDeliveryReceipt {
+            provider_reference: receipt.fbtrace_id,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct MetaRequest<'a> {
+    data: [MetaEvent<'a>; 1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_event_code: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct MetaEvent<'a> {
+    event_name: &'a str,
+    event_time: i64,
+    event_id: String,
+    action_source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_source_url: Option<&'a str>,
+    user_data: MetaUserData,
+    custom_data: Value,
+}
+
+#[derive(Serialize)]
+struct MetaUserData {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    external_id: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct MetaResponse {
+    events_received: u32,
+    fbtrace_id: Option<String>,
+}
+
+fn meta_event_name(name: &str) -> &str {
+    match name {
+        "page_view" => "PageView",
+        "view_content" => "ViewContent",
+        "search" => "Search",
+        "add_to_cart" => "AddToCart",
+        "initiate_checkout" => "InitiateCheckout",
+        "add_payment_info" => "AddPaymentInfo",
+        "purchase" => "Purchase",
+        "refund" => "Refund",
+        "view_duration" => "ViewDuration",
+        _ => name,
+    }
+}
+
+fn custom_data(command: &MetaDeliveryCommand) -> Value {
+    let mut data = command.properties.clone();
+    if let Some(object) = data.as_object_mut() {
+        // Traffic provenance remains a Chaos Analytics fact. Click identifiers
+        // must not be forwarded as arbitrary Meta custom_data fields.
+        object.remove("traffic");
+        if let Some(value) = command.value_minor {
+            let exponent = command
+                .currency
+                .as_deref()
+                .map(currency_exponent)
+                .unwrap_or(2);
+            object.insert("value".into(), json!(value as f64 / 10_f64.powi(exponent)));
+        }
+        if let Some(currency) = &command.currency {
+            object.insert("currency".into(), json!(currency));
+        }
+    }
+    data
+}
+
+fn currency_exponent(currency: &str) -> i32 {
+    match currency {
+        "BIF" | "CLP" | "DJF" | "GNF" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX" | "VND"
+        | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        "BHD" | "JOD" | "KWD" | "OMR" | "TND" => 3,
+        _ => 2,
+    }
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn invalid_command() -> MetaDeliveryError {
+    MetaDeliveryError {
+        retryable: false,
+        message: "Meta delivery command is invalid".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    fn command(value_minor: i64, currency: &str) -> MetaDeliveryCommand {
+        MetaDeliveryCommand {
+            delivery_id: Uuid::now_v7(),
+            event_id: Uuid::now_v7(),
+            dataset_id: "12345".into(),
+            credential_secret_reference: "env://CHAOS_ANALYTICS_SECRET_TEST".into(),
+            test_event_code: None,
+            event_name: "purchase".into(),
+            occurred_at: OffsetDateTime::UNIX_EPOCH,
+            visitor_id: None,
+            customer_id: None,
+            source_url: None,
+            value_minor: Some(value_minor),
+            currency: Some(currency.into()),
+            properties: json!({}),
+        }
+    }
+
+    #[test]
+    fn converts_minor_units_for_meta_without_changing_currency() {
+        let usd = custom_data(&command(1_299, "USD"));
+        assert_eq!(usd["value"], json!(12.99));
+        assert_eq!(usd["currency"], json!("USD"));
+
+        let jpy = custom_data(&command(1_299, "JPY"));
+        assert_eq!(jpy["value"], json!(1_299.0));
+        assert_eq!(jpy["currency"], json!("JPY"));
+    }
+
+    #[test]
+    fn does_not_forward_traffic_provenance_as_meta_custom_data() {
+        let mut input = command(1_299, "USD");
+        input.properties = json!({"traffic":{"session":{"fbclid":"private"}},"path":"/"});
+        let data = custom_data(&input);
+        assert!(data.get("traffic").is_none());
+        assert_eq!(data["path"], json!("/"));
+    }
+}

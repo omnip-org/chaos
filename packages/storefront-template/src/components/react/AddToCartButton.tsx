@@ -14,10 +14,7 @@ export default function AddToCartButton({ productVariantId }: Props) {
     try {
       const chaos = createChaosClient();
       const cart = await getOrCreateCart();
-      const existingLine = cart.lines.find((line) => line.product_variant_id === productVariantId);
-      const nextQuantity = (existingLine?.quantity ?? 0) + 1;
-      await chaos.cart.setLine(cart.id, productVariantId, { quantity: nextQuantity });
-      chaos.analytics?.cartLineAdded({ cartId: cart.id, productVariantId, quantity: nextQuantity });
+      await chaos.cart.addLine(cart.id, productVariantId);
       setState("added");
     } catch {
       setState("error");

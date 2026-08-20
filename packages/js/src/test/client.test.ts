@@ -125,3 +125,52 @@ test("catalog.listProducts forwards query parameters", async () => {
   assert.equal(captured.url?.searchParams.get("limit"), "10");
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
 });
+
+test("semantic SDK operations record conversion events only after successful responses", async () => {
+  const recorded: Array<[string, unknown]> = [];
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage: new MemoryStorage(),
+    analytics: false,
+    randomUUID: () => "idempotency-key",
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  // Replace transport and analytics at the resource boundary to test orchestration only.
+  const mutable = client as unknown as {
+    analytics: Record<string, (input: unknown) => void>;
+    request: (path: string) => Promise<unknown>;
+  };
+  mutable.analytics = {
+    search: (input) => recorded.push(["search", input]),
+    viewContent: (input) => recorded.push(["view_content", input]),
+    addToCart: (input) => recorded.push(["add_to_cart", input]),
+    initiateCheckout: (input) => recorded.push(["initiate_checkout", input]),
+  };
+  mutable.request = async (path) => {
+    if (path === "/products") return { data: [{ id: "product-1" }], meta: { page: { has_more: false } } };
+    if (path.startsWith("/products/")) return { data: { id: "product-1" } };
+    if (path.endsWith("/checkout")) return { data: { id: "checkout-1" } };
+    if (path === "/carts/cart-1") return { data: { id: "cart-1", lines: [] } };
+    return { data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity: 2 }] } };
+  };
+
+  await client.catalog.listProducts({ q: "shoes" });
+  await client.catalog.getProduct("shoe");
+  await client.cart.addLine("cart-1", "variant-1", 2);
+  await client.checkout.create("cart-1", {
+    contact: { email: "shopper@example.com" },
+    billing_address: {
+      full_name: "Shopper",
+      address_line1: "1 Main Street",
+      locality: "Singapore",
+      country_code: "SG",
+    },
+  });
+
+  assert.deepEqual(recorded, [
+    ["search", { query: "shoes", resultCount: 1 }],
+    ["view_content", { productId: "product-1" }],
+    ["add_to_cart", { cartId: "cart-1", productVariantId: "variant-1", quantity: 2 }],
+    ["initiate_checkout", { cartId: "cart-1", checkoutId: "checkout-1" }],
+  ]);
+});

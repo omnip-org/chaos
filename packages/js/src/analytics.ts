@@ -10,6 +10,7 @@ const EVENT_SCHEMA_VERSION = 1;
 const MAX_BATCH_SIZE = 20;
 const MAX_QUEUE_SIZE = 100;
 const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
+const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
 
 export interface AnalyticsConsentInput {
   analyticsStorage: boolean;
@@ -17,13 +18,10 @@ export interface AnalyticsConsentInput {
   policyVersion: string;
 }
 
-export interface PageViewedInput {
+export interface PageViewInput {
   path?: string;
   title?: string;
   referrerDomain?: string;
-  campaignSource?: string;
-  campaignMedium?: string;
-  campaignName?: string;
 }
 
 export interface AnalyticsOptions {
@@ -36,9 +34,21 @@ export interface AnalyticsOptions {
   sessionStorage?: Storage;
   randomUUID?: () => string;
   now?: () => number;
+  /** Monotonic clock used only for elapsed-time measurement. */
+  monotonicNow?: () => number;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
   flushIntervalMs?: number;
+  /** Defaults to opt_out: all configured collection starts immediately until the user opts out. */
+  privacyMode?: "opt_in" | "opt_out";
+  providers?: {
+    metaPixel?: { pixelId: string };
+    ga4?: { measurementId: string };
+  };
+  /** Initial consent. Without it, collection remains disabled until setConsent is called. */
+  consent?: AnalyticsConsentInput;
+  /** Starts lifecycle and SPA page tracking when initial consent is provided. Defaults to true. */
+  autoStart?: boolean;
 }
 
 interface QueuedEvent {
@@ -46,14 +56,34 @@ interface QueuedEvent {
   event_name: string;
   schema_version: 1;
   occurred_at: string;
-  anonymous_id: string;
+  visitor_id: string;
   session_id: string;
   consent: {
     analytics_storage: boolean;
     advertising_storage: boolean;
     policy_version: string;
   };
+  collection_basis: "consent" | "store_policy";
+  traffic?: TrafficAttribution;
   properties: Record<string, unknown>;
+}
+
+interface TrafficTouchpoint {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  campaign_id?: string;
+  term?: string;
+  content?: string;
+  referrer_domain?: string;
+  fbclid?: string;
+  gclid?: string;
+}
+
+interface TrafficAttribution {
+  first: TrafficTouchpoint;
+  session: TrafficTouchpoint;
+  last_non_direct?: TrafficTouchpoint;
 }
 
 export class ChaosStorefrontAnalytics {
@@ -66,13 +96,27 @@ export class ChaosStorefrontAnalytics {
   private readonly sessionStorageRef?: Storage;
   private readonly randomUUID: () => string;
   private readonly now: () => number;
+  private readonly monotonicNow: () => number;
   private readonly setIntervalImpl: typeof setInterval;
   private readonly clearIntervalImpl: typeof clearInterval;
   private readonly flushIntervalMs: number;
+  private readonly privacyMode: "opt_in" | "opt_out";
+  private readonly providers: BrowserProviderAdapters;
 
-  private readonly anonymousId: string;
-  private readonly sessionId: string;
+  private visitorId: string;
+  private sessionId: string;
+  private readonly visitorStorageKey: string;
+  private readonly sessionStorageKey: string;
+  private readonly queueStorageKey: string;
+  private readonly firstTouchStorageKey: string;
+  private readonly lastNonDirectStorageKey: string;
+  private readonly sessionTouchStorageKey: string;
+  private readonly providerEventStoragePrefix: string;
+  private traffic: TrafficAttribution | undefined;
   private consent: { analyticsStorage: boolean; advertisingStorage: boolean; policyVersion: string };
+  private explicitConsent = { analyticsStorage: false, advertisingStorage: false };
+  private optedOut = false;
+  private hasExplicitChoice = false;
   private queue: QueuedEvent[] = [];
   private inFlight: Promise<unknown> | null = null;
   private running = false;
@@ -82,9 +126,13 @@ export class ChaosStorefrontAnalytics {
   private accumulatedActiveMs = 0;
   private readonly onActivityChange = () => this.updateActivityState();
   private readonly onPageHide = () => {
-    this.flushEngagement();
+    this.flushViewDuration();
+    this.activeStartedAt = null;
     void this.flush({ keepalive: true }).catch(() => {});
   };
+  private readonly onPageShow = () => this.updateActivityState();
+  private readonly onRouteChange = () => this.pageView();
+  private restoreHistory: (() => void) | null = null;
 
   constructor(options: AnalyticsOptions) {
     if (!options?.publishableKey) {
@@ -99,25 +147,79 @@ export class ChaosStorefrontAnalytics {
     this.sessionStorageRef = options.sessionStorage ?? this.windowRef?.sessionStorage;
     this.randomUUID = options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     this.now = options.now ?? Date.now;
+    this.monotonicNow =
+      options.monotonicNow ?? globalThis.performance?.now.bind(globalThis.performance) ?? this.now;
     this.setIntervalImpl = options.setInterval ?? globalThis.setInterval;
     this.clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
     this.flushIntervalMs = options.flushIntervalMs ?? 15_000;
+    this.privacyMode = options.privacyMode ?? "opt_out";
     if (!this.fetchImpl || !this.randomUUID || !this.documentRef || !this.windowRef) {
       throw new TypeError("fetch, randomUUID, document, and window are required");
     }
     if (this.flushIntervalMs < 1_000 || this.flushIntervalMs > 60_000) {
       throw new RangeError("flushIntervalMs must be between 1000 and 60000");
     }
+    this.providers = new BrowserProviderAdapters(
+      this.windowRef,
+      this.documentRef,
+      options.providers,
+    );
 
-    this.anonymousId = persistentIdentifier(this.storage, "chaos.analytics.anonymous_id", this.randomUUID);
-    this.sessionId = persistentIdentifier(this.sessionStorageRef, "chaos.analytics.session_id", this.randomUUID);
+    const storageNamespace = analyticsStorageNamespace(this.endpoint, this.publishableKey);
+    this.queueStorageKey = `chaos.analytics.${storageNamespace}.queue.v1`;
+    this.visitorStorageKey = `chaos.analytics.${storageNamespace}.visitor_id`;
+    this.sessionStorageKey = `chaos.analytics.${storageNamespace}.session_id`;
+    this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
+    this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
+    this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
+    this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
+    this.visitorId = this.randomUUID();
+    this.sessionId = this.randomUUID();
     this.consent = { analyticsStorage: false, advertisingStorage: false, policyVersion: "unset" };
+    if (options.consent) {
+      this.setConsent(options.consent);
+      if (options.autoStart !== false) {
+        this.start();
+        this.pageView();
+      }
+    } else if (this.privacyMode === "opt_out") {
+      this.consent = {
+        analyticsStorage: false,
+        advertisingStorage: false,
+        policyVersion: "store-policy-opt-out",
+      };
+      this.enableCollectionStorage();
+      this.providers.setConsent({ analyticsStorage: true, advertisingStorage: true });
+      if (options.autoStart !== false) {
+        this.start();
+        this.pageView();
+      }
+    }
   }
 
   setConsent({ analyticsStorage, advertisingStorage, policyVersion }: AnalyticsConsentInput): void {
     validatePolicyVersion(policyVersion);
-    if (!analyticsStorage) {
+    if (advertisingStorage && !analyticsStorage) {
+      throw new TypeError("advertisingStorage requires analyticsStorage");
+    }
+    this.hasExplicitChoice = true;
+    this.explicitConsent = {
+      analyticsStorage: Boolean(analyticsStorage),
+      advertisingStorage: Boolean(advertisingStorage),
+    };
+    this.optedOut = this.privacyMode === "opt_out" && !analyticsStorage && !advertisingStorage;
+    const effectiveAnalyticsStorage = !this.optedOut && (analyticsStorage || this.privacyMode === "opt_out");
+    if (!effectiveAnalyticsStorage) {
       this.queue = [];
+      removeStored(this.sessionStorageRef, this.queueStorageKey);
+      removeStored(this.storage, this.visitorStorageKey);
+      removeStored(this.sessionStorageRef, this.sessionStorageKey);
+      removeStored(this.storage, this.firstTouchStorageKey);
+      removeStored(this.storage, this.lastNonDirectStorageKey);
+      removeStored(this.sessionStorageRef, this.sessionTouchStorageKey);
+      this.visitorId = this.randomUUID();
+      this.sessionId = this.randomUUID();
+      this.traffic = undefined;
       this.accumulatedActiveMs = 0;
       this.currentPageViewEventId = null;
     }
@@ -126,7 +228,29 @@ export class ChaosStorefrontAnalytics {
       advertisingStorage: Boolean(advertisingStorage),
       policyVersion,
     };
-    this.activeStartedAt = this.isActive() && analyticsStorage ? this.now() : null;
+    if (effectiveAnalyticsStorage) {
+      this.enableCollectionStorage();
+    }
+    this.providers.setConsent(this.explicitConsent);
+    this.activeStartedAt = this.isActive() && effectiveAnalyticsStorage ? this.monotonicNow() : null;
+  }
+
+  /** Returns the policy-bound identity payload used after Customer association. */
+  identityLinkInput(): {
+    visitor_id: string;
+    consent: QueuedEvent["consent"];
+    collection_basis: QueuedEvent["collection_basis"];
+  } | null {
+    if (!this.collectionEnabled()) return null;
+    return {
+      visitor_id: this.visitorId,
+      consent: {
+        analytics_storage: this.consent.analyticsStorage,
+        advertising_storage: this.consent.advertisingStorage,
+        policy_version: this.consent.policyVersion,
+      },
+      collection_basis: this.explicitConsent.analyticsStorage ? "consent" : "store_policy",
+    };
   }
 
   start(): void {
@@ -136,9 +260,12 @@ export class ChaosStorefrontAnalytics {
     this.windowRef.addEventListener("focus", this.onActivityChange);
     this.windowRef.addEventListener("blur", this.onActivityChange);
     this.windowRef.addEventListener("pagehide", this.onPageHide);
+    this.windowRef.addEventListener("pageshow", this.onPageShow);
+    this.windowRef.addEventListener("popstate", this.onRouteChange);
+    this.restoreHistory = observeHistory(this.windowRef, this.onRouteChange);
     this.updateActivityState();
     this.timer = this.setIntervalImpl(() => {
-      this.flushEngagement();
+      this.flushViewDuration();
       void this.flush().catch(() => {});
     }, this.flushIntervalMs);
   }
@@ -151,53 +278,50 @@ export class ChaosStorefrontAnalytics {
       this.windowRef.removeEventListener("focus", this.onActivityChange);
       this.windowRef.removeEventListener("blur", this.onActivityChange);
       this.windowRef.removeEventListener("pagehide", this.onPageHide);
+      this.windowRef.removeEventListener("pageshow", this.onPageShow);
+      this.windowRef.removeEventListener("popstate", this.onRouteChange);
+      this.restoreHistory?.();
+      this.restoreHistory = null;
       if (this.timer !== null) this.clearIntervalImpl(this.timer);
       this.timer = null;
       this.activeStartedAt = null;
     }
-    this.flushEngagement();
+    this.flushViewDuration();
     await this.flush({ keepalive: true });
   }
 
-  pageViewed(input: PageViewedInput = {}): string | null {
-    const { path, title, referrerDomain, campaignSource, campaignMedium, campaignName } = input;
-    this.flushEngagement();
+  pageView(input: PageViewInput = {}): string | null {
+    const { path, title, referrerDomain } = input;
+    this.flushViewDuration();
     const resolvedPath = path ?? this.documentRef.location?.pathname ?? "/";
     const resolvedTitle = title ?? nonEmpty(this.documentRef.title);
     const resolvedReferrer = referrerDomain ?? referrerHost(this.documentRef.referrer);
-    const campaign = campaignParameters(
-      this.documentRef.location?.search,
-      campaignSource,
-      campaignMedium,
-      campaignName,
-    );
     const eventId = this.enqueue(
-      "page_viewed",
+      "page_view",
       compact({
         path: resolvedPath,
         title: resolvedTitle,
         referrer_domain: resolvedReferrer,
-        ...campaign,
       }),
     );
     this.accumulatedActiveMs = 0;
     this.currentPageViewEventId = eventId;
-    this.activeStartedAt = this.isActive() && eventId ? this.now() : null;
+    this.activeStartedAt = this.isActive() && eventId ? this.monotonicNow() : null;
     return eventId;
   }
 
-  productViewed({ productId, productVariantId }: { productId: string; productVariantId?: string }): string | null {
+  viewContent({ productId, productVariantId }: { productId: string; productVariantId?: string }): string | null {
     return this.enqueue(
-      "product_viewed",
+      "view_content",
       compact({ product_id: productId, product_variant_id: productVariantId }),
     );
   }
 
-  searchPerformed({ query, resultCount }: { query: string; resultCount?: number }): string | null {
-    return this.enqueue("search_performed", compact({ query, result_count: resultCount }));
+  search({ query, resultCount }: { query: string; resultCount?: number }): string | null {
+    return this.enqueue("search", compact({ query, result_count: resultCount }));
   }
 
-  cartLineAdded({
+  addToCart({
     cartId,
     productVariantId,
     quantity,
@@ -206,27 +330,78 @@ export class ChaosStorefrontAnalytics {
     productVariantId: string;
     quantity: number;
   }): string | null {
-    return this.enqueue("cart_line_added", {
+    return this.enqueue("add_to_cart", {
       cart_id: cartId,
       product_variant_id: productVariantId,
       quantity,
     });
   }
 
-  checkoutStarted({ cartId, checkoutId }: { cartId: string; checkoutId?: string }): string | null {
-    return this.enqueue("checkout_started", compact({ cart_id: cartId, checkout_id: checkoutId }));
+  initiateCheckout({ cartId, checkoutId }: { cartId: string; checkoutId?: string }): string | null {
+    return this.enqueue("initiate_checkout", compact({ cart_id: cartId, checkout_id: checkoutId }));
   }
 
-  flushEngagement(): number {
+  /** Projects a created Payment Attempt to browser providers once. */
+  addPaymentInfo(input: {
+    paymentAttemptId: string;
+    orderId: string;
+    valueMinor: number;
+    currency: string;
+  }): string | null {
+    validateMoney(input.valueMinor, input.currency);
+    return this.projectProviderEventOnce("add_payment_info", input.paymentAttemptId, {
+      payment_attempt_id: input.paymentAttemptId,
+      order_id: input.orderId,
+      value_minor: input.valueMinor,
+      currency: input.currency.toUpperCase(),
+    });
+  }
+
+  /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
+  purchase(input: {
+    orderId: string;
+    valueMinor: number;
+    currency: string;
+    items: Array<{ itemId: string; quantity: number; priceMinor: number }>;
+  }): string | null {
+    validateMoney(input.valueMinor, input.currency);
+    const currency = input.currency.toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new TypeError("currency must be an ISO 4217 code");
+    return this.projectProviderEventOnce("purchase", input.orderId, {
+      order_id: input.orderId,
+      value_minor: input.valueMinor,
+      currency,
+      items: input.items.map((item) => ({
+        item_id: item.itemId,
+        quantity: item.quantity,
+        price_minor: item.priceMinor,
+      })),
+    });
+  }
+
+  private projectProviderEventOnce(
+    eventName: string,
+    eventId: string,
+    properties: Record<string, unknown>,
+  ): string | null {
+    if (!this.collectionEnabled()) return null;
+    const storageKey = `${this.providerEventStoragePrefix}${eventName}.${eventId}`;
+    if (this.storage?.getItem(storageKey)) return null;
+    this.providers.track(eventName, eventId, properties);
+    this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
+    return eventId;
+  }
+
+  flushViewDuration(): number {
     this.snapshotActiveTime();
-    if (!this.currentPageViewEventId || !this.consent.analyticsStorage) {
+    if (!this.currentPageViewEventId || !this.collectionEnabled()) {
       this.accumulatedActiveMs = 0;
       return 0;
     }
     let emitted = 0;
     while (this.accumulatedActiveMs >= 1) {
       const activeMilliseconds = Math.min(Math.floor(this.accumulatedActiveMs), MAX_ENGAGEMENT_INTERVAL_MS);
-      this.enqueue("engagement_heartbeat", {
+      this.enqueue("view_duration", {
         page_view_event_id: this.currentPageViewEventId,
         active_milliseconds: activeMilliseconds,
       });
@@ -238,11 +413,18 @@ export class ChaosStorefrontAnalytics {
 
   flush(options: { keepalive?: boolean } = {}): Promise<unknown> {
     if (this.inFlight) return this.inFlight;
+    this.pruneExpiredQueue();
     if (this.queue.length === 0) return Promise.resolve(null);
-    this.inFlight = this.sendNextBatch(Boolean(options.keepalive)).finally(() => {
+    this.inFlight = this.drainQueue(Boolean(options.keepalive)).finally(() => {
       this.inFlight = null;
     });
     return this.inFlight;
+  }
+
+  private async drainQueue(keepalive: boolean): Promise<unknown> {
+    let result: unknown = null;
+    while (this.queue.length > 0) result = await this.sendNextBatch(keepalive);
+    return result;
   }
 
   private async sendNextBatch(keepalive: boolean): Promise<unknown> {
@@ -260,32 +442,42 @@ export class ChaosStorefrontAnalytics {
       if (!response.ok) {
         throw new Error(`analytics collection failed with HTTP ${response.status}`);
       }
+      this.persistQueue();
       return await response.json();
     } catch (error) {
-      this.queue.unshift(...batch);
-      this.trimQueue();
+      if (this.consent.analyticsStorage) {
+        this.queue.unshift(...batch);
+        this.trimQueue();
+      }
+      this.persistQueue();
       throw error;
     }
   }
 
   private enqueue(eventName: string, properties: Record<string, unknown>): string | null {
-    if (!this.consent.analyticsStorage) return null;
+    if (!this.collectionEnabled()) return null;
     const eventId = this.randomUUID();
     this.queue.push({
       event_id: eventId,
       event_name: eventName,
       schema_version: EVENT_SCHEMA_VERSION,
       occurred_at: new Date(this.now()).toISOString(),
-      anonymous_id: this.anonymousId,
+      visitor_id: this.visitorId,
       session_id: this.sessionId,
       consent: {
         analytics_storage: this.consent.analyticsStorage,
         advertising_storage: this.consent.advertisingStorage,
         policy_version: this.consent.policyVersion,
       },
+      collection_basis: this.explicitConsent.analyticsStorage ? "consent" : "store_policy",
+      ...(this.traffic
+        ? { traffic: trafficForConsent(this.traffic, this.providerAdvertisingEnabled()) }
+        : {}),
       properties,
     });
+    this.providers.track(eventName, eventId, properties);
     this.trimQueue();
+    this.persistQueue();
     if (this.queue.length >= MAX_BATCH_SIZE) {
       void this.flush().catch(() => {});
     }
@@ -294,19 +486,89 @@ export class ChaosStorefrontAnalytics {
 
   private trimQueue(): void {
     if (this.queue.length > MAX_QUEUE_SIZE) {
-      this.queue.splice(0, this.queue.length - MAX_QUEUE_SIZE);
+      const removedPageViews = new Set(
+        this.queue
+          .splice(0, this.queue.length - MAX_QUEUE_SIZE)
+          .filter((event) => event.event_name === "page_view")
+          .map((event) => event.event_id),
+      );
+      if (removedPageViews.size > 0) {
+        this.queue = this.queue.filter(
+          (event) =>
+            event.event_name !== "view_duration" ||
+            !removedPageViews.has(String(event.properties.page_view_event_id)),
+        );
+      }
     }
   }
 
+  private persistQueue(): void {
+    writeStoredJson(this.sessionStorageRef, this.queueStorageKey, this.queue);
+  }
+
+  private enableCollectionStorage(): void {
+    this.visitorId = persistentIdentifier(this.storage, this.visitorStorageKey, this.randomUUID);
+    this.sessionId = persistentIdentifier(
+      this.sessionStorageRef,
+      this.sessionStorageKey,
+      this.randomUUID,
+    );
+    this.restoreQueue();
+    this.resolveTraffic();
+  }
+
+  private restoreQueue(): void {
+    if (this.queue.length > 0) return;
+    const restored = readStoredJson(this.sessionStorageRef, this.queueStorageKey);
+    if (Array.isArray(restored)) {
+      this.queue = restored.filter(validQueuedEvent).slice(-MAX_QUEUE_SIZE);
+      this.pruneExpiredQueue();
+    }
+  }
+
+  private pruneExpiredQueue(): void {
+    const oldestAccepted = this.now() - MAX_QUEUE_AGE_MS;
+    this.queue = this.queue.filter((event) => Date.parse(event.occurred_at) >= oldestAccepted);
+    this.persistQueue();
+  }
+
+  private resolveTraffic(): void {
+    const captured = captureTrafficTouchpoint(
+      this.documentRef.location?.search,
+      this.documentRef.referrer,
+      this.providerAdvertisingEnabled(),
+    );
+    const storedSession = readTrafficTouchpoint(this.sessionStorageRef, this.sessionTouchStorageKey);
+    const session = storedSession
+      ? compact({
+          ...storedSession,
+          ...(this.providerAdvertisingEnabled()
+            ? { fbclid: captured.fbclid, gclid: captured.gclid }
+            : {}),
+        }) as TrafficTouchpoint
+      : captured;
+    writeStoredJson(this.sessionStorageRef, this.sessionTouchStorageKey, session);
+    const first = readTrafficTouchpoint(this.storage, this.firstTouchStorageKey) ?? session;
+    writeStoredJson(this.storage, this.firstTouchStorageKey, first);
+    const existingLast = readTrafficTouchpoint(this.storage, this.lastNonDirectStorageKey);
+    const lastNonDirect = isNonDirectTouchpoint(session) ? session : existingLast;
+    if (lastNonDirect) writeStoredJson(this.storage, this.lastNonDirectStorageKey, lastNonDirect);
+    this.traffic = {
+      first,
+      session,
+      ...(lastNonDirect ? { last_non_direct: lastNonDirect } : {}),
+    };
+  }
+
   private updateActivityState(): void {
-    const active = this.isActive() && this.consent.analyticsStorage;
+    const active = this.isActive() && this.collectionEnabled();
     this.snapshotActiveTime();
-    this.activeStartedAt = active ? this.now() : null;
+    this.activeStartedAt = active ? this.monotonicNow() : null;
   }
 
   private snapshotActiveTime(): void {
     if (this.activeStartedAt === null) return;
-    const now = this.now();
+    const now = this.monotonicNow();
     this.accumulatedActiveMs += Math.max(0, now - this.activeStartedAt);
     this.activeStartedAt = now;
   }
@@ -314,6 +576,263 @@ export class ChaosStorefrontAnalytics {
   private isActive(): boolean {
     return this.documentRef.visibilityState === "visible" && this.documentRef.hasFocus();
   }
+
+  private collectionEnabled(): boolean {
+    return !this.optedOut && (this.explicitConsent.analyticsStorage || this.privacyMode === "opt_out");
+  }
+
+  private providerAdvertisingEnabled(): boolean {
+    return (
+      !this.optedOut &&
+      (this.explicitConsent.advertisingStorage ||
+        (this.privacyMode === "opt_out" && !this.hasExplicitChoice))
+    );
+  }
+}
+
+type ProviderConsent = { analyticsStorage: boolean; advertisingStorage: boolean };
+type ProviderOptions = AnalyticsOptions["providers"];
+type ProviderFunction = ((...args: unknown[]) => void) & {
+  callMethod?: (...args: unknown[]) => void;
+  queue?: unknown[][];
+  loaded?: boolean;
+  version?: string;
+};
+type ProviderWindow = Window &
+  typeof globalThis & {
+    dataLayer?: unknown[][];
+    gtag?: (...args: unknown[]) => void;
+    fbq?: ProviderFunction;
+    _fbq?: ProviderFunction;
+  };
+
+class BrowserProviderAdapters {
+  private readonly windowRef: ProviderWindow;
+  private readonly documentRef: Document;
+  private readonly options: ProviderOptions;
+  private consent: ProviderConsent = { analyticsStorage: false, advertisingStorage: false };
+  private metaStarted = false;
+  private ga4Started = false;
+
+  constructor(windowRef: Window & typeof globalThis, documentRef: Document, options: ProviderOptions) {
+    this.windowRef = windowRef as ProviderWindow;
+    this.documentRef = documentRef;
+    this.options = options;
+    validateProviderOptions(options);
+  }
+
+  setConsent(consent: ProviderConsent): void {
+    this.consent = consent;
+    if (consent.analyticsStorage && this.options?.ga4) this.startGa4();
+    if (this.ga4Started) {
+      this.windowRef.gtag?.("consent", "update", {
+        analytics_storage: consent.analyticsStorage ? "granted" : "denied",
+        ad_storage: consent.advertisingStorage ? "granted" : "denied",
+        ad_user_data: consent.advertisingStorage ? "granted" : "denied",
+        ad_personalization: consent.advertisingStorage ? "granted" : "denied",
+      });
+    }
+    if (consent.advertisingStorage && this.options?.metaPixel) this.startMeta();
+    if (this.metaStarted) {
+      this.windowRef.fbq?.("consent", consent.advertisingStorage ? "grant" : "revoke");
+    }
+  }
+
+  track(eventName: string, eventId: string, properties: Record<string, unknown>): void {
+    if (this.consent.advertisingStorage && this.metaStarted) {
+      const mapped = metaEvent(eventName, properties);
+      this.windowRef.fbq?.("track", mapped.name, mapped.parameters, { eventID: eventId });
+    }
+    if (this.consent.analyticsStorage && this.ga4Started) {
+      const mapped = ga4Event(eventName, eventId, properties);
+      this.windowRef.gtag?.("event", mapped.name, mapped.parameters);
+    }
+  }
+
+  private startMeta(): void {
+    if (this.metaStarted || !this.options?.metaPixel) return;
+    this.metaStarted = true;
+    if (!this.windowRef.fbq) {
+      const fbq: ProviderFunction = (...args: unknown[]) => {
+        if (fbq.callMethod) fbq.callMethod(...args);
+        else fbq.queue?.push(args);
+      };
+      fbq.queue = [];
+      fbq.loaded = true;
+      fbq.version = "2.0";
+      this.windowRef.fbq = fbq;
+      this.windowRef._fbq = fbq;
+      loadProviderScript(this.documentRef, "chaos-meta-pixel", "https://connect.facebook.net/en_US/fbevents.js");
+    }
+    this.windowRef.fbq("init", this.options.metaPixel.pixelId);
+  }
+
+  private startGa4(): void {
+    if (this.ga4Started || !this.options?.ga4) return;
+    this.ga4Started = true;
+    this.windowRef.dataLayer ??= [];
+    this.windowRef.gtag ??= (...args: unknown[]) => this.windowRef.dataLayer?.push(args);
+    this.windowRef.gtag("consent", "default", {
+      analytics_storage: "granted",
+      ad_storage: this.consent.advertisingStorage ? "granted" : "denied",
+      ad_user_data: this.consent.advertisingStorage ? "granted" : "denied",
+      ad_personalization: this.consent.advertisingStorage ? "granted" : "denied",
+    });
+    this.windowRef.gtag("js", new Date());
+    this.windowRef.gtag("config", this.options.ga4.measurementId, { send_page_view: false });
+    loadProviderScript(
+      this.documentRef,
+      "chaos-google-tag",
+      `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(this.options.ga4.measurementId)}`,
+    );
+  }
+}
+
+function validateProviderOptions(options: ProviderOptions): void {
+  if (options?.metaPixel && !/^[0-9]{5,32}$/.test(options.metaPixel.pixelId)) {
+    throw new TypeError("providers.metaPixel.pixelId must contain 5-32 digits");
+  }
+  if (options?.ga4 && !/^G-[A-Z0-9]{4,20}$/.test(options.ga4.measurementId)) {
+    throw new TypeError("providers.ga4.measurementId must be a GA4 measurement ID");
+  }
+}
+
+function loadProviderScript(documentRef: Document, id: string, source: string): void {
+  if (documentRef.getElementById?.(id) || !documentRef.createElement || !documentRef.head) return;
+  const script = documentRef.createElement("script");
+  script.id = id;
+  script.async = true;
+  script.src = source;
+  documentRef.head.appendChild(script);
+}
+
+function metaEvent(
+  eventName: string,
+  properties: Record<string, unknown>,
+): { name: string; parameters: Record<string, unknown> } {
+  const names: Record<string, string> = {
+    page_view: "PageView",
+    view_content: "ViewContent",
+    search: "Search",
+    add_to_cart: "AddToCart",
+    initiate_checkout: "InitiateCheckout",
+    add_payment_info: "AddPaymentInfo",
+    purchase: "Purchase",
+    view_duration: "ViewDuration",
+  };
+  return {
+    name: names[eventName] ?? eventName,
+    parameters: compact({
+      content_ids: commerceItemId(properties) ? [commerceItemId(properties)] : undefined,
+      content_type: commerceItemId(properties) ? "product" : undefined,
+      search_string: properties.query,
+      quantity: properties.quantity,
+      page_path: properties.path,
+      active_milliseconds: properties.active_milliseconds,
+      value: providerValue(properties.value_minor, properties.currency),
+      currency: properties.currency,
+      contents: providerItems(properties.items),
+    }),
+  };
+}
+
+function ga4Event(
+  eventName: string,
+  eventId: string,
+  properties: Record<string, unknown>,
+): { name: string; parameters: Record<string, unknown> } {
+  const names: Record<string, string> = {
+    view_content: "view_item",
+    add_to_cart: "add_to_cart",
+    initiate_checkout: "begin_checkout",
+    add_payment_info: "add_payment_info",
+    purchase: "purchase",
+  };
+  const itemId = commerceItemId(properties);
+  return {
+    name: names[eventName] ?? eventName,
+    parameters: compact({
+      event_id: eventId,
+      page_path: properties.path,
+      page_title: properties.title,
+      search_term: properties.query,
+      engagement_time_msec: properties.active_milliseconds,
+      transaction_id: properties.order_id,
+      value: providerValue(properties.value_minor, properties.currency),
+      currency: properties.currency,
+      items:
+        ga4Items(properties.items, properties.currency) ??
+        (itemId ? [compact({ item_id: itemId, quantity: properties.quantity })] : undefined),
+    }),
+  };
+}
+
+function providerValue(valueMinor: unknown, currency: unknown): number | undefined {
+  if (typeof valueMinor !== "number" || typeof currency !== "string") return undefined;
+  const zeroDecimal = new Set(["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"]);
+  const threeDecimal = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
+  const divisor = zeroDecimal.has(currency) ? 1 : threeDecimal.has(currency) ? 1_000 : 100;
+  return valueMinor / divisor;
+}
+
+function validateMoney(valueMinor: number, currency: string): void {
+  if (!Number.isSafeInteger(valueMinor) || valueMinor < 0) {
+    throw new RangeError("valueMinor must be a non-negative safe integer");
+  }
+  if (!/^[A-Za-z]{3}$/.test(currency)) throw new TypeError("currency must be an ISO 4217 code");
+}
+
+function providerItems(items: unknown): unknown {
+  if (!Array.isArray(items)) return undefined;
+  return items.map((item) => {
+    const value = item as Record<string, unknown>;
+    return compact({ id: value.item_id, quantity: value.quantity });
+  });
+}
+
+function ga4Items(items: unknown, currency: unknown): unknown {
+  if (!Array.isArray(items)) return undefined;
+  return items.map((item) => {
+    const value = item as Record<string, unknown>;
+    return compact({
+      item_id: value.item_id,
+      quantity: value.quantity,
+      price: providerValue(value.price_minor, currency),
+    });
+  });
+}
+
+function commerceItemId(properties: Record<string, unknown>): unknown {
+  return properties.product_variant_id ?? properties.product_id;
+}
+
+function analyticsStorageNamespace(endpoint: string, publishableKey: string): string {
+  const input = `${endpoint}\0${publishableKey}`;
+  let hash = 2_166_136_261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function observeHistory(windowRef: Window & typeof globalThis, listener: () => void): () => void {
+  const history = windowRef.history;
+  if (!history?.pushState || !history?.replaceState) return () => {};
+  const pushState = history.pushState.bind(history);
+  const replaceState = history.replaceState.bind(history);
+  history.pushState = (...args: Parameters<History["pushState"]>) => {
+    pushState(...args);
+    listener();
+  };
+  history.replaceState = (...args: Parameters<History["replaceState"]>) => {
+    replaceState(...args);
+    listener();
+  };
+  return () => {
+    history.pushState = pushState;
+    history.replaceState = replaceState;
+  };
 }
 
 export function createStorefrontAnalytics(options: AnalyticsOptions): ChaosStorefrontAnalytics {
@@ -362,27 +881,6 @@ function nonEmpty(value: string | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function campaignParameters(
-  search: string | undefined,
-  source: string | undefined,
-  medium: string | undefined,
-  name: string | undefined,
-): Record<string, unknown> {
-  let parameters: URLSearchParams;
-  try {
-    parameters = new URLSearchParams(search ?? "");
-  } catch {
-    parameters = new URLSearchParams();
-  }
-  const campaignSource = boundedText(source ?? parameters.get("utm_source") ?? undefined, 100);
-  if (!campaignSource) return {};
-  return compact({
-    campaign_source: campaignSource,
-    campaign_medium: boundedText(medium ?? parameters.get("utm_medium") ?? undefined, 100),
-    campaign_name: boundedText(name ?? parameters.get("utm_campaign") ?? undefined, 200),
-  });
-}
-
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 function boundedText(value: string | undefined, maximumLength: number): string | undefined {
@@ -396,4 +894,102 @@ function boundedText(value: string | undefined, maximumLength: number): string |
 
 function compact<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+}
+
+function captureTrafficTouchpoint(
+  search: string | undefined,
+  referrer: string | undefined,
+  advertisingStorage: boolean,
+): TrafficTouchpoint {
+  const parameters = new URLSearchParams(search ?? "");
+  return compact({
+    source: boundedText(parameters.get("utm_source") ?? undefined, 100),
+    medium: boundedText(parameters.get("utm_medium") ?? undefined, 100),
+    campaign: boundedText(parameters.get("utm_campaign") ?? undefined, 200),
+    campaign_id: boundedText(parameters.get("utm_id") ?? undefined, 200),
+    term: boundedText(parameters.get("utm_term") ?? undefined, 200),
+    content: boundedText(parameters.get("utm_content") ?? undefined, 200),
+    referrer_domain: referrerHost(referrer),
+    fbclid: advertisingStorage ? boundedText(parameters.get("fbclid") ?? undefined, 512) : undefined,
+    gclid: advertisingStorage ? boundedText(parameters.get("gclid") ?? undefined, 512) : undefined,
+  }) as TrafficTouchpoint;
+}
+
+function trafficForConsent(value: TrafficAttribution, advertisingStorage: boolean): TrafficAttribution {
+  if (advertisingStorage) return value;
+  const redact = ({ fbclid: _fbclid, gclid: _gclid, ...touchpoint }: TrafficTouchpoint) => touchpoint;
+  return {
+    first: redact(value.first),
+    session: redact(value.session),
+    ...(value.last_non_direct ? { last_non_direct: redact(value.last_non_direct) } : {}),
+  };
+}
+
+function isNonDirectTouchpoint(value: TrafficTouchpoint): boolean {
+  return Boolean(value.source || value.medium || value.campaign || value.referrer_domain || value.fbclid || value.gclid);
+}
+
+function readTrafficTouchpoint(storage: Storage | undefined, key: string): TrafficTouchpoint | undefined {
+  const value = readStoredJson(storage, key);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const result = compact({
+    source: storedText(candidate.source, 100),
+    medium: storedText(candidate.medium, 100),
+    campaign: storedText(candidate.campaign, 200),
+    campaign_id: storedText(candidate.campaign_id, 200),
+    term: storedText(candidate.term, 200),
+    content: storedText(candidate.content, 200),
+    referrer_domain: storedText(candidate.referrer_domain, 253),
+    fbclid: storedText(candidate.fbclid, 512),
+    gclid: storedText(candidate.gclid, 512),
+  }) as TrafficTouchpoint;
+  return result;
+}
+
+function storedText(value: unknown, maximumLength: number): string | undefined {
+  return typeof value === "string" ? boundedText(value, maximumLength) : undefined;
+}
+
+function readStoredJson(storage: Storage | undefined, key: string): unknown {
+  try {
+    const value = storage?.getItem(key);
+    return value ? JSON.parse(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredJson(storage: Storage | undefined, key: string, value: unknown): void {
+  try {
+    storage?.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage is optional; the in-memory queue remains functional.
+  }
+}
+
+function removeStored(storage: Storage | undefined, key: string): void {
+  try {
+    storage?.removeItem(key);
+  } catch {
+    // Storage is optional.
+  }
+}
+
+function validQueuedEvent(value: unknown): value is QueuedEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Partial<QueuedEvent>;
+  return (
+    isUuid(event.event_id) &&
+    typeof event.event_name === "string" &&
+    event.schema_version === EVENT_SCHEMA_VERSION &&
+    typeof event.occurred_at === "string" &&
+    isUuid(event.visitor_id) &&
+    isUuid(event.session_id) &&
+    (event.collection_basis === "consent" || event.collection_basis === "store_policy") &&
+    Boolean(
+      event.consent?.analytics_storage || event.collection_basis === "store_policy",
+    ) &&
+    Boolean(event.properties && typeof event.properties === "object")
+  );
 }

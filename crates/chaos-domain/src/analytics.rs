@@ -1,90 +1,166 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AnalyticsDestinationProvider {
-    MetaCapi,
-    Ga4,
-}
-
-impl AnalyticsDestinationProvider {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::MetaCapi => "meta_capi",
-            Self::Ga4 => "ga4",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "meta_capi" => Some(Self::MetaCapi),
-            "ga4" => Some(Self::Ga4),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsDestinationSecretReference(String);
-
-impl AnalyticsDestinationSecretReference {
-    pub fn new(value: impl Into<String>) -> Result<Self, DomainError> {
-        let value = value.into();
-        let environment_reference = value
-            .strip_prefix("env://CHAOS_ANALYTICS_SECRET_")
-            .is_some_and(|name| {
-                !name.is_empty()
-                    && name.len() <= 96
-                    && name.bytes().all(|byte| {
-                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                    })
-            });
-        let encrypted_reference = value.strip_prefix("enc://").is_some_and(|payload| {
-            !payload.is_empty()
-                && payload.len() <= MAX_SECRET_REFERENCE_LEN
-                && payload
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        });
-        if !environment_reference && !encrypted_reference {
-            return Err(validation(
-                "credential_secret_reference",
-                "must be an env://CHAOS_ANALYTICS_SECRET_* or enc://<base64> reference",
-            ));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn expose_reference(&self) -> &str {
-        &self.0
-    }
-}
-
 use crate::{
-    DomainError, FieldViolation, MAX_SECRET_REFERENCE_LEN,
+    DomainError, FieldViolation,
     catalog::{ProductId, ProductVariantId},
     sales::{CartId, CheckoutId},
 };
 
 pub const BROWSER_EVENT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_ENGAGEMENT_INTERVAL_MILLISECONDS: u32 = 60_000;
-pub const MAX_SESSION_ENGAGEMENT_MILLISECONDS: u64 = 14_400_000;
-pub const SESSION_INACTIVITY_MINUTES: i64 = 30;
 pub const DEFAULT_RAW_EVENT_RETENTION_DAYS: u16 = 30;
 pub const MAX_RAW_EVENT_RETENTION_DAYS: u16 = 400;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AnalyticsPolicy {
-    behavior_collection_enabled: bool,
-    advertising_exports_enabled: bool,
+pub enum BrowserCollectionMode {
+    OptIn,
+    OptOut,
+}
+
+impl BrowserCollectionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OptIn => "opt_in",
+            Self::OptOut => "opt_out",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserCollectionBasis {
+    Consent,
+    StorePolicy,
+}
+
+impl BrowserCollectionBasis {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Consent => "consent",
+            Self::StorePolicy => "store_policy",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrafficTouchpoint {
+    source: Option<String>,
+    medium: Option<String>,
+    campaign: Option<String>,
+    campaign_id: Option<String>,
+    term: Option<String>,
+    content: Option<String>,
+    referrer_domain: Option<String>,
+    fbclid: Option<String>,
+    gclid: Option<String>,
+}
+
+impl TrafficTouchpoint {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        source: Option<String>,
+        medium: Option<String>,
+        campaign: Option<String>,
+        campaign_id: Option<String>,
+        term: Option<String>,
+        content: Option<String>,
+        referrer_domain: Option<String>,
+        fbclid: Option<String>,
+        gclid: Option<String>,
+    ) -> Result<Self, DomainError> {
+        for (field, value, maximum) in [
+            ("traffic.source", source.as_deref(), 100),
+            ("traffic.medium", medium.as_deref(), 100),
+            ("traffic.campaign", campaign.as_deref(), 200),
+            ("traffic.campaign_id", campaign_id.as_deref(), 200),
+            ("traffic.term", term.as_deref(), 200),
+            ("traffic.content", content.as_deref(), 200),
+            ("traffic.fbclid", fbclid.as_deref(), 512),
+            ("traffic.gclid", gclid.as_deref(), 512),
+        ] {
+            validate_optional_text(field, value, maximum)?;
+        }
+        if let Some(domain) = referrer_domain.as_deref()
+            && !valid_referrer_domain(domain)
+        {
+            return Err(validation(
+                "traffic.referrer_domain",
+                "must be a bounded ASCII host name",
+            ));
+        }
+        Ok(Self {
+            source,
+            medium,
+            campaign,
+            campaign_id,
+            term,
+            content,
+            referrer_domain,
+            fbclid,
+            gclid,
+        })
+    }
+
+    pub fn fields(&self) -> [Option<&str>; 9] {
+        [
+            self.source.as_deref(),
+            self.medium.as_deref(),
+            self.campaign.as_deref(),
+            self.campaign_id.as_deref(),
+            self.term.as_deref(),
+            self.content.as_deref(),
+            self.referrer_domain.as_deref(),
+            self.fbclid.as_deref(),
+            self.gclid.as_deref(),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrafficAttribution {
+    first: TrafficTouchpoint,
+    session: TrafficTouchpoint,
+    last_non_direct: Option<TrafficTouchpoint>,
+}
+
+impl TrafficAttribution {
+    pub const fn new(
+        first: TrafficTouchpoint,
+        session: TrafficTouchpoint,
+        last_non_direct: Option<TrafficTouchpoint>,
+    ) -> Self {
+        Self {
+            first,
+            session,
+            last_non_direct,
+        }
+    }
+
+    pub const fn first(&self) -> &TrafficTouchpoint {
+        &self.first
+    }
+    pub const fn session(&self) -> &TrafficTouchpoint {
+        &self.session
+    }
+    pub const fn last_non_direct(&self) -> Option<&TrafficTouchpoint> {
+        self.last_non_direct.as_ref()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnalyticsSettings {
+    collection_enabled: bool,
+    browser_collection_mode: BrowserCollectionMode,
+    meta_reporting_enabled: bool,
     identity_linking_enabled: bool,
     raw_event_retention_days: u16,
 }
 
-impl AnalyticsPolicy {
+impl AnalyticsSettings {
     pub fn new(
-        behavior_collection_enabled: bool,
-        advertising_exports_enabled: bool,
+        collection_enabled: bool,
+        browser_collection_mode: BrowserCollectionMode,
+        meta_reporting_enabled: bool,
         identity_linking_enabled: bool,
         raw_event_retention_days: u16,
     ) -> Result<Self, DomainError> {
@@ -95,8 +171,9 @@ impl AnalyticsPolicy {
             ));
         }
         Ok(Self {
-            behavior_collection_enabled,
-            advertising_exports_enabled,
+            collection_enabled,
+            browser_collection_mode,
+            meta_reporting_enabled,
             identity_linking_enabled,
             raw_event_retention_days,
         })
@@ -104,19 +181,24 @@ impl AnalyticsPolicy {
 
     pub fn builtin() -> Self {
         Self {
-            behavior_collection_enabled: true,
-            advertising_exports_enabled: false,
+            collection_enabled: true,
+            browser_collection_mode: BrowserCollectionMode::OptOut,
+            meta_reporting_enabled: false,
             identity_linking_enabled: false,
             raw_event_retention_days: DEFAULT_RAW_EVENT_RETENTION_DAYS,
         }
     }
 
-    pub const fn behavior_collection_enabled(self) -> bool {
-        self.behavior_collection_enabled
+    pub const fn collection_enabled(self) -> bool {
+        self.collection_enabled
     }
 
-    pub const fn advertising_exports_enabled(self) -> bool {
-        self.advertising_exports_enabled
+    pub const fn browser_collection_mode(self) -> BrowserCollectionMode {
+        self.browser_collection_mode
+    }
+
+    pub const fn meta_reporting_enabled(self) -> bool {
+        self.meta_reporting_enabled
     }
 
     pub const fn identity_linking_enabled(self) -> bool {
@@ -175,146 +257,74 @@ impl ConsentSnapshot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrowserEventName {
-    PageViewed,
-    ProductViewed,
-    SearchPerformed,
-    CartLineAdded,
-    CheckoutStarted,
-    EngagementHeartbeat,
+    PageView,
+    ViewContent,
+    Search,
+    AddToCart,
+    InitiateCheckout,
+    ViewDuration,
 }
 
 impl BrowserEventName {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PageViewed => "page_viewed",
-            Self::ProductViewed => "product_viewed",
-            Self::SearchPerformed => "search_performed",
-            Self::CartLineAdded => "cart_line_added",
-            Self::CheckoutStarted => "checkout_started",
-            Self::EngagementHeartbeat => "engagement_heartbeat",
+            Self::PageView => "page_view",
+            Self::ViewContent => "view_content",
+            Self::Search => "search",
+            Self::AddToCart => "add_to_cart",
+            Self::InitiateCheckout => "initiate_checkout",
+            Self::ViewDuration => "view_duration",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "page_viewed" => Some(Self::PageViewed),
-            "product_viewed" => Some(Self::ProductViewed),
-            "search_performed" => Some(Self::SearchPerformed),
-            "cart_line_added" => Some(Self::CartLineAdded),
-            "checkout_started" => Some(Self::CheckoutStarted),
-            "engagement_heartbeat" => Some(Self::EngagementHeartbeat),
+            "page_view" => Some(Self::PageView),
+            "view_content" => Some(Self::ViewContent),
+            "search" => Some(Self::Search),
+            "add_to_cart" => Some(Self::AddToCart),
+            "initiate_checkout" => Some(Self::InitiateCheckout),
+            "view_duration" => Some(Self::ViewDuration),
             _ => None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct SessionEventContribution {
-    pub event_count: u64,
-    pub page_view_count: u64,
-    pub product_view_count: u64,
-    pub search_count: u64,
-    pub cart_line_added_count: u64,
-    pub checkout_started_count: u64,
-    pub active_engagement_milliseconds: u64,
-}
-
-impl SessionEventContribution {
-    pub fn from_event(
-        event_name: BrowserEventName,
-        active_engagement_milliseconds: Option<u32>,
-    ) -> Result<Self, DomainError> {
-        let mut value = Self {
-            event_count: 1,
-            ..Self::default()
-        };
-        match event_name {
-            BrowserEventName::PageViewed => value.page_view_count = 1,
-            BrowserEventName::ProductViewed => value.product_view_count = 1,
-            BrowserEventName::SearchPerformed => value.search_count = 1,
-            BrowserEventName::CartLineAdded => value.cart_line_added_count = 1,
-            BrowserEventName::CheckoutStarted => value.checkout_started_count = 1,
-            BrowserEventName::EngagementHeartbeat => {
-                let active = active_engagement_milliseconds.ok_or_else(|| {
-                    validation(
-                        "active_engagement_milliseconds",
-                        "is required for an engagement heartbeat",
-                    )
-                })?;
-                if !(1..=MAX_ENGAGEMENT_INTERVAL_MILLISECONDS).contains(&active) {
-                    return Err(validation(
-                        "active_engagement_milliseconds",
-                        "must be between 1 and 60000",
-                    ));
-                }
-                value.active_engagement_milliseconds = u64::from(active);
-            }
-        }
-        if event_name != BrowserEventName::EngagementHeartbeat
-            && active_engagement_milliseconds.is_some()
-        {
-            return Err(validation(
-                "active_engagement_milliseconds",
-                "is allowed only for an engagement heartbeat",
-            ));
-        }
-        Ok(value)
-    }
-}
-
-pub fn capped_session_engagement(current: u64, addition: u64) -> Result<u64, DomainError> {
-    if current > MAX_SESSION_ENGAGEMENT_MILLISECONDS {
-        return Err(validation(
-            "active_engagement_milliseconds",
-            "stored session engagement exceeds the supported cap",
-        ));
-    }
-    Ok(current
-        .saturating_add(addition)
-        .min(MAX_SESSION_ENGAGEMENT_MILLISECONDS))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BrowserEventProperties {
-    PageViewed {
+    PageView {
         path: String,
         title: Option<String>,
         referrer_domain: Option<String>,
-        campaign_source: Option<String>,
-        campaign_medium: Option<String>,
-        campaign_name: Option<String>,
     },
-    ProductViewed {
+    ViewContent {
         product_id: ProductId,
         product_variant_id: Option<ProductVariantId>,
     },
-    SearchPerformed {
+    Search {
         query: String,
         result_count: Option<u32>,
     },
-    CartLineAdded {
+    AddToCart {
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
     },
-    CheckoutStarted {
+    InitiateCheckout {
         cart_id: CartId,
         checkout_id: Option<CheckoutId>,
     },
-    EngagementHeartbeat {
+    ViewDuration {
         page_view_event_id: Uuid,
         active_milliseconds: u32,
     },
 }
 
 impl BrowserEventProperties {
-    pub fn page_viewed(
+    pub fn page_view(
         path: impl Into<String>,
         title: Option<String>,
         referrer_domain: Option<String>,
-        campaign_source: Option<String>,
-        campaign_medium: Option<String>,
-        campaign_name: Option<String>,
     ) -> Result<Self, DomainError> {
         let path = path.into();
         if !path.starts_with('/')
@@ -328,23 +338,6 @@ impl BrowserEventProperties {
             ));
         }
         validate_optional_text("properties.title", title.as_deref(), 200)?;
-        validate_optional_text(
-            "properties.campaign_source",
-            campaign_source.as_deref(),
-            100,
-        )?;
-        validate_optional_text(
-            "properties.campaign_medium",
-            campaign_medium.as_deref(),
-            100,
-        )?;
-        validate_optional_text("properties.campaign_name", campaign_name.as_deref(), 200)?;
-        if campaign_source.is_none() && (campaign_medium.is_some() || campaign_name.is_some()) {
-            return Err(validation(
-                "properties.campaign_source",
-                "is required when campaign medium or name is present",
-            ));
-        }
         if let Some(domain) = referrer_domain.as_deref()
             && (domain.is_empty()
                 || domain.len() > 253
@@ -357,27 +350,24 @@ impl BrowserEventProperties {
                 "must be a bounded ASCII host name",
             ));
         }
-        Ok(Self::PageViewed {
+        Ok(Self::PageView {
             path,
             title,
             referrer_domain,
-            campaign_source,
-            campaign_medium,
-            campaign_name,
         })
     }
 
-    pub fn product_viewed(
+    pub fn view_content(
         product_id: ProductId,
         product_variant_id: Option<ProductVariantId>,
     ) -> Self {
-        Self::ProductViewed {
+        Self::ViewContent {
             product_id,
             product_variant_id,
         }
     }
 
-    pub fn search_performed(
+    pub fn search(
         query: impl Into<String>,
         result_count: Option<u32>,
     ) -> Result<Self, DomainError> {
@@ -394,13 +384,13 @@ impl BrowserEventProperties {
                 "must not exceed 1000000",
             ));
         }
-        Ok(Self::SearchPerformed {
+        Ok(Self::Search {
             query,
             result_count,
         })
     }
 
-    pub fn cart_line_added(
+    pub fn add_to_cart(
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
@@ -411,21 +401,21 @@ impl BrowserEventProperties {
                 "must be between 1 and 10000",
             ));
         }
-        Ok(Self::CartLineAdded {
+        Ok(Self::AddToCart {
             cart_id,
             product_variant_id,
             quantity,
         })
     }
 
-    pub const fn checkout_started(cart_id: CartId, checkout_id: Option<CheckoutId>) -> Self {
-        Self::CheckoutStarted {
+    pub const fn initiate_checkout(cart_id: CartId, checkout_id: Option<CheckoutId>) -> Self {
+        Self::InitiateCheckout {
             cart_id,
             checkout_id,
         }
     }
 
-    pub fn engagement_heartbeat(
+    pub fn view_duration(
         page_view_event_id: Uuid,
         active_milliseconds: u32,
     ) -> Result<Self, DomainError> {
@@ -441,7 +431,7 @@ impl BrowserEventProperties {
                 "must be between 1 and 60000",
             ));
         }
-        Ok(Self::EngagementHeartbeat {
+        Ok(Self::ViewDuration {
             page_view_event_id,
             active_milliseconds,
         })
@@ -449,12 +439,12 @@ impl BrowserEventProperties {
 
     pub const fn name(&self) -> BrowserEventName {
         match self {
-            Self::PageViewed { .. } => BrowserEventName::PageViewed,
-            Self::ProductViewed { .. } => BrowserEventName::ProductViewed,
-            Self::SearchPerformed { .. } => BrowserEventName::SearchPerformed,
-            Self::CartLineAdded { .. } => BrowserEventName::CartLineAdded,
-            Self::CheckoutStarted { .. } => BrowserEventName::CheckoutStarted,
-            Self::EngagementHeartbeat { .. } => BrowserEventName::EngagementHeartbeat,
+            Self::PageView { .. } => BrowserEventName::PageView,
+            Self::ViewContent { .. } => BrowserEventName::ViewContent,
+            Self::Search { .. } => BrowserEventName::Search,
+            Self::AddToCart { .. } => BrowserEventName::AddToCart,
+            Self::InitiateCheckout { .. } => BrowserEventName::InitiateCheckout,
+            Self::ViewDuration { .. } => BrowserEventName::ViewDuration,
         }
     }
 }
@@ -464,20 +454,25 @@ pub struct BrowserEvent {
     event_id: Uuid,
     schema_version: u16,
     occurred_at: OffsetDateTime,
-    anonymous_id: Uuid,
+    visitor_id: Uuid,
     session_id: Uuid,
     consent: ConsentSnapshot,
+    collection_basis: BrowserCollectionBasis,
+    traffic: Option<TrafficAttribution>,
     properties: BrowserEventProperties,
 }
 
 impl BrowserEvent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_id: Uuid,
         schema_version: u16,
         occurred_at: OffsetDateTime,
-        anonymous_id: Uuid,
+        visitor_id: Uuid,
         session_id: Uuid,
         consent: ConsentSnapshot,
+        collection_basis: BrowserCollectionBasis,
+        traffic: Option<TrafficAttribution>,
         properties: BrowserEventProperties,
     ) -> Result<Self, DomainError> {
         if event_id.is_nil() {
@@ -486,8 +481,8 @@ impl BrowserEvent {
         if schema_version != BROWSER_EVENT_SCHEMA_VERSION {
             return Err(validation("schema_version", "must equal 1"));
         }
-        if anonymous_id.is_nil() {
-            return Err(validation("anonymous_id", "must be a non-nil UUID"));
+        if visitor_id.is_nil() {
+            return Err(validation("visitor_id", "must be a non-nil UUID"));
         }
         if session_id.is_nil() {
             return Err(validation("session_id", "must be a non-nil UUID"));
@@ -496,9 +491,11 @@ impl BrowserEvent {
             event_id,
             schema_version,
             occurred_at,
-            anonymous_id,
+            visitor_id,
             session_id,
             consent,
+            collection_basis,
+            traffic,
             properties,
         })
     }
@@ -515,8 +512,8 @@ impl BrowserEvent {
         self.occurred_at
     }
 
-    pub const fn anonymous_id(&self) -> Uuid {
-        self.anonymous_id
+    pub const fn visitor_id(&self) -> Uuid {
+        self.visitor_id
     }
 
     pub const fn session_id(&self) -> Uuid {
@@ -525,6 +522,14 @@ impl BrowserEvent {
 
     pub const fn consent(&self) -> &ConsentSnapshot {
         &self.consent
+    }
+
+    pub const fn collection_basis(&self) -> BrowserCollectionBasis {
+        self.collection_basis
+    }
+
+    pub const fn traffic(&self) -> Option<&TrafficAttribution> {
+        self.traffic.as_ref()
     }
 
     pub const fn properties(&self) -> &BrowserEventProperties {
@@ -552,6 +557,14 @@ fn validate_optional_text(
     Ok(())
 }
 
+fn valid_referrer_domain(domain: &str) -> bool {
+    !domain.is_empty()
+        && domain.len() <= 253
+        && domain
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+}
+
 fn validation(field: &'static str, reason: impl Into<String>) -> DomainError {
     DomainError::Validation(vec![FieldViolation {
         field,
@@ -567,16 +580,20 @@ mod tests {
     fn browser_events_reject_unbounded_engagement_and_unsafe_paths() {
         let page_view_event_id = Uuid::now_v7();
         assert_eq!(
-            BrowserEventProperties::engagement_heartbeat(page_view_event_id, 60_000).unwrap(),
-            BrowserEventProperties::EngagementHeartbeat {
+            BrowserEventProperties::view_duration(page_view_event_id, 60_000).unwrap(),
+            BrowserEventProperties::ViewDuration {
                 page_view_event_id,
                 active_milliseconds: 60_000,
             }
         );
-        assert!(BrowserEventProperties::engagement_heartbeat(Uuid::now_v7(), 60_001).is_err());
+        assert!(BrowserEventProperties::view_duration(Uuid::now_v7(), 60_001).is_err());
+        assert!(BrowserEventProperties::page_view("/products?total=100", None, None).is_err());
         assert!(
-            BrowserEventProperties::page_viewed(
-                "/products?total=100",
+            TrafficTouchpoint::new(
+                Some("x".repeat(101)),
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -586,24 +603,16 @@ mod tests {
             .is_err()
         );
         assert!(
-            BrowserEventProperties::page_viewed(
-                "/products",
-                None,
-                None,
-                None,
-                Some("email".into()),
-                Some("launch".into()),
-            )
-            .is_err()
-        );
-        assert!(
-            BrowserEventProperties::page_viewed(
-                "/products",
-                None,
-                None,
+            TrafficTouchpoint::new(
                 Some("newsletter".into()),
                 Some("email".into()),
                 Some("launch".into()),
+                None,
+                None,
+                None,
+                Some("search.example".into()),
+                None,
+                None,
             )
             .is_ok()
         );
@@ -616,56 +625,21 @@ mod tests {
     }
 
     #[test]
-    fn session_contributions_cap_estimated_engagement() {
-        let contribution = SessionEventContribution::from_event(
-            BrowserEventName::EngagementHeartbeat,
-            Some(60_000),
-        )
-        .unwrap();
-        assert_eq!(contribution.active_engagement_milliseconds, 60_000);
+    fn analytics_settings_have_bounded_retention_and_conservative_defaults() {
+        let default = AnalyticsSettings::builtin();
+        assert!(default.collection_enabled());
         assert_eq!(
-            capped_session_engagement(14_390_000, contribution.active_engagement_milliseconds)
-                .unwrap(),
-            MAX_SESSION_ENGAGEMENT_MILLISECONDS
+            default.browser_collection_mode(),
+            BrowserCollectionMode::OptOut
         );
-        assert!(
-            SessionEventContribution::from_event(BrowserEventName::PageViewed, Some(1)).is_err()
-        );
-    }
-
-    #[test]
-    fn analytics_policy_has_bounded_retention_and_conservative_defaults() {
-        let default = AnalyticsPolicy::builtin();
-        assert!(default.behavior_collection_enabled());
-        assert!(!default.advertising_exports_enabled());
+        assert!(!default.meta_reporting_enabled());
         assert!(!default.identity_linking_enabled());
         assert_eq!(default.raw_event_retention_days(), 30);
-        assert!(AnalyticsPolicy::new(true, false, false, 0).is_err());
-        assert!(AnalyticsPolicy::new(true, false, false, 401).is_err());
-    }
-
-    #[test]
-    fn destination_secrets_are_constrained_secret_manager_references() {
         assert!(
-            AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_META_PRIMARY")
-                .is_ok()
-        );
-        assert!(AnalyticsDestinationSecretReference::new("env://META_TOKEN").is_err());
-        assert!(
-            AnalyticsDestinationSecretReference::new("env://CHAOS_ANALYTICS_SECRET_lowercase")
-                .is_err()
+            AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false, false, 0).is_err()
         );
         assert!(
-            AnalyticsDestinationSecretReference::new("enc://bm9uY2UtY2lwaGVydGV4dC10YWc").is_ok()
-        );
-        assert!(AnalyticsDestinationSecretReference::new("enc://").is_err());
-        assert!(AnalyticsDestinationSecretReference::new("enc://not valid base64!!!").is_err());
-        assert!(
-            AnalyticsDestinationSecretReference::new(format!(
-                "enc://{}",
-                "a".repeat(MAX_SECRET_REFERENCE_LEN + 1)
-            ))
-            .is_err()
+            AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false, false, 401,).is_err()
         );
     }
 }

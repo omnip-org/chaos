@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chaos_application::{
     ApplicationError,
     ports::{
@@ -26,10 +29,11 @@ use chaos_domain::{
     store::{SalesChannelId, StoreId},
 };
 use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -40,6 +44,15 @@ use super::{
 };
 
 const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";
+const ORDER_TRACKING_KEY_LIFETIME: time::Duration = time::Duration::days(180);
+
+fn generate_order_tracking_key() -> (String, [u8; 32]) {
+    let mut secret = [0_u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let plaintext = format!("otk_{}", URL_SAFE_NO_PAD.encode(secret));
+    let digest = Sha256::digest(plaintext.as_bytes()).into();
+    (plaintext, digest)
+}
 const CREATE_REFUND_OPERATION: &str = "refunds.create.v1";
 const CREATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.create.v1";
 const UPDATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.update.v1";
@@ -688,6 +701,18 @@ impl PaymentRepository for PostgresPaymentRepository {
         .bind(provider_account_id)
         .bind(attempt.amount().amount_minor())
         .bind(currency.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.initiated', $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(actor.store_id.as_uuid())
+        .bind(attempt.id().as_uuid())
+        .bind(json!({ "payment_attempt_id": attempt.id().as_uuid() }))
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -1478,6 +1503,21 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let (tracking_key, tracking_digest) = generate_order_tracking_key();
+    sqlx::query(
+        "INSERT INTO commerce.order_tracking_keys \
+         (id,store_id,order_id,secret_digest,expires_at,created_at) \
+         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(store_id,order_id) DO NOTHING",
+    )
+    .bind(Uuid::now_v7())
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(tracking_digest.as_slice())
+    .bind(now + ORDER_TRACKING_KEY_LIFETIME)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     sqlx::query(
         "INSERT INTO integration.email_deliveries \
          (id, store_id, semantic_event_id, semantic_event_type, \
@@ -1486,6 +1526,8 @@ async fn confirm_paid_order(
                 'order.confirmed', contact.email, 'order_confirmation', 1, \
                 jsonb_build_object( \
                     'order_id', order_row.id, \
+                    'order_number', order_row.order_number, \
+                    'tracking_key', $5, \
                     'total_amount_minor', order_row.total_amount_minor, \
                     'currency', order_row.currency::text \
                 ), 'resend' \
@@ -1500,6 +1542,7 @@ async fn confirm_paid_order(
     .bind(transition_id)
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
+    .bind(tracking_key)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;

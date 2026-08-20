@@ -1,6 +1,6 @@
 # ADR 0022: Unauthenticated Single-Order Status Lookup
 
-- Status: Accepted
+- Status: Superseded by ADR 0027
 - Date: 2026-08-17
 
 ## Context

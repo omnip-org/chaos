@@ -27,7 +27,7 @@ mod storefront_catalog;
 mod storefront_sales;
 mod tax;
 
-pub use analytics::{PostgresAnalyticsEventRepository, PostgresAnalyticsReportingRepository};
+pub use analytics::PostgresAnalyticsEventRepository;
 pub use catalog_management::PostgresCatalogManagementUnitOfWork;
 pub use catalog_provisioning::PostgresCatalogProvisioningUnitOfWork;
 pub use catalog_read::PostgresCatalogReadRepository;

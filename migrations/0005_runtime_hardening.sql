@@ -46,11 +46,9 @@ REVOKE UPDATE, DELETE
        integration.email_deliveries,
        integration.email_suppressions,
        integration.webhook_events,
-       integration.store_policy_versions,
-       integration.identity_links,
-       integration.behavior_events,
-       integration.erasure_requests,
-       integration.commerce_facts
+       integration.commerce_events,
+       integration.visitor_customer_links,
+       integration.provider_metric_snapshots
     FROM chaos_runtime;
 
 COMMENT ON ROLE chaos_runtime IS

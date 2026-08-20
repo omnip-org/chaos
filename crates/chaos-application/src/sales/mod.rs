@@ -281,23 +281,30 @@ impl StorefrontSales {
             })
     }
 
-    /// Reads one Order by ID for a Publishable key holding `orders:read`, without a
-    /// possession-bound shopper credential. The Order UUID is the only credential —
-    /// see ADR 0022 for why this narrow, read-only carve-out from the usual
-    /// possession-bound model (ADR 0009) is safe.
-    pub async fn get_order_by_id(
+    pub async fn exchange_order_tracking_key(
         &self,
         actor: &MachineActor,
-        order_id: OrderId,
+        tracking_key: &secrecy::SecretString,
+        now: OffsetDateTime,
+    ) -> Result<crate::ports::OrderTrackingSession, ApplicationError> {
+        require_storefront_scope(actor, PublishableKeyScope::OrdersRead)?;
+        self.repository
+            .exchange_order_tracking_key(actor, tracking_key, now)
+            .await?
+            .ok_or(ApplicationError::Forbidden)
+    }
+
+    pub async fn get_tracked_order(
+        &self,
+        actor: &MachineActor,
+        access_token: &secrecy::SecretString,
+        now: OffsetDateTime,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
         require_storefront_scope(actor, PublishableKeyScope::OrdersRead)?;
         self.repository
-            .get_order_by_id(actor, order_id)
+            .get_tracked_order(actor, access_token, now)
             .await?
-            .ok_or_else(|| ApplicationError::NotFound {
-                resource: "order",
-                id: order_id.as_uuid().to_string(),
-            })
+            .ok_or(ApplicationError::Forbidden)
     }
 }
 

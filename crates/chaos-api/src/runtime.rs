@@ -12,9 +12,9 @@ use chaos_application::{
     sales::CheckoutExpiryWorkers,
 };
 use chaos_infrastructure::{
-    analytics_destinations::{Ga4MeasurementDestination, MetaConversionsDestination},
     clock::SystemClock,
     config::Settings,
+    meta::MetaConversionsDestination,
     providers::{
         easypost::EasyPostShippingProvider,
         email::{ResendEmailProvider, SmtpEmailProvider},
@@ -49,26 +49,12 @@ impl WorkerRuntime {
         let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let analytics_destination_adapters = vec![
-            Arc::new(MetaConversionsDestination::new(
-                settings.analytics_meta_api_base_url.clone(),
-                settings.dependency_timeout,
-                dynamic_secrets.clone(),
-            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
-            Arc::new(Ga4MeasurementDestination::new(
-                settings.analytics_ga4_api_base_url.clone(),
-                settings.dependency_timeout,
-                dynamic_secrets.clone(),
-            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
-        ];
-        let analytics_workers = AnalyticsWorkers::new(
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository,
-            analytics_destination_adapters,
-        );
+        let meta_destination = Arc::new(MetaConversionsDestination::new(
+            settings.analytics_meta_api_base_url.clone(),
+            settings.dependency_timeout,
+            dynamic_secrets.clone(),
+        )?);
+        let analytics_workers = AnalyticsWorkers::new(analytics_repository, meta_destination);
 
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
@@ -128,6 +114,7 @@ impl WorkerRuntime {
             notification_repository,
             notification_providers,
             settings.email_from.clone(),
+            settings.storefront_public_base_url.to_string(),
         );
 
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
@@ -17,14 +18,26 @@ use chaos_domain::{
     },
     sales::{
         CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderDeliveryStatus,
-        OrderFulfillmentStatus, OrderId, OrderStatus, PostalAddress, ShopperId,
+        OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
     },
     store::StoreId,
 };
+use rand::Rng;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+const ORDER_TRACKING_KEY_LIFETIME: time::Duration = time::Duration::days(180);
+
+fn generate_order_tracking_key() -> (String, [u8; 32]) {
+    let mut secret = [0_u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let plaintext = format!("otk_{}", URL_SAFE_NO_PAD.encode(secret));
+    let digest = Sha256::digest(plaintext.as_bytes()).into();
+    (plaintext, digest)
+}
 
 use super::{
     idempotency::{self, IdempotencyScope},
@@ -131,13 +144,15 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                AND ($3::text IS NULL OR o.status::text = $3) \
                AND ($4::uuid IS NULL OR o.customer_id = $4 OR link.customer_id = $4) \
                AND ($5::text IS NULL OR contact.email = lower($5)) \
-             ORDER BY o.id DESC LIMIT $6",
+               AND ($6::text IS NULL OR o.order_number = upper($6)) \
+             ORDER BY o.id DESC LIMIT $7",
         )
         .bind(store_id.as_uuid())
         .bind(after)
         .bind(filter.status.map(OrderStatus::as_str))
         .bind(filter.customer_id.map(CustomerId::as_uuid))
         .bind(filter.email.as_deref())
+        .bind(filter.order_number.as_deref())
         .bind(i64::from(limit) + 1)
         .fetch_all(&mut *transaction)
         .await
@@ -263,6 +278,21 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
+            let (tracking_key, tracking_digest) = generate_order_tracking_key();
+            sqlx::query(
+                "INSERT INTO commerce.order_tracking_keys \
+                 (id,store_id,order_id,secret_digest,expires_at,created_at) \
+                 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(store_id,order_id) DO NOTHING",
+            )
+            .bind(Uuid::now_v7())
+            .bind(store_id.as_uuid())
+            .bind(order_id.as_uuid())
+            .bind(tracking_digest.as_slice())
+            .bind(now + ORDER_TRACKING_KEY_LIFETIME)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
             sqlx::query(
                 "INSERT INTO integration.email_deliveries \
                  (id, store_id, semantic_event_id, semantic_event_type, \
@@ -271,6 +301,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                         'order.confirmed', contact.email, 'order_confirmation', 1, \
                         jsonb_build_object( \
                             'order_id', order_row.id, \
+                            'order_number', order_row.order_number, \
+                            'tracking_key', $5, \
                             'total_amount_minor', order_row.total_amount_minor, \
                             'currency', order_row.currency::text \
                         ), 'resend' \
@@ -285,6 +317,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             .bind(transition_id)
             .bind(store_id.as_uuid())
             .bind(order_id.as_uuid())
+            .bind(tracking_key)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -325,8 +358,8 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
-    let locale = sqlx::query_scalar::<_, String>(
-        "SELECT locale FROM commerce.orders \
+    let (locale, order_number) = sqlx::query_as::<_, (String, String)>(
+        "SELECT locale, order_number FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -381,6 +414,7 @@ async fn load_order(
     .map_err(database_error)?;
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.0),
+        order_number: OrderNumber::parse(order_number)?,
         shopper_id: ShopperId::from_uuid(row.1),
         customer_id: row.2.map(CustomerId::from_uuid),
         checkout_id: CheckoutId::from_uuid(row.3),

@@ -2435,29 +2435,31 @@ CREATE TABLE commerce.checkout_lines (
 );
 
 CREATE TABLE commerce.orders (
-    id                       UUID                  NOT NULL PRIMARY KEY,
-    store_id                 UUID                  NOT NULL,
-    sales_channel_id         UUID                  NOT NULL,
-    checkout_id              UUID                  NOT NULL,
-    shopper_id               UUID                  NOT NULL,
+    id                       UUID                               NOT NULL PRIMARY KEY,
+    store_id                 UUID                               NOT NULL,
+    order_number             TEXT                               NOT NULL,
+    sales_channel_id         UUID                               NOT NULL,
+    checkout_id              UUID                               NOT NULL,
+    shopper_id               UUID                               NOT NULL,
     customer_id              UUID,
     inventory_reservation_id UUID,
-    price_list_id            UUID                  NOT NULL,
-    currency                 CHAR(3)               NOT NULL,
-    locale                   VARCHAR(63)           NOT NULL DEFAULT 'en-US',
-    status                   commerce.order_status    NOT NULL DEFAULT 'pending',
-    fulfillment_status       commerce.order_fulfillment_status NOT NULL DEFAULT 'unfulfilled',
-    delivery_status          commerce.order_delivery_status NOT NULL DEFAULT 'not_delivered',
-    subtotal_amount_minor    BIGINT                NOT NULL,
-    discount_amount_minor    BIGINT                NOT NULL,
-    tax_amount_minor         BIGINT                NOT NULL,
-    tax_inclusive            BOOLEAN               NOT NULL,
-    shipping_amount_minor    BIGINT                NOT NULL,
-    total_amount_minor       BIGINT                NOT NULL,
-    created_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at               TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    price_list_id            UUID                               NOT NULL,
+    currency                 CHAR(3)                            NOT NULL,
+    locale                   VARCHAR(63)                        NOT NULL DEFAULT 'en-US',
+    status                   commerce.order_status              NOT NULL DEFAULT 'pending',
+    fulfillment_status       commerce.order_fulfillment_status  NOT NULL DEFAULT 'unfulfilled',
+    delivery_status          commerce.order_delivery_status     NOT NULL DEFAULT 'not_delivered',
+    subtotal_amount_minor    BIGINT                             NOT NULL,
+    discount_amount_minor    BIGINT                             NOT NULL,
+    tax_amount_minor         BIGINT                             NOT NULL,
+    tax_inclusive            BOOLEAN                            NOT NULL,
+    shipping_amount_minor    BIGINT                             NOT NULL,
+    total_amount_minor       BIGINT                             NOT NULL,
+    created_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
+    UNIQUE (store_id, order_number),
     UNIQUE (store_id, id, shopper_id),
     UNIQUE (store_id, checkout_id),
     FOREIGN KEY (store_id, checkout_id, shopper_id)
@@ -2471,6 +2473,9 @@ CREATE TABLE commerce.orders (
     FOREIGN KEY (store_id, inventory_reservation_id)
         REFERENCES commerce.inventory_reservations(store_id, id),
     CONSTRAINT orders_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT orders_order_number_check CHECK (
+        order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'
+    ),
     CONSTRAINT orders_locale_check CHECK (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
     ),
@@ -2502,6 +2507,48 @@ CREATE TABLE commerce.order_contacts (
         phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
     )
 );
+
+CREATE TABLE commerce.order_tracking_keys (
+    id                UUID        NOT NULL PRIMARY KEY,
+    store_id          UUID        NOT NULL,
+    order_id          UUID        NOT NULL,
+    secret_digest     BYTEA       NOT NULL,
+    expires_at        TIMESTAMPTZ NOT NULL,
+    revoked_at        TIMESTAMPTZ,
+    last_used_at      TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, order_id),
+    UNIQUE (store_id, secret_digest),
+    FOREIGN KEY (store_id, order_id)
+        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
+    CONSTRAINT order_tracking_keys_digest_check CHECK (octet_length(secret_digest) = 32),
+    CONSTRAINT order_tracking_keys_expiry_check CHECK (expires_at > created_at),
+    CONSTRAINT order_tracking_keys_revocation_check CHECK (
+        revoked_at IS NULL OR revoked_at >= created_at
+    )
+);
+
+CREATE TABLE commerce.order_tracking_sessions (
+    id                UUID        NOT NULL PRIMARY KEY,
+    store_id          UUID        NOT NULL,
+    tracking_key_id   UUID        NOT NULL,
+    access_digest     BYTEA       NOT NULL,
+    expires_at        TIMESTAMPTZ NOT NULL,
+    last_used_at      TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (store_id, id),
+    UNIQUE (store_id, access_digest),
+    FOREIGN KEY (store_id, tracking_key_id)
+        REFERENCES commerce.order_tracking_keys(store_id, id) ON DELETE CASCADE,
+    CONSTRAINT order_tracking_sessions_digest_check CHECK (octet_length(access_digest) = 32),
+    CONSTRAINT order_tracking_sessions_expiry_check CHECK (expires_at > created_at)
+);
+
+CREATE INDEX order_tracking_sessions_expiry_idx
+    ON commerce.order_tracking_sessions (expires_at, id);
 
 CREATE TABLE commerce.order_addresses (
     store_id             UUID               NOT NULL,
@@ -3955,6 +4002,10 @@ ALTER TABLE commerce.checkout_lines ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE commerce.order_tracking_keys ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE commerce.order_tracking_sessions ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE commerce.order_contacts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_addresses ENABLE ROW LEVEL SECURITY;
@@ -4118,6 +4169,14 @@ CREATE POLICY store_isolation ON commerce.orders
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
     );
+
+CREATE POLICY store_isolation ON commerce.order_tracking_keys
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.order_tracking_sessions
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.order_contacts
     USING (

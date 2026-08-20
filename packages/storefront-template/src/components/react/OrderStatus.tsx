@@ -11,10 +11,11 @@ export default function OrderStatus({ orderId }: { orderId: string }) {
     let cancelled = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
+    const chaos = createChaosClient();
 
     async function refresh() {
       try {
-        const { data } = await createChaosClient().orders.get(orderId);
+        const { data } = await chaos.orders.get(orderId);
         if (cancelled) return;
         setOrder(data);
         setError(null);
@@ -52,6 +53,9 @@ export default function OrderStatus({ orderId }: { orderId: string }) {
   return (
     <div className="mt-4 space-y-2 text-gray-600">
       <p>Your payment is confirmed and the order is ready for fulfillment.</p>
+      <p className="text-sm">
+        Order: <span className="font-medium">{order.order_number}</span>
+      </p>
       <p className="text-sm">
         Fulfillment: <span className="font-medium">{order.fulfillment_status}</span>
       </p>

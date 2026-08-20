@@ -125,7 +125,7 @@
       "post": {
         "operationId": "linkStorefrontAnalyticsIdentity",
         "tags": ["Analytics"],
-        "summary": "Link an anonymous Analytics identity to the authenticated Customer",
+        "summary": "Link a Storefront Visitor to the authenticated Customer",
         "description": "Requires current analytics-storage consent and an effective Store Analytics Policy that enables identity linking. Customer identity is never returned.",
         "security": [{ "publishableKey": ["analytics:write"] }],
         "parameters": [
@@ -350,6 +350,34 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/Forbidden" },
           "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/order-tracking-sessions": {
+      "post": {
+        "operationId": "exchangeOrderTrackingKey",
+        "tags": ["Orders"],
+        "summary": "Exchange an emailed Order tracking key for a short-lived session",
+        "security": [{ "publishableKey": ["orders:read"] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExchangeOrderTrackingKey" } } } },
+        "responses": {
+          "201": { "description": "Tracking session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingSessionEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      }
+    },
+    "/order-tracking-orders": {
+      "post": {
+        "operationId": "getTrackedOrder",
+        "tags": ["Orders"],
+        "summary": "Read one Order with a short-lived tracking session",
+        "security": [{ "publishableKey": ["orders:read"] }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingAccess" } } } },
+        "responses": {
+          "200": { "description": "Order", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
         }
       }
     },
@@ -620,24 +648,42 @@
           "policy_version": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$" }
         }
       },
-      "PageViewedProperties": {
+      "TrafficTouchpoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "medium": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "campaign": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "campaign_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "term": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "content": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 },
+          "fbclid": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "gclid": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      },
+      "TrafficAttribution": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["first", "session"],
+        "properties": {
+          "first": { "$ref": "#/components/schemas/TrafficTouchpoint" },
+          "session": { "$ref": "#/components/schemas/TrafficTouchpoint" },
+          "last_non_direct": { "$ref": "#/components/schemas/TrafficTouchpoint" }
+        }
+      },
+      "PageViewProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
-        "dependentRequired": {
-          "campaign_medium": ["campaign_source"],
-          "campaign_name": ["campaign_source"]
-        },
         "properties": {
           "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/[^?#]*$" },
           "title": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 },
-          "campaign_source": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "campaign_medium": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "campaign_name": { "type": "string", "minLength": 1, "maxLength": 200 }
+          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 }
         }
       },
-      "ProductViewedProperties": {
+      "ViewContentProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["product_id"],
@@ -646,7 +692,7 @@
           "product_variant_id": { "type": "string", "format": "uuid" }
         }
       },
-      "SearchPerformedProperties": {
+      "SearchProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["query"],
@@ -655,7 +701,7 @@
           "result_count": { "type": "integer", "minimum": 0, "maximum": 1000000 }
         }
       },
-      "CartLineAddedProperties": {
+      "AddToCartProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["cart_id", "product_variant_id", "quantity"],
@@ -665,7 +711,7 @@
           "quantity": { "type": "integer", "minimum": 1, "maximum": 10000 }
         }
       },
-      "CheckoutStartedProperties": {
+      "InitiateCheckoutProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["cart_id"],
@@ -674,7 +720,7 @@
           "checkout_id": { "type": "string", "format": "uuid" }
         }
       },
-      "EngagementHeartbeatProperties": {
+      "ViewDurationProperties": {
         "type": "object",
         "additionalProperties": false,
         "required": ["page_view_event_id", "active_milliseconds"],
@@ -686,33 +732,35 @@
       "BrowserAnalyticsEvent": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["event_id", "event_name", "schema_version", "occurred_at", "anonymous_id", "session_id", "consent", "properties"],
+        "required": ["event_id", "event_name", "schema_version", "occurred_at", "visitor_id", "session_id", "consent", "collection_basis", "properties"],
         "properties": {
           "event_id": { "type": "string", "format": "uuid" },
-          "event_name": { "type": "string", "enum": ["page_viewed", "product_viewed", "search_performed", "cart_line_added", "checkout_started", "engagement_heartbeat"] },
+          "event_name": { "type": "string", "enum": ["page_view", "view_content", "search", "add_to_cart", "initiate_checkout", "view_duration"] },
           "schema_version": { "type": "integer", "const": 1 },
           "occurred_at": { "type": "string", "format": "date-time" },
-          "anonymous_id": { "type": "string", "format": "uuid" },
+          "visitor_id": { "type": "string", "format": "uuid" },
           "session_id": { "type": "string", "format": "uuid" },
           "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
+          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] },
+          "traffic": { "$ref": "#/components/schemas/TrafficAttribution" },
           "properties": {
             "oneOf": [
-              { "$ref": "#/components/schemas/PageViewedProperties" },
-              { "$ref": "#/components/schemas/ProductViewedProperties" },
-              { "$ref": "#/components/schemas/SearchPerformedProperties" },
-              { "$ref": "#/components/schemas/CartLineAddedProperties" },
-              { "$ref": "#/components/schemas/CheckoutStartedProperties" },
-              { "$ref": "#/components/schemas/EngagementHeartbeatProperties" }
+              { "$ref": "#/components/schemas/PageViewProperties" },
+              { "$ref": "#/components/schemas/ViewContentProperties" },
+              { "$ref": "#/components/schemas/SearchProperties" },
+              { "$ref": "#/components/schemas/AddToCartProperties" },
+              { "$ref": "#/components/schemas/InitiateCheckoutProperties" },
+              { "$ref": "#/components/schemas/ViewDurationProperties" }
             ]
           }
         },
         "allOf": [
-          { "if": { "properties": { "event_name": { "const": "page_viewed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/PageViewedProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "product_viewed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ProductViewedProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "search_performed" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/SearchPerformedProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "cart_line_added" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/CartLineAddedProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "checkout_started" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/CheckoutStartedProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "engagement_heartbeat" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/EngagementHeartbeatProperties" } } } }
+          { "if": { "properties": { "event_name": { "const": "page_view" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/PageViewProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "view_content" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewContentProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "search" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/SearchProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "add_to_cart" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/AddToCartProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "initiate_checkout" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/InitiateCheckoutProperties" } } } },
+          { "if": { "properties": { "event_name": { "const": "view_duration" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewDurationProperties" } } } }
         ]
       },
       "CollectAnalyticsEvents": {
@@ -726,14 +774,14 @@
       "AnalyticsCollectionResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["received", "stored", "duplicates", "discarded_for_consent", "discarded_for_policy", "collection_policy_version"],
+        "required": ["received", "stored", "duplicates", "discarded_for_consent", "discarded_for_settings", "settings_revision"],
         "properties": {
           "received": { "type": "integer", "minimum": 1, "maximum": 20 },
           "stored": { "type": "integer", "minimum": 0, "maximum": 20 },
           "duplicates": { "type": "integer", "minimum": 0, "maximum": 20 },
           "discarded_for_consent": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "discarded_for_policy": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "collection_policy_version": { "type": "string" }
+          "discarded_for_settings": { "type": "integer", "minimum": 0, "maximum": 20 },
+          "settings_revision": { "type": "integer", "minimum": 1 }
         }
       },
       "AnalyticsCollectionEnvelope": {
@@ -745,22 +793,24 @@
       "LinkAnalyticsIdentity": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["anonymous_id", "consent"],
+        "required": ["visitor_id", "consent", "collection_basis"],
         "properties": {
-          "anonymous_id": { "type": "string", "format": "uuid", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
-          "consent": { "$ref": "#/components/schemas/AnalyticsConsent" }
+          "visitor_id": { "type": "string", "format": "uuid", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
+          "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
+          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] }
         }
       },
       "AnalyticsIdentityLink": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "store_id", "anonymous_id", "consent_policy_version", "collection_policy_version", "linked_at", "retention_expires_at"],
+        "required": ["id", "store_id", "visitor_id", "consent_policy_version", "collection_basis", "settings_revision", "linked_at", "retention_expires_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "store_id": { "type": "string", "format": "uuid" },
-          "anonymous_id": { "type": "string", "format": "uuid" },
+          "visitor_id": { "type": "string", "format": "uuid" },
           "consent_policy_version": { "type": "string" },
-          "collection_policy_version": { "type": "string" },
+          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] },
+          "settings_revision": { "type": "integer", "minimum": 1 },
           "linked_at": { "type": "string", "format": "date-time" },
           "retention_expires_at": { "type": "string", "format": "date-time" }
         }
@@ -1088,9 +1138,10 @@
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "checkout_id", "price_list_id", "currency", "locale", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": ["id", "order_number", "checkout_id", "price_list_id", "currency", "locale", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "order_number": { "type": "string", "pattern": "^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$" },
           "checkout_id": { "type": "string", "format": "uuid" },
           "customer_id": { "type": "string", "format": "uuid" },
           "inventory_reservation_id": { "type": "string", "format": "uuid" },
@@ -1123,6 +1174,34 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/Order" } }
+      },
+      "ExchangeOrderTrackingKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tracking_key"],
+        "properties": { "tracking_key": { "type": "string", "pattern": "^otk_[A-Za-z0-9_-]{43}$" } }
+      },
+      "OrderTrackingAccess": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["access_token"],
+        "properties": { "access_token": { "type": "string", "pattern": "^ots_[A-Za-z0-9_-]{43}$" } }
+      },
+      "OrderTrackingSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["access_token", "expires_at", "order"],
+        "properties": {
+          "access_token": { "type": "string", "pattern": "^ots_[A-Za-z0-9_-]{43}$" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "order": { "$ref": "#/components/schemas/Order" }
+        }
+      },
+      "OrderTrackingSessionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/components/schemas/OrderTrackingSession" } }
       },
       "UpdateCustomer": {
         "type": "object",
@@ -1352,7 +1431,7 @@
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "RateLimited": {
-        "description": "Store, Sales Channel, or anonymous-identity collection budget exceeded",
+        "description": "Store, Sales Channel, or Visitor collection budget exceeded",
         "headers": {
           "Retry-After": {
             "description": "Seconds until the current fixed collection window expires",

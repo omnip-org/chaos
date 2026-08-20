@@ -2,7 +2,7 @@ export { ChaosStorefrontClient, createStorefrontClient } from "./client.js";
 export type { ClientOptions, RequestOptions } from "./client.js";
 
 export { ChaosStorefrontAnalytics, createStorefrontAnalytics } from "./analytics.js";
-export type { AnalyticsConsentInput, AnalyticsOptions, PageViewedInput } from "./analytics.js";
+export type { AnalyticsConsentInput, AnalyticsOptions, PageViewInput } from "./analytics.js";
 
 export { ChaosApiError } from "./errors.js";
 

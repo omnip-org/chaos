@@ -27,6 +27,7 @@ pub struct Settings {
     pub apple_client_id: Option<String>,
     pub smtp_url: Option<String>,
     pub email_from: String,
+    pub storefront_public_base_url: Url,
     pub resend_api_key: Option<SecretString>,
     pub resend_webhook_secret: Option<SecretString>,
     pub resend_api_base_url: Url,
@@ -34,7 +35,6 @@ pub struct Settings {
     pub stripe_api_base_url: Url,
     pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
-    pub analytics_ga4_api_base_url: Url,
     pub provider_secret_key: SecretKey,
     pub media_storage: Option<MediaStorageSettings>,
     pub shopper_token_active_key_id: String,
@@ -125,6 +125,10 @@ impl Settings {
             apple_client_id: optional("APPLE_CLIENT_ID"),
             smtp_url: optional("SMTP_URL"),
             email_from: required("EMAIL_FROM")?,
+            storefront_public_base_url: parse_or(
+                "STOREFRONT_PUBLIC_BASE_URL",
+                "http://localhost:4321/",
+            )?,
             resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
             resend_webhook_secret: optional("RESEND_WEBHOOK_SECRET").map(SecretString::from),
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
@@ -134,10 +138,6 @@ impl Settings {
             analytics_meta_api_base_url: parse_or(
                 "ANALYTICS_META_API_BASE_URL",
                 "https://graph.facebook.com/v24.0/",
-            )?,
-            analytics_ga4_api_base_url: parse_or(
-                "ANALYTICS_GA4_API_BASE_URL",
-                "https://www.google-analytics.com/",
             )?,
             provider_secret_key: provider_secret_key()?,
             media_storage: media_storage_settings()?,

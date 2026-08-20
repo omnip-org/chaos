@@ -37,10 +37,7 @@ mod test_support;
 use anyhow::Context as _;
 use axum::Router;
 use chaos_application::{
-    analytics::{
-        AnalyticsAdministration, AnalyticsCollection, AnalyticsDestinations, AnalyticsPrivacy,
-        AnalyticsReporting, AnalyticsWorkers,
-    },
+    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy, AnalyticsWorkers},
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
         CreateProduct, MediaAdministration, ReviewAdministration, StorefrontCollections,
@@ -67,7 +64,6 @@ use std::sync::Arc;
 
 use chaos_infrastructure::{
     RedisAnalyticsCollectionRateLimiter,
-    analytics_destinations::{Ga4MeasurementDestination, MetaConversionsDestination},
     clock::SystemClock,
     config::Settings,
     easypost::EasyPostShippingProvider,
@@ -77,13 +73,13 @@ use chaos_infrastructure::{
         PostgresAccessKeyRepository, PostgresIdentityRepository, SecureAccessKeyMaterialGenerator,
     },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
+    meta::MetaConversionsDestination,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
-        PostgresAnalyticsReportingRepository, PostgresCatalogLocalizationRepository,
-        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
-        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
+        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+        PostgresCollectionRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
+        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
@@ -148,8 +144,6 @@ pub struct ApiState {
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub analytics_privacy: Arc<AnalyticsPrivacy>,
-    pub analytics_reporting: Arc<AnalyticsReporting>,
-    pub analytics_destinations: Arc<AnalyticsDestinations>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
@@ -335,36 +329,20 @@ impl ApiState {
                 infrastructure.redis_client(),
             )),
         );
-        let analytics_administration = AnalyticsAdministration::new(analytics_repository.clone());
+        let analytics_administration = AnalyticsAdministration::new(
+            analytics_repository.clone(),
+            analytics_repository.clone(),
+        );
         let analytics_privacy = AnalyticsPrivacy::new(analytics_repository.clone());
-        let analytics_reporting = AnalyticsReporting::new(Arc::new(
-            PostgresAnalyticsReportingRepository::new(infrastructure.analytics_pool()),
-        ));
-        let analytics_destinations = AnalyticsDestinations::new(analytics_repository.clone());
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =
             ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());
-        let analytics_destination_secrets = dynamic_secrets.clone();
-        let analytics_destination_adapters = vec![
-            Arc::new(MetaConversionsDestination::new(
-                settings.analytics_meta_api_base_url.clone(),
-                settings.dependency_timeout,
-                analytics_destination_secrets.clone(),
-            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
-            Arc::new(Ga4MeasurementDestination::new(
-                settings.analytics_ga4_api_base_url.clone(),
-                settings.dependency_timeout,
-                analytics_destination_secrets,
-            )?) as Arc<dyn chaos_application::ports::AnalyticsDestination>,
-        ];
-        let analytics_workers = AnalyticsWorkers::new(
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository.clone(),
-            analytics_repository,
-            analytics_destination_adapters,
-        );
+        let meta_destination = Arc::new(MetaConversionsDestination::new(
+            settings.analytics_meta_api_base_url.clone(),
+            settings.dependency_timeout,
+            dynamic_secrets.clone(),
+        )?);
+        let analytics_workers = AnalyticsWorkers::new(analytics_repository, meta_destination);
         let storefront_catalog = StorefrontCatalog::new(Arc::new(
             PostgresStorefrontCatalogRepository::new(infrastructure.runtime_pool()),
         ));
@@ -450,6 +428,7 @@ impl ApiState {
             notification_repository.clone(),
             notification_providers,
             settings.email_from.clone(),
+            settings.storefront_public_base_url.to_string(),
         );
         let notification_verifiers = settings
             .resend_webhook_secret
@@ -527,8 +506,6 @@ impl ApiState {
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
             analytics_privacy: Arc::new(analytics_privacy),
-            analytics_reporting: Arc::new(analytics_reporting),
-            analytics_destinations: Arc::new(analytics_destinations),
             analytics_workers: Arc::new(analytics_workers),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
@@ -581,8 +558,6 @@ pub fn router(state: ApiState) -> Router {
             provider_secret_management: state.provider_secret_management.clone(),
             analytics_administration: state.analytics_administration.clone(),
             analytics_privacy: state.analytics_privacy.clone(),
-            analytics_reporting: state.analytics_reporting.clone(),
-            analytics_destinations: state.analytics_destinations.clone(),
             clock: state.clock.clone(),
         },
         state.mcp_allowed_hosts.clone(),
@@ -646,6 +621,7 @@ mod tests {
             apple_client_id: None,
             smtp_url: Some("smtp://localhost:1025".into()),
             email_from: "Chaos <no-reply@localhost>".into(),
+            storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             resend_api_key: None,
             resend_webhook_secret: None,
             resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
@@ -653,7 +629,6 @@ mod tests {
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
-            analytics_ga4_api_base_url: "http://127.0.0.1:12115/".parse().unwrap(),
             provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
                 "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
             )

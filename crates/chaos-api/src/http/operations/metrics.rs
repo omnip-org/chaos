@@ -82,39 +82,6 @@ async fn scrape(State(state): State<ApiState>) -> impl IntoResponse {
         ::metrics::gauge!("chaos_shipping_cancellation_dead_letter").set(dead_letter as f64);
         ::metrics::gauge!("chaos_shipping_cancellation_oldest_due_seconds").set(oldest);
     }
-    if let Ok((pending, processing, dead_letter, oldest)) =
-        sqlx::query_as::<_, (i64, i64, i64, f64)>(
-            "SELECT * FROM integration.sessionization_metrics()",
-        )
-        .fetch_one(&pool)
-        .await
-    {
-        ::metrics::gauge!("chaos_analytics_sessionization_pending").set(pending as f64);
-        ::metrics::gauge!("chaos_analytics_sessionization_processing").set(processing as f64);
-        ::metrics::gauge!("chaos_analytics_sessionization_dead_letter").set(dead_letter as f64);
-        ::metrics::gauge!("chaos_analytics_sessionization_oldest_pending_seconds").set(oldest);
-    }
-    if let Ok((expired_events, expired_sessions, expired_links, oldest)) =
-        sqlx::query_as::<_, (i64, i64, i64, f64)>("SELECT * FROM integration.retention_metrics()")
-            .fetch_one(&pool)
-            .await
-    {
-        ::metrics::gauge!("chaos_analytics_retention_expired_behavior_events")
-            .set(expired_events as f64);
-        ::metrics::gauge!("chaos_analytics_retention_expired_sessions")
-            .set(expired_sessions as f64);
-        ::metrics::gauge!("chaos_analytics_retention_expired_identity_links")
-            .set(expired_links as f64);
-        ::metrics::gauge!("chaos_analytics_retention_oldest_expired_seconds").set(oldest);
-    }
-    if let Ok((pending, oldest)) =
-        sqlx::query_as::<_, (i64, f64)>("SELECT * FROM integration.erasure_metrics()")
-            .fetch_one(&pool)
-            .await
-    {
-        ::metrics::gauge!("chaos_analytics_erasure_pending").set(pending as f64);
-        ::metrics::gauge!("chaos_analytics_erasure_oldest_pending_seconds").set(oldest);
-    }
     (
         [(
             header::CONTENT_TYPE,

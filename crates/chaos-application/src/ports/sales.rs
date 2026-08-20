@@ -10,6 +10,7 @@ use chaos_domain::{
         OrderFulfillmentStatus, OrderId, OrderStatus, ShopperId,
     },
 };
+use secrecy::SecretString;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -114,6 +115,7 @@ pub struct OrderTransitionItem {
 
 pub struct OrderDetail {
     pub id: OrderId,
+    pub order_number: chaos_domain::sales::OrderNumber,
     pub shopper_id: ShopperId,
     pub customer_id: Option<CustomerId>,
     pub checkout_id: CheckoutId,
@@ -140,7 +142,14 @@ pub struct OrderDetail {
     pub updated_at: OffsetDateTime,
 }
 
+pub struct OrderTrackingSession {
+    pub access_token: SecretString,
+    pub expires_at: OffsetDateTime,
+    pub order: OrderDetail,
+}
+
 pub struct OrderListFilter {
+    pub order_number: Option<String>,
     pub status: Option<OrderStatus>,
     pub customer_id: Option<CustomerId>,
     pub email: Option<String>,
@@ -231,10 +240,18 @@ pub trait StorefrontSalesRepository: Send + Sync {
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 
-    async fn get_order_by_id(
+    async fn exchange_order_tracking_key(
         &self,
         actor: &MachineActor,
-        order_id: OrderId,
+        tracking_key: &SecretString,
+        now: OffsetDateTime,
+    ) -> Result<Option<OrderTrackingSession>, ApplicationError>;
+
+    async fn get_tracked_order(
+        &self,
+        actor: &MachineActor,
+        access_token: &SecretString,
+        now: OffsetDateTime,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 }
 

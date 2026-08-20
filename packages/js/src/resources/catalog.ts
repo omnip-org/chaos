@@ -22,12 +22,24 @@ export interface ListCollectionsParams extends CursorPageParams {
 export class CatalogResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
-  listProducts(params: ListProductsParams = {}): Promise<PageEnvelope<Product>> {
-    return this.client.request("/products", { method: "GET", query: params });
+  async listProducts(params: ListProductsParams = {}): Promise<PageEnvelope<Product>> {
+    const response = await this.client.request<PageEnvelope<Product>, ListProductsParams>("/products", {
+      method: "GET",
+      query: params,
+    });
+    if (params.q) {
+      this.client.analytics?.search({ query: params.q, resultCount: response.data.length });
+    }
+    return response;
   }
 
-  getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
-    return this.client.request(`/products/${encodeURIComponent(handle)}`, { method: "GET", query: params });
+  async getProduct(handle: string, params: GetProductParams = {}): Promise<DataEnvelope<Product>> {
+    const response = await this.client.request<DataEnvelope<Product>, GetProductParams>(
+      `/products/${encodeURIComponent(handle)}`,
+      { method: "GET", query: params },
+    );
+    this.client.analytics?.viewContent({ productId: response.data.id });
+    return response;
   }
 
   listCollections(params: ListCollectionsParams = {}): Promise<PageEnvelope<Collection>> {
