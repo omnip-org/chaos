@@ -1014,13 +1014,7 @@ fn convert(e: impl std::error::Error + Send + Sync + 'static) -> ApplicationErro
 mod tests {
     use std::sync::Arc;
 
-    use chaos_application::{
-        ports::{
-            AnalyticsEventRepository as _, AnalyticsSettingsRepository as _,
-            AnalyticsWorkerRepository as _,
-        },
-        store::StoreQueries,
-    };
+    use chaos_application::store::StoreQueries;
     use chaos_domain::{
         analytics::{BrowserEvent, BrowserEventProperties, ConsentSnapshot},
         identity::{AccessKeyId, UserId},
