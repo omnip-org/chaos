@@ -80,7 +80,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<UploadProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -216,7 +216,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -254,7 +254,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ArchiveProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )

@@ -33,7 +33,7 @@ use chaos_application::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
         ShippingProviderAdministration,
     },
-    identity::{IdentityService, McpKeyAuthentication, McpKeyManagement},
+    identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateStore, MerchantQueries,
@@ -57,7 +57,7 @@ use chaos_infrastructure::{
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
     identity::{
         JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
-        PostgresIdentityRepository, PostgresMcpKeyRepository, SecureMcpKeyMaterialGenerator,
+        PostgresAccessKeyRepository, PostgresIdentityRepository, SecureAccessKeyMaterialGenerator,
     },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     repositories::{
@@ -104,8 +104,8 @@ pub struct ApiState {
     pub lifecycle: Lifecycle,
     pub metrics: PrometheusHandle,
     pub identity_auth: Arc<dyn IdentityAuthentication>,
-    pub mcp_key_management: Arc<McpKeyManagement>,
-    pub mcp_key_authentication: Arc<McpKeyAuthentication>,
+    pub access_key_management: Arc<AccessKeyManagement>,
+    pub access_key_authentication: Arc<AccessKeyAuthentication>,
     pub mcp_allowed_hosts: Vec<String>,
     pub create_store: Arc<CreateStore>,
     pub store_administration: Arc<StoreAdministration>,
@@ -216,14 +216,14 @@ impl ApiState {
                 settings.auth_jwt_lifetime_seconds,
             )?),
         );
-        let mcp_key_repository = Arc::new(PostgresMcpKeyRepository::new(
+        let access_key_repository = Arc::new(PostgresAccessKeyRepository::new(
             infrastructure.identity_pool(),
         ));
-        let mcp_key_management = McpKeyManagement::new(
-            mcp_key_repository.clone(),
-            Arc::new(SecureMcpKeyMaterialGenerator),
+        let access_key_management = AccessKeyManagement::new(
+            access_key_repository.clone(),
+            Arc::new(SecureAccessKeyMaterialGenerator),
         );
-        let mcp_key_authentication = McpKeyAuthentication::new(mcp_key_repository);
+        let access_key_authentication = AccessKeyAuthentication::new(access_key_repository);
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             infrastructure.runtime_pool(),
         )));
@@ -395,6 +395,11 @@ impl ApiState {
             )?) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
             Arc::new(StripeWebhookVerifier::new(
                 payment_repository.clone(),
+                payment_secrets.clone(),
+            )) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
+            Arc::new(StripeWebhookVerifier::for_provider(
+                "stripe_checkout",
+                payment_repository.clone(),
                 payment_secrets,
             )) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
         ];
@@ -476,8 +481,8 @@ impl ApiState {
             lifecycle,
             metrics,
             identity_auth: Arc::new(identity_auth),
-            mcp_key_management: Arc::new(mcp_key_management),
-            mcp_key_authentication: Arc::new(mcp_key_authentication),
+            access_key_management: Arc::new(access_key_management),
+            access_key_authentication: Arc::new(access_key_authentication),
             mcp_allowed_hosts: settings.mcp_allowed_hosts.clone(),
             create_store: Arc::new(create_store),
             store_administration: Arc::new(store_administration),
@@ -530,7 +535,7 @@ impl ApiState {
 pub fn router(state: ApiState) -> Router {
     let mcp_router = chaos_mcp::router(
         chaos_mcp::McpState {
-            mcp_key_authentication: state.mcp_key_authentication.clone(),
+            access_key_authentication: state.access_key_authentication.clone(),
             merchant_queries: state.merchant_queries.clone(),
             store_membership_management: state.store_membership_management.clone(),
             create_store: state.create_store.clone(),

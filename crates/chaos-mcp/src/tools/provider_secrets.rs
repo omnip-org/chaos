@@ -46,7 +46,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateProviderSecretParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )

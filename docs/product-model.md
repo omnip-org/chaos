@@ -34,11 +34,11 @@ An immutable commercial record after creation, with controlled state transitions
 
 A Payment records authorization and capture against one Order. A Refund references captured value and may never cause total successful or pending refunds to exceed the captured amount.
 
-## MCP Key
+## Access Key
 
-A private credential owned by one User and used only to authenticate MCP. The plaintext is shown once; only verification material is stored. An MCP Key never grants Store access by itself. Every tool call selects a Store and checks the User's current membership and role.
+A private credential owned by one User and used only to authenticate MCP. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every tool call selects a Store and checks the User's current membership and role.
 
-The authenticated operation chain is `MCP Key -> User -> Store Membership -> Store`. Request telemetry retains the MCP Key, User, Store, and request identities so AI-driven mutations are attributable.
+The authenticated operation chain is `Access Key -> User -> Store Membership -> Store`. Request telemetry retains the Access Key, User, Store, and request identities so AI-driven mutations are attributable.
 
 ## Publishable Key
 

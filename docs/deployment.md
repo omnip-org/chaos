@@ -78,7 +78,7 @@ curl --fail https://api.example.com/health/ready
 ## Identity and MCP bootstrap
 
 1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
-2. Create a User-owned MCP Key at `POST /identity/v1/mcp-keys` with the JWT. Preserve the plaintext returned once.
+2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
 3. Configure the AI client with `Authorization: Bearer <mcp-key>` and `X-Chaos-Store-Id: <store-id>`.
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
 5. Create only Publishable Keys for storefront or Sales Channel clients.

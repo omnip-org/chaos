@@ -127,11 +127,15 @@
       "StripeWebhookEvent": {
         "type": "object",
         "additionalProperties": true,
-        "required": ["id", "type", "account", "data"],
+        "required": ["id", "type", "data"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "type": { "type": "string", "minLength": 1 },
-          "account": { "type": "string", "pattern": "^acct_[A-Za-z0-9_]+$" },
+          "account": {
+            "type": "string",
+            "pattern": "^acct_[A-Za-z0-9_]+$",
+            "description": "Present for Stripe Connect events and omitted for events from the account owning the API key."
+          },
           "data": { "type": "object" }
         }
       },

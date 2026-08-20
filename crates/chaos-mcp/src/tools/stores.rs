@@ -78,13 +78,15 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal =
-            match crate::auth::authenticate_principal(&self.state.mcp_key_authentication, &parts)
-                .await
-            {
-                Ok(principal) => principal,
-                Err(result) => return Ok(result),
-            };
+        let principal = match crate::auth::authenticate_principal(
+            &self.state.access_key_authentication,
+            &parts,
+        )
+        .await
+        {
+            Ok(principal) => principal,
+            Err(result) => return Ok(result),
+        };
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
@@ -116,13 +118,15 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListStoresParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal =
-            match crate::auth::authenticate_principal(&self.state.mcp_key_authentication, &parts)
-                .await
-            {
-                Ok(principal) => principal,
-                Err(result) => return Ok(result),
-            };
+        let principal = match crate::auth::authenticate_principal(
+            &self.state.access_key_authentication,
+            &parts,
+        )
+        .await
+        {
+            Ok(principal) => principal,
+            Err(result) => return Ok(result),
+        };
         let after = match params.cursor.as_deref().map(uuid::Uuid::parse_str) {
             Some(Ok(id)) => Some(StoreId::from_uuid(id)),
             Some(Err(_)) => {

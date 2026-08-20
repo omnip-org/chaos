@@ -56,7 +56,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListOrdersParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -125,7 +125,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<GetOrderParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -186,7 +186,7 @@ impl ChaosMcp {
         target_status: OrderStatus,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -237,7 +237,18 @@ fn order_summary(detail: chaos_application::ports::OrderDetail) -> serde_json::V
         "tax_amount_minor": detail.tax_amount_minor,
         "shipping_amount_minor": detail.shipping_amount_minor,
         "total_amount_minor": detail.total_amount_minor,
-        "line_count": detail.lines.len(),
+        "lines": detail.lines.into_iter().map(|line| json!({
+            "product_id": line.product_id.as_uuid(),
+            "product_variant_id": line.product_variant_id.as_uuid(),
+            "product_title": line.product_title,
+            "variant_title": line.variant_title,
+            "sku": line.sku,
+            "requires_shipping": line.requires_shipping,
+            "track_inventory": line.track_inventory,
+            "quantity": line.quantity,
+            "unit_price_amount_minor": line.unit_price_amount_minor,
+            "total_amount_minor": line.total_amount_minor,
+        })).collect::<Vec<_>>(),
         "created_at": format_time(detail.created_at),
         "updated_at": format_time(detail.updated_at),
     })

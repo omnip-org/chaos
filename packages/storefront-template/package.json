@@ -2,7 +2,7 @@
   "name": "storefront-template",
   "private": true,
   "version": "0.1.0",
-  "description": "Reference Astro + React + Tailwind storefront built on @omnip-org/chaos-js, with Stripe Checkout Session checkout.",
+  "description": "Reference Astro + React + Tailwind storefront with Stripe Embedded Checkout.",
   "type": "module",
   "scripts": {
     "dev": "astro dev",
@@ -13,6 +13,8 @@
     "@astrojs/node": "^11.1.2",
     "@astrojs/react": "^6.0.2",
     "@omnip-org/chaos-js": "file:../js",
+    "@stripe/react-stripe-js": "^6.8.1",
+    "@stripe/stripe-js": "^9.13.0",
     "astro": "^7.2.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

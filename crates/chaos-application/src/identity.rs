@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chaos_domain::identity::{IdentityProvider, McpKey, McpKeyId, UserId};
+use chaos_domain::identity::{AccessKey, AccessKeyId, IdentityProvider, UserId};
 use secrecy::SecretString;
 
 use crate::{
     ApplicationError,
     ports::{
-        AccessTokenCodec, AccessTokenGrant, ExternalIdentityVerifier, IdentityAuthentication,
-        IdentityRepository, McpKeyListItem, McpKeyMaterialGenerator, McpKeyRepository,
+        AccessKeyListItem, AccessKeyMaterialGenerator, AccessKeyRepository, AccessTokenCodec,
+        AccessTokenGrant, ExternalIdentityVerifier, IdentityAuthentication, IdentityRepository,
         McpPrincipal,
     },
 };
@@ -19,27 +19,27 @@ pub struct IdentityService {
     tokens: Arc<dyn AccessTokenCodec>,
 }
 
-pub struct CreateMcpKeyOutput {
-    pub key: McpKey,
+pub struct CreateAccessKeyOutput {
+    pub key: AccessKey,
     pub key_identifier: String,
     pub display_suffix: String,
     pub plaintext: SecretString,
 }
 
-pub struct McpKeyPage {
-    pub items: Vec<McpKeyListItem>,
+pub struct AccessKeyPage {
+    pub items: Vec<AccessKeyListItem>,
     pub has_more: bool,
 }
 
-pub struct McpKeyManagement {
-    repository: Arc<dyn McpKeyRepository>,
-    generator: Arc<dyn McpKeyMaterialGenerator>,
+pub struct AccessKeyManagement {
+    repository: Arc<dyn AccessKeyRepository>,
+    generator: Arc<dyn AccessKeyMaterialGenerator>,
 }
 
-impl McpKeyManagement {
+impl AccessKeyManagement {
     pub fn new(
-        repository: Arc<dyn McpKeyRepository>,
-        generator: Arc<dyn McpKeyMaterialGenerator>,
+        repository: Arc<dyn AccessKeyRepository>,
+        generator: Arc<dyn AccessKeyMaterialGenerator>,
     ) -> Self {
         Self {
             repository,
@@ -51,11 +51,11 @@ impl McpKeyManagement {
         &self,
         user_id: UserId,
         name: String,
-    ) -> Result<CreateMcpKeyOutput, ApplicationError> {
-        let key = McpKey::issue(user_id, name).map_err(ApplicationError::from)?;
+    ) -> Result<CreateAccessKeyOutput, ApplicationError> {
+        let key = AccessKey::issue(user_id, name).map_err(ApplicationError::from)?;
         let material = self.generator.generate();
         self.repository.create(&key, &material).await?;
-        Ok(CreateMcpKeyOutput {
+        Ok(CreateAccessKeyOutput {
             key,
             key_identifier: material.key_identifier,
             display_suffix: material.display_suffix,
@@ -66,29 +66,33 @@ impl McpKeyManagement {
     pub async fn list(
         &self,
         user_id: UserId,
-        after: Option<McpKeyId>,
+        after: Option<AccessKeyId>,
         limit: u16,
-    ) -> Result<McpKeyPage, ApplicationError> {
+    ) -> Result<AccessKeyPage, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self.repository.list(user_id, after, limit + 1).await?;
         let has_more = items.len() > usize::from(limit);
         if has_more {
             items.pop();
         }
-        Ok(McpKeyPage { items, has_more })
+        Ok(AccessKeyPage { items, has_more })
     }
 
-    pub async fn revoke(&self, user_id: UserId, key_id: McpKeyId) -> Result<(), ApplicationError> {
+    pub async fn revoke(
+        &self,
+        user_id: UserId,
+        key_id: AccessKeyId,
+    ) -> Result<(), ApplicationError> {
         self.repository.revoke(user_id, key_id).await
     }
 }
 
-pub struct McpKeyAuthentication {
-    repository: Arc<dyn McpKeyRepository>,
+pub struct AccessKeyAuthentication {
+    repository: Arc<dyn AccessKeyRepository>,
 }
 
-impl McpKeyAuthentication {
-    pub fn new(repository: Arc<dyn McpKeyRepository>) -> Self {
+impl AccessKeyAuthentication {
+    pub fn new(repository: Arc<dyn AccessKeyRepository>) -> Self {
         Self { repository }
     }
 

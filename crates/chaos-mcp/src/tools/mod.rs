@@ -28,7 +28,7 @@ use chaos_application::{
         CreateProduct, MediaAdministration, ReviewAdministration,
     },
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
-    identity::McpKeyAuthentication,
+    identity::AccessKeyAuthentication,
     inventory::InventoryManagement,
     merchant::{
         ApiKeyManagement, CreateStore, MerchantQueries, ProviderSecretManagement,
@@ -45,7 +45,7 @@ use rmcp::{handler::server::router::tool::ToolRouter, tool_handler};
 /// Mirrors `ApiState` in `chaos-api`, but scoped to only what MCP tools need.
 #[derive(Clone)]
 pub struct McpState {
-    pub mcp_key_authentication: Arc<McpKeyAuthentication>,
+    pub access_key_authentication: Arc<AccessKeyAuthentication>,
     pub merchant_queries: Arc<MerchantQueries>,
     pub store_membership_management: Arc<StoreMembershipManagement>,
     pub create_store: Arc<CreateStore>,
@@ -118,7 +118,7 @@ impl rmcp::ServerHandler for ChaosMcp {
             .build();
         info.instructions = Some(
             "Chaos Commerce admin tools. Every tool call authenticates against the \
-             Authorization: Bearer <mcp-key> header using a user-owned MCP key. Every \
+             Authorization: Bearer <mcp-key> header using a user-owned Access Key. Every \
              Store-scoped request must include X-Chaos-Store-Id and current Store membership \
              is checked before the tool runs. create_store and list_stores are User-scoped and \
              do not require that header. Read tools return \

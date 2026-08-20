@@ -5,9 +5,9 @@ use crate::{DomainError, FieldViolation};
 use super::UserId;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct McpKeyId(Uuid);
+pub struct AccessKeyId(Uuid);
 
-impl McpKeyId {
+impl AccessKeyId {
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
@@ -21,20 +21,20 @@ impl McpKeyId {
     }
 }
 
-impl Default for McpKeyId {
+impl Default for AccessKeyId {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct McpKey {
-    id: McpKeyId,
+pub struct AccessKey {
+    id: AccessKeyId,
     user_id: UserId,
     name: String,
 }
 
-impl McpKey {
+impl AccessKey {
     pub fn issue(user_id: UserId, name: impl Into<String>) -> Result<Self, DomainError> {
         let name = name.into().trim().to_owned();
         if name.is_empty() || name.chars().count() > 80 {
@@ -44,13 +44,13 @@ impl McpKey {
             }]));
         }
         Ok(Self {
-            id: McpKeyId::new(),
+            id: AccessKeyId::new(),
             user_id,
             name,
         })
     }
 
-    pub const fn id(&self) -> McpKeyId {
+    pub const fn id(&self) -> AccessKeyId {
         self.id
     }
 
@@ -69,12 +69,12 @@ mod tests {
 
     #[test]
     fn trims_a_valid_key_name() {
-        let key = McpKey::issue(UserId::new(), "  Store assistant  ").unwrap();
+        let key = AccessKey::issue(UserId::new(), "  Store assistant  ").unwrap();
         assert_eq!(key.name(), "Store assistant");
     }
 
     #[test]
     fn rejects_an_empty_key_name() {
-        assert!(McpKey::issue(UserId::new(), "   ").is_err());
+        assert!(AccessKey::issue(UserId::new(), "   ").is_err());
     }
 }

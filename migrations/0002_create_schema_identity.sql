@@ -41,7 +41,7 @@ CREATE TABLE identity.external_identities (
     )
 );
 
-CREATE TABLE identity.mcp_keys (
+CREATE TABLE identity.access_keys (
     id              UUID                NOT NULL,
     user_id         UUID                NOT NULL,
     key_identifier  TEXT                NOT NULL,
@@ -54,23 +54,23 @@ CREATE TABLE identity.mcp_keys (
     created_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT mcp_keys_pkey PRIMARY KEY (id),
-    CONSTRAINT mcp_keys_user_id_fkey FOREIGN KEY (user_id)
+    CONSTRAINT access_keys_pkey PRIMARY KEY (id),
+    CONSTRAINT access_keys_user_id_fkey FOREIGN KEY (user_id)
         REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT mcp_keys_key_identifier_key UNIQUE (key_identifier),
-    CONSTRAINT mcp_keys_key_identifier_format_check CHECK (
+    CONSTRAINT access_keys_key_identifier_key UNIQUE (key_identifier),
+    CONSTRAINT access_keys_key_identifier_format_check CHECK (
         key_identifier ~ '^[A-Za-z0-9_-]{16}$'
     ),
-    CONSTRAINT mcp_keys_secret_digest_length_check CHECK (
+    CONSTRAINT access_keys_secret_digest_length_check CHECK (
         octet_length(secret_digest) = 32
     ),
-    CONSTRAINT mcp_keys_display_suffix_format_check CHECK (
+    CONSTRAINT access_keys_display_suffix_format_check CHECK (
         display_suffix ~ '^[A-Za-z0-9_-]{4}$'
     ),
-    CONSTRAINT mcp_keys_name_length_check CHECK (
+    CONSTRAINT access_keys_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 80
     ),
-    CONSTRAINT mcp_keys_expiration_check CHECK (
+    CONSTRAINT access_keys_expiration_check CHECK (
         expires_at IS NULL OR expires_at > created_at
     )
 );
@@ -78,8 +78,8 @@ CREATE TABLE identity.mcp_keys (
 CREATE INDEX external_identities_user_idx
     ON identity.external_identities (user_id, provider);
 
-CREATE INDEX mcp_keys_user_id_idx
-    ON identity.mcp_keys (user_id, id);
+CREATE INDEX access_keys_user_id_idx
+    ON identity.access_keys (user_id, id);
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA identity TO chaos_identity;

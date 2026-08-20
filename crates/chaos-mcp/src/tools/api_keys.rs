@@ -63,7 +63,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<CreateApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -115,7 +115,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<ListApiKeysParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )
@@ -173,7 +173,7 @@ impl ChaosMcp {
         Parameters(params): Parameters<RevokeApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             &parts,
         )

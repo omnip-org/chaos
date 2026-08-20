@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import type { Cart } from "@omnip-org/chaos-js";
+import { EmbeddedCheckout, EmbeddedCheckoutProvider } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
+import type { Cart, ChaosStorefrontClient, PaymentClientAction } from "@omnip-org/chaos-js";
 import { ChaosApiError } from "@omnip-org/chaos-js";
 import { createChaosClient } from "../../lib/chaos";
 import { getOrCreateCart } from "../../lib/cart";
@@ -26,10 +28,34 @@ const EMPTY_FORM: BillingForm = {
   countryCode: "",
 };
 
+interface EmbeddedPayment {
+  stripe: ReturnType<typeof loadStripe>;
+  clientSecret: string;
+  orderId: string;
+}
+
+async function waitForClientAction(
+  chaos: ChaosStorefrontClient,
+  paymentAttemptId: string,
+): Promise<PaymentClientAction> {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      return (await chaos.payments.getClientAction(paymentAttemptId)).data;
+    } catch (error) {
+      if (!(error instanceof ChaosApiError) || error.code !== "payment_client_action_not_ready") {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error("The payment provider did not become ready in time.");
+}
+
 export default function CartView() {
   const [cart, setCart] = useState<Cart | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkingOut, setCheckingOut] = useState(false);
+  const [embeddedPayment, setEmbeddedPayment] = useState<EmbeddedPayment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<BillingForm>(EMPTY_FORM);
 
@@ -61,31 +87,48 @@ export default function CartView() {
     setError(null);
     try {
       const chaos = createChaosClient();
+      const address = {
+        full_name: form.fullName,
+        address_line1: form.addressLine1,
+        locality: form.locality,
+        postal_code: form.postalCode,
+        country_code: form.countryCode.toUpperCase(),
+      };
+      const requiresShipping = cart.lines.some((line) => line.requires_shipping);
+      const shippingOptions = requiresShipping
+        ? (await chaos.cart.quoteShippingOptions(cart.id, address.country_code)).data
+        : [];
+      if (requiresShipping && shippingOptions.length === 0) {
+        throw new Error("No shipping service is available for this destination.");
+      }
       const { data: checkout } = await chaos.checkout.create(cart.id, {
         contact: { email: form.email },
-        billing_address: {
-          full_name: form.fullName,
-          address_line1: form.addressLine1,
-          locality: form.locality,
-          postal_code: form.postalCode,
-          country_code: form.countryCode.toUpperCase(),
-        },
+        billing_address: address,
+        ...(requiresShipping && {
+          shipping_address: address,
+          shipping_service_id: shippingOptions[0].service_id,
+        }),
       });
       chaos.analytics?.checkoutStarted({ cartId: cart.id, checkoutId: checkout.id });
       const { data: order } = await chaos.checkout.createOrder(checkout.id);
       const { data: attempt } = await chaos.payments.createAttempt(order.id, {
         provider: "stripe_checkout",
-        success_url: new URL("/checkout/success?session_id={CHECKOUT_SESSION_ID}", location.origin).toString(),
-        cancel_url: new URL("/checkout/cancel", location.origin).toString(),
+        return_url: new URL(`/checkout/success?order_id=${encodeURIComponent(order.id)}`, location.origin).toString(),
       });
-      const { data: action } = await chaos.payments.getClientAction(attempt.id);
-      if (action.type === "redirect_to_checkout") {
-        window.location.href = action.client_token;
+      const action = await waitForClientAction(chaos, attempt.id);
+      if (action.type === "mount_embedded_checkout") {
+        setEmbeddedPayment({
+          stripe: action.account_reference.startsWith("platform:")
+            ? loadStripe(action.public_key)
+            : loadStripe(action.public_key, { stripeAccount: action.account_reference }),
+          clientSecret: action.client_token,
+          orderId: order.id,
+        });
         return;
       }
       setError("This template only supports the stripe_checkout provider.");
     } catch (caught) {
-      setError(caught instanceof ChaosApiError ? caught.message : "Checkout failed. Please try again.");
+      setError(caught instanceof Error ? caught.message : "Checkout failed. Please try again.");
     } finally {
       setCheckingOut(false);
     }
@@ -94,6 +137,30 @@ export default function CartView() {
   if (loading) return <p className="text-gray-500">Loading cart...</p>;
   if (!cart || cart.lines.length === 0) {
     return <p className="text-gray-500">Your cart is empty.</p>;
+  }
+
+  if (embeddedPayment) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <p className="text-sm font-medium text-gray-900">Complete your payment</p>
+          <p className="mt-1 text-xs text-gray-500">Order {embeddedPayment.orderId}</p>
+        </div>
+        <EmbeddedCheckoutProvider
+          stripe={embeddedPayment.stripe}
+          options={{ clientSecret: embeddedPayment.clientSecret }}
+        >
+          <EmbeddedCheckout />
+        </EmbeddedCheckoutProvider>
+        <button
+          type="button"
+          onClick={() => setEmbeddedPayment(null)}
+          className="text-sm text-gray-600 underline hover:text-gray-900"
+        >
+          Return to order details
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -221,7 +288,7 @@ export default function CartView() {
         disabled={checkingOut || !formComplete}
         className="w-full rounded-md bg-gray-900 px-4 py-3 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-50"
       >
-        {checkingOut ? "Redirecting to Stripe..." : "Checkout with Stripe"}
+        {checkingOut ? "Preparing secure payment..." : "Continue to secure payment"}
       </button>
     </div>
   );

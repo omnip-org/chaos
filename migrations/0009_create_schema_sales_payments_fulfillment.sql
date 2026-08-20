@@ -1632,13 +1632,16 @@ CREATE FUNCTION payments.resolve_provider_webhook_secret_references(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
 )
-RETURNS TABLE (secret_reference TEXT)
+RETURNS TABLE (
+    external_account_reference TEXT,
+    secret_reference           TEXT
+)
 LANGUAGE SQL
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT candidate.secret_reference
+    SELECT account.external_account_reference, candidate.secret_reference
     FROM payments.provider_accounts AS account
     CROSS JOIN LATERAL (
         VALUES
@@ -1650,9 +1653,13 @@ AS $$
             )
     ) AS candidate(secret_reference, priority)
     WHERE account.provider = requested_provider
-      AND account.external_account_reference = requested_external_account_reference
+      AND (
+          requested_external_account_reference IS NULL
+          OR account.external_account_reference = requested_external_account_reference
+    )
+      AND account.enabled
       AND candidate.secret_reference IS NOT NULL
-    ORDER BY candidate.priority;
+    ORDER BY account.id, candidate.priority;
 $$;
 
 CREATE FUNCTION payments.claim_provider_readiness_checks(

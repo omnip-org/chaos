@@ -98,6 +98,11 @@ pub struct VerifiedWebhookEvent {
     pub verified_at: OffsetDateTime,
 }
 
+pub struct PaymentWebhookConfiguration {
+    pub external_account_reference: String,
+    pub secret_reference: chaos_domain::payments::PaymentSecretReference,
+}
+
 pub struct QueueJob {
     pub id: Uuid,
     pub store_id: Uuid,
@@ -124,11 +129,9 @@ pub struct ProviderCommand {
     pub external_account_reference: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub payment_provider_reference: Option<String>,
-    /// Required by adapters that redirect the shopper to a hosted checkout
-    /// page (e.g. Stripe Checkout Sessions); unused by PaymentIntent-style
-    /// adapters.
-    pub success_url: Option<String>,
-    pub cancel_url: Option<String>,
+    /// Required by embedded Checkout Session adapters; unused by
+    /// PaymentIntent-style adapters.
+    pub return_url: Option<String>,
 }
 
 pub struct ProviderCommandResult {
@@ -145,8 +148,8 @@ pub struct PaymentClientAction {
     pub provider: String,
     /// One of `"confirm_payment"` (client_token is a PaymentIntent client
     /// secret for Stripe.js/Elements confirmation) or
-    /// `"redirect_to_checkout"` (client_token is the hosted Checkout
-    /// Session URL the shopper's browser should navigate to).
+    /// `"mount_embedded_checkout"` (client_token is an embedded Checkout
+    /// Session client secret).
     pub kind: &'static str,
     pub public_key: SecretString,
     pub client_token: SecretString,
@@ -214,11 +217,11 @@ pub trait PaymentWebhookVerifier: Send + Sync {
 
 #[async_trait]
 pub trait PaymentWebhookConfigurationRepository: Send + Sync {
-    async fn webhook_secret_references(
+    async fn webhook_configurations(
         &self,
         provider: &str,
-        external_account_reference: &str,
-    ) -> Result<Vec<chaos_domain::payments::PaymentSecretReference>, ApplicationError>;
+        external_account_reference: Option<&str>,
+    ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError>;
 }
 
 #[async_trait]
@@ -228,8 +231,7 @@ pub trait PaymentRepository: Send + Sync {
         actor: &ShopperActor,
         order_id: OrderId,
         provider: &str,
-        success_url: Option<&str>,
-        cancel_url: Option<&str>,
+        return_url: Option<&str>,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError>;
 

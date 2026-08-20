@@ -60,9 +60,7 @@ struct WebhookPath {
 struct CreateAttemptBody {
     provider: String,
     #[serde(default)]
-    success_url: Option<String>,
-    #[serde(default)]
-    cancel_url: Option<String>,
+    return_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -102,7 +100,7 @@ async fn create_attempt(
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateAttemptBody>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
-    validate_return_urls(&body)?;
+    validate_return_url(&body)?;
     let idempotency = body_request(&headers, "create_payment_attempt", &(path.order_id, &body))?;
     let attempt = state
         .payment_service
@@ -110,35 +108,36 @@ async fn create_attempt(
             actor,
             order_id: OrderId::from_uuid(path.order_id),
             provider: body.provider,
-            success_url: body.success_url,
-            cancel_url: body.cancel_url,
+            return_url: body.return_url,
             idempotency,
         })
         .await?;
     Ok(ApiResponse::created(attempt_data(attempt)))
 }
 
-fn validate_return_urls(body: &CreateAttemptBody) -> Result<(), ApiError> {
-    for (field, value) in [
-        ("success_url", &body.success_url),
-        ("cancel_url", &body.cancel_url),
-    ] {
-        if let Some(url) = value
-            && !url.starts_with("https://")
-        {
-            return Err(invalid_value(field, "must be an https:// URL"));
+fn validate_return_url(body: &CreateAttemptBody) -> Result<(), ApiError> {
+    if let Some(value) = &body.return_url {
+        let url = url::Url::parse(value)
+            .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
+        let secure = url.scheme() == "https";
+        let loopback = url.scheme() == "http"
+            && url.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        if !secure && !loopback {
+            return Err(invalid_value(
+                "return_url",
+                "must use https, except for an http loopback URL in local development",
+            ));
         }
     }
-    if body.success_url.is_some() != body.cancel_url.is_some() {
+    if body.provider == "stripe_checkout" && body.return_url.is_none() {
         return Err(invalid_value(
-            "success_url",
-            "success_url and cancel_url must both be present or both be absent",
-        ));
-    }
-    if body.provider == "stripe_checkout" && body.success_url.is_none() {
-        return Err(invalid_value(
-            "success_url",
-            "success_url and cancel_url are required for the stripe_checkout provider",
+            "return_url",
+            "return_url is required for the stripe_checkout provider",
         ));
     }
     Ok(())
@@ -245,4 +244,41 @@ fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
         }],
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateAttemptBody, validate_return_url};
+
+    #[test]
+    fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
+        assert!(
+            validate_return_url(&CreateAttemptBody {
+                provider: "stripe_checkout".into(),
+                return_url: Some("https://shop.example.com/checkout/success".into()),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_return_url(&CreateAttemptBody {
+                provider: "stripe_checkout".into(),
+                return_url: Some("http://127.0.0.1:4321/checkout/success".into()),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_return_url(&CreateAttemptBody {
+                provider: "stripe_checkout".into(),
+                return_url: Some("http://shop.example.com/checkout/success".into()),
+            })
+            .is_err()
+        );
+        assert!(
+            validate_return_url(&CreateAttemptBody {
+                provider: "stripe_checkout".into(),
+                return_url: None,
+            })
+            .is_err()
+        );
+    }
 }

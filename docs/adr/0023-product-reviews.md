@@ -17,7 +17,7 @@ The critical evidence rule carried over from the prior integration this replaces
 
 Storefront submission (`POST /store/v1/products/{product_id}/reviews`) requires a Publishable key with the new `reviews:write` scope and an `Idempotency-Key`, and needs no shopper credential — matching how this capability worked previously, where submission was reachable without an authenticated session. A submission always lands `pending` and is invisible to `GET /store/v1/products/{product_id}/reviews` until an administrator approves it. That read endpoint returns only `catalog:read`-scoped Publishable key access, the same scope every other public catalog read already uses, and returns approved top-level reviews newest-first with their approved staff replies nested underneath, mirroring the read shape this capability had previously so the response requires no restructuring on the client.
 
-Review moderation is exposed through MCP tools authenticated with a User-owned MCP Key and authorized through current Store membership. Approval and rejection are terminal from `pending` only; a moderation mistake requires a new review, matching other terminal commerce transitions.
+Review moderation is exposed through MCP tools authenticated with a User-owned Access Key and authorized through current Store membership. Approval and rejection are terminal from `pending` only; a moderation mistake requires a new review, matching other terminal commerce transitions.
 
 ## Consequences
 

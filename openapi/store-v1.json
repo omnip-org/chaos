@@ -1194,17 +1194,10 @@
         "required": ["provider"],
         "properties": {
           "provider": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "success_url": {
+          "return_url": {
             "type": "string",
             "format": "uri",
-            "pattern": "^https://",
-            "description": "Required for the stripe_checkout provider. The shopper is redirected here after a successful hosted Checkout Session."
-          },
-          "cancel_url": {
-            "type": "string",
-            "format": "uri",
-            "pattern": "^https://",
-            "description": "Required for the stripe_checkout provider. The shopper is redirected here if the hosted Checkout Session is cancelled."
+            "description": "Required for the stripe_checkout provider. Stripe returns the shopper here after Embedded Checkout completes. HTTPS is required except for local loopback development."
           }
         }
       },
@@ -1239,8 +1232,8 @@
           "provider": { "type": "string" },
           "type": {
             "type": "string",
-            "enum": ["confirm_payment", "redirect_to_checkout"],
-            "description": "confirm_payment: client_token is a PaymentIntent client secret for Stripe.js/Elements confirmation. redirect_to_checkout: client_token is the hosted Checkout Session URL to navigate the shopper to."
+            "enum": ["confirm_payment", "mount_embedded_checkout"],
+            "description": "confirm_payment: client_token is a PaymentIntent client secret for Stripe.js/Elements confirmation. mount_embedded_checkout: client_token is an Embedded Checkout Session client secret."
           },
           "public_key": { "type": "string", "minLength": 1 },
           "client_token": { "type": "string", "minLength": 1 },

@@ -4,7 +4,7 @@ use axum::{
     routing::{delete, post},
 };
 use chaos_application::ApplicationError;
-use chaos_domain::identity::{IdentityProvider, McpKeyId};
+use chaos_domain::identity::{AccessKeyId, IdentityProvider};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -14,8 +14,11 @@ use super::{ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState, Authenticated
 pub fn routes() -> Router<ApiState> {
     Router::new()
         .route("/auth/external", post(sign_in))
-        .route("/mcp-keys", post(create_mcp_key).get(list_mcp_keys))
-        .route("/mcp-keys/{mcp_key_id}", delete(revoke_mcp_key))
+        .route(
+            "/access-keys",
+            post(create_access_key).get(list_access_keys),
+        )
+        .route("/access-keys/{access_key_id}", delete(revoke_access_key))
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
@@ -34,18 +37,18 @@ struct AccessTokenData {
 }
 
 #[derive(Deserialize)]
-struct CreateMcpKeyBody {
+struct CreateAccessKeyBody {
     name: String,
 }
 
 #[derive(Deserialize)]
-struct ListMcpKeysQuery {
+struct ListAccessKeysQuery {
     cursor: Option<Uuid>,
     limit: Option<u16>,
 }
 
 #[derive(Serialize)]
-struct McpKeyCreatedData {
+struct AccessKeyCreatedData {
     id: Uuid,
     name: String,
     key_identifier: String,
@@ -54,7 +57,7 @@ struct McpKeyCreatedData {
 }
 
 #[derive(Serialize)]
-struct McpKeyData {
+struct AccessKeyData {
     id: Uuid,
     name: String,
     key_identifier: String,
@@ -67,8 +70,8 @@ struct McpKeyData {
 }
 
 #[derive(Serialize)]
-struct McpKeyPageData {
-    items: Vec<McpKeyData>,
+struct AccessKeyPageData {
+    items: Vec<AccessKeyData>,
     has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<Uuid>,
@@ -91,13 +94,16 @@ async fn sign_in(
     }))
 }
 
-async fn create_mcp_key(
+async fn create_access_key(
     State(state): State<ApiState>,
     AuthenticatedUser { user_id }: AuthenticatedUser,
-    ApiJson(body): ApiJson<CreateMcpKeyBody>,
-) -> Result<ApiResponse<McpKeyCreatedData>, ApiError> {
-    let output = state.mcp_key_management.create(user_id, body.name).await?;
-    Ok(ApiResponse::created(McpKeyCreatedData {
+    ApiJson(body): ApiJson<CreateAccessKeyBody>,
+) -> Result<ApiResponse<AccessKeyCreatedData>, ApiError> {
+    let output = state
+        .access_key_management
+        .create(user_id, body.name)
+        .await?;
+    Ok(ApiResponse::created(AccessKeyCreatedData {
         id: output.key.id().as_uuid(),
         name: output.key.name().to_owned(),
         key_identifier: output.key_identifier,
@@ -106,16 +112,16 @@ async fn create_mcp_key(
     }))
 }
 
-async fn list_mcp_keys(
+async fn list_access_keys(
     State(state): State<ApiState>,
     AuthenticatedUser { user_id }: AuthenticatedUser,
-    Query(query): Query<ListMcpKeysQuery>,
-) -> Result<ApiResponse<McpKeyPageData>, ApiError> {
+    Query(query): Query<ListAccessKeysQuery>,
+) -> Result<ApiResponse<AccessKeyPageData>, ApiError> {
     let page = state
-        .mcp_key_management
+        .access_key_management
         .list(
             user_id,
-            query.cursor.map(McpKeyId::from_uuid),
+            query.cursor.map(AccessKeyId::from_uuid),
             query.limit.unwrap_or(20),
         )
         .await?;
@@ -126,7 +132,7 @@ async fn list_mcp_keys(
     let items = page
         .items
         .into_iter()
-        .map(|item| McpKeyData {
+        .map(|item| AccessKeyData {
             id: item.id.as_uuid(),
             name: item.name,
             key_identifier: item.key_identifier,
@@ -136,23 +142,23 @@ async fn list_mcp_keys(
             revoked_at: item.revoked_at.map(ApiDateTime::from),
         })
         .collect();
-    Ok(ApiResponse::ok(McpKeyPageData {
+    Ok(ApiResponse::ok(AccessKeyPageData {
         items,
         has_more: page.has_more,
         next_cursor,
     }))
 }
 
-async fn revoke_mcp_key(
+async fn revoke_access_key(
     State(state): State<ApiState>,
     AuthenticatedUser { user_id }: AuthenticatedUser,
-    Path(mcp_key_id): Path<Uuid>,
+    Path(access_key_id): Path<Uuid>,
 ) -> Result<ApiResponse<serde_json::Value>, ApiError> {
     state
-        .mcp_key_management
-        .revoke(user_id, McpKeyId::from_uuid(mcp_key_id))
+        .access_key_management
+        .revoke(user_id, AccessKeyId::from_uuid(access_key_id))
         .await?;
-    Ok(ApiResponse::ok(serde_json::json!({ "id": mcp_key_id })))
+    Ok(ApiResponse::ok(serde_json::json!({ "id": access_key_id })))
 }
 
 #[cfg(test)]

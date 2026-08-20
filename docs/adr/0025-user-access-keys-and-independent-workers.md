@@ -1,4 +1,4 @@
-# ADR 0025: Use User-owned MCP Keys and Independent Workers
+# ADR 0025: Use User-owned Access Keys and Independent Workers
 
 - Status: Accepted
 - Date: 2026-08-20
@@ -9,7 +9,7 @@ Users may operate multiple Stores. A Store-scoped secret key forces an AI client
 
 ## Decision
 
-Private MCP Keys belong to Users in the Identity context. Authentication resolves `mcp_key_id` and `user_id`. Each MCP request explicitly selects a Store, rechecks current membership, and carries the Key identity into the Store actor used by application use cases. Stores issue only Publishable Sales Channel Keys with storefront capabilities.
+Private Access Keys belong to Users in the Identity context. Authentication resolves `access_key_id` and `user_id`. Each MCP request explicitly selects a Store, rechecks current membership, and carries the Key identity into the Store actor used by application use cases. Stores issue only Publishable Sales Channel Keys with storefront capabilities.
 
 The HTTP API retains only identity bootstrap, storefront and channel operations, Provider webhooks, health, and metrics. Store administration is provided through MCP tools.
 
@@ -17,4 +17,4 @@ Background polling runs in the independently deployed `chaos-worker` binary. API
 
 ## Consequences
 
-Revoking a User Key disables every MCP connection that presents it. Removing a Store membership immediately removes that Key's access to the Store. Observability can correlate request, MCP Key, User, and Store identities. API and Worker replica counts can be tuned independently, and API rollouts no longer interrupt background consumers.
+Revoking a User Key disables every MCP connection that presents it. Removing a Store membership immediately removes that Key's access to the Store. Observability can correlate request, Access Key, User, and Store identities. API and Worker replica counts can be tuned independently, and API rollouts no longer interrupt background consumers.

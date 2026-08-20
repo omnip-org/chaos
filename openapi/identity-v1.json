@@ -30,40 +30,40 @@
         }
       }
     },
-    "/mcp-keys": {
+    "/access-keys": {
       "get": {
-        "operationId": "listMcpKeys",
-        "summary": "List MCP Keys owned by the authenticated User",
+        "operationId": "listAccessKeys",
+        "summary": "List Access Keys owned by the authenticated User",
         "security": [{ "userJwt": [] }],
-        "responses": { "200": { "description": "MCP Key page" } }
+        "responses": { "200": { "description": "Access Key page" } }
       },
       "post": {
-        "operationId": "createMcpKey",
-        "summary": "Create a User-owned MCP Key",
+        "operationId": "createAccessKey",
+        "summary": "Create a User-owned Access Key",
         "security": [{ "userJwt": [] }],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CreateMcpKey" }
+              "schema": { "$ref": "#/components/schemas/CreateAccessKey" }
             }
           }
         },
-        "responses": { "201": { "description": "MCP Key created; secret is returned once" } }
+        "responses": { "201": { "description": "Access Key created; secret is returned once" } }
       }
     },
-    "/mcp-keys/{mcp_key_id}": {
+    "/access-keys/{access_key_id}": {
       "delete": {
-        "operationId": "revokeMcpKey",
-        "summary": "Revoke an MCP Key owned by the authenticated User",
+        "operationId": "revokeAccessKey",
+        "summary": "Revoke an Access Key owned by the authenticated User",
         "security": [{ "userJwt": [] }],
         "parameters": [{
-          "name": "mcp_key_id",
+          "name": "access_key_id",
           "in": "path",
           "required": true,
           "schema": { "type": "string", "format": "uuid" }
         }],
-        "responses": { "200": { "description": "MCP Key revoked" } }
+        "responses": { "200": { "description": "Access Key revoked" } }
       }
     }
   },
@@ -80,7 +80,7 @@
           "identity_token": { "type": "string", "writeOnly": true }
         }
       },
-      "CreateMcpKey": {
+      "CreateAccessKey": {
         "type": "object",
         "required": ["name"],
         "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 80 } }

@@ -1,75 +1,112 @@
 # Storefront Template
 
 A reference Astro + React + Tailwind storefront built on
-[`@omnip-org/chaos-js`](../js), checking out through Stripe's hosted
-Checkout page (the `stripe_checkout` provider — see
-[ADR 0024](../../docs/adr/0024-stripe-checkout-session-support.md)).
+[`@omnip-org/chaos-js`](../js). It demonstrates Chaos catalog, cart,
+checkout, order, and Stripe Embedded Checkout in one small application.
 
-This is a template to copy and adapt, not a package meant to be installed —
-it's marked `"private": true` and not published.
+This is a private template to copy and adapt, not a published package.
 
-## What it demonstrates
+## End-to-end flow
 
-- Server-rendered (SSR) product listing and detail pages using
-  `chaos.catalog.listProducts()` / `chaos.catalog.getProduct()`.
-- A client-side cart (React island) persisting the Cart id in
-  `localStorage` and calling `chaos.cart.create()` / `setLine()` /
-  `removeLine()`.
-- A full checkout flow: `chaos.checkout.create()` → `chaos.checkout.createOrder()`
-  → `chaos.payments.createAttempt(orderId, { provider: "stripe_checkout", success_url, cancel_url })`
-  → `chaos.payments.getClientAction(attemptId)` → redirect the browser to
-  the returned Checkout Session URL.
-- `success`/`cancel` pages Stripe redirects back to.
+1. A User signs in through the Identity HTTP API and creates a User Access Key.
+2. The Access Key authenticates MCP calls that create a Store, product variants,
+   prices, inventory, a storefront Publishable Key, and an optional Stripe
+   payment account.
+3. This storefront lists the published product and lets a shopper create a cart
+   and order.
+4. Chaos creates an embedded Stripe Checkout Session. The browser receives only
+   its client secret and mounts Stripe's Embedded Checkout component.
+5. A verified Stripe webhook confirms the payment. The return page polls the
+   Chaos order until that server-side confirmation arrives.
+6. MCP creates a fulfillment, marks it shipped, and marks it delivered.
 
-## Setup
+Payment success is never inferred from the browser return URL. The order changes
+only after Chaos verifies and processes the Stripe webhook.
+
+## Bootstrap the demo
+
+Run Chaos API and the independent Worker first. Then provide either an existing
+Chaos JWT or a Google/Apple identity token:
 
 ```sh
-cp .env.example .env
-# fill in PUBLIC_CHAOS_PUBLISHABLE_KEY and PUBLIC_CHAOS_STORE_API_BASE_URL
-npm install
-npm run dev
+export CHAOS_API_ORIGIN=http://127.0.0.1:8080
+export CHAOS_IDENTITY_PROVIDER=google
+export CHAOS_IDENTITY_TOKEN='...'
+
+# Optional: omit all three to bootstrap catalog/storefront without payments.
+export STRIPE_SECRET_KEY='sk_test_...'
+export STRIPE_PUBLISHABLE_KEY='pk_test_...'
+export STRIPE_WEBHOOK_SECRET='whsec_...'
+
+node scripts/storefront-demo.mjs setup
 ```
 
-Both environment variables are required, and both need the `PUBLIC_`
-prefix — Astro/Vite only includes `PUBLIC_`-prefixed variables in the
-browser bundle, and this template's cart/checkout React islands read them
-client-side.
+For an existing User JWT, set `CHAOS_USER_JWT` instead of the two identity
+variables. For an existing User Access Key, set `CHAOS_ACCESS_KEY`; the script
+then skips Identity HTTP calls. Stripe uses the account that owns the API key by
+default, with a Store-unique `platform:` reference. Set
+`STRIPE_ACCOUNT_REFERENCE=acct_...` only for Stripe Connect.
 
-`PUBLIC_CHAOS_STORE_API_BASE_URL` must be an absolute URL (e.g.
-`https://shop.example.com/store/v1`), even for local development. This
-template renders its product pages server-side, and Node's `fetch` — unlike
-a browser's — cannot resolve a relative URL against a page origin it
-doesn't have.
+The script writes two ignored, mode-`0600` files:
 
-## Server-side vs. browser-side client
+- `packages/storefront-template/.env.demo` contains the browser-safe Store
+  Publishable Key and Store API URL.
+- `.env.storefront-demo` contains the User Access Key and Store id for subsequent
+  MCP fulfillment calls. Keep it secret.
 
-`src/lib/chaos.ts` exports one `createChaosClient()` factory used
-everywhere, but it behaves slightly differently depending on where it
-runs (checked via Astro's `import.meta.env.SSR`):
+Start the template with Astro's `demo` environment mode:
 
-- **Server (SSR pages)**: constructed with `analytics: false`, since the
-  bundled analytics collector's constructor requires `document`/`window`,
-  which don't exist under Node. Shopper-token persistence also falls back
-  to none (no `localStorage` on the server) — fine, since SSR pages only
-  do read-only catalog queries.
-- **Browser (React islands)**: default configuration — analytics enabled,
-  shopper token persisted in `localStorage` across requests.
+```sh
+cd packages/storefront-template
+npm install
+npm run dev -- --mode demo
+```
+
+`PUBLIC_CHAOS_STORE_API_BASE_URL` must be absolute, including locally, because
+the server-rendered pages use Node `fetch`, which cannot resolve a relative URL.
+
+## Stripe webhook
+
+Configure Stripe to deliver Checkout events to:
+
+```text
+https://YOUR_CHAOS_ORIGIN/webhooks/v1/payments/stripe_checkout
+```
+
+The endpoint secret must be the value supplied as `STRIPE_WEBHOOK_SECRET` during
+bootstrap. At minimum subscribe to `checkout.session.completed`,
+`checkout.session.async_payment_succeeded`,
+`checkout.session.async_payment_failed`, and `checkout.session.expired`.
+
+For local testing, forward Stripe test events to the same path and use the
+forwarder's `whsec_...` secret when running the bootstrap script.
+
+## Fulfill the paid order through MCP
+
+After Checkout returns and the order page shows payment confirmation, load the
+ignored admin environment and run:
+
+```sh
+set -a
+source .env.storefront-demo
+set +a
+node scripts/storefront-demo.mjs fulfill ORDER_UUID
+```
+
+The command reads the paid order lines through MCP, creates their fulfillment,
+then transitions it through `shipped` and `delivered`. Override
+`CHAOS_DEMO_CARRIER` and `CHAOS_DEMO_TRACKING_NUMBER` to use custom demo values.
+
+## Server-side and browser-side clients
+
+`src/lib/chaos.ts` exports one client factory. Server-side rendering disables
+browser analytics and requires an absolute API URL. Browser islands enable the
+normal analytics and shopper-token persistence behavior.
+
+The Store is selected entirely by its Publishable Key. A multi-domain deployment
+should resolve the correct key outside this template.
 
 ## Deployment
 
-`astro.config.mjs` uses the Node adapter in `standalone` mode, so
-`npm run build` followed by `node ./dist/server/entry.mjs` runs the app
-directly — no separate hosting-specific adapter needed. Deploy it anywhere
-that can run a long-lived Node 22 process (Docker, a VM, or a Node-compatible
-PaaS), with `PUBLIC_CHAOS_PUBLISHABLE_KEY` and
-`PUBLIC_CHAOS_STORE_API_BASE_URL` set in the environment.
-
-## What this template intentionally doesn't do
-
-- **Multi-domain/multi-Store resolution.** The Store is determined
-  entirely by which publishable key you configure. This template assumes
-  each Store deploys its own storefront instance with its own key.
-- **Order status on the success page.** Stripe's `success_url` only gets
-  Stripe's own `session_id` back (via the `{CHECKOUT_SESSION_ID}`
-  placeholder), not the Chaos `order_id`; the success page shows a static
-  confirmation rather than fetching live order status.
+`astro.config.mjs` uses the Node adapter in standalone mode. Build with
+`npm run build`, then run `node ./dist/server/entry.mjs` on Node 22 or newer.

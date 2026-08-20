@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 const STRIPE_API_VERSION: &str = "2026-02-25.clover";
 const WEBHOOK_TOLERANCE_SECONDS: i64 = 300;
+const STRIPE_PLATFORM_ACCOUNT_PREFIX: &str = "platform:";
 
 /// HTTP plumbing shared by every Stripe-backed `PaymentProvider` adapter:
 /// credential resolution, URL joining, and authenticated form POST/GET.
@@ -131,9 +132,16 @@ impl StripeHttp {
         secret_key: &str,
         external_account_reference: &str,
     ) -> Result<StripeAccount, ApplicationError> {
+        let path = if is_platform_account(external_account_reference) {
+            "v1/account".to_owned()
+        } else if valid_stripe_identifier(external_account_reference, "acct_") {
+            format!("v1/accounts/{external_account_reference}")
+        } else {
+            return Err(provider_invalid_response());
+        };
         let response = self
             .client
-            .get(self.endpoint(&format!("v1/accounts/{external_account_reference}"))?)
+            .get(self.endpoint(&path)?)
             .headers(stripe_platform_headers(secret_key)?)
             .send()
             .await
@@ -292,16 +300,18 @@ impl PaymentProviderOnboarding for StripePaymentProvider {
     }
 }
 
-/// Stripe Connect account readiness, shared by every Stripe-backed
-/// `PaymentProviderOnboarding` adapter — checkout-session mode and
-/// PaymentIntent mode operate on the same underlying Connect account.
+/// Stripe account readiness shared by every Stripe-backed adapter. The
+/// `platform:...` reference uses the account owning the API key; an `acct_...`
+/// reference uses Stripe Connect.
 async fn stripe_account_readiness(
     http: &StripeHttp,
     external_account_reference: &str,
     credential_secret_reference: &PaymentSecretReference,
     checked_at: OffsetDateTime,
 ) -> Result<PaymentProviderReadiness, ApplicationError> {
-    if !valid_stripe_identifier(external_account_reference, "acct_") {
+    if !is_platform_account(external_account_reference)
+        && !valid_stripe_identifier(external_account_reference, "acct_")
+    {
         return Err(provider_invalid_response());
     }
     let credentials = http.credentials(credential_secret_reference).await?;
@@ -311,7 +321,8 @@ async fn stripe_account_readiness(
             external_account_reference,
         )
         .await?;
-    if account.id != external_account_reference {
+    let connected = !is_platform_account(external_account_reference);
+    if connected && account.id != external_account_reference {
         return Err(provider_invalid_response());
     }
 
@@ -336,10 +347,10 @@ async fn stripe_account_readiness(
     if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
         blocker_codes.push("requirements_due".into());
     }
-    if fee_payer != Some("account") {
+    if connected && fee_payer != Some("account") {
         blocker_codes.push("fee_payer_mismatch".into());
     }
-    if losses_payer != Some("stripe") {
+    if connected && losses_payer != Some("stripe") {
         blocker_codes.push("loss_liability_mismatch".into());
     }
 
@@ -398,12 +409,8 @@ impl PaymentProvider for StripeCheckoutPaymentProvider {
             .http
             .credentials(&command.credential_secret_reference)
             .await?;
-        let success_url = command
-            .success_url
-            .as_deref()
-            .ok_or_else(provider_invalid_response)?;
-        let cancel_url = command
-            .cancel_url
+        let return_url = command
+            .return_url
             .as_deref()
             .ok_or_else(provider_invalid_response)?;
         let object = self
@@ -415,8 +422,8 @@ impl PaymentProvider for StripeCheckoutPaymentProvider {
                 &command.idempotency_key,
                 &[
                     ("mode".into(), "payment".into()),
-                    ("success_url".into(), success_url.into()),
-                    ("cancel_url".into(), cancel_url.into()),
+                    ("ui_mode".into(), "embedded_page".into()),
+                    ("return_url".into(), return_url.into()),
                     ("line_items[0][quantity]".into(), "1".into()),
                     (
                         "line_items[0][price_data][currency]".into(),
@@ -463,12 +470,12 @@ impl PaymentProvider for StripeCheckoutPaymentProvider {
                 "cs_",
             )
             .await?;
-        let url = object.url.ok_or_else(provider_invalid_response)?;
+        let client_secret = object.client_secret.ok_or_else(provider_invalid_response)?;
         Ok(PaymentClientAction {
             provider: "stripe_checkout".into(),
-            kind: "redirect_to_checkout",
+            kind: "mount_embedded_checkout",
             public_key: credentials.publishable_key,
-            client_token: SecretString::from(url),
+            client_token: SecretString::from(client_secret),
             account_reference: command.external_account_reference,
         })
     }
@@ -497,6 +504,7 @@ impl PaymentProviderOnboarding for StripeCheckoutPaymentProvider {
 }
 
 pub struct StripeWebhookVerifier {
+    provider: &'static str,
     configurations: Arc<dyn PaymentWebhookConfigurationRepository>,
     secrets: Arc<dyn PaymentSecretResolver>,
 }
@@ -507,6 +515,19 @@ impl StripeWebhookVerifier {
         secrets: Arc<dyn PaymentSecretResolver>,
     ) -> Self {
         Self {
+            provider: "stripe",
+            configurations,
+            secrets,
+        }
+    }
+
+    pub fn for_provider(
+        provider: &'static str,
+        configurations: Arc<dyn PaymentWebhookConfigurationRepository>,
+        secrets: Arc<dyn PaymentSecretResolver>,
+    ) -> Self {
+        Self {
+            provider,
             configurations,
             secrets,
         }
@@ -516,7 +537,7 @@ impl StripeWebhookVerifier {
 #[async_trait]
 impl PaymentWebhookVerifier for StripeWebhookVerifier {
     fn name(&self) -> &'static str {
-        "stripe"
+        self.provider
     }
 
     async fn verify(
@@ -532,38 +553,45 @@ impl PaymentWebhookVerifier for StripeWebhookVerifier {
         let raw: Value = serde_json::from_slice(payload).map_err(|_| invalid_webhook())?;
         let envelope: StripeEventEnvelope =
             serde_json::from_value(raw.clone()).map_err(|_| invalid_webhook())?;
-        if !valid_stripe_identifier(&envelope.id, "evt_")
-            || !valid_stripe_identifier(&envelope.account, "acct_")
+        if !valid_stripe_identifier(&envelope.id, "evt_") {
+            return Err(invalid_webhook());
+        }
+        if envelope
+            .account
+            .as_deref()
+            .is_some_and(|account| !valid_stripe_identifier(account, "acct_"))
         {
             return Err(invalid_webhook());
         }
-        let references = self
+        let configurations = self
             .configurations
-            .webhook_secret_references(provider, &envelope.account)
+            .webhook_configurations(provider, envelope.account.as_deref())
             .await?;
-        if references.is_empty() {
+        if configurations.is_empty() {
             return Err(ApplicationError::Unauthorized);
         }
-        let mut verified = false;
-        for reference in references {
-            let secret = self.secrets.resolve(&reference).await?;
+        let mut external_account_reference = None;
+        for configuration in configurations {
+            let secret = self
+                .secrets
+                .resolve(&configuration.secret_reference)
+                .await?;
             if verify_stripe_signature(signature, payload, secret.expose_secret(), received_at)
                 .is_ok()
             {
-                verified = true;
+                external_account_reference = Some(configuration.external_account_reference);
                 break;
             }
         }
-        if !verified {
-            return Err(ApplicationError::Unauthorized);
-        }
+        let external_account_reference =
+            external_account_reference.ok_or(ApplicationError::Unauthorized)?;
         let (event_type, aggregate_id, failure_code) = map_stripe_event(&envelope)?;
         let object_reference = envelope.data.object.id.clone();
         Ok(VerifiedWebhookEvent {
             provider: provider.into(),
             provider_event_id: envelope.id,
             event_type,
-            external_account_reference: envelope.account,
+            external_account_reference,
             object_reference: object_reference.clone(),
             failure_code: failure_code.clone(),
             payload: serde_json::json!({
@@ -607,8 +635,6 @@ struct StripeObject {
     id: String,
     #[serde(default)]
     client_secret: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -669,7 +695,8 @@ struct StripeEventEnvelope {
     id: String,
     #[serde(rename = "type")]
     event_type: String,
-    account: String,
+    #[serde(default)]
+    account: Option<String>,
     data: StripeEventData,
 }
 
@@ -779,7 +806,9 @@ fn stripe_headers(
     connected_account: &str,
     idempotency_key: Option<&str>,
 ) -> Result<HeaderMap, ApplicationError> {
-    if !valid_stripe_identifier(connected_account, "acct_") {
+    if !is_platform_account(connected_account)
+        && !valid_stripe_identifier(connected_account, "acct_")
+    {
         return Err(provider_invalid_response());
     }
     let mut authorization =
@@ -787,10 +816,12 @@ fn stripe_headers(
     authorization.set_sensitive(true);
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, authorization);
-    headers.insert(
-        "stripe-account",
-        HeaderValue::from_str(connected_account).map_err(|_| provider_invalid_response())?,
-    );
+    if !is_platform_account(connected_account) {
+        headers.insert(
+            "stripe-account",
+            HeaderValue::from_str(connected_account).map_err(|_| provider_invalid_response())?,
+        );
+    }
     headers.insert(
         "stripe-version",
         HeaderValue::from_static(STRIPE_API_VERSION),
@@ -926,6 +957,18 @@ fn valid_stripe_identifier(value: &str, prefix: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+fn is_platform_account(value: &str) -> bool {
+    value
+        .strip_prefix(STRIPE_PLATFORM_ACCOUNT_PREFIX)
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.len() <= 255 - STRIPE_PLATFORM_ACCOUNT_PREFIX.len()
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+}
+
 fn is_loopback(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
@@ -980,9 +1023,12 @@ mod tests {
         http::{Request, Response},
         routing::any,
     };
+    use chaos_application::ports::PaymentWebhookConfiguration;
     use chaos_domain::CurrencyCode;
 
     use super::*;
+
+    const TEST_STRIPE_PLATFORM_ACCOUNT: &str = "platform:demo-store";
 
     struct StaticSecrets(HashMap<String, String>);
 
@@ -1004,18 +1050,25 @@ mod tests {
 
     #[async_trait]
     impl PaymentWebhookConfigurationRepository for StaticWebhookConfiguration {
-        async fn webhook_secret_references(
+        async fn webhook_configurations(
             &self,
             provider: &str,
-            external_account_reference: &str,
-        ) -> Result<Vec<PaymentSecretReference>, ApplicationError> {
-            Ok(
-                if provider == "stripe" && external_account_reference == "acct_connected" {
-                    self.0.clone()
-                } else {
-                    Vec::new()
-                },
-            )
+            external_account_reference: Option<&str>,
+        ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
+            let reference = match (provider, external_account_reference) {
+                ("stripe", Some("acct_connected")) => "acct_connected",
+                ("stripe_checkout", None) => TEST_STRIPE_PLATFORM_ACCOUNT,
+                _ => return Ok(Vec::new()),
+            };
+            Ok(self
+                .0
+                .iter()
+                .cloned()
+                .map(|secret_reference| PaymentWebhookConfiguration {
+                    external_account_reference: reference.into(),
+                    secret_reference,
+                })
+                .collect())
         }
     }
 
@@ -1059,12 +1112,15 @@ mod tests {
             ("GET", "/v1/accounts/acct_not_ready") => {
                 r#"{"id":"acct_not_ready","charges_enabled":false,"payouts_enabled":false,"details_submitted":false,"capabilities":{"card_payments":"inactive"},"controller":{"fees":{"payer":"application"},"losses":{"payments":"application"}},"requirements":{"currently_due":["business_profile.url"],"past_due":[],"disabled_reason":"requirements.past_due"}}"#
             }
+            ("GET", "/v1/account") => {
+                r#"{"id":"acct_platform","charges_enabled":true,"payouts_enabled":true,"details_submitted":true,"capabilities":{"card_payments":"active"},"requirements":{"currently_due":[],"past_due":[],"disabled_reason":null}}"#
+            }
             ("POST", "/v1/refunds") => r#"{"id":"re_created"}"#,
             ("POST", "/v1/checkout/sessions") => {
-                r#"{"id":"cs_created","url":"https://checkout.stripe.com/c/pay/cs_created"}"#
+                r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
             }
             ("GET", "/v1/checkout/sessions/cs_created") => {
-                r#"{"id":"cs_created","url":"https://checkout.stripe.com/c/pay/cs_created"}"#
+                r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
             }
             _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
         };
@@ -1110,8 +1166,7 @@ mod tests {
                 external_account_reference: "acct_connected".into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
-                success_url: None,
-                cancel_url: None,
+                return_url: None,
             })
             .await
             .unwrap();
@@ -1139,8 +1194,7 @@ mod tests {
                 external_account_reference: "acct_connected".into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: Some(created.provider_reference),
-                success_url: None,
-                cancel_url: None,
+                return_url: None,
             })
             .await
             .unwrap();
@@ -1200,7 +1254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stripe_checkout_adapter_creates_a_session_and_returns_its_redirect_url() {
+    async fn stripe_checkout_adapter_creates_an_embedded_session_and_returns_its_client_secret() {
         let state = MockState(Arc::new(Mutex::new(Vec::new())));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1233,11 +1287,10 @@ mod tests {
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "checkout-command".into(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
-                success_url: Some("https://shop.example.com/success".into()),
-                cancel_url: Some("https://shop.example.com/cancel".into()),
+                return_url: Some("https://shop.example.com/success".into()),
             })
             .await
             .unwrap();
@@ -1245,26 +1298,38 @@ mod tests {
         let action = provider
             .client_action(ProviderClientActionCommand {
                 provider_reference: created.provider_reference.clone(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference.clone(),
             })
             .await
             .unwrap();
-        assert_eq!(action.kind, "redirect_to_checkout");
+        assert_eq!(action.kind, "mount_embedded_checkout");
         assert_eq!(
             action.client_token.expose_secret(),
-            "https://checkout.stripe.com/c/pay/cs_created"
+            "cs_created_secret_value"
         );
+        assert_eq!(action.account_reference, TEST_STRIPE_PLATFORM_ACCOUNT);
+        let readiness = provider
+            .check_readiness(
+                TEST_STRIPE_PLATFORM_ACCOUNT,
+                &reference,
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .unwrap();
+        assert!(readiness.ready);
 
         let requests = state.0.lock().unwrap();
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/v1/checkout/sessions");
-        assert_eq!(requests[0].headers["stripe-account"], "acct_connected");
+        assert!(requests[0].headers.get("stripe-account").is_none());
+        assert!(requests[1].headers.get("stripe-account").is_none());
+        assert_eq!(requests[2].path, "/v1/account");
         let form: HashMap<_, _> =
             url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
         assert_eq!(form["mode"], "payment");
-        assert_eq!(form["success_url"], "https://shop.example.com/success");
-        assert_eq!(form["cancel_url"], "https://shop.example.com/cancel");
+        assert_eq!(form["ui_mode"], "embedded_page");
+        assert_eq!(form["return_url"], "https://shop.example.com/success");
         assert_eq!(form["line_items[0][quantity]"], "1");
         assert_eq!(form["line_items[0][price_data][currency]"], "usd");
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "1234");
@@ -1277,7 +1342,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stripe_checkout_adapter_rejects_creation_without_return_urls() {
+    async fn stripe_checkout_adapter_rejects_creation_without_return_url() {
         let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
         let secrets = Arc::new(StaticSecrets(HashMap::from([(
             "test://stripe".into(),
@@ -1299,20 +1364,20 @@ mod tests {
                 external_account_reference: "acct_connected".into(),
                 credential_secret_reference: reference,
                 payment_provider_reference: None,
-                success_url: None,
-                cancel_url: None,
+                return_url: None,
             })
             .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn stripe_webhook_verifies_timestamped_signature_before_mapping_event() {
+    async fn stripe_checkout_webhook_supports_platform_account_events() {
         let active_reference =
             PaymentSecretReference::new("webhook", "test://webhook-active").unwrap();
         let previous_reference =
             PaymentSecretReference::new("webhook", "test://webhook-previous").unwrap();
-        let verifier = StripeWebhookVerifier::new(
+        let verifier = StripeWebhookVerifier::for_provider(
+            "stripe_checkout",
             Arc::new(StaticWebhookConfiguration(vec![
                 active_reference,
                 previous_reference,
@@ -1328,11 +1393,10 @@ mod tests {
         let aggregate_id = Uuid::now_v7();
         let payload = serde_json::to_vec(&serde_json::json!({
             "id": "evt_1",
-            "type": "payment_intent.succeeded",
-            "account": "acct_connected",
+            "type": "checkout.session.completed",
             "data": {"object": {
-                "id": "pi_created",
-                "status": "succeeded",
+                "id": "cs_created",
+                "payment_status": "paid",
                 "metadata": {"chaos_payment_attempt_id": aggregate_id}
             }}
         }))
@@ -1353,7 +1417,7 @@ mod tests {
             .collect::<String>();
         let event = verifier
             .verify(
-                "stripe",
+                "stripe_checkout",
                 &format!("t={},v1={signature}", received_at.unix_timestamp()),
                 &payload,
                 received_at,
@@ -1361,13 +1425,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(event.event_type, "payment.captured");
-        assert_eq!(event.object_reference, "pi_created");
+        assert_eq!(event.object_reference, "cs_created");
+        assert_eq!(
+            event.external_account_reference,
+            TEST_STRIPE_PLATFORM_ACCOUNT
+        );
         assert_eq!(event.payload["aggregate_id"], aggregate_id.to_string());
 
         assert!(
             verifier
                 .verify(
-                    "stripe",
+                    "stripe_checkout",
                     &format!("t={},v1={signature}", received_at.unix_timestamp()),
                     &payload,
                     received_at + time::Duration::minutes(6),

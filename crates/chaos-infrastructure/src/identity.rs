@@ -5,12 +5,14 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        AccessTokenCodec, AccessTokenGrant, ExternalIdentityVerifier, GeneratedMcpKeyMaterial,
-        IdentityRepository, McpKeyListItem, McpKeyMaterialGenerator, McpKeyRepository,
+        AccessKeyListItem, AccessKeyMaterialGenerator, AccessKeyRepository, AccessTokenCodec,
+        AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityRepository,
         McpPrincipal, VerifiedExternalIdentity,
     },
 };
-use chaos_domain::identity::{Email, ExternalSubject, IdentityProvider, McpKey, McpKeyId, UserId};
+use chaos_domain::identity::{
+    AccessKey, AccessKeyId, Email, ExternalSubject, IdentityProvider, UserId,
+};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
     jwk::JwkSet,
@@ -27,7 +29,7 @@ use url::Url;
 use uuid::Uuid;
 
 const JWKS_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60);
-const MCP_KEY_PREFIX: &str = "cc_mcp_v1_";
+const ACCESS_KEY_PREFIX: &str = "cc_access_v1_";
 
 #[derive(Clone, Debug)]
 pub struct OidcProviderConfiguration {
@@ -262,20 +264,20 @@ impl IdentityRepository for PostgresIdentityRepository {
 }
 
 #[derive(Default)]
-pub struct SecureMcpKeyMaterialGenerator;
+pub struct SecureAccessKeyMaterialGenerator;
 
-impl McpKeyMaterialGenerator for SecureMcpKeyMaterialGenerator {
-    fn generate(&self) -> GeneratedMcpKeyMaterial {
+impl AccessKeyMaterialGenerator for SecureAccessKeyMaterialGenerator {
+    fn generate(&self) -> GeneratedAccessKeyMaterial {
         let mut identifier_bytes = [0_u8; 12];
         let mut secret_bytes = [0_u8; 32];
         rand::rng().fill_bytes(&mut identifier_bytes);
         rand::rng().fill_bytes(&mut secret_bytes);
         let key_identifier = URL_SAFE_NO_PAD.encode(identifier_bytes);
         let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext = format!("{MCP_KEY_PREFIX}{key_identifier}_{secret}");
+        let plaintext = format!("{ACCESS_KEY_PREFIX}{key_identifier}_{secret}");
         let secret_digest = Sha256::digest(plaintext.as_bytes()).into();
         let display_suffix = secret[secret.len() - 4..].to_owned();
-        GeneratedMcpKeyMaterial {
+        GeneratedAccessKeyMaterial {
             key_identifier,
             secret_digest,
             display_suffix,
@@ -285,25 +287,25 @@ impl McpKeyMaterialGenerator for SecureMcpKeyMaterialGenerator {
 }
 
 #[derive(Clone)]
-pub struct PostgresMcpKeyRepository {
+pub struct PostgresAccessKeyRepository {
     pool: PgPool,
 }
 
-impl PostgresMcpKeyRepository {
+impl PostgresAccessKeyRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 }
 
 #[async_trait]
-impl McpKeyRepository for PostgresMcpKeyRepository {
+impl AccessKeyRepository for PostgresAccessKeyRepository {
     async fn create(
         &self,
-        key: &McpKey,
-        material: &GeneratedMcpKeyMaterial,
+        key: &AccessKey,
+        material: &GeneratedAccessKeyMaterial,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO identity.mcp_keys \
+            "INSERT INTO identity.access_keys \
              (id, user_id, key_identifier, secret_digest, display_suffix, name) \
              SELECT $1, identity_user.id, $2, $3, $4, $5 \
              FROM identity.users AS identity_user \
@@ -330,9 +332,9 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
     async fn list(
         &self,
         user_id: UserId,
-        after: Option<McpKeyId>,
+        after: Option<AccessKeyId>,
         limit: u16,
-    ) -> Result<Vec<McpKeyListItem>, ApplicationError> {
+    ) -> Result<Vec<AccessKeyListItem>, ApplicationError> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -347,13 +349,13 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
         >(
             "SELECT id, name, key_identifier, display_suffix::text, created_at, \
                     last_used_at, revoked_at \
-             FROM identity.mcp_keys \
+             FROM identity.access_keys \
              WHERE user_id = $1 AND ($2::uuid IS NULL OR id > $2) \
              ORDER BY id ASC \
              LIMIT $3",
         )
         .bind(user_id.as_uuid())
-        .bind(after.map(McpKeyId::as_uuid))
+        .bind(after.map(AccessKeyId::as_uuid))
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
@@ -370,8 +372,8 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
                     last_used_at,
                     revoked_at,
                 )| {
-                    McpKeyListItem {
-                        id: McpKeyId::from_uuid(id),
+                    AccessKeyListItem {
+                        id: AccessKeyId::from_uuid(id),
                         name,
                         key_identifier,
                         display_suffix,
@@ -384,9 +386,9 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
             .collect())
     }
 
-    async fn revoke(&self, user_id: UserId, key_id: McpKeyId) -> Result<(), ApplicationError> {
+    async fn revoke(&self, user_id: UserId, key_id: AccessKeyId) -> Result<(), ApplicationError> {
         let result = sqlx::query(
-            "UPDATE identity.mcp_keys \
+            "UPDATE identity.access_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1 AND user_id = $2",
@@ -398,7 +400,7 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
         .map_err(database_error)?;
         if result.rows_affected() == 0 {
             return Err(ApplicationError::NotFound {
-                resource: "MCP key",
+                resource: "Access Key",
                 id: key_id.as_uuid().to_string(),
             });
         }
@@ -409,30 +411,31 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
         &self,
         presented_key: &SecretString,
     ) -> Result<Option<McpPrincipal>, ApplicationError> {
-        let Some(key_identifier) = parse_mcp_key_identifier(presented_key.expose_secret()) else {
+        let Some(key_identifier) = parse_access_key_identifier(presented_key.expose_secret())
+        else {
             return Ok(None);
         };
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
         let row = sqlx::query_as::<_, (Uuid, Uuid)>(
             "WITH authenticated AS MATERIALIZED ( \
-                 SELECT mcp_key.id, mcp_key.user_id \
-                 FROM identity.mcp_keys AS mcp_key \
+                 SELECT access_key.id, access_key.user_id \
+                 FROM identity.access_keys AS access_key \
                  INNER JOIN identity.users AS identity_user \
-                    ON identity_user.id = mcp_key.user_id \
-                 WHERE mcp_key.key_identifier = $1 \
-                   AND mcp_key.secret_digest = $2 \
-                   AND mcp_key.revoked_at IS NULL \
-                   AND (mcp_key.expires_at IS NULL \
-                        OR mcp_key.expires_at > CURRENT_TIMESTAMP) \
+                    ON identity_user.id = access_key.user_id \
+                 WHERE access_key.key_identifier = $1 \
+                   AND access_key.secret_digest = $2 \
+                   AND access_key.revoked_at IS NULL \
+                   AND (access_key.expires_at IS NULL \
+                        OR access_key.expires_at > CURRENT_TIMESTAMP) \
                    AND identity_user.status = 'active' \
              ), touched AS ( \
-                 UPDATE identity.mcp_keys AS mcp_key \
+                 UPDATE identity.access_keys AS access_key \
                  SET last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
                  FROM authenticated \
-                 WHERE mcp_key.id = authenticated.id \
-                   AND (mcp_key.last_used_at IS NULL \
-                        OR mcp_key.last_used_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes') \
-                 RETURNING mcp_key.id \
+                 WHERE access_key.id = authenticated.id \
+                   AND (access_key.last_used_at IS NULL \
+                        OR access_key.last_used_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes') \
+                 RETURNING access_key.id \
              ) \
              SELECT id, user_id FROM authenticated",
         )
@@ -442,14 +445,14 @@ impl McpKeyRepository for PostgresMcpKeyRepository {
         .await
         .map_err(database_error)?;
         Ok(row.map(|(key_id, user_id)| McpPrincipal {
-            key_id: McpKeyId::from_uuid(key_id),
+            key_id: AccessKeyId::from_uuid(key_id),
             user_id: UserId::from_uuid(user_id),
         }))
     }
 }
 
-fn parse_mcp_key_identifier(presented_key: &str) -> Option<&str> {
-    let remainder = presented_key.strip_prefix(MCP_KEY_PREFIX)?;
+fn parse_access_key_identifier(presented_key: &str) -> Option<&str> {
+    let remainder = presented_key.strip_prefix(ACCESS_KEY_PREFIX)?;
     let (identifier, remainder) = remainder.split_at_checked(16)?;
     let secret = remainder.strip_prefix('_')?;
     (!secret.is_empty()).then_some(identifier)
@@ -563,12 +566,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_mcp_key_has_a_versioned_user_credential_shape() {
-        let generated = SecureMcpKeyMaterialGenerator.generate();
+    fn generated_access_key_has_a_versioned_user_credential_shape() {
+        let generated = SecureAccessKeyMaterialGenerator.generate();
         let plaintext = generated.plaintext.expose_secret();
-        assert!(plaintext.starts_with(MCP_KEY_PREFIX));
+        assert!(plaintext.starts_with(ACCESS_KEY_PREFIX));
         assert_eq!(
-            parse_mcp_key_identifier(plaintext),
+            parse_access_key_identifier(plaintext),
             Some(generated.key_identifier.as_str())
         );
         assert_eq!(

@@ -36,6 +36,8 @@ pub struct GetPaymentProviderParams {
 pub struct CreatePaymentProviderParams {
     pub provider: String,
     pub display_name: String,
+    /// Use a unique "platform:..." reference for the Stripe account owning
+    /// the API key, or an "acct_..." identifier for a Stripe Connect account.
     pub external_account_reference: String,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
@@ -218,7 +220,7 @@ impl ChaosMcp {
         parts: &http::request::Parts,
     ) -> Result<chaos_application::merchant::StoreActor, CallToolResult> {
         match crate::auth::authenticate_mcp(
-            &self.state.mcp_key_authentication,
+            &self.state.access_key_authentication,
             &self.state.merchant_queries,
             parts,
         )

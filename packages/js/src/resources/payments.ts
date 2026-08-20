@@ -5,8 +5,7 @@ export class PaymentsResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
   /**
-   * For the stripe_checkout provider (Stripe's hosted Checkout page),
-   * `body.success_url`/`body.cancel_url` are required.
+   * For the stripe_checkout provider, `body.return_url` is required.
    */
   createAttempt(
     orderId: string,
@@ -34,9 +33,8 @@ export class PaymentsResource {
    * type: "confirm_payment" — client_token is a PaymentIntent client secret.
    * Never log, cache, or place it in a URL.
    *
-   * type: "redirect_to_checkout" — client_token is itself the hosted Stripe
-   * Checkout Session URL; navigate the browser there
-   * (e.g. `window.location.href = clientToken`).
+   * type: "mount_embedded_checkout" — client_token is an Embedded Checkout
+   * Session client secret. Never log, cache, or place it in a URL.
    */
   getClientAction(paymentAttemptId: string): Promise<DataEnvelope<PaymentClientAction>> {
     return this.client.request(`/payment-attempts/${encodeURIComponent(paymentAttemptId)}/client-action`, {

@@ -1,6 +1,6 @@
 use chaos_application::{
     ApplicationError,
-    identity::McpKeyAuthentication,
+    identity::AccessKeyAuthentication,
     merchant::MerchantQueries,
     ports::{AdminActor, McpPrincipal},
 };
@@ -18,20 +18,20 @@ use crate::error::tool_error;
 /// failure so the caller's MCP client renders "wrong scope"/"unauthorized" as
 /// readable tool output rather than an opaque protocol error.
 pub async fn authenticate_mcp(
-    mcp_key_authentication: &McpKeyAuthentication,
+    access_key_authentication: &AccessKeyAuthentication,
     merchant_queries: &MerchantQueries,
     parts: &http::request::Parts,
 ) -> Result<AdminActor, CallToolResult> {
-    let principal = authenticate_principal(mcp_key_authentication, parts).await?;
+    let principal = authenticate_principal(access_key_authentication, parts).await?;
     let store_id = store_id(parts).map_err(tool_error)?;
     let actor = merchant_queries
         .authorize(principal.user_id, store_id)
         .await
         .map_err(tool_error)?
-        .with_mcp_key(principal.key_id);
+        .with_access_key(principal.key_id);
     tracing::info!(
         request_id = request_id(parts),
-        mcp_key_id = %principal.key_id.as_uuid(),
+        access_key_id = %principal.key_id.as_uuid(),
         user_id = %principal.user_id.as_uuid(),
         store_id = %store_id.as_uuid(),
         "MCP request authorized"
@@ -40,19 +40,19 @@ pub async fn authenticate_mcp(
 }
 
 pub async fn authenticate_principal(
-    mcp_key_authentication: &McpKeyAuthentication,
+    access_key_authentication: &AccessKeyAuthentication,
     parts: &http::request::Parts,
 ) -> Result<McpPrincipal, CallToolResult> {
     let token = bearer_token(parts).map_err(tool_error)?;
-    let principal = mcp_key_authentication
+    let principal = access_key_authentication
         .authenticate(&token)
         .await
         .map_err(tool_error)?;
     tracing::info!(
         request_id = request_id(parts),
-        mcp_key_id = %principal.key_id.as_uuid(),
+        access_key_id = %principal.key_id.as_uuid(),
         user_id = %principal.user_id.as_uuid(),
-        "MCP key authenticated"
+        "Access Key authenticated"
     );
     Ok(principal)
 }
@@ -97,29 +97,29 @@ mod tests {
 
     use async_trait::async_trait;
     use chaos_application::{
-        identity::McpKeyAuthentication,
+        identity::AccessKeyAuthentication,
         merchant::MerchantQueries,
         ports::{
-            GeneratedMcpKeyMaterial, McpKeyListItem, McpKeyRepository, McpPrincipal,
+            AccessKeyListItem, AccessKeyRepository, GeneratedAccessKeyMaterial, McpPrincipal,
             MerchantReadRepository, StoreListItem,
         },
     };
     use chaos_domain::{
-        identity::{McpKey, McpKeyId, UserId},
+        identity::{AccessKey, AccessKeyId, UserId},
         merchant::{StoreId, StoreRole},
     };
     use secrecy::SecretString;
 
     use super::*;
 
-    struct FixedMcpKeys(McpPrincipal);
+    struct FixedAccessKeys(McpPrincipal);
 
     #[async_trait]
-    impl McpKeyRepository for FixedMcpKeys {
+    impl AccessKeyRepository for FixedAccessKeys {
         async fn create(
             &self,
-            _key: &McpKey,
-            _material: &GeneratedMcpKeyMaterial,
+            _key: &AccessKey,
+            _material: &GeneratedAccessKeyMaterial,
         ) -> Result<(), ApplicationError> {
             unreachable!()
         }
@@ -127,16 +127,16 @@ mod tests {
         async fn list(
             &self,
             _user_id: UserId,
-            _after: Option<McpKeyId>,
+            _after: Option<AccessKeyId>,
             _limit: u16,
-        ) -> Result<Vec<McpKeyListItem>, ApplicationError> {
+        ) -> Result<Vec<AccessKeyListItem>, ApplicationError> {
             unreachable!()
         }
 
         async fn revoke(
             &self,
             _user_id: UserId,
-            _key_id: McpKeyId,
+            _key_id: AccessKeyId,
         ) -> Result<(), ApplicationError> {
             unreachable!()
         }
@@ -177,13 +177,19 @@ mod tests {
     #[tokio::test]
     async fn resolves_a_user_key_then_rechecks_the_selected_store_membership() {
         let user_id = UserId::new();
-        let key_id = McpKeyId::new();
+        let key_id = AccessKeyId::new();
         let store_id = StoreId::new();
         let authentication =
-            McpKeyAuthentication::new(Arc::new(FixedMcpKeys(McpPrincipal { key_id, user_id })));
+            AccessKeyAuthentication::new(Arc::new(FixedAccessKeys(McpPrincipal {
+                key_id,
+                user_id,
+            })));
         let queries = MerchantQueries::new(Arc::new(FixedMembership { user_id, store_id }));
         let request = http::Request::builder()
-            .header(http::header::AUTHORIZATION, "Bearer cc_mcp_v1_test_secret")
+            .header(
+                http::header::AUTHORIZATION,
+                "Bearer cc_access_v1_test_secret",
+            )
             .header("x-chaos-store-id", store_id.as_uuid().to_string())
             .body(())
             .unwrap();
@@ -197,23 +203,27 @@ mod tests {
         let AdminActor::Store(store_actor) = actor else {
             unreachable!()
         };
-        assert_eq!(store_actor.mcp_key_id(), Some(key_id));
+        assert_eq!(store_actor.access_key_id(), Some(key_id));
     }
 
     #[tokio::test]
     async fn rejects_a_store_without_current_membership() {
         let user_id = UserId::new();
         let allowed_store_id = StoreId::new();
-        let authentication = McpKeyAuthentication::new(Arc::new(FixedMcpKeys(McpPrincipal {
-            key_id: McpKeyId::new(),
-            user_id,
-        })));
+        let authentication =
+            AccessKeyAuthentication::new(Arc::new(FixedAccessKeys(McpPrincipal {
+                key_id: AccessKeyId::new(),
+                user_id,
+            })));
         let queries = MerchantQueries::new(Arc::new(FixedMembership {
             user_id,
             store_id: allowed_store_id,
         }));
         let request = http::Request::builder()
-            .header(http::header::AUTHORIZATION, "Bearer cc_mcp_v1_test_secret")
+            .header(
+                http::header::AUTHORIZATION,
+                "Bearer cc_access_v1_test_secret",
+            )
             .header("x-chaos-store-id", StoreId::new().as_uuid().to_string())
             .body(())
             .unwrap();

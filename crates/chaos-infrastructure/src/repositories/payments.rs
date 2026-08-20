@@ -9,9 +9,9 @@ use chaos_application::{
         PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
         PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
         PaymentProviderReadinessQueue, PaymentProviderReadinessStatus, PaymentRepository,
-        PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-        ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, ShopperActor,
-        VerifiedWebhookEvent,
+        PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
+        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
+        RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
 };
 use chaos_domain::{
@@ -505,13 +505,13 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
 
 #[async_trait]
 impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
-    async fn webhook_secret_references(
+    async fn webhook_configurations(
         &self,
         provider: &str,
-        external_account_reference: &str,
-    ) -> Result<Vec<PaymentSecretReference>, ApplicationError> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT secret_reference \
+        external_account_reference: Option<&str>,
+    ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT external_account_reference, secret_reference \
              FROM payments.resolve_provider_webhook_secret_references($1, $2)",
         )
         .bind(provider)
@@ -520,9 +520,14 @@ impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|reference| {
-            PaymentSecretReference::new("webhook_secret_reference", reference)
-                .map_err(ApplicationError::from)
+        .map(|(external_account_reference, reference)| {
+            Ok(PaymentWebhookConfiguration {
+                external_account_reference,
+                secret_reference: PaymentSecretReference::new(
+                    "webhook_secret_reference",
+                    reference,
+                )?,
+            })
         })
         .collect()
     }
@@ -612,8 +617,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         shopper: &ShopperActor,
         order_id: OrderId,
         provider: &str,
-        success_url: Option<&str>,
-        cancel_url: Option<&str>,
+        return_url: Option<&str>,
         request: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -696,8 +700,7 @@ impl PaymentRepository for PostgresPaymentRepository {
             provider,
             attempt.amount().amount_minor(),
             currency,
-            success_url,
-            cancel_url,
+            return_url,
         )
         .await?;
         let detail = load_attempt(
@@ -821,7 +824,6 @@ impl PaymentRepository for PostgresPaymentRepository {
             &row.5,
             amount_minor,
             currency,
-            None,
             None,
         )
         .await?;
@@ -990,7 +992,7 @@ impl PaymentRepository for PostgresPaymentRepository {
                 message: "the captured Payment Attempt has no provider reference",
             });
         }
-        let (success_url, cancel_url) = outbox_return_urls(job);
+        let return_url = outbox_return_url(job);
         Ok(ProviderCommand {
             event_type: job.event_type.clone(),
             aggregate_id,
@@ -1003,8 +1005,7 @@ impl PaymentRepository for PostgresPaymentRepository {
                 row.3,
             )?,
             payment_provider_reference: row.4,
-            success_url,
-            cancel_url,
+            return_url,
         })
     }
 
@@ -1189,8 +1190,7 @@ async fn insert_outbox(
     provider: &str,
     amount_minor: i64,
     currency: CurrencyCode,
-    success_url: Option<&str>,
-    cancel_url: Option<&str>,
+    return_url: Option<&str>,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.outbox_events \
@@ -1207,8 +1207,7 @@ async fn insert_outbox(
         "aggregate_id": aggregate_id,
         "amount_minor": amount_minor,
         "currency": currency.as_str(),
-        "success_url": success_url,
-        "cancel_url": cancel_url,
+        "return_url": return_url,
     }))
     .execute(&mut **transaction)
     .await
@@ -1782,14 +1781,11 @@ fn outbox_currency(job: &QueueJob) -> Result<&str, ApplicationError> {
         .ok_or_else(invalid_outbox_payload)
 }
 
-fn outbox_return_urls(job: &QueueJob) -> (Option<String>, Option<String>) {
-    let field = |name: &str| {
-        job.payload
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    };
-    (field("success_url"), field("cancel_url"))
+fn outbox_return_url(job: &QueueJob) -> Option<String> {
+    job.payload
+        .get("return_url")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn invalid_outbox_payload() -> ApplicationError {

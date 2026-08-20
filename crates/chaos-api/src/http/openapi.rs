@@ -49,7 +49,7 @@ mod tests {
         let paths = specification["paths"].as_object().unwrap();
         assert_eq!(paths.len(), 3);
         assert!(paths.contains_key("/auth/external"));
-        assert!(paths.contains_key("/mcp-keys"));
-        assert!(paths.contains_key("/mcp-keys/{mcp_key_id}"));
+        assert!(paths.contains_key("/access-keys"));
+        assert!(paths.contains_key("/access-keys/{access_key_id}"));
     }
 }

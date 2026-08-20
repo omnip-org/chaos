@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use chaos_domain::identity::{Email, ExternalSubject, IdentityProvider, McpKey, McpKeyId, UserId};
+use chaos_domain::identity::{
+    AccessKey, AccessKeyId, Email, ExternalSubject, IdentityProvider, UserId,
+};
 use secrecy::SecretString;
 use time::OffsetDateTime;
 
@@ -53,19 +55,19 @@ pub trait IdentityAuthentication: Send + Sync {
     fn authenticate(&self, token: &SecretString) -> Result<UserId, ApplicationError>;
 }
 
-pub struct GeneratedMcpKeyMaterial {
+pub struct GeneratedAccessKeyMaterial {
     pub key_identifier: String,
     pub secret_digest: [u8; 32],
     pub display_suffix: String,
     pub plaintext: SecretString,
 }
 
-pub trait McpKeyMaterialGenerator: Send + Sync {
-    fn generate(&self) -> GeneratedMcpKeyMaterial;
+pub trait AccessKeyMaterialGenerator: Send + Sync {
+    fn generate(&self) -> GeneratedAccessKeyMaterial;
 }
 
-pub struct McpKeyListItem {
-    pub id: McpKeyId,
+pub struct AccessKeyListItem {
+    pub id: AccessKeyId,
     pub name: String,
     pub key_identifier: String,
     pub display_suffix: String,
@@ -76,26 +78,26 @@ pub struct McpKeyListItem {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct McpPrincipal {
-    pub key_id: McpKeyId,
+    pub key_id: AccessKeyId,
     pub user_id: UserId,
 }
 
 #[async_trait]
-pub trait McpKeyRepository: Send + Sync {
+pub trait AccessKeyRepository: Send + Sync {
     async fn create(
         &self,
-        key: &McpKey,
-        material: &GeneratedMcpKeyMaterial,
+        key: &AccessKey,
+        material: &GeneratedAccessKeyMaterial,
     ) -> Result<(), ApplicationError>;
 
     async fn list(
         &self,
         user_id: UserId,
-        after: Option<McpKeyId>,
+        after: Option<AccessKeyId>,
         limit: u16,
-    ) -> Result<Vec<McpKeyListItem>, ApplicationError>;
+    ) -> Result<Vec<AccessKeyListItem>, ApplicationError>;
 
-    async fn revoke(&self, user_id: UserId, key_id: McpKeyId) -> Result<(), ApplicationError>;
+    async fn revoke(&self, user_id: UserId, key_id: AccessKeyId) -> Result<(), ApplicationError>;
 
     async fn authenticate(
         &self,
