@@ -1,15 +1,9 @@
-use chaos_application::{
-    catalog::{
-        ChangeProductStatusInput, CreateProductInput, CreateProductOptionInput,
-        CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
-        UpdateProductInput,
-    },
-    ports::AdminActor,
+use chaos_application::catalog::{
+    ChangeProductStatusInput, CreateProductInput, CreateProductOptionInput,
+    CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
+    UpdateProductInput,
 };
-use chaos_domain::{
-    catalog::ProductId,
-    merchant::{ApiKeyScope, SalesChannelId},
-};
+use chaos_domain::{catalog::ProductId, merchant::SalesChannelId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -152,7 +146,7 @@ pub struct ProductPublicationParams {
 #[tool_router(router = products_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List products in the Store bound to this API key, including draft and \
+        description = "List products in the selected Store, including draft and \
                         archived products. Paginated; use the returned next_cursor for more pages."
     )]
     async fn list_products(
@@ -160,20 +154,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListProductsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_product_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -222,8 +213,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Get full details for a single product in the Store bound to this API \
-                        key, including options, variants, their selected option values, and \
+        description = "Get full details for a single product in the selected Store, including \
+                        options, variants, their selected option values, and \
                         metadata (both product-level and per-variant)."
     )]
     async fn get_product(
@@ -231,20 +222,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -296,7 +284,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a new draft product in the Store bound to this API key, with its \
+        description = "Create a new draft product in the selected Store, with its \
                         options, variants, and optional metadata (product-level and \
                         per-variant, arbitrary JSON up to 32KB, useful for automation \
                         bookkeeping). The product starts as draft and is not visible anywhere \
@@ -308,10 +296,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -321,10 +309,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         let options = params
@@ -378,7 +363,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Update a product's handle, title, description, and metadata in the \
-                        Store bound to this API key. Every field is replaced wholesale, \
+                        selected Store. Every field is replaced wholesale, \
                         including metadata (omit it to clear existing metadata). Requires \
                         confirm: true and an idempotency_key."
     )]
@@ -387,10 +372,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateProductParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -400,10 +385,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -431,7 +413,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Activate a draft product in the Store bound to this API key, making it \
+        description = "Activate a draft product in the selected Store, making it \
                         eligible for publication. Requires at least one variant. Requires \
                         confirm: true and an idempotency_key."
     )]
@@ -444,7 +426,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive a product in the Store bound to this API key, removing it from \
+        description = "Archive a product in the selected Store, removing it from \
                         sale without deleting it. Requires confirm: true and an idempotency_key."
     )]
     async fn archive_product(
@@ -456,8 +438,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Publish an active product to a sales channel in the Store bound to this \
-                        API key, making it visible on that channel. Requires confirm: true and \
+        description = "Publish an active product to a sales channel in the selected Store, making it visible on that channel. Requires confirm: true and \
                         an idempotency_key."
     )]
     async fn publish_product(
@@ -469,8 +450,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Unpublish a product from a sales channel in the Store bound to this API \
-                        key. Requires confirm: true and an idempotency_key."
+        description = "Unpublish a product from a sales channel in the selected Store. Requires \
+                        confirm: true and an idempotency_key."
     )]
     async fn unpublish_product(
         &self,
@@ -488,10 +469,10 @@ impl ChaosMcp {
         params: ChangeProductStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -501,10 +482,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -534,10 +512,10 @@ impl ChaosMcp {
         params: ProductPublicationParams,
         publish: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -547,10 +525,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),

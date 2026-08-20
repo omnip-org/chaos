@@ -3,9 +3,9 @@ use chaos_application::{
         ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
         UpdateSalesChannelInput, UpdateStoreInput,
     },
-    ports::{AdminActor, SalesChannelAdminItem, StoreAdminItem},
+    ports::{SalesChannelAdminItem, StoreAdminItem},
 };
-use chaos_domain::merchant::{ApiKeyScope, SalesChannelId};
+use chaos_domain::merchant::SalesChannelId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -25,7 +25,7 @@ use crate::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateStoreParams {
-    /// URL-safe code, unique within the merchant account.
+    /// URL-safe code, globally unique across Stores.
     pub code: String,
     pub name: String,
     /// Two-letter ISO 3166-1 region code.
@@ -91,25 +91,22 @@ pub struct ChangeSalesChannelStatusParams {
 
 #[tool_router(router = store_admin_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
-    #[tool(description = "Get the Store bound to this API key.")]
+    #[tool(description = "Get the selected Store.")]
     async fn get_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self
             .state
@@ -123,7 +120,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update the Store bound to this API key's code, name, default region, \
+        description = "Update the selected Store's code, name, default region, \
                         and default currency. Requires confirm: true and an idempotency_key."
     )]
     async fn update_store(
@@ -131,10 +128,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -144,10 +141,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -169,10 +163,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Activate the Store bound to this API key, making it live. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Activate the selected Store, making it live. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn activate_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -182,7 +174,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive the Store bound to this API key. Requires confirm: true and an \
+        description = "Archive the selected Store. Requires confirm: true and an \
                         idempotency_key."
     )]
     async fn archive_store(
@@ -193,28 +185,23 @@ impl ChaosMcp {
         self.change_store_status(parts, params, false).await
     }
 
-    #[tool(
-        description = "List sales channels in the Store bound to this API key, including \
-                        archived ones."
-    )]
+    #[tool(description = "List sales channels in the selected Store, including \
+                        archived ones.")]
     async fn list_sales_channels(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self
             .state
@@ -230,28 +217,23 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Get a single sales channel's details in the Store bound to this API key."
-    )]
+    #[tool(description = "Get a single sales channel's details in the selected Store.")]
     async fn get_sales_channel(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
         {
             Ok(id) => SalesChannelId::from_uuid(id),
@@ -270,7 +252,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a sales channel in the Store bound to this API key. Requires \
+        description = "Create a sales channel in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn create_sales_channel(
@@ -278,10 +260,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -291,10 +273,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -316,18 +295,18 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a sales channel's code, name, and kind in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Update a sales channel's code, name, and kind in the selected Store. \
+                        Requires confirm: true and an idempotency_key."
     )]
     async fn update_sales_channel(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateSalesChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -337,10 +316,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
         {
             Ok(id) => SalesChannelId::from_uuid(id),
@@ -368,7 +344,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Activate a sales channel in the Store bound to this API key. Requires \
+        description = "Activate a sales channel in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn activate_sales_channel(
@@ -380,7 +356,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive a sales channel in the Store bound to this API key. The default \
+        description = "Archive a sales channel in the selected Store. The default \
                         channel cannot be archived. Requires confirm: true and an \
                         idempotency_key."
     )]
@@ -400,10 +376,10 @@ impl ChaosMcp {
         params: ChangeStoreStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -413,10 +389,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         let input = ChangeStoreStatusInput {
@@ -441,10 +414,10 @@ impl ChaosMcp {
         params: ChangeSalesChannelStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -454,10 +427,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let sales_channel_id = match parse_uuid_field(&params.sales_channel_id, "sales_channel_id")
         {
             Ok(id) => SalesChannelId::from_uuid(id),

@@ -1,11 +1,5 @@
-use chaos_application::{
-    ports::{AdminActor, OrderListFilter},
-    sales::ChangeOrderStatusInput,
-};
-use chaos_domain::{
-    merchant::ApiKeyScope,
-    sales::{OrderId, OrderStatus},
-};
+use chaos_application::{ports::OrderListFilter, sales::ChangeOrderStatusInput};
+use chaos_domain::sales::{OrderId, OrderStatus};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -54,29 +48,24 @@ pub struct ChangeOrderStatusParams {
 
 #[tool_router(router = orders_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
-    #[tool(
-        description = "List orders in the Store bound to this API key. Paginated; use the \
-                        returned next_cursor for more pages."
-    )]
+    #[tool(description = "List orders in the selected Store. Paginated; use the \
+                        returned next_cursor for more pages.")]
     async fn list_orders(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListOrdersParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::OrdersRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_uuid_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -129,26 +118,23 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Get a single order's summary in the Store bound to this API key.")]
+    #[tool(description = "Get a single order's summary in the selected Store.")]
     async fn get_order(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetOrderParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::OrdersRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let order_id = match parse_uuid_field(&params.order_id, "order_id") {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -166,7 +152,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Confirm a pending order in the Store bound to this API key. Requires \
+        description = "Confirm a pending order in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn confirm_order(
@@ -179,7 +165,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Cancel a pending order in the Store bound to this API key. Requires \
+        description = "Cancel a pending order in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn cancel_order(
@@ -199,10 +185,10 @@ impl ChaosMcp {
         params: ChangeOrderStatusParams,
         target_status: OrderStatus,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::OrdersWrite,
         )
         .await
         {
@@ -212,10 +198,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let order_id = match parse_uuid_field(&params.order_id, "order_id") {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),

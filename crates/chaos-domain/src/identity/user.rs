@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
 
+const EXTERNAL_SUBJECT_MAX_LENGTH: usize = 255;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct UserId(Uuid);
 
@@ -54,6 +56,52 @@ pub enum UserStatus {
     Disabled,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum IdentityProvider {
+    Google,
+    Apple,
+}
+
+impl IdentityProvider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Apple => "apple",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "google" => Ok(Self::Google),
+            "apple" => Ok(Self::Apple),
+            _ => Err(DomainError::Validation(vec![FieldViolation {
+                field: "provider",
+                reason: "must be one of: google, apple".into(),
+            }])),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ExternalSubject(String);
+
+impl ExternalSubject {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > EXTERNAL_SUBJECT_MAX_LENGTH {
+            return Err(DomainError::Validation(vec![FieldViolation {
+                field: "subject",
+                reason: "must contain 1-255 bytes".into(),
+            }]));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct User {
     id: UserId,
@@ -96,5 +144,19 @@ mod tests {
     #[test]
     fn rejects_invalid_email() {
         assert!(Email::parse("not-an-email").is_err());
+    }
+
+    #[test]
+    fn supports_only_configured_identity_provider_kinds() {
+        assert_eq!(
+            IdentityProvider::parse("google").unwrap(),
+            IdentityProvider::Google
+        );
+        assert!(IdentityProvider::parse("password").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_external_subject() {
+        assert!(ExternalSubject::parse("").is_err());
     }
 }

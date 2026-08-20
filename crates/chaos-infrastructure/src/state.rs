@@ -10,7 +10,7 @@ use chaos_domain::merchant::StoreId;
 #[derive(Clone)]
 pub struct AppState {
     postgres: PgPool,
-    control_plane_postgres: PgPool,
+    identity_postgres: PgPool,
     analytics_postgres: PgPool,
     redis: RedisClient,
     pub dependency_timeout: Duration,
@@ -70,14 +70,14 @@ impl AppState {
             })
             .connect_lazy(&settings.database_url)
             .context("invalid analytics DATABASE_URL")?;
-        let control_plane_role = settings.database_control_plane_role.clone();
-        let control_plane_postgres = PgPoolOptions::new()
-            .max_connections(settings.database_control_plane_max_connections)
+        let identity_role = settings.database_identity_role.clone();
+        let identity_postgres = PgPoolOptions::new()
+            .max_connections(settings.database_identity_max_connections)
             .acquire_timeout(settings.database_acquire_timeout)
             .after_connect(move |connection, _metadata| {
-                let control_plane_role = control_plane_role.clone();
+                let identity_role = identity_role.clone();
                 Box::pin(async move {
-                    if let Some(role) = control_plane_role {
+                    if let Some(role) = identity_role {
                         let statement = format!("SET ROLE {role}");
                         // Settings constrains the identifier to [a-z_][a-z0-9_]*.
                         sqlx::query(sqlx::AssertSqlSafe(statement))
@@ -87,20 +87,20 @@ impl AppState {
                     Ok(())
                 })
             })
-            .connect_lazy(&settings.database_control_plane_url)
-            .context("invalid DATABASE_CONTROL_PLANE_URL")?;
+            .connect_lazy(&settings.database_identity_url)
+            .context("invalid DATABASE_IDENTITY_URL")?;
 
         Ok(Self {
             postgres,
-            control_plane_postgres,
+            identity_postgres,
             analytics_postgres,
             redis,
             dependency_timeout: settings.dependency_timeout,
         })
     }
 
-    pub fn control_plane_pool(&self) -> PgPool {
-        self.control_plane_postgres.clone()
+    pub fn identity_pool(&self) -> PgPool {
+        self.identity_postgres.clone()
     }
 
     pub fn runtime_pool(&self) -> PgPool {
@@ -140,11 +140,11 @@ impl AppState {
             anyhow::ensure!(pong == "PONG", "unexpected Redis PING response");
             Ok::<_, anyhow::Error>(())
         };
-        let control_plane_postgres = async {
+        let identity_postgres = async {
             sqlx::query("SELECT 1")
-                .execute(&self.control_plane_postgres)
+                .execute(&self.identity_postgres)
                 .await
-                .context("control-plane PostgreSQL readiness check failed")?;
+                .context("identity PostgreSQL readiness check failed")?;
             Ok::<_, anyhow::Error>(())
         };
         let analytics_postgres = async {
@@ -155,7 +155,7 @@ impl AppState {
             Ok::<_, anyhow::Error>(())
         };
 
-        tokio::try_join!(postgres, control_plane_postgres, analytics_postgres, redis)?;
+        tokio::try_join!(postgres, identity_postgres, analytics_postgres, redis)?;
         Ok(())
     }
 }

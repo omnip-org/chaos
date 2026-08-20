@@ -157,7 +157,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .expect("clean notification fixture");
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
         let store_a = Uuid::now_v7();
         let store_b = Uuid::now_v7();
         for (store_id, code) in [(store_a, "na"), (store_b, "nb")] {

@@ -205,7 +205,7 @@ mod tests {
                  (id, store_id, key_identifier, secret_digest, \
                   display_suffix, name, class, created_by_user_id) \
                  VALUES ($1, $2, $3, $4, 'abcd', 'RLS test key', \
-                         'secret', $5)",
+                         'publishable', $5)",
             )
             .bind(key_id)
             .bind(store_id)
@@ -217,7 +217,7 @@ mod tests {
             .unwrap();
             sqlx::query(
                 "INSERT INTO merchant.api_key_scopes (api_key_id, scope) \
-                 VALUES ($1, 'mcp:tools')",
+                 VALUES ($1, 'catalog:read')",
             )
             .bind(key_id)
             .execute(&pool)
@@ -334,7 +334,7 @@ mod tests {
                 .await
                 .unwrap();
         let visible_scope_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'mcp:tools'",
+            "SELECT count(*) FROM merchant.api_key_scopes WHERE scope = 'catalog:read'",
         )
         .fetch_one(transaction.connection())
         .await
@@ -407,7 +407,7 @@ mod tests {
         let option_a = Uuid::now_v7();
         let option_value_a = Uuid::now_v7();
         let variant_b = Uuid::now_v7();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query(
             "INSERT INTO merchant.stores (id, code, name) \

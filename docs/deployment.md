@@ -2,7 +2,9 @@
 
 ## Topology
 
-Cloudflare terminates public TLS and proxies to the host gateway. Caddy listens on HTTP port 8080 and load-balances the blue and green API replicas; it does not issue a public certificate. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL, Redis, and metrics must not be publicly reachable.
+Cloudflare terminates public TLS and proxies to the host gateway. The gateway load-balances the blue and green API replicas. One independently restartable Worker service runs background consumers and has no public listener. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL, Redis, and metrics must not be publicly reachable.
+
+API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because queue claims, leases, retries, and idempotency are designed for concurrent consumers.
 
 ## Host bootstrap
 
@@ -19,29 +21,27 @@ If the `ghcr.io/omnip-org/chaos` package is private, authenticate Docker to GHCR
 echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 ```
 
-Copy `.env.example` to `.env`, set mode `0600`, and replace every `CHANGE_ME_*` value — this is the same template used for local development, so nothing distinguishes a production `.env` except the values you put in it. `POSTGRES_PASSWORD` is the password of the `chaos` login role. Both database URLs use that login; the application assumes the migration-created `chaos_runtime` and `chaos_control_plane` NOLOGIN roles after connecting.
+Copy `.env.example` to `.env`, set mode `0600`, and replace every `CHANGE_ME_*` value — this is the same template used for local development, so nothing distinguishes a production `.env` except the values you put in it. `POSTGRES_PASSWORD` is the password of the `chaos` login role. Both database URLs use that login; the application assumes the migration-created `chaos_runtime` and `chaos_identity` NOLOGIN roles after connecting.
 
-Configure Cloudflare's public origin as the external `AUTH_PUBLIC_BASE_URL` and `WEBAUTHN_RP_ORIGIN`. Both use `https://` even though the Cloudflare-to-Caddy hop is HTTP.
+`DATABASE_IDENTITY_URL` may be omitted when Identity uses the same PostgreSQL login and endpoint as `DATABASE_URL`; keeping it explicit allows the Identity pool to move independently later.
+
+The repository includes the local self-signed origin certificate used behind Cloudflare at `deploy/nginx/certs/omnip.org.crt` and `deploy/nginx/certs/omnip.org.key`. Replace the certificate paths and `server_name` in the NGINX configuration together if a different origin name is used.
+
+Set `AUTH_JWT_ISSUER` to the public HTTPS API origin, use a deployment-specific `AUTH_JWT_AUDIENCE`, generate `AUTH_JWT_SECRET` with at least 32 random bytes, and configure at least one of `GOOGLE_CLIENT_ID` or `APPLE_CLIENT_ID`.
+
+Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted by the MCP endpoint. The MCP transport is stateless so requests may be distributed across blue and green API replicas without sticky sessions.
 
 ## Provider secret encryption
 
 Payment, shipping, and analytics Provider Key secrets are AES-256-GCM encrypted and stored directly in PostgreSQL as an opaque `enc://<base64>` reference. There is no separate secret-manager service to run. `CHAOS_PROVIDER_SECRET_KEY` in the host's `.env` is the only key material: exactly 32 raw bytes, base64-encoded (`openssl rand -base64 32`), read once at startup.
 
-**Back this key up like you would the database itself.** There is no rotation or re-encryption tooling — losing the key makes every previously stored Provider Key permanently unrecoverable, and rotating it requires an owner/administrator to re-submit every Provider Key for every Store through the Admin API.
+**Back this key up like you would the database itself.** There is no rotation or re-encryption tooling — losing the key makes every previously stored Provider Key permanently unrecoverable, and rotating it requires an owner to re-submit every Provider Key for every Store through MCP.
 
-An owner or administrator uploads a Provider Key through the Admin API:
-
-```bash
-curl --fail-with-body \
-  -X POST "$BASE_URL/admin/v1/merchant-accounts/$ACCOUNT_ID/stores/$STORE_ID/provider-secrets" \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{"kind":"payment_webhook","value":"whsec_xxx"}'
-```
+An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The MCP connection uses the User's private Key and selects the target Store with `X-Chaos-Store-Id`.
 
 The response contains a newly generated `enc://...` reference. The plaintext is not returned again or stored anywhere in plaintext. Use that reference in the existing Provider account create/update request.
 
-Adding or changing an encrypted Provider Key takes effect on the next Provider operation on both replicas. It does not require a deployment or restart. Submit a new value and update the Provider account reference when the 24-hour application-level overlap is required.
+Adding or changing an encrypted Provider Key takes effect on the next Provider operation. It does not require a deployment or restart. Submit a new value through MCP and update the Provider account reference when the 24-hour application-level overlap is required.
 
 ## Deployment
 
@@ -51,38 +51,42 @@ To deploy, on the host itself (`/opt/chaos` by convention), pull the latest comp
 
 ```bash
 git pull --ff-only
-./scripts/deploy.sh
+cd deploy
+./deploy.sh
 ```
+
+If the NGINX `server_name` is not `chaos.omnip.org`, pass the matching value as `ORIGIN_HOST` when invoking the script so its final origin health probe uses the correct Host header.
 
 With no `CHAOS_IMAGE` set, this deploys `ghcr.io/omnip-org/chaos:latest` — whatever Release most recently published. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); starts PostgreSQL and Redis; applies migrations once; rolls blue and green independently; starts the gateway; and runs health probes. If a replica fails to become healthy the rollout aborts before touching the second replica, so the previous version keeps serving.
 
 Rollback to a specific version:
 
 ```bash
-CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./scripts/deploy.sh
+cd deploy
+CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./deploy.sh
 ```
 
 Release tags every image with both `:VERSION` and `:latest`, and `deploy.sh` never removes other locally-cached same-repo tags (only dangling layers) — a pinned rollback is usually a re-pull of a tag Docker already has cached, not a cold fetch.
 
-Verify the origin and Cloudflare paths:
+Verify the origin and Cloudflare paths (replace the Host name if the NGINX configuration uses a different origin name):
 
 ```bash
-curl --fail http://127.0.0.1:8080/health/live
+curl --insecure --fail --header 'Host: chaos.omnip.org' https://127.0.0.1/health/live
 curl --fail https://api.example.com/health/ready
 ```
 
-## Store onboarding without a restart
+## Identity and MCP bootstrap
 
-1. Authenticate through the Admin email-link or passkey flow.
-2. Create the Merchant Account and Store through the Admin API.
-3. Create Store-scoped publishable and secret API keys. Preserve each plaintext key returned once; these keys do not belong in the Chaos API environment.
-4. Upload third-party credentials through `POST .../provider-secrets`.
-5. Create disabled Payment, Shipping, or Analytics Provider configuration with the returned `enc://` references.
-6. Complete external Provider onboarding, request enablement, and confirm readiness.
+1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
+2. Create a User-owned MCP Key at `POST /identity/v1/mcp-keys` with the JWT. Preserve the plaintext returned once.
+3. Configure the AI client with `Authorization: Bearer <mcp-key>` and `X-Chaos-Store-Id: <store-id>`.
+4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
+5. Create only Publishable Keys for storefront or Sales Channel clients.
+6. Upload third-party credentials and configure Providers through MCP tools.
 7. Activate the Store and exercise a non-destructive quote or test transaction.
 
 ## Deployment secrets and rotation
 
 The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, email, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. It is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
 
-Editing `.env` and re-running `./scripts/deploy.sh` performs a normal blue/green rollout, since both replicas are restarted with the new environment. Changing or adding an encrypted Provider secret through the Admin API does not require a deploy.
+Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

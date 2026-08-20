@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn generated_key_has_parseable_versioned_shape() {
-        let generated = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Secret);
+        let generated = SecureApiKeyMaterialGenerator.generate(ApiKeyClass::Publishable);
         let plaintext = generated.plaintext.expose_secret();
 
         assert_eq!(
@@ -409,13 +409,13 @@ mod tests {
         );
         let expected_digest: [u8; 32] = Sha256::digest(plaintext.as_bytes()).into();
         assert_eq!(generated.secret_digest, expected_digest);
-        assert!(plaintext.starts_with("cc_v1_secret_"));
+        assert!(plaintext.starts_with("cc_v1_publishable_"));
         assert!(plaintext.ends_with(&generated.display_suffix));
     }
 
     #[test]
     fn malformed_key_is_rejected_before_database_lookup() {
-        assert_eq!(parse_key_identifier("cc_v1_secret_short_secret"), None);
+        assert_eq!(parse_key_identifier("cc_v1_publishable_short_secret"), None);
         assert_eq!(parse_key_identifier("not-a-key"), None);
     }
 
@@ -444,7 +444,7 @@ mod tests {
             .unwrap();
         let user_id = UserId::new();
         let store_id = StoreId::new();
-        let unique_suffix = Uuid::now_v7().simple().to_string();
+        let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())
@@ -482,9 +482,9 @@ mod tests {
         let creation_input = || CreateApiKeyInput {
             actor: actor.clone(),
             store_id,
-            name: "MCP production".into(),
-            class: "secret".into(),
-            scopes: vec!["mcp:tools".into(), "orders:read".into()],
+            name: "Storefront production".into(),
+            class: "publishable".into(),
+            scopes: vec!["catalog:read".into(), "orders:read".into()],
             idempotency: IdempotencyRequest {
                 key: format!("create-{unique_suffix}"),
                 request_fingerprint: [41; 32],
@@ -514,7 +514,7 @@ mod tests {
         let machine_actor = authentication
             .authenticate(
                 &plaintext,
-                &[ApiKeyScope::McpTools, ApiKeyScope::OrdersRead],
+                &[ApiKeyScope::CatalogRead, ApiKeyScope::OrdersRead],
             )
             .await
             .unwrap();
@@ -523,7 +523,7 @@ mod tests {
             authentication
                 .authenticate(
                     &plaintext,
-                    &[ApiKeyScope::McpTools, ApiKeyScope::CustomersWrite],
+                    &[ApiKeyScope::CatalogRead, ApiKeyScope::CartsWrite],
                 )
                 .await
                 .is_err()
@@ -552,7 +552,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             authentication
-                .authenticate(&plaintext, &[ApiKeyScope::McpTools])
+                .authenticate(&plaintext, &[ApiKeyScope::CatalogRead])
                 .await,
             Err(ApplicationError::Unauthorized)
         ));

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
-    merchant::{CursorKind, decode_cursor, encode_cursor, page_limit, page_meta},
+    pagination::{CursorKind, decode_cursor, encode_cursor, page_limit, page_meta},
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -269,8 +269,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::http::{
-        pricing::tests::{response_json, test_state},
         router,
+        test_support::{response_json, test_state},
     };
 
     use super::*;
@@ -326,7 +326,7 @@ mod tests {
         let product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
         let price_list_id = Uuid::now_v7();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(user_id.as_uuid())

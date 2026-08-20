@@ -1,13 +1,10 @@
-use chaos_application::{
-    catalog::{
-        ChangeCollectionStatusInput, CollectionPublicationInput, CreateCollectionInput,
-        ReplaceCollectionProductsInput, UpdateCollectionInput,
-    },
-    ports::AdminActor,
+use chaos_application::catalog::{
+    ChangeCollectionStatusInput, CollectionPublicationInput, CreateCollectionInput,
+    ReplaceCollectionProductsInput, UpdateCollectionInput,
 };
 use chaos_domain::{
     catalog::{CollectionId, ProductId},
-    merchant::{ApiKeyScope, SalesChannelId},
+    merchant::SalesChannelId,
 };
 use rmcp::{
     ErrorData,
@@ -49,6 +46,9 @@ pub struct CreateCollectionParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Arbitrary JSON (up to 32KB) for automation bookkeeping. Not shown to shoppers.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -63,6 +63,9 @@ pub struct UpdateCollectionParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Replaces the collection's metadata; omit or pass null to clear it.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -106,7 +109,7 @@ pub struct CollectionPublicationParams {
 #[tool_router(router = collections_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List collections in the Store bound to this API key, including draft \
+        description = "List collections in the selected Store, including draft \
                         and archived collections. Paginated; use the returned next_cursor for \
                         more pages."
     )]
@@ -115,20 +118,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListCollectionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_collection_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -177,28 +177,25 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Get full details for a single collection in the Store bound to this API \
-                        key, including its member products and published sales channels."
+        description = "Get full details for a single collection in the selected Store, \
+                        including its member products and published sales channels."
     )]
     async fn get_collection(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -222,6 +219,7 @@ impl ChaosMcp {
                 })).collect::<Vec<_>>(),
                 "published_sales_channel_ids": detail.published_sales_channel_ids.into_iter()
                     .map(|id| id.as_uuid()).collect::<Vec<_>>(),
+                "metadata": detail.metadata,
                 "created_at": format_time(detail.created_at),
                 "updated_at": format_time(detail.updated_at),
             }))),
@@ -230,7 +228,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a draft collection in the Store bound to this API key. Requires \
+        description = "Create a draft collection in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn create_collection(
@@ -238,10 +236,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -251,10 +249,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -266,8 +261,7 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
-                // Not yet exposed as an MCP tool parameter; use the Admin HTTP API to set metadata.
-                metadata: None,
+                metadata: params.metadata,
                 idempotency,
                 now: self.state.clock.now(),
             })
@@ -279,18 +273,17 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a collection's handle, title, and description in the Store bound \
-                        to this API key. Requires confirm: true and an idempotency_key."
+        description = "Update a collection's handle, title, and description in the selected Store. Requires confirm: true and an idempotency_key."
     )]
     async fn update_collection(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -300,10 +293,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -320,7 +310,7 @@ impl ChaosMcp {
                 handle: params.handle,
                 title: params.title,
                 description: params.description,
-                metadata: None,
+                metadata: params.metadata,
                 idempotency,
                 now: self.state.clock.now(),
             })
@@ -332,7 +322,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Activate a draft collection in the Store bound to this API key. Requires \
+        description = "Activate a draft collection in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn activate_collection(
@@ -343,10 +333,8 @@ impl ChaosMcp {
         self.change_collection_status(parts, params, true).await
     }
 
-    #[tool(
-        description = "Archive a collection in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Archive a collection in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn archive_collection(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -357,7 +345,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Replace the full set of member products in a collection, in the Store \
-                        bound to this API key. Pass the complete desired product_ids list, in \
+                        selected by X-Chaos-Store-Id. Pass the complete desired product_ids list, in \
                         display order — this replaces membership, it does not append. Requires \
                         confirm: true and an idempotency_key."
     )]
@@ -366,10 +354,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AddProductsToCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -379,10 +367,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -415,8 +400,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Publish an active collection to a sales channel in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Publish an active collection to a sales channel in the selected Store. \
+                        Requires confirm: true and an idempotency_key."
     )]
     async fn publish_collection(
         &self,
@@ -428,8 +413,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Unpublish a collection from a sales channel in the Store bound to this \
-                        API key. Requires confirm: true and an idempotency_key."
+        description = "Unpublish a collection from a sales channel in the selected Store. Requires confirm: true and an idempotency_key."
     )]
     async fn unpublish_collection(
         &self,
@@ -448,10 +432,10 @@ impl ChaosMcp {
         params: ChangeCollectionStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -461,10 +445,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -495,10 +476,10 @@ impl ChaosMcp {
         params: CollectionPublicationParams,
         publish: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -508,10 +489,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),

@@ -20,7 +20,9 @@ use uuid::Uuid;
 use super::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, CartShopper,
     CustomerCheckout, CustomerMachine, CustomerSession,
-    merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
+    pagination::{
+        CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta,
+    },
     storefront_sales::{OrderData, order_data},
 };
 

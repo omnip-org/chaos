@@ -1,12 +1,9 @@
 use base64::Engine as _;
 use chaos_application::{
     catalog::{CreateMediaAssetInput, MediaAssetActionInput},
-    ports::{AdminActor, MediaAssetItem},
+    ports::MediaAssetItem,
 };
-use chaos_domain::{
-    catalog::{MediaAssetId, ProductId, ProductVariantId},
-    merchant::ApiKeyScope,
-};
+use chaos_domain::catalog::{MediaAssetId, ProductId, ProductVariantId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -71,7 +68,7 @@ pub struct ArchiveProductMediaParams {
 #[tool_router(router = media_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "Upload an image for a product in the Store bound to this API key, in \
+        description = "Upload an image for a product in the selected Store, in \
                         one call. Provide the image as base64-encoded bytes (data_base64); this \
                         tool computes the checksum, creates the Media Asset record, uploads the \
                         bytes to storage, and marks it ready — no separate presigned-URL steps \
@@ -82,10 +79,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UploadProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaWrite,
         )
         .await
         {
@@ -95,10 +92,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -213,7 +207,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List media assets for a product in the Store bound to this API key, \
+        description = "List media assets for a product in the selected Store, \
                         including pending and archived ones."
     )]
     async fn list_product_media(
@@ -221,20 +215,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -254,7 +245,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive a media asset for a product in the Store bound to this API key. \
+        description = "Archive a media asset for a product in the selected Store. \
                         Requires confirm: true and an idempotency_key."
     )]
     async fn archive_product_media(
@@ -262,10 +253,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ArchiveProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaWrite,
         )
         .await
         {
@@ -275,10 +266,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),

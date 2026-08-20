@@ -1,11 +1,7 @@
-use chaos_application::{
-    inventory::{AdjustStockInput, CreateInventoryLocationInput},
-    ports::AdminActor,
-};
+use chaos_application::inventory::{AdjustStockInput, CreateInventoryLocationInput};
 use chaos_domain::{
     catalog::ProductVariantId,
     inventory::{InventoryLocationId, StockItemId},
-    merchant::ApiKeyScope,
 };
 use rmcp::{
     ErrorData,
@@ -77,27 +73,24 @@ pub struct AdjustStockParams {
 impl ChaosMcp {
     #[tool(
         description = "List stock levels (on-hand, reserved, available quantity) per inventory \
-                        location and product variant in the Store bound to this API key."
+                        location and product variant in the selected Store."
     )]
     async fn list_inventory(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListStockParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::InventoryRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_stock_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -146,28 +139,24 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List inventory locations (warehouses, stores, etc.) in the Store bound \
-                        to this API key."
+        description = "List inventory locations (warehouses, stores, etc.) in the selected Store."
     )]
     async fn list_inventory_locations(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListInventoryLocationsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::InventoryRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_location_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -215,18 +204,17 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create an inventory location (warehouse, store, etc.) in the Store bound \
-                        to this API key. Requires confirm: true and an idempotency_key."
+        description = "Create an inventory location (warehouse, store, etc.) in the selected Store. Requires confirm: true and an idempotency_key."
     )]
     async fn create_inventory_location(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateInventoryLocationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::InventoryWrite,
         )
         .await
         {
@@ -236,10 +224,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -261,7 +246,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Adjust on-hand stock quantity for a product variant at an inventory \
-                        location, in the Store bound to this API key. Use a positive \
+                        location, in the selected Store. Use a positive \
                         delta_quantity to receive stock and a negative one to remove it. \
                         Requires confirm: true and an idempotency_key."
     )]
@@ -270,10 +255,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AdjustStockParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::InventoryWrite,
         )
         .await
         {
@@ -283,10 +268,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let inventory_location_id =
             match parse_uuid_field(&params.inventory_location_id, "inventory_location_id") {
                 Ok(id) => InventoryLocationId::from_uuid(id),

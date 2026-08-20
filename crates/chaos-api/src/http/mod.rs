@@ -1,29 +1,21 @@
 mod analytics;
-mod api_key;
 mod auth;
-mod catalog;
 mod collection;
 mod customer;
 mod error;
 mod extract;
-mod fulfillment;
 mod health;
-mod inventory;
-mod localization;
-mod media;
-mod merchant;
 mod metrics;
 mod notification;
 mod openapi;
-mod order;
+mod pagination;
 mod payment;
-mod pricing;
-mod provider_secret;
 mod response;
 mod review;
-mod store_admin;
 mod storefront;
 mod storefront_sales;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Context as _;
 use axum::Router;
@@ -41,14 +33,15 @@ use chaos_application::{
         FulfillmentManagement, FulfillmentWorkers, ShippingManagement,
         ShippingProviderAdministration,
     },
+    identity::{IdentityService, McpKeyAuthentication, McpKeyManagement},
     inventory::InventoryManagement,
     merchant::{
         ApiKeyAuthentication, ApiKeyManagement, CreateStore, MerchantQueries,
-        ProviderSecretManagement, StoreAdministration,
+        ProviderSecretManagement, StoreAdministration, StoreMembershipManagement,
     },
     notifications::{NotificationWebhooks, NotificationWorkers},
     payments::{PaymentProviderAdministration, PaymentService, PaymentWorkers},
-    ports::{Clock, MediaStorage, PasswordlessAuthentication, ShopperCredentialCodec},
+    ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{CheckoutExpiryWorkers, CustomerService, OrderManagement, StorefrontSales},
     storefront::StorefrontCatalog,
@@ -62,8 +55,11 @@ use chaos_infrastructure::{
     config::Settings,
     easypost::EasyPostShippingProvider,
     email::{ResendEmailProvider, ResendWebhookVerifier, SmtpEmailProvider},
+    identity::{
+        JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
+        PostgresIdentityRepository, PostgresMcpKeyRepository, SecureMcpKeyMaterialGenerator,
+    },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
-    passwordless::PasswordlessAuth,
     repositories::{
         HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
         PostgresAnalyticsReportingRepository, PostgresApiKeyRepository,
@@ -75,9 +71,10 @@ use chaos_infrastructure::{
         PostgresPaymentRepository, PostgresPricingManagementRepository,
         PostgresPricingProvisioningUnitOfWork, PostgresPromotionRepository,
         PostgresReviewRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreProvisioningUnitOfWork,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresTaxRuleRepository, SandboxPaymentProvider, SecureApiKeyMaterialGenerator,
+        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
+        PostgresStoreProvisioningUnitOfWork, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        SecureApiKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
@@ -85,6 +82,7 @@ use chaos_infrastructure::{
     stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider, StripeWebhookVerifier},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
+use secrecy::ExposeSecret as _;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -94,7 +92,7 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    AnalyticsCustomer, AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedSession,
+    AnalyticsCustomer, AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedUser,
     CartMachine, CartShopper, CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession,
     OrderLookupMachine, StoreContext, StorefrontMachine,
 };
@@ -105,7 +103,10 @@ pub struct ApiState {
     pub infrastructure: AppState,
     pub lifecycle: Lifecycle,
     pub metrics: PrometheusHandle,
-    pub passwordless_auth: Arc<dyn PasswordlessAuthentication>,
+    pub identity_auth: Arc<dyn IdentityAuthentication>,
+    pub mcp_key_management: Arc<McpKeyManagement>,
+    pub mcp_key_authentication: Arc<McpKeyAuthentication>,
+    pub mcp_allowed_hosts: Vec<String>,
     pub create_store: Arc<CreateStore>,
     pub store_administration: Arc<StoreAdministration>,
     pub inventory_management: Arc<InventoryManagement>,
@@ -123,6 +124,7 @@ pub struct ApiState {
     pub tax_management: Arc<TaxManagement>,
     pub promotion_management: Arc<PromotionManagement>,
     pub merchant_queries: Arc<MerchantQueries>,
+    pub store_membership_management: Arc<StoreMembershipManagement>,
     pub api_key_management: Arc<ApiKeyManagement>,
     pub api_key_authentication: Arc<ApiKeyAuthentication>,
     pub provider_secret_management: Arc<ProviderSecretManagement>,
@@ -172,15 +174,56 @@ impl ApiState {
                     .context("SMTP_URL must be set when RESEND_API_KEY is not")?;
                 Arc::new(SmtpEmailProvider::new(smtp_url)?)
             };
-        let passwordless_auth = PasswordlessAuth::new(
-            infrastructure.control_plane_pool(),
-            infrastructure.redis_client(),
-            &settings.webauthn_rp_id,
-            &settings.webauthn_rp_origin,
-            email_provider.clone(),
-            &settings.email_from,
-            &settings.auth_public_base_url,
-        )?;
+        let identity_providers = [
+            settings
+                .google_client_id
+                .as_ref()
+                .map(|audience| OidcProviderConfiguration {
+                    provider: chaos_domain::identity::IdentityProvider::Google,
+                    issuers: vec![
+                        "https://accounts.google.com".into(),
+                        "accounts.google.com".into(),
+                    ],
+                    audience: audience.clone(),
+                    jwks_uri: "https://www.googleapis.com/oauth2/v3/certs"
+                        .parse()
+                        .unwrap(),
+                }),
+            settings
+                .apple_client_id
+                .as_ref()
+                .map(|audience| OidcProviderConfiguration {
+                    provider: chaos_domain::identity::IdentityProvider::Apple,
+                    issuers: vec!["https://appleid.apple.com".into()],
+                    audience: audience.clone(),
+                    jwks_uri: "https://appleid.apple.com/auth/keys".parse().unwrap(),
+                }),
+        ]
+        .into_iter()
+        .flatten();
+        let identity_auth = IdentityService::new(
+            Arc::new(OidcIdentityVerifier::new(
+                identity_providers,
+                settings.dependency_timeout,
+            )?),
+            Arc::new(PostgresIdentityRepository::new(
+                infrastructure.identity_pool(),
+            )),
+            Arc::new(JwtAccessTokenCodec::new(
+                settings.auth_jwt_issuer.clone(),
+                settings.auth_jwt_audience.clone(),
+                settings.auth_jwt_secret.expose_secret().as_bytes(),
+                settings.auth_jwt_lifetime_seconds,
+            )?),
+        );
+        let mcp_key_repository = Arc::new(PostgresMcpKeyRepository::new(
+            infrastructure.identity_pool(),
+        ));
+        let mcp_key_management = McpKeyManagement::new(
+            mcp_key_repository.clone(),
+            Arc::new(SecureMcpKeyMaterialGenerator),
+        );
+        let mcp_key_authentication = McpKeyAuthentication::new(mcp_key_repository);
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             infrastructure.runtime_pool(),
         )));
@@ -254,6 +297,9 @@ impl ApiState {
         let merchant_queries = MerchantQueries::new(Arc::new(PostgresMerchantReadRepository::new(
             infrastructure.runtime_pool(),
         )));
+        let store_membership_management = StoreMembershipManagement::new(Arc::new(
+            PostgresStoreMembershipRepository::new(infrastructure.runtime_pool()),
+        ));
         let api_key_repository =
             Arc::new(PostgresApiKeyRepository::new(infrastructure.runtime_pool()));
         let api_key_management = ApiKeyManagement::new(
@@ -309,7 +355,7 @@ impl ApiState {
         let storefront_sales = StorefrontSales::new(storefront_sales_repository.clone());
         let customer_service = CustomerService::new(Arc::new(PostgresCustomerRepository::new(
             infrastructure.runtime_pool(),
-            infrastructure.control_plane_pool(),
+            infrastructure.identity_pool(),
         )));
         let checkout_expiry_workers = CheckoutExpiryWorkers::new(storefront_sales_repository);
         let order_management = OrderManagement::new(Arc::new(
@@ -429,7 +475,10 @@ impl ApiState {
             infrastructure,
             lifecycle,
             metrics,
-            passwordless_auth: Arc::new(passwordless_auth),
+            identity_auth: Arc::new(identity_auth),
+            mcp_key_management: Arc::new(mcp_key_management),
+            mcp_key_authentication: Arc::new(mcp_key_authentication),
+            mcp_allowed_hosts: settings.mcp_allowed_hosts.clone(),
             create_store: Arc::new(create_store),
             store_administration: Arc::new(store_administration),
             inventory_management: Arc::new(inventory_management),
@@ -447,6 +496,7 @@ impl ApiState {
             tax_management: Arc::new(tax_management),
             promotion_management: Arc::new(promotion_management),
             merchant_queries: Arc::new(merchant_queries),
+            store_membership_management: Arc::new(store_membership_management),
             api_key_management: Arc::new(api_key_management),
             api_key_authentication: Arc::new(api_key_authentication),
             provider_secret_management: Arc::new(provider_secret_management),
@@ -478,50 +528,47 @@ impl ApiState {
 }
 
 pub fn router(state: ApiState) -> Router {
-    let mcp_router = chaos_mcp::router(chaos_mcp::McpState {
-        api_key_authentication: state.api_key_authentication.clone(),
-        catalog_queries: state.catalog_queries.clone(),
-        create_product: state.create_product.clone(),
-        catalog_management: state.catalog_management.clone(),
-        collection_administration: state.collection_administration.clone(),
-        pricing_management: state.pricing_management.clone(),
-        create_price_list: state.create_price_list.clone(),
-        promotion_management: state.promotion_management.clone(),
-        tax_management: state.tax_management.clone(),
-        inventory_management: state.inventory_management.clone(),
-        order_management: state.order_management.clone(),
-        fulfillment_management: state.fulfillment_management.clone(),
-        shipping_management: state.shipping_management.clone(),
-        shipping_provider_administration: state.shipping_provider_administration.clone(),
-        store_administration: state.store_administration.clone(),
-        payment_service: state.payment_service.clone(),
-        media_administration: state.media_administration.clone(),
-        catalog_localization: state.catalog_localization.clone(),
-        review_administration: state.review_administration.clone(),
-        api_key_management: state.api_key_management.clone(),
-        provider_secret_management: state.provider_secret_management.clone(),
-        clock: state.clock.clone(),
-    });
+    let mcp_router = chaos_mcp::router(
+        chaos_mcp::McpState {
+            mcp_key_authentication: state.mcp_key_authentication.clone(),
+            merchant_queries: state.merchant_queries.clone(),
+            store_membership_management: state.store_membership_management.clone(),
+            create_store: state.create_store.clone(),
+            catalog_queries: state.catalog_queries.clone(),
+            create_product: state.create_product.clone(),
+            catalog_management: state.catalog_management.clone(),
+            collection_administration: state.collection_administration.clone(),
+            pricing_management: state.pricing_management.clone(),
+            create_price_list: state.create_price_list.clone(),
+            promotion_management: state.promotion_management.clone(),
+            tax_management: state.tax_management.clone(),
+            inventory_management: state.inventory_management.clone(),
+            order_management: state.order_management.clone(),
+            fulfillment_management: state.fulfillment_management.clone(),
+            shipping_management: state.shipping_management.clone(),
+            shipping_provider_administration: state.shipping_provider_administration.clone(),
+            store_administration: state.store_administration.clone(),
+            payment_service: state.payment_service.clone(),
+            payment_provider_administration: state.payment_provider_administration.clone(),
+            media_administration: state.media_administration.clone(),
+            catalog_localization: state.catalog_localization.clone(),
+            review_administration: state.review_administration.clone(),
+            api_key_management: state.api_key_management.clone(),
+            provider_secret_management: state.provider_secret_management.clone(),
+            analytics_administration: state.analytics_administration.clone(),
+            analytics_privacy: state.analytics_privacy.clone(),
+            analytics_reporting: state.analytics_reporting.clone(),
+            analytics_destinations: state.analytics_destinations.clone(),
+            clock: state.clock.clone(),
+        },
+        state.mcp_allowed_hosts.clone(),
+    );
     Router::new()
         .nest("/health", health::routes())
         .nest("/metrics", metrics::routes())
-        .nest("/admin/v1/auth", auth::routes())
-        .nest("/admin/v1", merchant::routes())
-        .nest("/admin/v1", store_admin::routes())
-        .nest("/admin/v1", analytics::admin_routes())
-        .nest("/admin/v1", inventory::routes())
-        .nest("/admin/v1", order::routes())
-        .nest("/admin/v1", fulfillment::routes())
+        .nest("/identity/v1", auth::routes())
         .merge(payment::routes())
         .merge(notification::routes())
-        .nest("/admin/v1", catalog::routes())
-        .nest("/admin/v1", collection::admin_routes())
-        .nest("/admin/v1", review::admin_routes())
-        .nest("/admin/v1", media::routes())
-        .nest("/admin/v1", localization::routes())
-        .nest("/admin/v1", pricing::routes())
-        .nest("/admin/v1", api_key::routes())
-        .nest("/admin/v1", provider_secret::routes())
         .nest("/store/v1", storefront::routes())
         .nest("/store/v1", collection::storefront_routes())
         .nest("/store/v1", review::storefront_routes())
@@ -555,18 +602,24 @@ mod tests {
         let settings = Settings {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             database_url: "postgres://localhost/chaos".into(),
-            database_control_plane_url: "postgres://localhost/chaos".into(),
+            database_identity_url: "postgres://localhost/chaos".into(),
             database_max_connections: 1,
-            database_control_plane_max_connections: 1,
+            database_identity_max_connections: 1,
             database_analytics_max_connections: 1,
             database_analytics_statement_timeout: Duration::from_millis(10),
             database_acquire_timeout: Duration::from_millis(10),
             database_runtime_role: None,
-            database_control_plane_role: None,
+            database_identity_role: None,
             redis_url: "redis://localhost".into(),
-            webauthn_rp_id: "localhost".into(),
-            webauthn_rp_origin: "http://localhost:8080".into(),
-            auth_public_base_url: "http://localhost:8080".into(),
+            auth_jwt_issuer: "https://identity.chaos.test".into(),
+            auth_jwt_audience: "chaos-api".into(),
+            auth_jwt_secret: secrecy::SecretString::from(
+                "test-jwt-secret-that-is-at-least-32-bytes",
+            ),
+            auth_jwt_lifetime_seconds: 3600,
+            mcp_allowed_hosts: vec!["localhost".into()],
+            google_client_id: Some("test-google-client".into()),
+            apple_client_id: None,
             smtp_url: Some("smtp://localhost:1025".into()),
             email_from: "Chaos <no-reply@localhost>".into(),
             resend_api_key: None,
@@ -674,7 +727,7 @@ mod tests {
     async fn malformed_json_uses_the_error_envelope() {
         let response = router(test_state())
             .oneshot(
-                Request::post("/admin/v1/auth/email-links")
+                Request::post("/identity/v1/auth/external")
                     .header("content-type", "application/json")
                     .body(Body::from("{"))
                     .unwrap(),
@@ -689,10 +742,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_openapi_contract_is_publicly_available() {
+    async fn identity_openapi_contract_is_publicly_available() {
         let response = router(test_state())
             .oneshot(
-                Request::get("/openapi/admin-v1.json")
+                Request::get("/openapi/identity-v1.json")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -709,7 +762,7 @@ mod tests {
             .await
             .unwrap();
         let contract = serde_json::from_slice::<Value>(&body).unwrap();
-        assert_eq!(contract["info"]["title"], "Chaos Admin API");
+        assert_eq!(contract["info"]["title"], "Chaos Identity API");
         assert_eq!(contract["openapi"], "3.1.0");
     }
 
@@ -749,17 +802,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn price_list_administration_requires_a_human_session() {
-        let store_id = uuid::Uuid::now_v7();
+    async fn legacy_admin_http_surface_is_not_routed() {
         let response = router(test_state())
             .oneshot(
-                Request::get(format!("/admin/v1/stores/{store_id}/price-lists"))
+                Request::get("/admin/v1/stores")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mcp_transport_is_stateless_and_rejects_unconfigured_hosts() {
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "chaos-test", "version": "1.0.0" }
+            }
+        });
+        let request = |host: &'static str| {
+            Request::post("/mcp/v1")
+                .header("host", host)
+                .header("accept", "application/json, text/event-stream")
+                .header("content-type", "application/json")
+                .body(Body::from(initialize.to_string()))
+                .unwrap()
+        };
+
+        let app = router(test_state());
+        let rejected = app
+            .clone()
+            .oneshot(request("untrusted.example"))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+
+        let accepted = app.oneshot(request("localhost")).await.unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        assert!(accepted.headers().get("mcp-session-id").is_none());
     }
 }

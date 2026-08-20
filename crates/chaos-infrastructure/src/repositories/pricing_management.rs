@@ -514,7 +514,7 @@ mod tests {
         let product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
         let price_list_id = PriceListId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())

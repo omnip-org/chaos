@@ -6,7 +6,7 @@ use chaos_domain::{
         FulfillmentId, FulfillmentStatus, ReturnId, ReturnStatus, ShippingProviderAccount,
         ShippingProviderAccountId, ShippingRateQuoteId, ShippingSecretReference,
     },
-    merchant::{ApiKeyScope, StoreId, StoreRole},
+    merchant::{StoreId, StoreRole},
     pricing::Money,
     sales::OrderId,
 };
@@ -672,13 +672,7 @@ impl FulfillmentManagement {
 fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::FulfillmentWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 
@@ -691,13 +685,7 @@ fn require_provider_administrator(actor: &AdminActor) -> Result<(), ApplicationE
                 Err(ApplicationError::Forbidden)
             }
         }
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::FulfillmentWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

@@ -301,7 +301,7 @@ mod tests {
         let other_product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
         let other_variant_id = ProductVariantId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
@@ -314,8 +314,8 @@ mod tests {
             (other_store_id, format!("pricing-other-{suffix}")),
         ] {
             sqlx::query(
-                "INSERT INTO merchant.stores (id, code, name) \
-                 VALUES ($1, $2, 'Pricing Store')",
+                "INSERT INTO merchant.stores (id, code, name, status) \
+                 VALUES ($1, $2, 'Pricing Store', 'active')",
             )
             .bind(id.as_uuid())
             .bind(code)

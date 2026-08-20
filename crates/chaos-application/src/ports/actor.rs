@@ -5,7 +5,7 @@ use crate::merchant::StoreActor;
 use super::MachineActor;
 
 /// The caller of an admin-facing use case: either a human Store member
-/// (passwordless session) or a Store-scoped API key (MCP / machine client).
+/// (JWT access token) or a Store-scoped API key (MCP / machine client).
 ///
 /// Kept as a closed enum rather than a trait so it stays object-safe at
 /// `dyn` port boundaries (`CatalogManagementUnitOfWork`, etc.) without

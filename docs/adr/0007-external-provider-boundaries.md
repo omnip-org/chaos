@@ -53,9 +53,9 @@ Notifications are an integration capability, not the source of truth for authent
 
 The notification application boundary owns delivery requests, templates and template versions, recipient policy, suppression state, and delivery status. An `EmailProvider` port is implemented by a Resend adapter. Ordinary business transactions write notification requests or semantic events atomically to an outbox; notification workers render an approved template and send with a stable provider idempotency key.
 
-Authentication email is a dedicated security flow. A raw sign-in token may be passed directly to the provider adapter while it is in process memory, or referenced through encrypted short-lived storage if asynchronous delivery is later required. The general notification outbox contains only a non-secret semantic reference and never persists a reusable sign-in token in plaintext.
+Identity authentication is delegated to external OIDC providers and does not use email links. Commerce notification email remains asynchronous and contains only non-secret semantic references in its durable outbox.
 
-Resend webhook requests are verified from the raw body, deduplicated by delivery identity, and may update delivery status or suppression records. Delivery, bounce, and complaint events never reverse the business transaction that requested the message. Authentication secrets and one-time links must not be written to logs, metrics, general event payloads, or reusable templates.
+Resend webhook requests are verified from the raw body, deduplicated by delivery identity, and may update delivery status or suppression records. Delivery, bounce, and complaint events never reverse the business transaction that requested the message. Provider credentials must not be written to logs, metrics, general event payloads, or reusable templates.
 
 ### Reliability and worker ownership
 

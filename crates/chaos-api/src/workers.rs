@@ -1,0 +1,395 @@
+use crate::{http::ApiState, lifecycle::Lifecycle};
+use uuid::Uuid;
+
+pub async fn run(
+    state: ApiState,
+    lifecycle: Lifecycle,
+    worker_shutdown_timeout: std::time::Duration,
+) {
+    let payment_worker = tokio::spawn(payment_worker_loop(
+        state.payment_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let fulfillment_worker = tokio::spawn(fulfillment_worker_loop(
+        state.fulfillment_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let notification_worker = tokio::spawn(notification_worker_loop(
+        state.notification_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let analytics_worker = tokio::spawn(analytics_worker_loop(
+        state.analytics_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let search_worker = tokio::spawn(search_worker_loop(
+        state.search_indexer.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let checkout_expiry_worker = tokio::spawn(checkout_expiry_worker_loop(
+        state.checkout_expiry_workers.clone(),
+        state.clock.clone(),
+        lifecycle.clone(),
+    ));
+    tracing::info!("background worker started");
+    shutdown_signal(lifecycle).await;
+    tokio::join!(
+        drain_worker("payment", payment_worker, worker_shutdown_timeout),
+        drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
+        drain_worker("notification", notification_worker, worker_shutdown_timeout),
+        drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
+        drain_worker("search", search_worker, worker_shutdown_timeout),
+        drain_worker(
+            "checkout-expiry",
+            checkout_expiry_worker,
+            worker_shutdown_timeout
+        ),
+    );
+}
+
+struct PollBackoff {
+    current: std::time::Duration,
+}
+
+impl PollBackoff {
+    const BASE: std::time::Duration = std::time::Duration::from_millis(250);
+    const MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn new() -> Self {
+        Self {
+            current: Self::BASE,
+        }
+    }
+
+    /// Returns how long to sleep before the next poll, then updates state for
+    /// the following call: any processed work resets the interval to the
+    /// base so a busy queue keeps draining at full speed, while an idle poll
+    /// doubles the interval up to `MAX` so an empty queue stops hammering
+    /// Postgres every 250ms.
+    fn observe(&mut self, processed: usize) -> std::time::Duration {
+        let sleep_for = self.current;
+        self.current = if processed > 0 {
+            Self::BASE
+        } else {
+            std::cmp::min(self.current * 2, Self::MAX)
+        };
+        sleep_for
+    }
+}
+
+async fn analytics_worker_loop(
+    workers: std::sync::Arc<chaos_application::analytics::AnalyticsWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
+    let mut next_erasure_at = time::OffsetDateTime::UNIX_EPOCH;
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let now = clock.now();
+        let mut processed = 0usize;
+        match workers.run_sessionization_batch(worker_id, now, 100).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics sessionization batch failed");
+            }
+        }
+        match workers.run_commerce_fact_batch(worker_id, now, 100).await {
+            Ok(count) => {
+                ::metrics::counter!("chaos_analytics_commerce_fact_jobs_claimed_total")
+                    .increment(count as u64);
+                processed += count;
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics commerce fact batch failed");
+            }
+        }
+        match workers.run_attribution_batch(worker_id, now, 100).await {
+            Ok(count) => {
+                ::metrics::counter!("chaos_analytics_attribution_jobs_claimed_total")
+                    .increment(count as u64);
+                processed += count;
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics attribution batch failed");
+            }
+        }
+        match workers.run_export_batch(worker_id, now, 100).await {
+            Ok(count) => {
+                ::metrics::counter!("chaos_analytics_export_jobs_claimed_total")
+                    .increment(count as u64);
+                processed += count;
+            }
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "analytics export batch failed");
+            }
+        }
+        if now >= next_retention_at {
+            match workers.run_retention_batch(now, 1000).await {
+                Ok(result) => {
+                    ::metrics::counter!("chaos_analytics_retention_behavior_events_deleted_total")
+                        .increment(result.behavior_events_deleted);
+                    ::metrics::counter!(
+                        "chaos_analytics_retention_attribution_results_deleted_total"
+                    )
+                    .increment(result.attribution_results_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_sessions_deleted_total")
+                        .increment(result.sessions_deleted);
+                    ::metrics::counter!("chaos_analytics_retention_identity_links_deleted_total")
+                        .increment(result.identity_links_deleted);
+                    next_retention_at = now + time::Duration::minutes(1);
+                }
+                Err(error) => {
+                    tracing::warn!(%worker_id, %error, "analytics retention batch failed");
+                    next_retention_at = now + time::Duration::seconds(5);
+                }
+            }
+        }
+        if now >= next_erasure_at {
+            match workers.run_erasure_batch(now, 100).await {
+                Ok(result) => {
+                    ::metrics::counter!("chaos_analytics_erasure_requests_completed_total")
+                        .increment(result.requests_completed);
+                    ::metrics::counter!("chaos_analytics_erasure_behavior_events_deleted_total")
+                        .increment(result.behavior_events_deleted);
+                    ::metrics::counter!(
+                        "chaos_analytics_erasure_attribution_results_deleted_total"
+                    )
+                    .increment(result.attribution_results_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_sessions_deleted_total")
+                        .increment(result.sessions_deleted);
+                    ::metrics::counter!("chaos_analytics_erasure_identity_links_deleted_total")
+                        .increment(result.identity_links_deleted);
+                    next_erasure_at = now + time::Duration::seconds(1);
+                }
+                Err(error) => {
+                    tracing::warn!(%worker_id, %error, "analytics erasure batch failed");
+                    next_erasure_at = now + time::Duration::seconds(5);
+                }
+            }
+        }
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn notification_worker_loop(
+    workers: std::sync::Arc<chaos_application::notifications::NotificationWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let processed = match workers.run_batch(worker_id, clock.now(), 50).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "notification delivery batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn drain_worker(
+    worker_name: &'static str,
+    mut worker: tokio::task::JoinHandle<()>,
+    timeout: std::time::Duration,
+) {
+    match tokio::time::timeout(timeout, &mut worker).await {
+        Ok(Ok(())) => tracing::info!(worker = worker_name, "worker drained"),
+        Ok(Err(error)) => {
+            tracing::warn!(worker = worker_name, %error, "worker stopped unexpectedly");
+        }
+        Err(_) => {
+            tracing::warn!(
+                worker = worker_name,
+                ?timeout,
+                "worker drain timed out; aborting task"
+            );
+            worker.abort();
+            let _ = worker.await;
+        }
+    }
+}
+
+async fn search_worker_loop(
+    indexer: std::sync::Arc<chaos_infrastructure::repositories::PostgresSearchIndexer>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let processed = match indexer.run_batch(worker_id, 100, clock.now()).await {
+            Ok(count) => count as usize,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "search indexing batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn payment_worker_loop(
+    workers: std::sync::Arc<chaos_application::payments::PaymentWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let now = clock.now();
+        let mut processed = 0usize;
+        match workers.run_outbox_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "payment outbox batch failed");
+            }
+        }
+        match workers.run_webhook_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "payment webhook batch failed");
+            }
+        }
+        match workers.run_readiness_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
+            }
+        }
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn fulfillment_worker_loop(
+    workers: std::sync::Arc<chaos_application::fulfillment::FulfillmentWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let now = clock.now();
+        let mut processed = 0usize;
+        match workers.run_batch(worker_id, now, 50).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "fulfillment event batch failed");
+            }
+        }
+        match workers.run_tracking_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "shipping tracking batch failed");
+            }
+        }
+        match workers.run_cancellation_batch(worker_id, now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
+            }
+        }
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn checkout_expiry_worker_loop(
+    workers: std::sync::Arc<chaos_application::sales::CheckoutExpiryWorkers>,
+    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let processed = match workers.run_batch(worker_id, clock.now(), 100).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "Checkout expiry batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn shutdown_signal(lifecycle: Lifecycle) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+
+    lifecycle.begin_draining();
+    tracing::info!("shutdown signal received; worker is draining");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::drain_worker;
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_drain_waits_for_normal_completion() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let worker_completed = completed.clone();
+        let worker = tokio::spawn(async move {
+            worker_completed.store(true, Ordering::SeqCst);
+        });
+
+        drain_worker("test", worker, std::time::Duration::from_secs(1)).await;
+
+        assert!(completed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn worker_drain_aborts_after_the_bounded_timeout() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let worker_dropped = dropped.clone();
+        let worker = tokio::spawn(async move {
+            let _drop_signal = DropSignal(worker_dropped);
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+
+        drain_worker("test", worker, std::time::Duration::from_millis(1)).await;
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+}

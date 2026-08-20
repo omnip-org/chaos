@@ -74,7 +74,7 @@ const chaos = createStorefrontClient({
 Cart/Checkout/Order calls only need the publishable key (plus the
 auto-managed shopper token). Customer-account endpoints
 (`chaos.customer.*`) additionally require a customer session obtained
-through this store's passwordless auth flow — set it once and every
+through the user identity flow — set it once and every
 customer call attaches it:
 
 ```ts

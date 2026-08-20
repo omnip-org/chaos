@@ -21,7 +21,7 @@ EasyPost cancellation is a label-refund request, not a promise that a parcel in 
 
 Tracking refresh retrieves the EasyPost Tracker and maps its status into provider-neutral tracking observations. Only the Fulfillment application use case may translate a delivered observation into a Fulfillment transition. Unknown provider states fail closed for reconciliation rather than silently advancing commerce state.
 
-API keys remain in an external secret manager. Store configuration contains only a constrained secret reference and provider identity. The initial environment resolver accepts only `env://CHAOS_SHIPPING_SECRET_*` references; future secret-manager adapters implement the same application port.
+Provider credentials remain behind the secret-resolution application port. Store configuration contains only a constrained secret reference and provider identity. The current adapter accepts encrypted `enc://` references created through MCP and may also resolve deployment-managed references without exposing plaintext to the Store configuration model.
 
 ## Consequences
 

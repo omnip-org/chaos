@@ -3,6 +3,7 @@ mod create_store;
 mod provider_secrets;
 mod queries;
 mod store_administration;
+mod store_membership;
 
 pub use api_keys::{ApiKeyAuthentication, ApiKeyManagement, CreateApiKeyInput, CreateApiKeyOutput};
 pub use create_store::{CreateStore, CreateStoreInput, CreateStoreOutput};
@@ -12,3 +13,4 @@ pub use store_administration::{
     ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
     StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
 };
+pub use store_membership::StoreMembershipManagement;

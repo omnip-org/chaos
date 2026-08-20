@@ -3464,7 +3464,7 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
         let user_id = UserId::new();
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
@@ -3483,8 +3483,8 @@ mod tests {
             .await
             .unwrap();
         for (id, code) in [
-            (store_id, "sales-store"),
-            (other_store_id, "other-sales-store"),
+            (store_id, format!("sales-{suffix}")),
+            (other_store_id, format!("other-sales-{suffix}")),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.stores \

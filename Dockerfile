@@ -24,6 +24,7 @@ RUN apt-get update \
 
 COPY --from=builder /app/target/release/chaos /usr/local/bin/chaos
 COPY --from=builder /app/target/release/chaos-migrate /usr/local/bin/chaos-migrate
+COPY --from=builder /app/target/release/chaos-worker /usr/local/bin/chaos-worker
 
 USER 10001:10001
 EXPOSE 8080

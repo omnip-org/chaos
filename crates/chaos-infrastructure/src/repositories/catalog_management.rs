@@ -307,7 +307,7 @@ mod tests {
         let variant_id = ProductVariantId::new();
         let channel_id = SalesChannelId::new();
         let other_channel_id = SalesChannelId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn machine_actor_with_products_write_scope_can_activate_and_archive_under_rls() {
+    async fn publishable_machine_actor_cannot_administer_catalog_under_rls() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -577,7 +577,7 @@ mod tests {
         let store_id = StoreId::new();
         let product_id = ProductId::new();
         let variant_id = ProductVariantId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())
@@ -623,30 +623,19 @@ mod tests {
             key,
             request_fingerprint: fingerprint,
         };
-        let authorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
+        let publishable_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
             api_key_id: chaos_domain::merchant::ApiKeyId::new(),
             store_id,
             sales_channel_id: None,
-            class: chaos_domain::merchant::ApiKeyClass::Secret,
-            scopes: vec![
-                chaos_domain::merchant::ApiKeyScope::McpTools,
-                chaos_domain::merchant::ApiKeyScope::ProductsWrite,
-            ],
-            created_by_user_id: owner_id,
-        });
-        let unauthorized_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
-            api_key_id: chaos_domain::merchant::ApiKeyId::new(),
-            store_id,
-            sales_channel_id: None,
-            class: chaos_domain::merchant::ApiKeyClass::Secret,
-            scopes: vec![chaos_domain::merchant::ApiKeyScope::McpTools],
+            class: chaos_domain::merchant::ApiKeyClass::Publishable,
+            scopes: vec![chaos_domain::merchant::ApiKeyScope::CatalogRead],
             created_by_user_id: owner_id,
         });
 
         assert!(matches!(
             service
                 .activate(ChangeProductStatusInput {
-                    actor: unauthorized_machine,
+                    actor: publishable_machine,
                     store_id,
                     product_id,
                     idempotency: request(format!("machine-forbidden-{suffix}"), [70; 32]),
@@ -654,40 +643,6 @@ mod tests {
                 .await,
             Err(ApplicationError::Forbidden)
         ));
-
-        service
-            .activate(ChangeProductStatusInput {
-                actor: authorized_machine.clone(),
-                store_id,
-                product_id,
-                idempotency: request(format!("machine-activate-{suffix}"), [71; 32]),
-            })
-            .await
-            .unwrap();
-        let status_after_activate: String =
-            sqlx::query_scalar("SELECT status::text FROM catalog.products WHERE id = $1")
-                .bind(product_id.as_uuid())
-                .fetch_one(&owner_pool)
-                .await
-                .unwrap();
-        assert_eq!(status_after_activate, "active");
-
-        service
-            .archive(ChangeProductStatusInput {
-                actor: authorized_machine,
-                store_id,
-                product_id,
-                idempotency: request(format!("machine-archive-{suffix}"), [72; 32]),
-            })
-            .await
-            .unwrap();
-        let status_after_archive: String =
-            sqlx::query_scalar("SELECT status::text FROM catalog.products WHERE id = $1")
-                .bind(product_id.as_uuid())
-                .fetch_one(&owner_pool)
-                .await
-                .unwrap();
-        assert_eq!(status_after_archive, "archived");
 
         sqlx::query("DELETE FROM merchant.stores WHERE id = $1")
             .bind(store_id.as_uuid())

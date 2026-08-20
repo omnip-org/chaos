@@ -1,96 +1,96 @@
 CREATE SCHEMA identity;
 
 COMMENT ON SCHEMA identity IS
-    'Users, credentials, service accounts, and sessions';
+    'Users and external login identities';
 
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 
+CREATE TYPE identity.identity_provider AS ENUM ('apple', 'google');
+
 CREATE TABLE identity.users (
-    id          UUID                    NOT NULL PRIMARY KEY,
-    email       extensions.citext       NOT NULL UNIQUE,
+    id          UUID                    NOT NULL,
+    email       extensions.citext       NOT NULL,
     status      identity.user_status    NOT NULL DEFAULT 'active',
     created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT users_pkey PRIMARY KEY (id),
+    CONSTRAINT users_email_key UNIQUE (email),
     CONSTRAINT users_email_length_check CHECK (
         length(trim(email::text)) BETWEEN 3 AND 320
     )
 );
 
-CREATE TABLE identity.magic_link_challenges (
-    id            UUID                 NOT NULL PRIMARY KEY,
-    email         extensions.citext    NOT NULL,
-    token_digest  BYTEA                NOT NULL UNIQUE,
-    expires_at    TIMESTAMPTZ          NOT NULL,
-    consumed_at   TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE identity.external_identities (
+    provider    identity.identity_provider  NOT NULL,
+    subject     TEXT                        NOT NULL,
+    user_id     UUID                        NOT NULL,
+    email       extensions.citext           NOT NULL,
+    created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT magic_link_challenges_token_digest_length_check CHECK (
-        octet_length(token_digest) = 32
+    CONSTRAINT external_identities_pkey PRIMARY KEY (provider, subject),
+    CONSTRAINT external_identities_user_id_fkey FOREIGN KEY (user_id)
+        REFERENCES identity.users(id) ON DELETE CASCADE,
+    CONSTRAINT external_identities_provider_user_id_key UNIQUE (provider, user_id),
+    CONSTRAINT external_identities_subject_length_check CHECK (
+        octet_length(subject) BETWEEN 1 AND 255
     ),
-    CONSTRAINT magic_link_challenges_expiration_check CHECK (
-        expires_at > created_at
+    CONSTRAINT external_identities_email_length_check CHECK (
+        length(trim(email::text)) BETWEEN 3 AND 320
     )
 );
 
-CREATE TABLE identity.sessions (
-    id            UUID           NOT NULL PRIMARY KEY,
-    user_id       UUID           NOT NULL,
-    token_digest  BYTEA          NOT NULL UNIQUE,
-    expires_at    TIMESTAMPTZ    NOT NULL,
-    revoked_at    TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at  TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE identity.mcp_keys (
+    id              UUID                NOT NULL,
+    user_id         UUID                NOT NULL,
+    key_identifier  TEXT                NOT NULL,
+    secret_digest   BYTEA               NOT NULL,
+    display_suffix  CHAR(4)             NOT NULL,
+    name            TEXT                NOT NULL,
+    expires_at      TIMESTAMPTZ,
+    last_used_at    TIMESTAMPTZ,
+    revoked_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (user_id)
+    CONSTRAINT mcp_keys_pkey PRIMARY KEY (id),
+    CONSTRAINT mcp_keys_user_id_fkey FOREIGN KEY (user_id)
         REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT sessions_token_digest_length_check CHECK (
-        octet_length(token_digest) = 32
+    CONSTRAINT mcp_keys_key_identifier_key UNIQUE (key_identifier),
+    CONSTRAINT mcp_keys_key_identifier_format_check CHECK (
+        key_identifier ~ '^[A-Za-z0-9_-]{16}$'
     ),
-    CONSTRAINT sessions_expiration_check CHECK (
-        expires_at > created_at
-    )
-);
-
-CREATE TABLE identity.passkey_credentials (
-    id             UUID           NOT NULL PRIMARY KEY,
-    user_id        UUID           NOT NULL,
-    credential_id  BYTEA          NOT NULL UNIQUE,
-    credential     JSONB          NOT NULL,
-    name           TEXT           NOT NULL,
-    created_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_used_at   TIMESTAMPTZ,
-
-    FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT passkey_credentials_credential_id_length_check CHECK (
-        octet_length(credential_id) BETWEEN 16 AND 1024
+    CONSTRAINT mcp_keys_secret_digest_length_check CHECK (
+        octet_length(secret_digest) = 32
     ),
-    CONSTRAINT passkey_credentials_name_length_check CHECK (
+    CONSTRAINT mcp_keys_display_suffix_format_check CHECK (
+        display_suffix ~ '^[A-Za-z0-9_-]{4}$'
+    ),
+    CONSTRAINT mcp_keys_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 80
+    ),
+    CONSTRAINT mcp_keys_expiration_check CHECK (
+        expires_at IS NULL OR expires_at > created_at
     )
 );
 
-CREATE INDEX magic_link_challenges_email_created_idx
-    ON identity.magic_link_challenges (email, created_at DESC);
+CREATE INDEX external_identities_user_idx
+    ON identity.external_identities (user_id, provider);
 
-CREATE INDEX sessions_user_expires_idx
-    ON identity.sessions (user_id, expires_at DESC);
-
-CREATE INDEX passkey_credentials_user_created_idx
-    ON identity.passkey_credentials (user_id, created_at DESC);
+CREATE INDEX mcp_keys_user_id_idx
+    ON identity.mcp_keys (user_id, id);
 
 GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA identity TO chaos_control_plane;
+    ON ALL TABLES IN SCHEMA identity TO chaos_identity;
 
 GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA identity TO chaos_control_plane;
+    ON ALL SEQUENCES IN SCHEMA identity TO chaos_identity;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_control_plane;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_identity;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_control_plane;
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_identity;
 
-GRANT USAGE ON SCHEMA identity TO chaos_control_plane;
+GRANT USAGE ON SCHEMA identity TO chaos_identity;

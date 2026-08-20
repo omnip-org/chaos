@@ -6,7 +6,7 @@ use chaos_application::{
         TransitionFulfillmentInput, TransitionReturnInput, UpdateShippingProviderAccountInput,
     },
     ports::{
-        AdminActor, FulfillmentAllocationInput, FulfillmentDetail, ReturnDetail, ReturnLineInput,
+        FulfillmentAllocationInput, FulfillmentDetail, ReturnDetail, ReturnLineInput,
         ReturnReceiptInput, ShippingAddress, ShippingLabelDetail, ShippingParcel,
         ShippingProviderAccountDetail, ShippingRateQuoteDetail, ShippingServiceDetail,
     },
@@ -18,7 +18,6 @@ use chaos_domain::{
         ShippingProviderAccountId, ShippingRateQuoteId, ShippingServiceId, ShippingServiceStatus,
     },
     inventory::InventoryLocationId,
-    merchant::ApiKeyScope,
     sales::OrderId,
 };
 use rmcp::{
@@ -247,7 +246,7 @@ pub struct CancelShippingLabelParams {
 #[tool_router(router = fulfillment_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "Create a fulfillment for an order in the Store bound to this API key, \
+        description = "Create a fulfillment for an order in the selected Store, \
                         allocating specific variant quantities to ship. Requires confirm: true \
                         and an idempotency_key."
     )]
@@ -256,10 +255,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateFulfillmentParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -269,10 +268,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let order_id = match parse_uuid_field(&params.order_id, "order_id") {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -302,7 +298,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Transition a fulfillment's status (e.g. shipped, delivered, cancelled) \
-                        in the Store bound to this API key. Requires confirm: true and an \
+                        in the selected Store. Requires confirm: true and an \
                         idempotency_key."
     )]
     async fn transition_fulfillment(
@@ -310,10 +306,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<TransitionFulfillmentParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -323,10 +319,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let fulfillment_id = match parse_uuid_field(&params.fulfillment_id, "fulfillment_id") {
             Ok(id) => FulfillmentId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -358,19 +351,17 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Create a return for an order in the Store bound to this API key. \
-                        Requires confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Create a return for an order in the selected Store. \
+                        Requires confirm: true and an idempotency_key.")]
     async fn create_return(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateReturnParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -380,10 +371,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let order_id = match parse_uuid_field(&params.order_id, "order_id") {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -413,26 +401,23 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Get a single return's details in the Store bound to this API key.")]
+    #[tool(description = "Get a single return's details in the selected Store.")]
     async fn get_return(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetReturnParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let return_id = match parse_uuid_field(&params.return_id, "return_id") {
             Ok(id) => ReturnId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -451,7 +436,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Transition a return's status (authorize, reject, receive, complete) in \
-                        the Store bound to this API key. When transitioning to \"received\", \
+                        the selected Store. When transitioning to \"received\", \
                         provide a receipt line per returned variant describing its disposition. \
                         Requires confirm: true and an idempotency_key."
     )]
@@ -460,10 +445,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<TransitionReturnParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -473,10 +458,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let return_id = match parse_uuid_field(&params.return_id, "return_id") {
             Ok(id) => ReturnId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -512,27 +494,24 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List shipping services in the Store bound to this API key, including \
+        description = "List shipping services in the selected Store, including \
                         archived ones."
     )]
     async fn list_shipping_services(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self.state.shipping_management.list(actor, store_id).await {
             Ok(items) => Ok(text_result(json!({
@@ -543,7 +522,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a shipping service in the Store bound to this API key. Requires \
+        description = "Create a shipping service in the selected Store. Requires \
                         confirm: true and an idempotency_key."
     )]
     async fn create_shipping_service(
@@ -551,10 +530,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateShippingServiceParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -564,10 +543,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -592,10 +568,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Activate a shipping service in the Store bound to this API key. \
-                        Requires confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Activate a shipping service in the selected Store. \
+                        Requires confirm: true and an idempotency_key.")]
     async fn activate_shipping_service(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -605,10 +579,8 @@ impl ChaosMcp {
             .await
     }
 
-    #[tool(
-        description = "Archive a shipping service in the Store bound to this API key. \
-                        Requires confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Archive a shipping service in the selected Store. \
+                        Requires confirm: true and an idempotency_key.")]
     async fn archive_shipping_service(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -620,26 +592,23 @@ impl ChaosMcp {
 
     #[tool(
         description = "List shipping provider accounts (carrier integrations) in the Store \
-                        bound to this API key."
+                        selected by X-Chaos-Store-Id."
     )]
     async fn list_shipping_provider_accounts(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self
             .state
@@ -654,29 +623,23 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Get a single shipping provider account's details in the Store bound to \
-                        this API key."
-    )]
+    #[tool(description = "Get a single shipping provider account's details in the selected Store.")]
     async fn get_shipping_provider_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetShippingProviderAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let provider_account_id =
             match parse_uuid_field(&params.provider_account_id, "provider_account_id") {
                 Ok(id) => ShippingProviderAccountId::from_uuid(id),
@@ -696,17 +659,17 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create a shipping provider account (carrier integration) in the Store \
-                        bound to this API key. Requires confirm: true and an idempotency_key."
+                        selected by X-Chaos-Store-Id. Requires confirm: true and an idempotency_key."
     )]
     async fn create_shipping_provider_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateShippingProviderAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -716,10 +679,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -743,7 +703,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a shipping provider account in the Store bound to this API key. \
+        description = "Update a shipping provider account in the selected Store. \
                         Requires confirm: true and an idempotency_key."
     )]
     async fn update_shipping_provider_account(
@@ -751,10 +711,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateShippingProviderAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -764,10 +724,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let id = match parse_uuid_field(&params.provider_account_id, "provider_account_id") {
             Ok(id) => ShippingProviderAccountId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -796,7 +753,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Quote shipping rates for a fulfillment's parcel via a shipping provider \
-                        account in the Store bound to this API key. Requires confirm: true and \
+                        account in the selected Store. Requires confirm: true and \
                         an idempotency_key."
     )]
     async fn quote_shipping_rates(
@@ -804,10 +761,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<QuoteShippingRatesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -817,10 +774,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let fulfillment_id = match parse_uuid_field(&params.fulfillment_id, "fulfillment_id") {
             Ok(id) => FulfillmentId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -861,7 +815,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Purchase a shipping label for a fulfillment using a prior rate quote, in \
-                        the Store bound to this API key. Requires confirm: true and an \
+                        the selected Store. Requires confirm: true and an \
                         idempotency_key."
     )]
     async fn purchase_shipping_label(
@@ -869,10 +823,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<PurchaseShippingLabelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -882,10 +836,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let fulfillment_id = match parse_uuid_field(&params.fulfillment_id, "fulfillment_id") {
             Ok(id) => FulfillmentId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -916,18 +867,17 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Cancel a purchased shipping label for a fulfillment, in the Store bound \
-                        to this API key. Requires confirm: true and an idempotency_key."
+        description = "Cancel a purchased shipping label for a fulfillment, in the selected Store. Requires confirm: true and an idempotency_key."
     )]
     async fn cancel_shipping_label(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CancelShippingLabelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -937,10 +887,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let fulfillment_id = match parse_uuid_field(&params.fulfillment_id, "fulfillment_id") {
             Ok(id) => FulfillmentId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -973,10 +920,10 @@ impl ChaosMcp {
         params: ChangeShippingServiceStatusParams,
         status: ShippingServiceStatus,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::FulfillmentWrite,
         )
         .await
         {
@@ -986,10 +933,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let service_id = match parse_uuid_field(&params.shipping_service_id, "shipping_service_id")
         {
             Ok(id) => ShippingServiceId::from_uuid(id),

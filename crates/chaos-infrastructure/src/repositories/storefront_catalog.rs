@@ -710,7 +710,7 @@ mod tests {
         let other_variant_id = ProductVariantId::new();
         let price_list_id = Uuid::now_v7();
         let other_price_list_id = Uuid::now_v7();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (id, code) in [
             (store_id, format!("storefront-{suffix}")),

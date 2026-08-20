@@ -1,5 +1,5 @@
-use chaos_application::{merchant::CreateApiKeyInput, ports::AdminActor};
-use chaos_domain::merchant::{ApiKeyId, ApiKeyScope};
+use chaos_application::merchant::CreateApiKeyInput;
+use chaos_domain::merchant::ApiKeyId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -21,10 +21,7 @@ use crate::{
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateApiKeyParams {
     pub name: String,
-    /// "publishable" (browser-embeddable, limited scopes) or "secret" (server-side only).
-    pub class: String,
-    /// Scope strings, e.g. ["mcp:tools", "orders:read"]. A secret key may hold any
-    /// scope; a publishable key may only hold storefront-facing scopes.
+    /// Storefront scope strings, e.g. ["catalog:read", "checkout:write"].
     pub scopes: Vec<String>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -37,14 +34,14 @@ pub struct ListApiKeysParams {
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// Maximum number of API keys to return (1-100). Defaults to 20.
+    /// Maximum number of Publishable Keys to return (1-100). Defaults to 20.
     #[serde(default)]
     pub limit: Option<u16>,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct RevokeApiKeyParams {
-    /// The API key's UUID.
+    /// The Publishable Key's UUID.
     pub api_key_id: String,
     /// Must be explicitly set to true. This action is irreversible and affects live
     /// store data — any caller presenting this key is immediately locked out.
@@ -56,19 +53,19 @@ pub struct RevokeApiKeyParams {
 #[tool_router(router = api_keys_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "Create a new API key in the Store bound to this API key. The returned \
+        description = "Create a new Publishable Key in the selected Store. The returned \
                         secret is shown exactly once and cannot be retrieved again — store it \
                         immediately. Requires confirm: true and an idempotency_key."
     )]
-    async fn create_api_key(
+    async fn create_publishable_key(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ApiKeysWrite,
         )
         .await
         {
@@ -78,10 +75,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -91,7 +85,7 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 name: params.name,
-                class: params.class,
+                class: "publishable".into(),
                 scopes: params.scopes,
                 idempotency,
             })
@@ -111,29 +105,26 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List API keys in the Store bound to this API key. Never includes \
+        description = "List Publishable Keys in the selected Store. Never includes \
                         secret material. Paginated; use the returned next_cursor for more \
                         pages."
     )]
-    async fn list_api_keys(
+    async fn list_publishable_keys(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListApiKeysParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ApiKeysRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_uuid_cursor) {
             Some(Ok(id)) => Some(ApiKeyId::from_uuid(id)),
             Some(Err(result)) => return Ok(result),
@@ -172,19 +163,19 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Revoke an API key in the Store bound to this API key, immediately \
+        description = "Revoke a Publishable Key in the selected Store, immediately \
                         locking out anyone presenting it. Requires confirm: true and an \
                         idempotency_key."
     )]
-    async fn revoke_api_key(
+    async fn revoke_publishable_key(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<RevokeApiKeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ApiKeysWrite,
         )
         .await
         {
@@ -198,10 +189,7 @@ impl ChaosMcp {
             Ok(id) => ApiKeyId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self

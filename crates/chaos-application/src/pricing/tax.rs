@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    merchant::{ApiKeyScope, StoreId},
+    merchant::StoreId,
     pricing::{TaxRule, TaxRuleId, TaxRuleStatus},
 };
 
@@ -82,12 +82,6 @@ impl TaxManagement {
 fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }

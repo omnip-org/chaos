@@ -159,7 +159,7 @@ mod tests {
         let first_store_id = StoreId::new();
         let second_store_id = StoreId::new();
         let other_store_id = StoreId::new();
-        let unique_suffix = Uuid::now_v7().simple().to_string();
+        let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (id, label) in [(user_id, "reader"), (other_user_id, "other")] {
             sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")

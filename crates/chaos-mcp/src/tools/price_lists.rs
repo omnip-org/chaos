@@ -1,10 +1,7 @@
-use chaos_application::{
-    ports::AdminActor,
-    pricing::{
-        ChangePriceListStatusInput, CreatePriceInput, CreatePriceListInput, UpdatePriceListInput,
-    },
+use chaos_application::pricing::{
+    ChangePriceListStatusInput, CreatePriceInput, CreatePriceListInput, UpdatePriceListInput,
 };
-use chaos_domain::{catalog::ProductVariantId, merchant::ApiKeyScope, pricing::PriceListId};
+use chaos_domain::{catalog::ProductVariantId, pricing::PriceListId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -105,7 +102,7 @@ pub struct ChangePriceListStatusParams {
 #[tool_router(router = price_lists_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List price lists in the Store bound to this API key, including draft \
+        description = "List price lists in the selected Store, including draft \
                         and archived lists. Paginated; use the returned next_cursor for more pages."
     )]
     async fn list_price_lists(
@@ -113,20 +110,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListPriceListsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let after = match params.cursor.as_deref().map(parse_price_list_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
@@ -179,28 +173,25 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Get full details for a single price list in the Store bound to this API \
-                        key, including every priced variant and its amount."
+        description = "Get full details for a single price list in the selected Store, \
+                        including every priced variant and its amount."
     )]
     async fn get_price_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetPriceListParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let price_list_id = match parse_uuid_field(&params.price_list_id, "price_list_id") {
             Ok(id) => PriceListId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -233,7 +224,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a price list in the Store bound to this API key. Set activate: \
+        description = "Create a price list in the selected Store. Set activate: \
                         true to activate immediately (every priced variant must already be \
                         active). Requires confirm: true and an idempotency_key."
     )]
@@ -242,10 +233,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreatePriceListParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -255,12 +246,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let store_id = match &actor {
-            AdminActor::Machine(machine) => machine.store_id,
-            AdminActor::Store(_) => {
-                unreachable!("authenticate_machine always returns AdminActor::Machine")
-            }
-        };
+        let store_id = actor.store_id();
         let starts_at = match parse_optional_time("starts_at", params.starts_at.as_deref()) {
             Ok(value) => value,
             Err(result) => return Ok(result),
@@ -300,7 +286,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Replace a price list's code, name, currency, schedule, and full price \
-                        set in the Store bound to this API key. Requires confirm: true and an \
+                        set in the selected Store. Requires confirm: true and an \
                         idempotency_key."
     )]
     async fn update_price_list(
@@ -308,10 +294,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdatePriceListParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -321,10 +307,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let price_list_id = match parse_uuid_field(&params.price_list_id, "price_list_id") {
             Ok(id) => PriceListId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -367,7 +350,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Activate a draft price list in the Store bound to this API key. Every \
+        description = "Activate a draft price list in the selected Store. Every \
                         priced variant must already be active. Requires confirm: true and an \
                         idempotency_key."
     )]
@@ -380,7 +363,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Archive a price list in the Store bound to this API key, removing it \
+        description = "Archive a price list in the selected Store, removing it \
                         from pricing resolution without deleting it. Requires confirm: true and \
                         an idempotency_key."
     )]
@@ -400,10 +383,10 @@ impl ChaosMcp {
         params: ChangePriceListStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -413,10 +396,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let price_list_id = match parse_uuid_field(&params.price_list_id, "price_list_id") {
             Ok(id) => PriceListId::from_uuid(id),
             Err(result) => return Ok(result),

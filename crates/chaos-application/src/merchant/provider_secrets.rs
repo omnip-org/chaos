@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chaos_domain::merchant::{ApiKeyScope, StoreId, StoreRole};
+use chaos_domain::merchant::{StoreId, StoreRole};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
@@ -70,12 +70,6 @@ fn require_provider_secret_writer(actor: &AdminActor) -> Result<(), ApplicationE
                 Err(ApplicationError::Forbidden)
             }
         }
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::ProviderSecretsWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }

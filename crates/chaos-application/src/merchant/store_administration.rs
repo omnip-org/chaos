@@ -3,8 +3,8 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation, RegionCode,
     merchant::{
-        ApiKeyScope, SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind,
-        SalesChannelStatus, Store, StoreCode, StoreId, StoreRole, StoreStatus,
+        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
+        Store, StoreCode, StoreId, StoreRole, StoreStatus,
     },
 };
 
@@ -247,13 +247,7 @@ fn require_store_administrator(actor: &AdminActor) -> Result<(), ApplicationErro
             StoreRole::Owner => Ok(()),
             StoreRole::Member => Err(ApplicationError::Forbidden),
         },
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::StoreAdminWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

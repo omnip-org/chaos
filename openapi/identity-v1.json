@@ -1,0 +1,106 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Chaos Identity API",
+    "version": "1.0.0"
+  },
+  "servers": [{ "url": "/identity/v1" }],
+  "paths": {
+    "/auth/external": {
+      "post": {
+        "operationId": "signInWithExternalIdentity",
+        "summary": "Exchange a verified external identity token for a Chaos JWT",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExternalSignIn" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JWT issued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AccessTokenEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp-keys": {
+      "get": {
+        "operationId": "listMcpKeys",
+        "summary": "List MCP Keys owned by the authenticated User",
+        "security": [{ "userJwt": [] }],
+        "responses": { "200": { "description": "MCP Key page" } }
+      },
+      "post": {
+        "operationId": "createMcpKey",
+        "summary": "Create a User-owned MCP Key",
+        "security": [{ "userJwt": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateMcpKey" }
+            }
+          }
+        },
+        "responses": { "201": { "description": "MCP Key created; secret is returned once" } }
+      }
+    },
+    "/mcp-keys/{mcp_key_id}": {
+      "delete": {
+        "operationId": "revokeMcpKey",
+        "summary": "Revoke an MCP Key owned by the authenticated User",
+        "security": [{ "userJwt": [] }],
+        "parameters": [{
+          "name": "mcp_key_id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "responses": { "200": { "description": "MCP Key revoked" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "userJwt": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "schemas": {
+      "ExternalSignIn": {
+        "type": "object",
+        "required": ["provider", "identity_token"],
+        "properties": {
+          "provider": { "type": "string", "enum": ["google", "apple"] },
+          "identity_token": { "type": "string", "writeOnly": true }
+        }
+      },
+      "CreateMcpKey": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 80 } }
+      },
+      "AccessTokenEnvelope": {
+        "type": "object",
+        "required": ["data"],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["user_id", "access_token", "token_type", "expires_in"],
+            "properties": {
+              "user_id": { "type": "string", "format": "uuid" },
+              "access_token": { "type": "string" },
+              "token_type": { "type": "string", "const": "Bearer" },
+              "expires_in": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     FieldViolation,
     catalog::{Product, ProductHandle, ProductId, ProductOptionValueId, Sku},
-    merchant::{ApiKeyScope, StoreId},
+    merchant::StoreId,
 };
 
 use crate::{
@@ -155,13 +155,7 @@ fn selection_violation(reason: &'static str) -> ApplicationError {
 fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::ProductsWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

@@ -1,7 +1,7 @@
 CREATE SCHEMA merchant;
 
 COMMENT ON SCHEMA merchant IS
-    'Merchant accounts, memberships, stores, and channels';
+    'Stores, memberships, channels, and Store-issued Publishable Keys';
 
 CREATE TYPE merchant.store_role AS ENUM ('owner', 'member');
 
@@ -19,7 +19,7 @@ CREATE TYPE merchant.sales_channel_status AS ENUM ('active', 'archived');
 
 CREATE TYPE merchant.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
 
-CREATE TYPE merchant.api_key_class AS ENUM ('publishable', 'secret');
+CREATE TYPE merchant.api_key_class AS ENUM ('publishable');
 
 CREATE TYPE merchant.api_key_scope AS ENUM (
     'analytics:write',
@@ -27,28 +27,7 @@ CREATE TYPE merchant.api_key_scope AS ENUM (
     'carts:write',
     'checkout:write',
     'orders:read',
-    'customers:write',
-    'mcp:tools',
-    'products:read',
-    'products:write',
-    'pricing:read',
-    'pricing:write',
-    'inventory:read',
-    'inventory:write',
-    'collections:read',
-    'collections:write',
-    'orders:write',
-    'fulfillment:read',
-    'fulfillment:write',
-    'store_admin:read',
-    'store_admin:write',
-    'payments:write',
-    'media:read',
-    'media:write',
-    'reviews:write',
-    'api_keys:read',
-    'api_keys:write',
-    'provider_secrets:write'
+    'reviews:write'
 );
 
 CREATE TABLE merchant.stores (
@@ -218,7 +197,17 @@ CREATE TABLE merchant.api_key_scopes (
 
     PRIMARY KEY (api_key_id, scope),
     FOREIGN KEY (api_key_id)
-        REFERENCES merchant.api_keys(id) ON DELETE CASCADE
+        REFERENCES merchant.api_keys(id) ON DELETE CASCADE,
+    CONSTRAINT api_key_scopes_publishable_scope_check CHECK (
+        scope IN (
+            'analytics:write',
+            'catalog:read',
+            'carts:write',
+            'checkout:write',
+            'orders:read',
+            'reviews:write'
+        )
+    )
 );
 
 CREATE INDEX store_memberships_user_idx

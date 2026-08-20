@@ -8,12 +8,12 @@ mod clock;
 mod collection;
 mod customer;
 mod fulfillment;
+mod identity;
 mod inventory;
 mod localization;
 mod media;
 mod merchant_query;
 mod notification;
-mod passwordless;
 mod payments;
 mod pricing;
 mod pricing_management;
@@ -24,6 +24,7 @@ mod sales;
 mod shopper;
 mod store;
 mod store_administration;
+mod store_membership;
 mod storefront_catalog;
 mod tax;
 
@@ -73,6 +74,11 @@ pub use fulfillment::{
     ShippingServiceRepository, ShippingTrackingJob, ShippingTrackingQueue,
     ShippingTrackingSnapshot,
 };
+pub use identity::{
+    AccessTokenCodec, AccessTokenGrant, ExternalIdentityVerifier, GeneratedMcpKeyMaterial,
+    IdentityAuthentication, IdentityRepository, McpKeyListItem, McpKeyMaterialGenerator,
+    McpKeyRepository, McpPrincipal, VerifiedExternalIdentity,
+};
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
     InventoryReservationTransition, StockAdjustment, StockItemItem,
@@ -90,7 +96,6 @@ pub use notification::{
     EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
     EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
 };
-pub use passwordless::{CeremonyOptions, PasswordlessAuthentication, SessionGrant};
 pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,
     PaymentProviderAccountConfiguration, PaymentProviderAccountDetail, PaymentProviderAccountPage,
@@ -118,6 +123,7 @@ pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvision
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
 };
+pub use store_membership::{StoreMembershipItem, StoreMembershipRepository};
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,

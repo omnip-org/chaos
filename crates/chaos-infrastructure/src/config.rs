@@ -9,18 +9,22 @@ use url::Url;
 pub struct Settings {
     pub bind_addr: SocketAddr,
     pub database_url: String,
-    pub database_control_plane_url: String,
+    pub database_identity_url: String,
     pub database_max_connections: u32,
-    pub database_control_plane_max_connections: u32,
+    pub database_identity_max_connections: u32,
     pub database_analytics_max_connections: u32,
     pub database_analytics_statement_timeout: Duration,
     pub database_acquire_timeout: Duration,
     pub database_runtime_role: Option<String>,
-    pub database_control_plane_role: Option<String>,
+    pub database_identity_role: Option<String>,
     pub redis_url: String,
-    pub webauthn_rp_id: String,
-    pub webauthn_rp_origin: String,
-    pub auth_public_base_url: String,
+    pub auth_jwt_issuer: String,
+    pub auth_jwt_audience: String,
+    pub auth_jwt_secret: SecretString,
+    pub auth_jwt_lifetime_seconds: u32,
+    pub mcp_allowed_hosts: Vec<String>,
+    pub google_client_id: Option<String>,
+    pub apple_client_id: Option<String>,
     pub smtp_url: Option<String>,
     pub email_from: String,
     pub resend_api_key: Option<SecretString>,
@@ -88,15 +92,15 @@ impl std::fmt::Debug for SecretKey {
 
 impl Settings {
     pub fn from_env() -> anyhow::Result<Self> {
+        let database_url = required("DATABASE_URL")?;
+        let database_identity_url =
+            optional("DATABASE_IDENTITY_URL").unwrap_or_else(|| database_url.clone());
         let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
-            database_url: required("DATABASE_URL")?,
-            database_control_plane_url: required("DATABASE_CONTROL_PLANE_URL")?,
+            database_url,
+            database_identity_url,
             database_max_connections: parse_or("DATABASE_MAX_CONNECTIONS", "20")?,
-            database_control_plane_max_connections: parse_or(
-                "DATABASE_CONTROL_PLANE_MAX_CONNECTIONS",
-                "5",
-            )?,
+            database_identity_max_connections: parse_or("DATABASE_IDENTITY_MAX_CONNECTIONS", "5")?,
             database_analytics_max_connections: parse_or(
                 "DATABASE_ANALYTICS_MAX_CONNECTIONS",
                 "3",
@@ -110,11 +114,15 @@ impl Settings {
                 "2000",
             )?),
             database_runtime_role: optional_role("DATABASE_RUNTIME_ROLE")?,
-            database_control_plane_role: optional_role("DATABASE_CONTROL_PLANE_ROLE")?,
+            database_identity_role: optional_role("DATABASE_IDENTITY_ROLE")?,
             redis_url: required("REDIS_URL")?,
-            webauthn_rp_id: required("WEBAUTHN_RP_ID")?,
-            webauthn_rp_origin: required("WEBAUTHN_RP_ORIGIN")?,
-            auth_public_base_url: required("AUTH_PUBLIC_BASE_URL")?,
+            auth_jwt_issuer: required("AUTH_JWT_ISSUER")?,
+            auth_jwt_audience: required("AUTH_JWT_AUDIENCE")?,
+            auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
+            auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
+            mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
+            google_client_id: optional("GOOGLE_CLIENT_ID"),
+            apple_client_id: optional("APPLE_CLIENT_ID"),
             smtp_url: optional("SMTP_URL"),
             email_from: required("EMAIL_FROM")?,
             resend_api_key: optional("RESEND_API_KEY").map(SecretString::from),
@@ -238,6 +246,25 @@ fn required(name: &str) -> anyhow::Result<String> {
         Ok(value) if !value.trim().is_empty() => Ok(value),
         _ => bail!("required environment variable {name} is not set"),
     }
+}
+
+fn comma_separated_or(name: &str, default: &str) -> anyhow::Result<Vec<String>> {
+    let values = env::var(name).unwrap_or_else(|_| default.to_owned());
+    let values = values
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        bail!("environment variable {name} must contain at least one host");
+    }
+    if values.iter().any(|value| {
+        value.contains('/') || value.contains("//") || value.chars().any(char::is_whitespace)
+    }) {
+        bail!("environment variable {name} must contain comma-separated host authorities");
+    }
+    Ok(values)
 }
 
 fn parse_or<T>(name: &str, default: &str) -> anyhow::Result<T>

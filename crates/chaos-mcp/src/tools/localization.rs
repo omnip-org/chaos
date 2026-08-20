@@ -4,12 +4,9 @@ use chaos_application::{
         TranslationActionInput, UpsertCollectionTranslationInput, UpsertMediaTranslationInput,
         UpsertProductTranslationInput,
     },
-    ports::{AdminActor, CollectionTranslation, MediaTranslation, ProductTranslation},
+    ports::{CollectionTranslation, MediaTranslation, ProductTranslation},
 };
-use chaos_domain::{
-    catalog::{CollectionId, MediaAssetId, ProductId, ProductVariantId},
-    merchant::ApiKeyScope,
-};
+use chaos_domain::catalog::{CollectionId, MediaAssetId, ProductId, ProductVariantId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -155,28 +152,22 @@ pub struct RemoveMediaTranslationParams {
 
 #[tool_router(router = localization_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
-    #[tool(
-        description = "List the enabled locales and default locale for the Store bound to \
-                        this API key."
-    )]
+    #[tool(description = "List the enabled locales and default locale for the selected Store.")]
     async fn list_store_locales(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self
             .state
@@ -192,10 +183,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Enable a locale for the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Enable a locale for the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn enable_locale(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -206,7 +195,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Set the default locale for the Store bound to this API key. The locale \
+        description = "Set the default locale for the selected Store. The locale \
                         must already be enabled. Requires confirm: true and an idempotency_key."
     )]
     async fn set_default_locale(
@@ -218,11 +207,9 @@ impl ChaosMcp {
             .await
     }
 
-    #[tool(
-        description = "Disable a locale for the Store bound to this API key. The default \
+    #[tool(description = "Disable a locale for the selected Store. The default \
                         locale cannot be disabled. Requires confirm: true and an \
-                        idempotency_key."
-    )]
+                        idempotency_key.")]
     async fn disable_locale(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -234,27 +221,24 @@ impl ChaosMcp {
 
     #[tool(
         description = "Get a product's translated title, description, and variant titles for \
-                        a locale, in the Store bound to this API key."
+                        a locale, in the selected Store."
     )]
     async fn get_product_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetProductTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -273,7 +257,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create or replace a product's translated title, description, and \
-                        variant titles for a locale, in the Store bound to this API key. \
+                        variant titles for a locale, in the selected Store. \
                         Requires confirm: true and an idempotency_key."
     )]
     async fn upsert_product_translation(
@@ -281,10 +265,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpsertProductTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -294,10 +278,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -331,18 +312,18 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Remove a product's translation for a locale, in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Remove a product's translation for a locale in the selected Store. \
+                        Requires confirm: true and an idempotency_key."
     )]
     async fn remove_product_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<RemoveProductTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProductsWrite,
         )
         .await
         {
@@ -352,10 +333,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -383,27 +361,24 @@ impl ChaosMcp {
 
     #[tool(
         description = "Get a collection's translated title and description for a locale, in \
-                        the Store bound to this API key."
+                        the selected Store."
     )]
     async fn get_collection_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetCollectionTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -422,7 +397,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create or replace a collection's translated title and description for \
-                        a locale, in the Store bound to this API key. Requires confirm: true \
+                        a locale, in the selected Store. Requires confirm: true \
                         and an idempotency_key."
     )]
     async fn upsert_collection_translation(
@@ -430,10 +405,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpsertCollectionTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -443,10 +418,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -475,18 +447,18 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Remove a collection's translation for a locale, in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Remove a collection's translation for a locale in the selected Store. \
+                        Requires confirm: true and an idempotency_key."
     )]
     async fn remove_collection_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<RemoveCollectionTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::CollectionsWrite,
         )
         .await
         {
@@ -496,10 +468,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let collection_id = match parse_uuid_field(&params.collection_id, "collection_id") {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -527,27 +496,24 @@ impl ChaosMcp {
 
     #[tool(
         description = "Get a media asset's translated alt text for a locale, in the Store \
-                        bound to this API key."
+                        selected by X-Chaos-Store-Id."
     )]
     async fn get_media_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetMediaTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -570,7 +536,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create or replace a media asset's translated alt text for a locale, in \
-                        the Store bound to this API key. Requires confirm: true and an \
+                        the selected Store. Requires confirm: true and an \
                         idempotency_key."
     )]
     async fn upsert_media_translation(
@@ -578,10 +544,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpsertMediaTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaWrite,
         )
         .await
         {
@@ -591,10 +557,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -627,18 +590,18 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Remove a media asset's translation for a locale, in the Store bound to \
-                        this API key. Requires confirm: true and an idempotency_key."
+        description = "Remove a media asset's translation for a locale in the selected Store. \
+                        Requires confirm: true and an idempotency_key."
     )]
     async fn remove_media_translation(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<RemoveMediaTranslationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::MediaWrite,
         )
         .await
         {
@@ -648,10 +611,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let product_id = match parse_uuid_field(&params.product_id, "product_id") {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
@@ -696,10 +656,10 @@ impl ChaosMcp {
         params: ChangeLocaleParams,
         action: LocaleAction,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::StoreAdminWrite,
         )
         .await
         {
@@ -709,10 +669,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 

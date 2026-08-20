@@ -1,11 +1,5 @@
-use chaos_application::{
-    catalog::{AddReviewReplyInput, ApproveReviewInput, RejectReviewInput},
-    ports::AdminActor,
-};
-use chaos_domain::{
-    catalog::{ReviewId, ReviewStatus},
-    merchant::ApiKeyScope,
-};
+use chaos_application::catalog::{AddReviewReplyInput, ApproveReviewInput, RejectReviewInput};
+use chaos_domain::catalog::{ReviewId, ReviewStatus};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -73,7 +67,7 @@ pub struct AddReviewReplyParams {
 #[tool_router(router = reviews_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List reviews in the Store bound to this API key, filtered by status \
+        description = "List reviews in the selected Store, filtered by status \
                         (defaults to pending). Paginated; use the returned next_cursor for \
                         more pages."
     )]
@@ -82,20 +76,17 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListReviewsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ReviewsWrite,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let status = match params.status.as_deref().map(parse_review_status) {
             Some(Ok(status)) => status,
             Some(Err(result)) => return Ok(result),
@@ -139,7 +130,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Approve a pending review in the Store bound to this API key, making it \
+        description = "Approve a pending review in the selected Store, making it \
                         visible on the product page. Requires confirm: true and an \
                         idempotency_key."
     )]
@@ -148,10 +139,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ApproveReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ReviewsWrite,
         )
         .await
         {
@@ -165,10 +156,7 @@ impl ChaosMcp {
             Ok(id) => ReviewId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
@@ -191,7 +179,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Reject a pending review in the Store bound to this API key, keeping it \
+        description = "Reject a pending review in the selected Store, keeping it \
                         hidden from the product page. Requires confirm: true and an \
                         idempotency_key."
     )]
@@ -200,10 +188,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<RejectReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ReviewsWrite,
         )
         .await
         {
@@ -217,10 +205,7 @@ impl ChaosMcp {
             Ok(id) => ReviewId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
@@ -241,19 +226,17 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Add a staff reply to a review in the Store bound to this API key. \
-                        Requires confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Add a staff reply to a review in the selected Store. \
+                        Requires confirm: true and an idempotency_key.")]
     async fn add_review_reply(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AddReviewReplyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ReviewsWrite,
         )
         .await
         {
@@ -267,10 +250,7 @@ impl ChaosMcp {
             Ok(id) => ReviewId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 

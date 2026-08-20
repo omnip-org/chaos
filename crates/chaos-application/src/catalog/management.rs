@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chaos_domain::{
     catalog::{ProductContent, ProductHandle, ProductId, ProductLifecycle},
-    merchant::{ApiKeyScope, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 
 use crate::{
@@ -215,13 +215,7 @@ async fn complete(
 fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::ProductsWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

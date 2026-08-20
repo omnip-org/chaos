@@ -52,14 +52,14 @@ type AddressRow = (
 #[derive(Clone)]
 pub struct PostgresCustomerRepository {
     runtime_pool: PgPool,
-    control_plane_pool: PgPool,
+    identity_pool: PgPool,
 }
 
 impl PostgresCustomerRepository {
-    pub fn new(runtime_pool: PgPool, control_plane_pool: PgPool) -> Self {
+    pub fn new(runtime_pool: PgPool, identity_pool: PgPool) -> Self {
         Self {
             runtime_pool,
-            control_plane_pool,
+            identity_pool,
         }
     }
 
@@ -102,7 +102,7 @@ impl CustomerRepository for PostgresCustomerRepository {
         let email: String =
             sqlx::query_scalar("SELECT email::text FROM identity.users WHERE id = $1")
                 .bind(user_id.as_uuid())
-                .fetch_optional(&self.control_plane_pool)
+                .fetch_optional(&self.identity_pool)
                 .await
                 .map_err(database_error)?
                 .ok_or(ApplicationError::Unauthorized)?;

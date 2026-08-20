@@ -24,7 +24,8 @@ pub fn tool_error(error: ApplicationError) -> CallToolResult {
         }
         ApplicationError::Forbidden => (
             "forbidden",
-            "the API key is not allowed to perform this operation".into(),
+            "the authenticated User is not allowed to perform this operation in the selected Store"
+                .into(),
             None,
         ),
         ApplicationError::NotFound { resource, id } => {

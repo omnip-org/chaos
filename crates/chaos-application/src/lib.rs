@@ -4,6 +4,7 @@ pub mod analytics;
 pub mod catalog;
 mod error;
 pub mod fulfillment;
+pub mod identity;
 pub mod inventory;
 pub mod merchant;
 pub mod notifications;

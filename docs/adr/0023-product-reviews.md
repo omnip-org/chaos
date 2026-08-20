@@ -1,6 +1,6 @@
 # ADR 0023: Product Reviews
 
-- Status: Accepted
+- Status: Superseded by ADR 0025
 - Date: 2026-08-17
 
 ## Context
@@ -17,13 +17,13 @@ The critical evidence rule carried over from the prior integration this replaces
 
 Storefront submission (`POST /store/v1/products/{product_id}/reviews`) requires a Publishable key with the new `reviews:write` scope and an `Idempotency-Key`, and needs no shopper credential — matching how this capability worked previously, where submission was reachable without an authenticated session. A submission always lands `pending` and is invisible to `GET /store/v1/products/{product_id}/reviews` until an administrator approves it. That read endpoint returns only `catalog:read`-scoped Publishable key access, the same scope every other public catalog read already uses, and returns approved top-level reviews newest-first with their approved staff replies nested underneath, mirroring the read shape this capability had previously so the response requires no restructuring on the client.
 
-Admin moderation lives under `/admin/v1/merchant-accounts/{id}/stores/{id}/reviews`: `GET ?status=pending|approved|rejected` (defaults to `pending`), `POST /{review_id}/approve`, `POST /{review_id}/reject`, and `POST /{review_id}/replies`. Approval and rejection are terminal from `pending` only — there is no un-approve or un-reject action in this release; a moderation mistake requires a new review, matching how Collections and Orders also treat their terminal transitions as one-way. `ReviewAdministration` authorizes the same way `CollectionAdministration` does: a human Merchant session with a writer role, or a Secret key holding the relevant scope (`reviews:write`, reused for admin/MCP access the same way `orders:read` already spans Secret-key admin use and Publishable-key Storefront use).
+Review moderation is exposed through MCP tools authenticated with a User-owned MCP Key and authorized through current Store membership. Approval and rejection are terminal from `pending` only; a moderation mistake requires a new review, matching other terminal commerce transitions.
 
 ## Consequences
 
 - The Storefront client's existing review data shape (id, product_id, parent_id, author_name, author_email, rating, title, content, images, status, is_staff_reply, created_at, updated_at, replies) is preserved field-for-field, with one deliberate addition: **`verified_buyer` is now a real field in the response** rather than a badge the client renders unconditionally. A client that previously assumed every returned review was verified must now read this field and gate the badge on it — a small, intentional change that makes the "Verified Buyer" claim strictly more honest than before, not less.
 - Review-photo uploads are out of scope for this release; `images` is always `[]`. Chaos already has a direct-upload Media Asset mechanism (ADR 0018) that a future increment can reuse for review photos rather than building a second upload path.
-- No MCP tool exposes review moderation yet; it is Admin-HTTP-only. A Secret key with `reviews:write` can already call the Admin endpoints directly.
+- MCP tools expose review listing, approval, rejection, and staff replies.
 - There is no rate limiting specific to review submission beyond the general request path; a Store that needs abuse resistance beyond `Idempotency-Key` replay protection would need it added as a follow-up, the same gap that exists for every other Storefront write endpoint today.
 
 ## Rejected alternatives

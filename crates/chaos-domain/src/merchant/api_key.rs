@@ -32,21 +32,18 @@ impl Default for ApiKeyId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApiKeyClass {
     Publishable,
-    Secret,
 }
 
 impl ApiKeyClass {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Publishable => "publishable",
-            Self::Secret => "secret",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "publishable" => Some(Self::Publishable),
-            "secret" => Some(Self::Secret),
             _ => None,
         }
     }
@@ -59,28 +56,7 @@ pub enum ApiKeyScope {
     CartsWrite,
     CheckoutWrite,
     OrdersRead,
-    OrdersWrite,
-    CustomersWrite,
-    McpTools,
-    ProductsRead,
-    ProductsWrite,
-    PricingRead,
-    PricingWrite,
-    InventoryRead,
-    InventoryWrite,
-    CollectionsRead,
-    CollectionsWrite,
     ReviewsWrite,
-    FulfillmentRead,
-    FulfillmentWrite,
-    StoreAdminRead,
-    StoreAdminWrite,
-    PaymentsWrite,
-    MediaRead,
-    MediaWrite,
-    ApiKeysRead,
-    ApiKeysWrite,
-    ProviderSecretsWrite,
 }
 
 impl ApiKeyScope {
@@ -91,28 +67,7 @@ impl ApiKeyScope {
             Self::CartsWrite => "carts:write",
             Self::CheckoutWrite => "checkout:write",
             Self::OrdersRead => "orders:read",
-            Self::OrdersWrite => "orders:write",
-            Self::CustomersWrite => "customers:write",
-            Self::McpTools => "mcp:tools",
-            Self::ProductsRead => "products:read",
-            Self::ProductsWrite => "products:write",
-            Self::PricingRead => "pricing:read",
-            Self::PricingWrite => "pricing:write",
-            Self::InventoryRead => "inventory:read",
-            Self::InventoryWrite => "inventory:write",
-            Self::CollectionsRead => "collections:read",
-            Self::CollectionsWrite => "collections:write",
             Self::ReviewsWrite => "reviews:write",
-            Self::FulfillmentRead => "fulfillment:read",
-            Self::FulfillmentWrite => "fulfillment:write",
-            Self::StoreAdminRead => "store_admin:read",
-            Self::StoreAdminWrite => "store_admin:write",
-            Self::PaymentsWrite => "payments:write",
-            Self::MediaRead => "media:read",
-            Self::MediaWrite => "media:write",
-            Self::ApiKeysRead => "api_keys:read",
-            Self::ApiKeysWrite => "api_keys:write",
-            Self::ProviderSecretsWrite => "provider_secrets:write",
         }
     }
 
@@ -123,48 +78,9 @@ impl ApiKeyScope {
             "carts:write" => Some(Self::CartsWrite),
             "checkout:write" => Some(Self::CheckoutWrite),
             "orders:read" => Some(Self::OrdersRead),
-            "orders:write" => Some(Self::OrdersWrite),
-            "customers:write" => Some(Self::CustomersWrite),
-            "mcp:tools" => Some(Self::McpTools),
-            "products:read" => Some(Self::ProductsRead),
-            "products:write" => Some(Self::ProductsWrite),
-            "pricing:read" => Some(Self::PricingRead),
-            "pricing:write" => Some(Self::PricingWrite),
-            "inventory:read" => Some(Self::InventoryRead),
-            "inventory:write" => Some(Self::InventoryWrite),
-            "collections:read" => Some(Self::CollectionsRead),
-            "collections:write" => Some(Self::CollectionsWrite),
             "reviews:write" => Some(Self::ReviewsWrite),
-            "fulfillment:read" => Some(Self::FulfillmentRead),
-            "fulfillment:write" => Some(Self::FulfillmentWrite),
-            "store_admin:read" => Some(Self::StoreAdminRead),
-            "store_admin:write" => Some(Self::StoreAdminWrite),
-            "payments:write" => Some(Self::PaymentsWrite),
-            "media:read" => Some(Self::MediaRead),
-            "media:write" => Some(Self::MediaWrite),
-            "api_keys:read" => Some(Self::ApiKeysRead),
-            "api_keys:write" => Some(Self::ApiKeysWrite),
-            "provider_secrets:write" => Some(Self::ProviderSecretsWrite),
             _ => None,
         }
-    }
-
-    /// Admin-only scopes (products/pricing/inventory) expose non-public store data
-    /// and mutations, unlike the storefront-facing scopes below — never embeddable
-    /// in a browser-facing Publishable key. `OrdersRead` is deliberately allowed here
-    /// in addition to its existing Secret-key/MCP use: a Store may opt a Publishable
-    /// key into unauthenticated single-Order lookup by ID (see ADR 0022) without that
-    /// widening what a Secret key holding the same scope can already do.
-    const fn allowed_for_publishable_key(self) -> bool {
-        matches!(
-            self,
-            Self::AnalyticsWrite
-                | Self::CatalogRead
-                | Self::CartsWrite
-                | Self::CheckoutWrite
-                | Self::OrdersRead
-                | Self::ReviewsWrite
-        )
     }
 }
 
@@ -203,17 +119,6 @@ impl ApiKey {
                 reason: "must not contain duplicate scopes".into(),
             }]));
         }
-        if class == ApiKeyClass::Publishable
-            && scopes
-                .iter()
-                .any(|scope| !scope.allowed_for_publishable_key())
-        {
-            return Err(DomainError::Validation(vec![FieldViolation {
-                field: "scopes",
-                reason: "publishable keys may contain only Storefront scopes".into(),
-            }]));
-        }
-
         Ok(Self {
             id: ApiKeyId::new(),
             store_id,
@@ -249,83 +154,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secret_key_can_receive_mcp_scope() {
-        let key = ApiKey::issue(
-            StoreId::new(),
-            "Production MCP",
-            ApiKeyClass::Secret,
-            vec![ApiKeyScope::McpTools, ApiKeyScope::OrdersRead],
-        )
-        .unwrap();
-
-        assert_eq!(key.class(), ApiKeyClass::Secret);
-        assert!(key.scopes().contains(&ApiKeyScope::McpTools));
-    }
-
-    #[test]
-    fn secret_key_can_receive_admin_write_scopes() {
-        let key = ApiKey::issue(
-            StoreId::new(),
-            "Production MCP Admin",
-            ApiKeyClass::Secret,
-            vec![
-                ApiKeyScope::McpTools,
-                ApiKeyScope::ProductsRead,
-                ApiKeyScope::ProductsWrite,
-                ApiKeyScope::PricingRead,
-                ApiKeyScope::PricingWrite,
-                ApiKeyScope::InventoryRead,
-                ApiKeyScope::InventoryWrite,
-                ApiKeyScope::CollectionsRead,
-                ApiKeyScope::CollectionsWrite,
-            ],
-        )
-        .unwrap();
-
-        assert!(key.scopes().contains(&ApiKeyScope::ProductsWrite));
-        assert!(key.scopes().contains(&ApiKeyScope::PricingWrite));
-    }
-
-    #[test]
-    fn publishable_key_rejects_admin_scopes() {
-        for scope in [
-            ApiKeyScope::ProductsRead,
-            ApiKeyScope::ProductsWrite,
-            ApiKeyScope::PricingRead,
-            ApiKeyScope::PricingWrite,
-            ApiKeyScope::InventoryRead,
-            ApiKeyScope::InventoryWrite,
-            ApiKeyScope::CollectionsRead,
-            ApiKeyScope::CollectionsWrite,
-        ] {
-            let result = ApiKey::issue(
-                StoreId::new(),
-                "Private Browser",
-                ApiKeyClass::Publishable,
-                vec![scope],
-            );
-            assert!(matches!(result, Err(DomainError::Validation(_))));
-        }
-    }
-
-    #[test]
-    fn admin_scope_round_trips_through_as_str_and_parse() {
-        for scope in [
-            ApiKeyScope::ProductsRead,
-            ApiKeyScope::ProductsWrite,
-            ApiKeyScope::PricingRead,
-            ApiKeyScope::PricingWrite,
-            ApiKeyScope::InventoryRead,
-            ApiKeyScope::InventoryWrite,
-            ApiKeyScope::CollectionsRead,
-            ApiKeyScope::CollectionsWrite,
-        ] {
-            assert_eq!(ApiKeyScope::parse(scope.as_str()), Some(scope));
-        }
-    }
-
-    #[test]
-    fn publishable_key_accepts_storefront_writes_and_rejects_private_scopes() {
+    fn publishable_key_accepts_storefront_scopes() {
         let key = ApiKey::issue(
             StoreId::new(),
             "Browser",
@@ -343,14 +172,6 @@ mod tests {
         assert!(key.scopes().contains(&ApiKeyScope::CheckoutWrite));
         assert!(key.scopes().contains(&ApiKeyScope::OrdersRead));
         assert!(key.scopes().contains(&ApiKeyScope::ReviewsWrite));
-
-        let result = ApiKey::issue(
-            StoreId::new(),
-            "Private Browser",
-            ApiKeyClass::Publishable,
-            vec![ApiKeyScope::McpTools],
-        );
-        assert!(matches!(result, Err(DomainError::Validation(_))));
     }
 
     #[test]
@@ -358,7 +179,7 @@ mod tests {
         let result = ApiKey::issue(
             StoreId::new(),
             "Duplicate",
-            ApiKeyClass::Secret,
+            ApiKeyClass::Publishable,
             vec![ApiKeyScope::CatalogRead, ApiKeyScope::CatalogRead],
         );
 

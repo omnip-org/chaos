@@ -288,7 +288,7 @@ mod tests {
         let owner_user_id = UserId::new();
         let member_user_id = UserId::new();
         let store_id = StoreId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         for (user_id, label) in [(owner_user_id, "owner"), (member_user_id, "member")] {
             sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
@@ -300,8 +300,8 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO merchant.stores \
-             (id, code, name, default_region, default_currency) \
-             VALUES ($1, $2, 'Catalog Store', 'US', 'USD')",
+            (id, code, name, default_region, default_currency, status) \
+             VALUES ($1, $2, 'Catalog Store', 'US', 'USD', 'active')",
         )
         .bind(store_id.as_uuid())
         .bind(format!("catalog-{suffix}"))

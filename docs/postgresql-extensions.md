@@ -18,7 +18,7 @@ The initial schema migration activates all three extensions. Their objects remai
 - `pgmq` does not require a background worker. Its future queues will create tables in the `pgmq` schema and require an explicit retention, retry, and dead-letter policy.
 - `pg_partman` builds on native declarative partitioning and is installed in the dedicated `partman` schema. Partition ownership and maintenance permissions require a dedicated role before the first managed partition set is created.
 
-Extensions must not bypass bounded-context ownership. Business code accesses extension APIs through application ports, and extension-owned schemas are never used as substitutes for merchant-account isolation.
+Extensions must not bypass bounded-context ownership. Business code accesses extension APIs through application ports, and extension-owned schemas are never used as substitutes for Store isolation.
 
 ## Versioning and production
 

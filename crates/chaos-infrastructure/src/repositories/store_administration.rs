@@ -600,7 +600,7 @@ mod tests {
         let store_id = StoreId::new();
         let other_store_id = StoreId::new();
         let default_channel_id = SalesChannelId::new();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_id.as_uuid())

@@ -230,7 +230,7 @@ mod tests {
             .await
             .unwrap();
         let owner_user_id = UserId::new();
-        let unique_suffix = Uuid::now_v7().simple().to_string();
+        let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
         let idempotency_key = format!("store-{unique_suffix}");
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")

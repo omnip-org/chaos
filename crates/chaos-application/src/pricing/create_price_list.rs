@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
-    merchant::{ApiKeyScope, StoreId},
+    merchant::StoreId,
     pricing::{PriceList, PriceListCode, PriceListId, PriceListSchedule},
 };
 use time::OffsetDateTime;
@@ -105,12 +105,6 @@ impl CreatePriceList {
 fn require_pricing_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::PricingWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }

@@ -1,5 +1,5 @@
-use chaos_application::{payments::CreateRefundInput, ports::AdminActor};
-use chaos_domain::{merchant::ApiKeyScope, payments::PaymentAttemptId};
+use chaos_application::payments::CreateRefundInput;
+use chaos_domain::payments::PaymentAttemptId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -32,18 +32,18 @@ pub struct CreateRefundParams {
 #[tool_router(router = payments_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "Refund some or all of a payment attempt in the Store bound to this API \
-                        key. Requires confirm: true and an idempotency_key."
+        description = "Refund some or all of a payment attempt in the selected Store. Requires \
+                        confirm: true and an idempotency_key."
     )]
     async fn create_refund(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateRefundParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PaymentsWrite,
         )
         .await
         {
@@ -53,10 +53,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let payment_attempt_id =
             match parse_uuid_field(&params.payment_attempt_id, "payment_attempt_id") {
                 Ok(id) => PaymentAttemptId::from_uuid(id),

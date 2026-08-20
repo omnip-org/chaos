@@ -1,415 +1,238 @@
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
-    http::StatusCode,
+    extract::{DefaultBodyLimit, Path, Query, State},
     routing::{delete, post},
 };
 use chaos_application::ApplicationError;
-use chaos_application::ports::{CeremonyOptions, SessionGrant};
-use chaos_domain::identity::Email;
+use chaos_domain::identity::{IdentityProvider, McpKeyId};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedSession};
+use super::{ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedUser};
 
 pub fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/email-links", post(request_email_link))
-        .route("/email-links/verify", post(verify_email_link))
-        .route("/session", delete(revoke_session))
-        .route(
-            "/passkeys/registration/options",
-            post(start_passkey_registration),
-        )
-        .route(
-            "/passkeys/registration/verify",
-            post(finish_passkey_registration),
-        )
-        .route(
-            "/passkeys/authentication/options",
-            post(start_passkey_authentication),
-        )
-        .route(
-            "/passkeys/authentication/verify",
-            post(finish_passkey_authentication),
-        )
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .route("/auth/external", post(sign_in))
+        .route("/mcp-keys", post(create_mcp_key).get(list_mcp_keys))
+        .route("/mcp-keys/{mcp_key_id}", delete(revoke_mcp_key))
+        .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
 #[derive(Deserialize)]
-struct RequestEmailLinkBody {
-    email: String,
-}
-
-#[derive(Deserialize)]
-struct VerifyEmailLinkBody {
-    token: String,
-}
-
-#[derive(Deserialize)]
-struct FinishPasskeyRegistrationBody {
-    ceremony_id: Uuid,
-    name: String,
-    credential: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-struct StartPasskeyAuthenticationBody {
-    email: String,
-}
-
-#[derive(Deserialize)]
-struct FinishPasskeyAuthenticationBody {
-    ceremony_id: Uuid,
-    credential: serde_json::Value,
+struct SignInBody {
+    provider: String,
+    identity_token: String,
 }
 
 #[derive(Serialize)]
-struct EmptyData {}
-
-#[derive(Serialize)]
-struct CeremonyData {
-    ceremony_id: Uuid,
-    public_key: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct PasskeyData {
-    id: Uuid,
-}
-
-#[derive(Serialize)]
-struct SessionData {
-    session_token: String,
+struct AccessTokenData {
+    user_id: Uuid,
+    access_token: String,
     token_type: &'static str,
     expires_in: u32,
 }
 
-async fn request_email_link(
-    State(state): State<ApiState>,
-    ApiJson(body): ApiJson<RequestEmailLinkBody>,
-) -> Result<ApiResponse<EmptyData>, ApiError> {
-    let email = Email::parse(body.email).map_err(ApplicationError::from)?;
-    state.passwordless_auth.request_magic_link(email).await?;
-    Ok(ApiResponse::new(StatusCode::ACCEPTED, EmptyData {}))
+#[derive(Deserialize)]
+struct CreateMcpKeyBody {
+    name: String,
 }
 
-async fn verify_email_link(
+#[derive(Deserialize)]
+struct ListMcpKeysQuery {
+    cursor: Option<Uuid>,
+    limit: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct McpKeyCreatedData {
+    id: Uuid,
+    name: String,
+    key_identifier: String,
+    display_suffix: String,
+    secret: String,
+}
+
+#[derive(Serialize)]
+struct McpKeyData {
+    id: Uuid,
+    name: String,
+    key_identifier: String,
+    display_suffix: String,
+    created_at: ApiDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revoked_at: Option<ApiDateTime>,
+}
+
+#[derive(Serialize)]
+struct McpKeyPageData {
+    items: Vec<McpKeyData>,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<Uuid>,
+}
+
+async fn sign_in(
     State(state): State<ApiState>,
-    ApiJson(body): ApiJson<VerifyEmailLinkBody>,
-) -> Result<ApiResponse<SessionData>, ApiError> {
+    ApiJson(body): ApiJson<SignInBody>,
+) -> Result<ApiResponse<AccessTokenData>, ApiError> {
+    let provider = IdentityProvider::parse(&body.provider).map_err(ApplicationError::from)?;
     let grant = state
-        .passwordless_auth
-        .consume_magic_link(&SecretString::from(body.token))
+        .identity_auth
+        .sign_in(provider, &SecretString::from(body.identity_token))
         .await?;
-    Ok(ApiResponse::ok(session_data(grant)))
-}
-
-async fn revoke_session(
-    State(state): State<ApiState>,
-    session: AuthenticatedSession,
-) -> Result<StatusCode, ApiError> {
-    state
-        .passwordless_auth
-        .revoke_session(&session.token)
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn start_passkey_registration(
-    State(state): State<ApiState>,
-    session: AuthenticatedSession,
-) -> Result<ApiResponse<CeremonyData>, ApiError> {
-    let options = state
-        .passwordless_auth
-        .start_passkey_registration(session.user_id)
-        .await?;
-    Ok(ApiResponse::ok(ceremony_data(options)))
-}
-
-async fn finish_passkey_registration(
-    State(state): State<ApiState>,
-    session: AuthenticatedSession,
-    ApiJson(body): ApiJson<FinishPasskeyRegistrationBody>,
-) -> Result<ApiResponse<PasskeyData>, ApiError> {
-    let name = body.name.trim();
-    if name.is_empty() || name.chars().count() > 80 {
-        return Err(ApplicationError::Validation {
-            violations: vec![chaos_domain::FieldViolation {
-                field: "name",
-                reason: "must contain 1-80 characters".into(),
-            }],
-        }
-        .into());
-    }
-    let id = state
-        .passwordless_auth
-        .finish_passkey_registration(session.user_id, body.ceremony_id, body.credential, name)
-        .await?;
-    Ok(ApiResponse::created(PasskeyData { id }))
-}
-
-async fn start_passkey_authentication(
-    State(state): State<ApiState>,
-    ApiJson(body): ApiJson<StartPasskeyAuthenticationBody>,
-) -> Result<ApiResponse<CeremonyData>, ApiError> {
-    let email = Email::parse(body.email).map_err(ApplicationError::from)?;
-    let options = state
-        .passwordless_auth
-        .start_passkey_authentication(email)
-        .await?;
-    Ok(ApiResponse::ok(ceremony_data(options)))
-}
-
-async fn finish_passkey_authentication(
-    State(state): State<ApiState>,
-    ApiJson(body): ApiJson<FinishPasskeyAuthenticationBody>,
-) -> Result<ApiResponse<SessionData>, ApiError> {
-    let grant = state
-        .passwordless_auth
-        .finish_passkey_authentication(body.ceremony_id, body.credential)
-        .await?;
-    Ok(ApiResponse::ok(session_data(grant)))
-}
-
-fn ceremony_data(options: CeremonyOptions) -> CeremonyData {
-    CeremonyData {
-        ceremony_id: options.ceremony_id,
-        public_key: options.public_key,
-    }
-}
-
-fn session_data(grant: SessionGrant) -> SessionData {
-    SessionData {
-        session_token: grant.token.expose_secret().to_owned(),
+    Ok(ApiResponse::ok(AccessTokenData {
+        user_id: grant.user_id.as_uuid(),
+        access_token: grant.token.expose_secret().to_owned(),
         token_type: "Bearer",
         expires_in: grant.expires_in_seconds,
-    }
+    }))
+}
+
+async fn create_mcp_key(
+    State(state): State<ApiState>,
+    AuthenticatedUser { user_id }: AuthenticatedUser,
+    ApiJson(body): ApiJson<CreateMcpKeyBody>,
+) -> Result<ApiResponse<McpKeyCreatedData>, ApiError> {
+    let output = state.mcp_key_management.create(user_id, body.name).await?;
+    Ok(ApiResponse::created(McpKeyCreatedData {
+        id: output.key.id().as_uuid(),
+        name: output.key.name().to_owned(),
+        key_identifier: output.key_identifier,
+        display_suffix: output.display_suffix,
+        secret: output.plaintext.expose_secret().to_owned(),
+    }))
+}
+
+async fn list_mcp_keys(
+    State(state): State<ApiState>,
+    AuthenticatedUser { user_id }: AuthenticatedUser,
+    Query(query): Query<ListMcpKeysQuery>,
+) -> Result<ApiResponse<McpKeyPageData>, ApiError> {
+    let page = state
+        .mcp_key_management
+        .list(
+            user_id,
+            query.cursor.map(McpKeyId::from_uuid),
+            query.limit.unwrap_or(20),
+        )
+        .await?;
+    let next_cursor = page
+        .has_more
+        .then(|| page.items.last().map(|item| item.id.as_uuid()))
+        .flatten();
+    let items = page
+        .items
+        .into_iter()
+        .map(|item| McpKeyData {
+            id: item.id.as_uuid(),
+            name: item.name,
+            key_identifier: item.key_identifier,
+            display_suffix: item.display_suffix,
+            created_at: ApiDateTime::from(item.created_at),
+            last_used_at: item.last_used_at.map(ApiDateTime::from),
+            revoked_at: item.revoked_at.map(ApiDateTime::from),
+        })
+        .collect();
+    Ok(ApiResponse::ok(McpKeyPageData {
+        items,
+        has_more: page.has_more,
+        next_cursor,
+    }))
+}
+
+async fn revoke_mcp_key(
+    State(state): State<ApiState>,
+    AuthenticatedUser { user_id }: AuthenticatedUser,
+    Path(mcp_key_id): Path<Uuid>,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    state
+        .mcp_key_management
+        .revoke(user_id, McpKeyId::from_uuid(mcp_key_id))
+        .await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "id": mcp_key_id })))
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use axum::{
-        body::Body,
-        http::{Method, Request, StatusCode},
+    use axum::http::{Method, StatusCode};
+    use chaos_application::{
+        ApplicationError,
+        ports::{AccessTokenGrant, IdentityAuthentication},
     };
-    use chaos_application::ports::PasswordlessAuthentication;
     use chaos_domain::identity::UserId;
-    use serde_json::{Value, json};
+    use serde_json::json;
     use tower::ServiceExt;
 
     use crate::http::{
-        pricing::tests::{request, response_json, test_state},
         router,
+        test_support::{request, response_json, test_state},
     };
 
     use super::*;
 
-    struct SuccessfulAuthentication {
-        user_id: UserId,
-    }
+    struct SuccessfulAuthentication;
 
     #[async_trait::async_trait]
-    impl PasswordlessAuthentication for SuccessfulAuthentication {
-        async fn request_magic_link(&self, _email: Email) -> Result<(), ApplicationError> {
-            Ok(())
-        }
-
-        async fn consume_magic_link(
+    impl IdentityAuthentication for SuccessfulAuthentication {
+        async fn sign_in(
             &self,
-            _token: &SecretString,
-        ) -> Result<SessionGrant, ApplicationError> {
-            Ok(grant())
+            _provider: IdentityProvider,
+            _identity_token: &SecretString,
+        ) -> Result<AccessTokenGrant, ApplicationError> {
+            Ok(AccessTokenGrant {
+                user_id: UserId::new(),
+                token: SecretString::from("access-token"),
+                expires_in_seconds: 3600,
+            })
         }
 
-        async fn authenticate_session(
-            &self,
-            _token: &SecretString,
-        ) -> Result<UserId, ApplicationError> {
-            Ok(self.user_id)
-        }
-
-        async fn revoke_session(&self, _token: &SecretString) -> Result<(), ApplicationError> {
-            Ok(())
-        }
-
-        async fn start_passkey_registration(
-            &self,
-            _user_id: UserId,
-        ) -> Result<CeremonyOptions, ApplicationError> {
-            Ok(options())
-        }
-
-        async fn finish_passkey_registration(
-            &self,
-            _user_id: UserId,
-            _ceremony_id: Uuid,
-            _credential: Value,
-            _name: &str,
-        ) -> Result<Uuid, ApplicationError> {
-            Ok(Uuid::now_v7())
-        }
-
-        async fn start_passkey_authentication(
-            &self,
-            _email: Email,
-        ) -> Result<CeremonyOptions, ApplicationError> {
-            Ok(options())
-        }
-
-        async fn finish_passkey_authentication(
-            &self,
-            _ceremony_id: Uuid,
-            _credential: Value,
-        ) -> Result<SessionGrant, ApplicationError> {
-            Ok(grant())
-        }
-    }
-
-    fn options() -> CeremonyOptions {
-        CeremonyOptions {
-            ceremony_id: Uuid::now_v7(),
-            public_key: json!({ "challenge": "test" }),
-        }
-    }
-
-    fn grant() -> SessionGrant {
-        SessionGrant {
-            token: SecretString::from("session-token".to_owned()),
-            expires_in_seconds: 3600,
+        fn authenticate(&self, _token: &SecretString) -> Result<UserId, ApplicationError> {
+            Ok(UserId::new())
         }
     }
 
     #[tokio::test]
-    async fn passwordless_http_adapter_covers_every_success_path_and_validation_boundary() {
-        let user_id = UserId::new();
-        let mut state = test_state("postgres://localhost/chaos", user_id);
-        state.passwordless_auth = Arc::new(SuccessfulAuthentication { user_id });
-
-        for (uri, expected) in [
-            ("/admin/v1/auth/email-links", StatusCode::ACCEPTED),
-            (
-                "/admin/v1/auth/passkeys/authentication/options",
-                StatusCode::OK,
-            ),
-        ] {
-            let response = router(state.clone())
-                .oneshot(request(
-                    Method::POST,
-                    uri,
-                    None,
-                    Some(json!({ "email": "person@example.com" })),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected);
-        }
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/email-links/verify",
-                None,
-                Some(json!({ "token": "magic-token" })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response_json(response).await["data"]["token_type"],
-            "Bearer"
-        );
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/passkeys/registration/options",
-                None,
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let ceremony_id = Uuid::now_v7();
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/passkeys/registration/verify",
-                None,
-                Some(json!({
-                    "ceremony_id": ceremony_id,
-                    "name": "Laptop",
-                    "credential": { "id": "credential" }
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/passkeys/authentication/verify",
-                None,
-                Some(json!({
-                    "ceremony_id": ceremony_id,
-                    "credential": { "id": "credential" }
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::DELETE,
-                "/admin/v1/auth/session",
-                None,
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/email-links",
-                None,
-                Some(json!({ "email": "invalid" })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-        let response = router(state.clone())
-            .oneshot(request(
-                Method::POST,
-                "/admin/v1/auth/passkeys/registration/verify",
-                None,
-                Some(json!({
-                    "ceremony_id": ceremony_id,
-                    "name": "",
-                    "credential": {}
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
+    async fn exchanges_a_supported_external_identity_for_an_access_token() {
+        let mut state = test_state("postgres://localhost/chaos", UserId::new());
+        state.identity_auth = Arc::new(SuccessfulAuthentication);
         let response = router(state)
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/admin/v1/auth/passkeys/registration/options")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                Method::POST,
+                "/identity/v1/auth/external",
+                None,
+                Some(json!({
+                    "provider": "google",
+                    "identity_token": "provider-token"
+                })),
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["data"]["access_token"], "access-token");
+        assert!(body["data"]["user_id"].as_str().is_some());
+        assert_eq!(body["data"]["token_type"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn rejects_an_unsupported_identity_provider() {
+        let response = router(test_state("postgres://localhost/chaos", UserId::new()))
+            .oneshot(request(
+                Method::POST,
+                "/identity/v1/auth/external",
+                None,
+                Some(json!({
+                    "provider": "password",
+                    "identity_token": "provider-token"
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

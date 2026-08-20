@@ -9,7 +9,11 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 static METRICS: OnceLock<PrometheusHandle> = OnceLock::new();
 static METRICS_INIT: Mutex<()> = Mutex::new(());
 
-pub fn init(filter: &str, json: bool) -> anyhow::Result<Option<SdkTracerProvider>> {
+pub fn init(
+    service_name: &'static str,
+    filter: &str,
+    json: bool,
+) -> anyhow::Result<Option<SdkTracerProvider>> {
     let filter = EnvFilter::try_new(filter).context("invalid RUST_LOG filter")?;
     let provider = if std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
         let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -21,7 +25,7 @@ pub fn init(filter: &str, json: bool) -> anyhow::Result<Option<SdkTracerProvider
                 .with_batch_exporter(exporter)
                 .with_resource(
                     opentelemetry_sdk::Resource::builder()
-                        .with_service_name("chaos-api")
+                        .with_service_name(service_name)
                         .build(),
                 )
                 .build(),
@@ -31,7 +35,7 @@ pub fn init(filter: &str, json: bool) -> anyhow::Result<Option<SdkTracerProvider
     };
     let otel_layer = provider
         .as_ref()
-        .map(|provider| tracing_opentelemetry::layer().with_tracer(provider.tracer("chaos-api")));
+        .map(|provider| tracing_opentelemetry::layer().with_tracer(provider.tracer(service_name)));
     let registry = tracing_subscriber::registry().with(filter).with(otel_layer);
 
     if json {

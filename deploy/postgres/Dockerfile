@@ -1,6 +1,6 @@
 FROM postgres:18.4-trixie
 
-ARG PIGSTY_KEY_SHA256=17b9c7727c3a4d3b77463299ade471b28a8ba97da263e6bbb02986a578de0882
+ARG PIGSTY_ASC_SHA256=17b9c7727c3a4d3b77463299ade471b28a8ba97da263e6bbb02986a578de0882
 ARG PG_CRON_PACKAGE_VERSION=1.6.7-3.pgdg13+1
 ARG PGMQ_PACKAGE_VERSION=1.12.0-1PIGSTY~trixie
 ARG PG_PARTMAN_PACKAGE_VERSION=5.5.0-2PIGSTY~trixie
@@ -11,7 +11,7 @@ RUN apt-get update \
     && curl -fsSL https://repo.pigsty.io/key \
         -o /etc/apt/keyrings/pigsty.asc \
     && printf '%s  %s\n' \
-        "${PIGSTY_KEY_SHA256}" /etc/apt/keyrings/pigsty.asc \
+        "${PIGSTY_ASC_SHA256}" /etc/apt/keyrings/pigsty.asc \
         > /tmp/pigsty-key.sha256 \
     && sha256sum -c /tmp/pigsty-key.sha256 \
     && printf '%s\n' \

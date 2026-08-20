@@ -34,7 +34,7 @@ Use English [Conventional Commits](https://www.conventionalcommits.org/) with a 
 Examples:
 
 ```text
-feat(merchant): add merchant account transaction context
+feat(identity): add external provider authentication
 fix(api): preserve requests during instance draining
 docs(architecture): document blue-green deployment
 ```

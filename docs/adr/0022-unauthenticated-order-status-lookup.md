@@ -11,7 +11,7 @@ A guest "check my order status" page is a different shape of problem: it is read
 
 ## Decision
 
-`GET /store/v1/orders/{order_id}` accepts a Publishable key holding the existing `orders:read` scope (previously Secret-key/MCP-only, see `docs/adr/0004-machine-credentials-and-mcp.md`) with no shopper credential. `orders:read` is now allowed on Publishable keys (`ApiKeyScope::allowed_for_publishable_key`) in addition to its existing Secret-key use — a Store must explicitly mint a key with this scope for the capability to exist at all; it is not implicitly enabled for every Publishable key.
+`GET /store/v1/orders/{order_id}` accepts a Publishable Key holding the `orders:read` scope with no shopper credential. A Store must explicitly mint a key with this scope for the capability to exist at all; it is not implicitly enabled for every Publishable Key.
 
 This is a narrow, scoped carve-out, not a reversal of ADR 0009:
 

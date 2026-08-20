@@ -26,7 +26,7 @@ $$;
 
 DO $$
 BEGIN
-    CREATE ROLE chaos_control_plane NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    CREATE ROLE chaos_identity NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END
@@ -35,10 +35,10 @@ $$;
 DO $$
 BEGIN
     EXECUTE format('GRANT chaos_runtime TO %I', current_user);
-    EXECUTE format('GRANT chaos_control_plane TO %I', current_user);
+    EXECUTE format('GRANT chaos_identity TO %I', current_user);
 END
 $$;
 
 GRANT USAGE ON SCHEMA extensions TO chaos_runtime;
 
-GRANT USAGE ON SCHEMA extensions TO chaos_control_plane;
+GRANT USAGE ON SCHEMA extensions TO chaos_identity;

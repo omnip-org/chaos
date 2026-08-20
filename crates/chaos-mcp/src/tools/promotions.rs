@@ -1,10 +1,9 @@
 use chaos_application::{
-    ports::{AdminActor, PromotionDetail},
+    ports::PromotionDetail,
     pricing::{ChangePromotionStatusInput, CreatePromotionInput},
 };
 use chaos_domain::{
     CurrencyCode,
-    merchant::ApiKeyScope,
     pricing::{PromotionId, PromotionStatus, PromotionTrigger, PromotionValue},
 };
 use rmcp::{
@@ -77,27 +76,24 @@ pub struct ChangePromotionStatusParams {
 #[tool_router(router = promotions_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List promotions in the Store bound to this API key, including active \
+        description = "List promotions in the selected Store, including active \
                         and archived ones."
     )]
     async fn list_promotions(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self.state.promotion_management.list(actor, store_id).await {
             Ok(items) => Ok(text_result(json!({
@@ -107,19 +103,17 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Create a promotion in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Create a promotion in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn create_promotion(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreatePromotionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -129,10 +123,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let trigger = match PromotionTrigger::parse(&params.trigger) {
             Some(trigger) => trigger,
             None => {
@@ -190,10 +181,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Activate a promotion in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Activate a promotion in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn activate_promotion(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -203,10 +192,8 @@ impl ChaosMcp {
             .await
     }
 
-    #[tool(
-        description = "Archive a promotion in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Archive a promotion in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn archive_promotion(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -224,10 +211,10 @@ impl ChaosMcp {
         params: ChangePromotionStatusParams,
         status: PromotionStatus,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -237,10 +224,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let promotion_id = match parse_uuid_field(&params.promotion_id, "promotion_id") {
             Ok(id) => PromotionId::from_uuid(id),
             Err(result) => return Ok(result),

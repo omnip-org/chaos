@@ -13,13 +13,13 @@ Product, ProductVariant, and Collection each gain a nullable `metadata JSONB` co
 
 Metadata is set at write time through the existing Product, Variant, and Collection create/update operations — there is no separate metadata endpoint. `ProductContent` and `CollectionContent` carry an optional `CatalogMetadata` alongside their existing title/description validation; `ProductVariant` carries its own, set at variant-creation time (variants have no standalone update endpoint in this release, matching their existing create-only lifecycle). A 32 KiB PostgreSQL `CHECK` constraint on each table backstops the domain bound.
 
-Admin Product/Variant/Collection detail responses and Storefront Product/Variant/Collection responses both include `metadata` when present; admin list responses omit it, matching the existing convention that list rows exclude `description`. The field is deliberately schema-agnostic on the wire: Chaos stores and returns exactly the JSON object a client sent, with no interpretation, translation, or validation of its internal shape.
+MCP Product/Variant/Collection detail results and Storefront Product/Variant/Collection responses both include `metadata` when present; list results omit it, matching the existing convention that list rows exclude `description`. The field is deliberately schema-agnostic on the wire: Chaos stores and returns exactly the JSON object a client sent, with no interpretation, translation, or validation of its internal shape.
 
 ## Consequences
 
 - Storefront clients can carry rich, per-item merchandising content without a schema migration for every new content shape, at the cost of Chaos being unable to search, validate, or localize anything inside it.
 - The 32 KiB bound is enforced identically in the domain (before any write) and in PostgreSQL (as defense in depth against a future write path that bypasses the domain type), so a stored value is never larger than what the domain already accepted.
-- `chaos-mcp`'s `create_product`/`update_product`/`create_collection`/`update_collection` tools do not yet expose a `metadata` parameter; the Admin HTTP API is the only way to set it in this release.
+- MCP product and collection create/update tools expose metadata directly. Metadata is not part of the Storefront write surface.
 - Metadata is not translated by the Store-scoped Catalog localization introduced in ADR 0019. A client that needs localized merchandising content must currently encode that inside the JSON value itself.
 
 ## Rejected alternatives

@@ -991,7 +991,7 @@ mod tests {
             .connect(&database_url)
             .await
             .unwrap();
-        let suffix = Uuid::now_v7().simple().to_string();
+        let suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
         let user_id = UserId::new();
         let other_user_id = UserId::new();
         let store_id = StoreId::new();
@@ -1016,7 +1016,7 @@ mod tests {
         }
         for (id, code) in [
             (store_id, "inventory-store"),
-            (other_store_id, "other-inventory-store"),
+            (other_store_id, "other-inventory"),
         ] {
             sqlx::query(
                 "INSERT INTO merchant.stores \
@@ -1139,7 +1139,7 @@ mod tests {
             api_key_id: ApiKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            class: ApiKeyClass::Secret,
+            class: ApiKeyClass::Publishable,
             scopes: vec![ApiKeyScope::CheckoutWrite],
             created_by_user_id: user_id,
         };

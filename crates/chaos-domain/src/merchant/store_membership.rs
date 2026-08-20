@@ -41,6 +41,14 @@ impl StoreMembership {
         }
     }
 
+    pub fn member(store_id: StoreId, user_id: UserId) -> Self {
+        Self {
+            store_id,
+            user_id,
+            role: StoreRole::Member,
+        }
+    }
+
     pub const fn store_id(&self) -> StoreId {
         self.store_id
     }

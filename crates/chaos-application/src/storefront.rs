@@ -179,18 +179,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secret_keys_cannot_cross_the_storefront_authentication_boundary() {
+    async fn publishable_keys_without_a_sales_channel_cannot_enter_storefront_catalog() {
         let catalog = StorefrontCatalog::new(Arc::new(EmptyRepository));
+        let mut key = actor(ApiKeyClass::Publishable);
+        key.sales_channel_id = None;
         let result = catalog
-            .list_products(
-                &actor(ApiKeyClass::Secret),
-                None,
-                None,
-                None,
-                None,
-                None,
-                20,
-            )
+            .list_products(&key, None, None, None, None, None, 20)
             .await;
         assert!(matches!(result, Err(ApplicationError::Forbidden)));
     }

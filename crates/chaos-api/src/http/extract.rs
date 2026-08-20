@@ -74,9 +74,8 @@ where
     }
 }
 
-pub struct AuthenticatedSession {
+pub struct AuthenticatedUser {
     pub user_id: UserId,
-    pub token: SecretString,
 }
 
 pub struct StorefrontMachine(pub MachineActor);
@@ -172,10 +171,7 @@ macro_rules! customer_machine_extractor {
                     .authenticate(&token, &[$scope])
                     .await?;
                 let session = customer_session_token(&parts.headers)?;
-                let user_id = state
-                    .passwordless_auth
-                    .authenticate_session(&session)
-                    .await?;
+                let user_id = state.identity_auth.authenticate(&session)?;
                 Ok(Self(CustomerActor { machine, user_id }))
             }
         }
@@ -193,16 +189,11 @@ impl FromRequestParts<ApiState> for CustomerSession {
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
         let session = customer_session_token(&parts.headers)?;
-        Ok(Self(
-            state
-                .passwordless_auth
-                .authenticate_session(&session)
-                .await?,
-        ))
+        Ok(Self(state.identity_auth.authenticate(&session)?))
     }
 }
 
-impl FromRequestParts<ApiState> for AuthenticatedSession {
+impl FromRequestParts<ApiState> for AuthenticatedUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(
@@ -210,8 +201,8 @@ impl FromRequestParts<ApiState> for AuthenticatedSession {
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers)?;
-        let user_id = state.passwordless_auth.authenticate_session(&token).await?;
-        Ok(Self { user_id, token })
+        let user_id = state.identity_auth.authenticate(&token)?;
+        Ok(Self { user_id })
     }
 }
 
@@ -253,7 +244,7 @@ impl FromRequestParts<ApiState> for StoreContext {
         parts: &mut Parts,
         state: &ApiState,
     ) -> Result<Self, Self::Rejection> {
-        let session = AuthenticatedSession::from_request_parts(parts, state).await?;
+        let session = AuthenticatedUser::from_request_parts(parts, state).await?;
         let Path(parameters) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
             .await
             .map_err(|_| invalid_store_id())?;

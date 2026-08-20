@@ -1,5 +1,4 @@
-use chaos_application::{merchant::CreateProviderSecretInput, ports::AdminActor};
-use chaos_domain::merchant::ApiKeyScope;
+use chaos_application::merchant::CreateProviderSecretInput;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -33,11 +32,11 @@ pub struct CreateProviderSecretParams {
 impl ChaosMcp {
     #[tool(
         description = "Store a provider secret (payment/shipping/analytics credential) in the \
-                        Store bound to this API key. The value is encrypted at rest and \
+                        selected Store. The value is encrypted at rest and \
                         referenced by an opaque string thereafter; it cannot be read back. \
                         This tool has no idempotency_key parameter because the underlying \
                         operation is not idempotent — calling it twice creates two independent \
-                        secret references, matching the Admin HTTP API. There is no update or \
+                        secret references. There is no update or \
                         delete tool for provider secrets; create a new one to rotate. Requires \
                         confirm: true."
     )]
@@ -46,10 +45,10 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateProviderSecretParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::ProviderSecretsWrite,
         )
         .await
         {
@@ -69,10 +68,7 @@ impl ChaosMcp {
                 })));
             }
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self
             .state

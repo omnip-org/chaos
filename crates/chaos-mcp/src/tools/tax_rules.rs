@@ -1,8 +1,8 @@
 use chaos_application::{
-    ports::{AdminActor, TaxRuleDetail},
+    ports::TaxRuleDetail,
     pricing::{ChangeTaxRuleStatusInput, CreateTaxRuleInput},
 };
-use chaos_domain::{merchant::ApiKeyScope, pricing::TaxRuleId, pricing::TaxRuleStatus};
+use chaos_domain::{pricing::TaxRuleId, pricing::TaxRuleStatus};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -48,27 +48,24 @@ pub struct ChangeTaxRuleStatusParams {
 #[tool_router(router = tax_rules_tool_router, vis = "pub(super)")]
 impl ChaosMcp {
     #[tool(
-        description = "List tax rules in the Store bound to this API key, including active \
+        description = "List tax rules in the selected Store, including active \
                         and archived ones."
     )]
     async fn list_tax_rules(
         &self,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingRead,
         )
         .await
         {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
 
         match self.state.tax_management.list(actor, store_id).await {
             Ok(items) => Ok(text_result(json!({
@@ -78,19 +75,17 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Create a tax rule in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Create a tax rule in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn create_tax_rule(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateTaxRuleParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -100,10 +95,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
 
         match self
@@ -125,10 +117,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Activate a tax rule in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Activate a tax rule in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn activate_tax_rule(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -138,10 +128,8 @@ impl ChaosMcp {
             .await
     }
 
-    #[tool(
-        description = "Archive a tax rule in the Store bound to this API key. Requires \
-                        confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Archive a tax rule in the selected Store. Requires \
+                        confirm: true and an idempotency_key.")]
     async fn archive_tax_rule(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -159,10 +147,10 @@ impl ChaosMcp {
         params: ChangeTaxRuleStatusParams,
         status: TaxRuleStatus,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_machine(
-            &self.state.api_key_authentication,
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.mcp_key_authentication,
+            &self.state.merchant_queries,
             &parts,
-            ApiKeyScope::PricingWrite,
         )
         .await
         {
@@ -172,10 +160,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let AdminActor::Machine(machine) = &actor else {
-            unreachable!("authenticate_machine always returns AdminActor::Machine")
-        };
-        let store_id = machine.store_id;
+        let store_id = actor.store_id();
         let rule_id = match parse_uuid_field(&params.tax_rule_id, "tax_rule_id") {
             Ok(id) => TaxRuleId::from_uuid(id),
             Err(result) => return Ok(result),

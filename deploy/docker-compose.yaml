@@ -25,6 +25,18 @@ services:
   api-green:
     <<: *api
 
+  worker:
+    image: ${CHAOS_IMAGE}
+    restart: unless-stopped
+    stop_grace_period: 45s
+    entrypoint: ["/usr/local/bin/chaos-worker"]
+    env_file:
+      - path: .env
+        required: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   migrate:
     image: ${CHAOS_IMAGE}
     restart: "no"
@@ -69,6 +81,11 @@ services:
   nginx:
     image: nginx:stable-alpine
     restart: unless-stopped
+    depends_on:
+      api-blue:
+        condition: service_healthy
+      api-green:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"

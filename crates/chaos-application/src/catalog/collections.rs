@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use chaos_domain::{
     Locale,
     catalog::{CollectionContent, CollectionHandle, CollectionId, CollectionStatus, ProductId},
-    merchant::{ApiKeyScope, SalesChannelId, StoreId},
+    merchant::{SalesChannelId, StoreId},
 };
 use time::OffsetDateTime;
 
@@ -305,13 +305,7 @@ fn content(
 fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::CollectionsWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

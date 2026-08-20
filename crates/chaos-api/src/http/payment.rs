@@ -8,29 +8,18 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    payments::{
-        CreatePaymentAttemptInput, CreatePaymentProviderAccountInput, CreateRefundInput,
-        UpdatePaymentProviderAccountInput,
-    },
-    ports::{
-        AdminActor, IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction,
-        PaymentProviderAccountDetail, RefundDetail,
-    },
+    payments::CreatePaymentAttemptInput,
+    ports::{IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction},
 };
-use chaos_domain::{
-    merchant::StoreId,
-    payments::{PaymentAttemptId, PaymentProviderAccountId},
-    sales::OrderId,
-};
+use chaos_domain::{payments::PaymentAttemptId, sales::OrderId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, CheckoutShopper,
-    StoreContext,
-    merchant::{CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta},
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutShopper,
+    pagination::idempotency_key,
 };
 
 pub(super) fn routes() -> Router<ApiState> {
@@ -47,18 +36,6 @@ pub(super) fn routes() -> Router<ApiState> {
             "/store/v1/payment-attempts/{payment_attempt_id}/client-action",
             get(get_client_action),
         )
-        .route(
-            "/admin/v1/stores/{store_id}/payment-attempts/{payment_attempt_id}/refunds",
-            post(create_refund),
-        )
-        .route(
-            "/admin/v1/stores/{store_id}/payment-provider-accounts",
-            get(list_provider_accounts).post(create_provider_account),
-        )
-        .route(
-            "/admin/v1/stores/{store_id}/payment-provider-accounts/{provider_account_id}",
-            get(get_provider_account).put(update_provider_account),
-        )
         .route("/webhooks/v1/payments/{provider}", post(receive_webhook))
         .layer(DefaultBodyLimit::max(64 * 1024))
 }
@@ -74,52 +51,8 @@ struct AttemptPath {
 }
 
 #[derive(Deserialize)]
-struct RefundPath {
-    store_id: Uuid,
-    payment_attempt_id: Uuid,
-}
-
-#[derive(Deserialize)]
 struct WebhookPath {
     provider: String,
-}
-
-#[derive(Deserialize)]
-struct ProviderCollectionPath {
-    store_id: Uuid,
-}
-
-#[derive(Deserialize)]
-struct ProviderPath {
-    store_id: Uuid,
-    provider_account_id: Uuid,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProviderListQuery {
-    cursor: Option<String>,
-    limit: Option<u16>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateProviderAccountBody {
-    provider: String,
-    display_name: String,
-    external_account_reference: String,
-    credential_secret_reference: String,
-    webhook_secret_reference: String,
-    enabled: bool,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct UpdateProviderAccountBody {
-    display_name: String,
-    credential_secret_reference: String,
-    webhook_secret_reference: String,
-    enabled: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -130,12 +63,6 @@ struct CreateAttemptBody {
     success_url: Option<String>,
     #[serde(default)]
     cancel_url: Option<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct CreateRefundBody {
-    amount_minor: i64,
 }
 
 #[derive(Serialize)]
@@ -164,150 +91,8 @@ struct PaymentClientActionData {
 }
 
 #[derive(Serialize)]
-struct RefundData {
-    id: Uuid,
-    payment_attempt_id: Uuid,
-    amount_minor: i64,
-    currency: String,
-    status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_reference: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    failure_code: Option<String>,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
-}
-
-#[derive(Serialize)]
 struct WebhookReceiptData {
     accepted: bool,
-}
-
-#[derive(Serialize)]
-struct PaymentProviderAccountData {
-    id: Uuid,
-    provider: String,
-    display_name: String,
-    external_account_reference: String,
-    enabled: bool,
-    credentials_configured: bool,
-    readiness_status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    readiness_checked_at: Option<ApiDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    readiness_valid_until: Option<ApiDateTime>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    readiness_blocker_codes: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credential_rotation_expires_at: Option<ApiDateTime>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    webhook_rotation_expires_at: Option<ApiDateTime>,
-    created_at: ApiDateTime,
-    updated_at: ApiDateTime,
-}
-
-async fn list_provider_accounts(
-    State(state): State<ApiState>,
-    StoreContext(actor): StoreContext,
-    ApiPath(path): ApiPath<ProviderCollectionPath>,
-    ApiQuery(query): ApiQuery<ProviderListQuery>,
-) -> Result<ApiResponse<Vec<PaymentProviderAccountData>>, ApiError> {
-    let after = query
-        .cursor
-        .as_deref()
-        .map(|value| decode_cursor(value, CursorKind::PaymentProviderAccount))
-        .transpose()?;
-    let limit = page_limit(query.limit)?;
-    let page = state
-        .payment_provider_administration
-        .list(actor, StoreId::from_uuid(path.store_id), after, limit)
-        .await?;
-    let next_cursor = page
-        .has_more
-        .then(|| {
-            page.items.last().map(|item| {
-                encode_cursor(
-                    item.account.id().as_uuid(),
-                    CursorKind::PaymentProviderAccount,
-                )
-            })
-        })
-        .flatten();
-    Ok(
-        ApiResponse::ok(page.items.into_iter().map(provider_account_data).collect())
-            .with_meta(page_meta(page.has_more, next_cursor)),
-    )
-}
-
-async fn get_provider_account(
-    State(state): State<ApiState>,
-    StoreContext(actor): StoreContext,
-    ApiPath(path): ApiPath<ProviderPath>,
-) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    let value = state
-        .payment_provider_administration
-        .get(
-            actor,
-            StoreId::from_uuid(path.store_id),
-            PaymentProviderAccountId::from_uuid(path.provider_account_id),
-        )
-        .await?;
-    Ok(ApiResponse::ok(provider_account_data(value)))
-}
-
-async fn create_provider_account(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    StoreContext(actor): StoreContext,
-    ApiPath(path): ApiPath<ProviderCollectionPath>,
-    ApiJson(body): ApiJson<CreateProviderAccountBody>,
-) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    let idempotency = body_request(&headers, "create_payment_provider_account", &body)?;
-    let value = state
-        .payment_provider_administration
-        .create(CreatePaymentProviderAccountInput {
-            actor,
-            store_id: StoreId::from_uuid(path.store_id),
-            provider: body.provider,
-            display_name: body.display_name,
-            external_account_reference: body.external_account_reference,
-            credential_secret_reference: body.credential_secret_reference,
-            webhook_secret_reference: body.webhook_secret_reference,
-            enabled: body.enabled,
-            checked_at: state.clock.now(),
-            idempotency,
-        })
-        .await?;
-    Ok(ApiResponse::created(provider_account_data(value)))
-}
-
-async fn update_provider_account(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    StoreContext(actor): StoreContext,
-    ApiPath(path): ApiPath<ProviderPath>,
-    ApiJson(body): ApiJson<UpdateProviderAccountBody>,
-) -> Result<ApiResponse<PaymentProviderAccountData>, ApiError> {
-    let idempotency = body_request(
-        &headers,
-        "update_payment_provider_account",
-        &(path.provider_account_id, &body),
-    )?;
-    let value = state
-        .payment_provider_administration
-        .update(UpdatePaymentProviderAccountInput {
-            actor,
-            store_id: StoreId::from_uuid(path.store_id),
-            id: PaymentProviderAccountId::from_uuid(path.provider_account_id),
-            display_name: body.display_name,
-            credential_secret_reference: body.credential_secret_reference,
-            webhook_secret_reference: body.webhook_secret_reference,
-            enabled: body.enabled,
-            checked_at: state.clock.now(),
-            idempotency,
-        })
-        .await?;
-    Ok(ApiResponse::ok(provider_account_data(value)))
 }
 
 async fn create_attempt(
@@ -330,7 +115,7 @@ async fn create_attempt(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::created(attempt_data(attempt)?))
+    Ok(ApiResponse::created(attempt_data(attempt)))
 }
 
 fn validate_return_urls(body: &CreateAttemptBody) -> Result<(), ApiError> {
@@ -344,8 +129,7 @@ fn validate_return_urls(body: &CreateAttemptBody) -> Result<(), ApiError> {
             return Err(invalid_value(field, "must be an https:// URL"));
         }
     }
-    let both_or_neither = body.success_url.is_some() == body.cancel_url.is_some();
-    if !both_or_neither {
+    if body.success_url.is_some() != body.cancel_url.is_some() {
         return Err(invalid_value(
             "success_url",
             "success_url and cancel_url must both be present or both be absent",
@@ -360,16 +144,6 @@ fn validate_return_urls(body: &CreateAttemptBody) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field,
-            reason: reason.into(),
-        }],
-    }
-    .into()
-}
-
 async fn get_attempt(
     State(state): State<ApiState>,
     CheckoutShopper(actor): CheckoutShopper,
@@ -379,7 +153,7 @@ async fn get_attempt(
         .payment_service
         .get_attempt(&actor, PaymentAttemptId::from_uuid(path.payment_attempt_id))
         .await?;
-    Ok(ApiResponse::ok(attempt_data(attempt)?))
+    Ok(ApiResponse::ok(attempt_data(attempt)))
 }
 
 async fn get_client_action(
@@ -396,31 +170,6 @@ async fn get_client_action(
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(response)
-}
-
-async fn create_refund(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    StoreContext(actor): StoreContext,
-    ApiPath(path): ApiPath<RefundPath>,
-    ApiJson(body): ApiJson<CreateRefundBody>,
-) -> Result<ApiResponse<RefundData>, ApiError> {
-    let idempotency = body_request(
-        &headers,
-        "create_refund",
-        &(path.store_id, path.payment_attempt_id, &body),
-    )?;
-    let refund = state
-        .payment_service
-        .create_refund(CreateRefundInput {
-            actor: AdminActor::Store(actor),
-            store_id: StoreId::from_uuid(path.store_id),
-            payment_attempt_id: PaymentAttemptId::from_uuid(path.payment_attempt_id),
-            amount_minor: body.amount_minor,
-            idempotency,
-        })
-        .await?;
-    Ok(ApiResponse::created(refund_data(refund)?))
 }
 
 async fn receive_webhook(
@@ -473,8 +222,8 @@ fn body_request<T: Serialize>(
     })
 }
 
-fn attempt_data(value: PaymentAttemptDetail) -> Result<PaymentAttemptData, ApplicationError> {
-    Ok(PaymentAttemptData {
+fn attempt_data(value: PaymentAttemptDetail) -> PaymentAttemptData {
+    PaymentAttemptData {
         id: value.id.as_uuid(),
         order_id: value.order_id.as_uuid(),
         provider: value.provider,
@@ -485,38 +234,15 @@ fn attempt_data(value: PaymentAttemptDetail) -> Result<PaymentAttemptData, Appli
         failure_code: value.failure_code,
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
-    })
-}
-
-fn refund_data(value: RefundDetail) -> Result<RefundData, ApplicationError> {
-    Ok(RefundData {
-        id: value.id.as_uuid(),
-        payment_attempt_id: value.payment_attempt_id.as_uuid(),
-        amount_minor: value.amount_minor,
-        currency: value.currency.as_str().into(),
-        status: value.status.as_str(),
-        provider_reference: value.provider_reference,
-        failure_code: value.failure_code,
-        created_at: value.created_at.into(),
-        updated_at: value.updated_at.into(),
-    })
-}
-
-fn provider_account_data(value: PaymentProviderAccountDetail) -> PaymentProviderAccountData {
-    PaymentProviderAccountData {
-        id: value.account.id().as_uuid(),
-        provider: value.account.provider().into(),
-        display_name: value.account.display_name().into(),
-        external_account_reference: value.account.external_account_reference().into(),
-        enabled: value.account.enabled(),
-        credentials_configured: value.credentials_configured,
-        readiness_status: value.readiness_status.as_str(),
-        readiness_checked_at: value.readiness_checked_at.map(Into::into),
-        readiness_valid_until: value.readiness_valid_until.map(Into::into),
-        readiness_blocker_codes: value.readiness_blocker_codes,
-        credential_rotation_expires_at: value.credential_rotation_expires_at.map(Into::into),
-        webhook_rotation_expires_at: value.webhook_rotation_expires_at.map(Into::into),
-        created_at: value.created_at.into(),
-        updated_at: value.updated_at.into(),
     }
+}
+
+fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field,
+            reason: reason.into(),
+        }],
+    }
+    .into()
 }

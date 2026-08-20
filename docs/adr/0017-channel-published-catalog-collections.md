@@ -13,7 +13,7 @@ Catalog owns manual Collections. A Collection belongs to exactly one Store and h
 
 Collection publication is an explicit relation to a Sales Channel. Only an active Collection can be published to an active Channel in the same Store. Storefront Collection reads require the Store, Channel, Collection, and Collection publication to be active. A Product in that Collection is visible and counted only when that Product is independently active and published to the same Channel. Product listing with a Collection handle preserves the manual membership position across cursor pages.
 
-Owner, administrator, developer, and manager memberships may mutate Collections. Mutations are idempotent and append typed immutable audit events for creation, content updates, lifecycle transitions, membership replacement, publication, and unpublication. Runtime privileges prohibit deleting Collection roots or changing audit events; RLS protects all Collection tables.
+Owner and Member Store memberships may mutate Collections under the current coarse role policy. Mutations are idempotent and append typed immutable audit events for creation, content updates, lifecycle transitions, membership replacement, publication, and unpublication. Runtime privileges prohibit deleting Collection roots or changing audit events; RLS protects all Collection tables.
 
 ## Consequences
 
@@ -35,4 +35,4 @@ That would let merchandising accidentally expose draft or channel-unpublished Pr
 
 ### Order Collection results by Product ID
 
-UUID ordering is stable but does not represent merchant intent. Cursor traversal resolves the anchor membership position and continues in manual order.
+UUID ordering is stable but does not represent Store operator intent. Cursor traversal resolves the anchor membership position and continues in manual order.

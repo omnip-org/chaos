@@ -6,7 +6,7 @@ use chaos_domain::{
         CollectionId, LocalizedAltText, LocalizedContent, LocalizedTitle, MediaAssetId, ProductId,
         ProductVariantId,
     },
-    merchant::{ApiKeyScope, StoreId, StoreRole},
+    merchant::{StoreId, StoreRole},
 };
 use time::OffsetDateTime;
 
@@ -338,29 +338,14 @@ fn require_locale_administrator(actor: &AdminActor) -> Result<(), ApplicationErr
                 Err(ApplicationError::Forbidden)
             }
         }
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::StoreAdminWrite) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 
 fn require_translation_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&ApiKeyScope::ProductsWrite)
-                || machine.scopes.contains(&ApiKeyScope::CollectionsWrite)
-                || machine.scopes.contains(&ApiKeyScope::MediaWrite)
-            {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

@@ -52,7 +52,7 @@ impl ApiKeyManagement {
         &self,
         input: CreateApiKeyInput,
     ) -> Result<CreateApiKeyOutput, ApplicationError> {
-        authorize_api_key_management(&input.actor, ApiKeyScope::ApiKeysWrite)?;
+        authorize_api_key_management(&input.actor)?;
         let class = parse_class(&input.class)?;
         let scopes = input
             .scopes
@@ -87,7 +87,7 @@ impl ApiKeyManagement {
         after: Option<ApiKeyId>,
         limit: u16,
     ) -> Result<Page<ApiKeyListItem>, ApplicationError> {
-        authorize_api_key_management(&actor, ApiKeyScope::ApiKeysRead)?;
+        authorize_api_key_management(&actor)?;
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
@@ -107,7 +107,7 @@ impl ApiKeyManagement {
         api_key_id: ApiKeyId,
         idempotency: IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
-        authorize_api_key_management(&actor, ApiKeyScope::ApiKeysWrite)?;
+        authorize_api_key_management(&actor)?;
         self.repository
             .revoke(actor, store_id, api_key_id, &idempotency)
             .await
@@ -143,27 +143,18 @@ impl ApiKeyAuthentication {
     }
 }
 
-fn authorize_api_key_management(
-    actor: &AdminActor,
-    required_scope: ApiKeyScope,
-) -> Result<(), ApplicationError> {
+fn authorize_api_key_management(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(store_actor) => match store_actor.role() {
             StoreRole::Owner => Ok(()),
             StoreRole::Member => Err(ApplicationError::Forbidden),
         },
-        AdminActor::Machine(machine) => {
-            if machine.scopes.contains(&required_scope) {
-                Ok(())
-            } else {
-                Err(ApplicationError::Forbidden)
-            }
-        }
+        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 
 fn parse_class(value: &str) -> Result<ApiKeyClass, ApplicationError> {
-    ApiKeyClass::parse(value).ok_or_else(|| invalid_enum("class", "must be publishable or secret"))
+    ApiKeyClass::parse(value).ok_or_else(|| invalid_enum("class", "must be publishable"))
 }
 
 fn parse_scope(value: &str) -> Result<ApiKeyScope, ApplicationError> {
@@ -192,43 +183,9 @@ mod tests {
 
     #[test]
     fn only_credential_administrators_can_manage_api_keys() {
-        assert!(
-            authorize_api_key_management(&actor(StoreRole::Owner), ApiKeyScope::ApiKeysWrite)
-                .is_ok()
-        );
+        assert!(authorize_api_key_management(&actor(StoreRole::Owner)).is_ok());
         assert!(matches!(
-            authorize_api_key_management(&actor(StoreRole::Member), ApiKeyScope::ApiKeysWrite),
-            Err(ApplicationError::Forbidden)
-        ));
-    }
-
-    #[test]
-    fn machine_actor_needs_the_required_scope() {
-        use chaos_domain::merchant::{ApiKeyClass, ApiKeyId};
-
-        let machine = |scopes: Vec<ApiKeyScope>| {
-            AdminActor::Machine(MachineActor {
-                api_key_id: ApiKeyId::new(),
-                store_id: StoreId::new(),
-                sales_channel_id: None,
-                class: ApiKeyClass::Secret,
-                scopes,
-                created_by_user_id: UserId::new(),
-            })
-        };
-
-        assert!(
-            authorize_api_key_management(
-                &machine(vec![ApiKeyScope::ApiKeysWrite]),
-                ApiKeyScope::ApiKeysWrite
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            authorize_api_key_management(
-                &machine(vec![ApiKeyScope::ApiKeysRead]),
-                ApiKeyScope::ApiKeysWrite
-            ),
+            authorize_api_key_management(&actor(StoreRole::Member)),
             Err(ApplicationError::Forbidden)
         ));
     }
