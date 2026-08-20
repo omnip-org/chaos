@@ -42,4 +42,4 @@ The authenticated operation chain is `Access Key -> User -> Store Membership -> 
 
 ## Publishable Key
 
-A Store-scoped credential for storefront or Sales Channel clients. It carries only explicitly allowed public capabilities and may select a Sales Channel. It cannot authenticate MCP or invoke Store administration.
+A Store-scoped credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate MCP or invoke Store administration.

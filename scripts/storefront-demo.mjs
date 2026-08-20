@@ -198,7 +198,6 @@ async function setup() {
   }
   const publishable = await mcp("create_publishable_key", {
     name: "Demo storefront",
-    scopes: ["catalog:read", "carts:write", "checkout:write", "orders:read", "analytics:write", "reviews:write"],
     confirm: true,
     idempotency_key: `${runId}-publishable-key`,
   });

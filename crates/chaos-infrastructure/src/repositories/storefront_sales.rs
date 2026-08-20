@@ -3540,7 +3540,7 @@ mod tests {
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
         inventory::InventoryLocationId,
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
     use time::Duration;
@@ -3817,11 +3817,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            scopes: vec![
-                PublishableKeyScope::CartsWrite,
-                PublishableKeyScope::CheckoutWrite,
-                PublishableKeyScope::OrdersRead,
-            ],
             created_by_user_id: user_id,
         };
         let actor = ShopperActor {

@@ -80,7 +80,7 @@ Credential resolution is intentionally asymmetric:
 
 - a User JWT yields `user_id`, followed by a Store membership check;
 - a User Access Key yields `access_key_id` and `user_id`, followed by a fresh Store membership check;
-- a Publishable Store Key yields `store_id`, optional `sales_channel_id`, and storefront capability scopes;
+- a Publishable Store Key yields `store_id` and a resolved `sales_channel_id`;
 - a webhook yields `store_id` only after signature verification and Provider mapping;
 - a Worker carries `store_id` in its durable job and establishes a fresh transaction context.
 

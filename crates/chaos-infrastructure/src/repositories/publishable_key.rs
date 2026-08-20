@@ -10,7 +10,7 @@ use chaos_application::{
 };
 use chaos_domain::{
     identity::UserId,
-    store::{PublishableKey, PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+    store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -103,19 +103,6 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         .await
         .map_err(database_error)?;
 
-        for key_scope in publishable_key.scopes() {
-            sqlx::query(
-                "INSERT INTO commerce.publishable_key_scopes \
-                 (publishable_key_id, scope) \
-                 VALUES ($1, $2::commerce.publishable_key_scope)",
-            )
-            .bind(publishable_key.id().as_uuid())
-            .bind(key_scope.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        }
-
         idempotency::complete(
             &mut transaction,
             &scope,
@@ -146,18 +133,11 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
                 String,
                 String,
                 String,
-                Vec<String>,
                 OffsetDateTime,
                 Option<OffsetDateTime>,
             ),
         >(
             "SELECT key.id, key.name, key.key_identifier, key.display_suffix::text, \
-                    ARRAY( \
-                        SELECT scope.scope::text \
-                        FROM commerce.publishable_key_scopes AS scope \
-                        WHERE scope.publishable_key_id = key.id \
-                        ORDER BY scope.scope::text \
-                    ), \
                     key.created_at, key.revoked_at \
              FROM commerce.publishable_keys AS key \
              WHERE key.store_id = $1 \
@@ -175,19 +155,12 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
 
         rows.into_iter()
             .map(
-                |(id, name, key_identifier, display_suffix, scopes, created_at, revoked_at)| {
+                |(id, name, key_identifier, display_suffix, created_at, revoked_at)| {
                     Ok(PublishableKeyListItem {
                         id: PublishableKeyId::from_uuid(id),
                         name,
                         key_identifier,
                         display_suffix,
-                        scopes: scopes
-                            .into_iter()
-                            .map(|scope| {
-                                PublishableKeyScope::parse(&scope)
-                                    .ok_or_else(|| corrupt_enum("Publishable Key scope", &scope))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
                         created_at,
                         revoked_at,
                     })
@@ -260,9 +233,9 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
             return Ok(None);
         };
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, Vec<String>, Uuid)>(
+        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, Uuid)>(
             "SELECT publishable_key_id, store_id, sales_channel_id, \
-                    scopes, created_by_user_id \
+                    created_by_user_id \
              FROM commerce.authenticate_publishable_key($1, $2)",
         )
         .bind(key_identifier)
@@ -272,18 +245,11 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         .map_err(database_error)?;
 
         row.map(
-            |(publishable_key_id, store_id, sales_channel_id, scopes, created_by_user_id)| {
+            |(publishable_key_id, store_id, sales_channel_id, created_by_user_id)| {
                 Ok(MachineActor {
                     publishable_key_id: PublishableKeyId::from_uuid(publishable_key_id),
                     store_id: StoreId::from_uuid(store_id),
                     sales_channel_id: sales_channel_id.map(SalesChannelId::from_uuid),
-                    scopes: scopes
-                        .into_iter()
-                        .map(|scope| {
-                            PublishableKeyScope::parse(&scope)
-                                .ok_or_else(|| corrupt_enum("Publishable Key scope", &scope))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
                     created_by_user_id: UserId::from_uuid(created_by_user_id),
                 })
             },
@@ -360,10 +326,6 @@ fn is_base64url_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
-fn corrupt_enum(name: &str, value: &str) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("database contains unknown {name}: {value}"))
-}
-
 fn database_error(error: sqlx::Error) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
 }
@@ -376,7 +338,7 @@ mod tests {
         CreatePublishableKeyInput, PublishableKeyAuthentication, PublishableKeyManagement,
         StoreQueries,
     };
-    use chaos_domain::{identity::UserId, store::PublishableKeyScope};
+    use chaos_domain::identity::UserId;
     use sqlx::postgres::PgPoolOptions;
 
     use crate::repositories::PostgresStoreReadRepository;
@@ -469,7 +431,6 @@ mod tests {
             actor: actor.clone(),
             store_id,
             name: "Storefront production".into(),
-            scopes: vec!["catalog:read".into(), "orders:read".into()],
             idempotency: IdempotencyRequest {
                 key: format!("create-{unique_suffix}"),
                 request_fingerprint: [41; 32],
@@ -496,29 +457,8 @@ mod tests {
         assert_eq!(page.items[0].id, publishable_key_id);
         assert_eq!(page.items[0].revoked_at, None);
 
-        let machine_actor = authentication
-            .authenticate(
-                &plaintext,
-                &[
-                    PublishableKeyScope::CatalogRead,
-                    PublishableKeyScope::OrdersRead,
-                ],
-            )
-            .await
-            .unwrap();
+        let machine_actor = authentication.authenticate(&plaintext).await.unwrap();
         assert_eq!(machine_actor.store_id, store_id);
-        assert!(
-            authentication
-                .authenticate(
-                    &plaintext,
-                    &[
-                        PublishableKeyScope::CatalogRead,
-                        PublishableKeyScope::CartsWrite
-                    ],
-                )
-                .await
-                .is_err()
-        );
 
         let replay = management.create(creation_input()).await;
         assert!(matches!(
@@ -552,9 +492,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            authentication
-                .authenticate(&plaintext, &[PublishableKeyScope::CatalogRead])
-                .await,
+            authentication.authenticate(&plaintext).await,
             Err(ApplicationError::Unauthorized)
         ));
         let page = management.list(actor, store_id, None, 20).await.unwrap();

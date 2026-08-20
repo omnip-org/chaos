@@ -1,5 +1,8 @@
 -- === Reliable delivery foundation ===
 
+-- Objects within every capability are ordered as types, tables, indexes,
+-- routines, row-level security, policies, and privileges.
+
 CREATE SCHEMA integration;
 
 COMMENT ON SCHEMA integration IS

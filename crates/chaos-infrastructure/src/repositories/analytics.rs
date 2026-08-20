@@ -1022,7 +1022,7 @@ mod tests {
     use chaos_domain::{
         analytics::{BrowserEvent, BrowserEventProperties, ConsentSnapshot},
         identity::{AccessKeyId, UserId},
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -1080,7 +1080,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::from_uuid(Uuid::now_v7()),
             store_id,
             sales_channel_id: Some(channel_id),
-            scopes: vec![PublishableKeyScope::AnalyticsWrite],
             created_by_user_id: user_id,
         };
         let consented = BrowserEvent::new(

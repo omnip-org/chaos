@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use chaos_domain::{
-    sales::{CustomerAddress, CustomerAddressId},
-    store::PublishableKeyScope,
-};
+use chaos_domain::sales::{CustomerAddress, CustomerAddressId};
 
 use crate::{
     ApplicationError,
@@ -13,7 +10,7 @@ use crate::{
     },
 };
 
-use super::{PostalAddressInput, postal_address, require_storefront_scope};
+use super::{PostalAddressInput, postal_address, require_storefront_actor};
 
 pub struct AssociateCustomerInput {
     pub shopper: ShopperActor,
@@ -53,7 +50,7 @@ impl CustomerService {
         &self,
         input: AssociateCustomerInput,
     ) -> Result<CustomerDetail, ApplicationError> {
-        require_storefront_scope(&input.shopper.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.shopper.machine)?;
         self.repository
             .associate(&input.shopper, input.user_id, &input.idempotency)
             .await
@@ -63,7 +60,7 @@ impl CustomerService {
         &self,
         actor: &CustomerActor,
     ) -> Result<Option<CustomerDetail>, ApplicationError> {
-        require_storefront_scope(&actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&actor.machine)?;
         self.repository.get(actor).await
     }
 
@@ -71,7 +68,7 @@ impl CustomerService {
         &self,
         input: UpdateCustomerInput,
     ) -> Result<CustomerDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         self.repository
             .update_phone(&input.actor, input.phone.as_deref(), &input.idempotency)
             .await
@@ -81,7 +78,7 @@ impl CustomerService {
         &self,
         input: CreateCustomerAddressInput,
     ) -> Result<CustomerAddressDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         let address = CustomerAddress::create(input.label, postal_address(input.address)?)?;
         self.repository
             .create_address(&input.actor, &address, &input.idempotency)
@@ -92,7 +89,7 @@ impl CustomerService {
         &self,
         input: DeleteCustomerAddressInput,
     ) -> Result<chaos_domain::sales::CustomerId, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         self.repository
             .delete_address(&input.actor, input.address_id, &input.idempotency)
             .await
@@ -104,7 +101,7 @@ impl CustomerService {
         after: Option<uuid::Uuid>,
         limit: u16,
     ) -> Result<CustomerOrderPage, ApplicationError> {
-        require_storefront_scope(&actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&actor.machine)?;
         self.repository.list_orders(actor, after, limit).await
     }
 }

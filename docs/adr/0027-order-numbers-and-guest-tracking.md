@@ -27,9 +27,9 @@ cleared after successful delivery. Failed jobs retain it only while retries
 remain possible.
 
 The public Order read endpoint again requires the possession-bound Shopper
-credential. A Publishable key with `orders:read` authorizes only tracking-key
-exchange and tracking-session reads; it is not itself sufficient to read an
-Order UUID.
+credential. An active Publishable Key authorizes the Store API entry point;
+possession of the tracking capability or session is still required to read a
+guest Order.
 
 Carrier tracking URLs remain data shown inside the stable Chaos tracking page.
 Emails link to Chaos rather than making a carrier URL the primary customer

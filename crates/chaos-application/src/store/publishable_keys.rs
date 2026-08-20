@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use chaos_domain::{
-    FieldViolation,
-    store::{PublishableKey, PublishableKeyId, PublishableKeyScope, StoreId, StoreRole},
-};
+use chaos_domain::store::{PublishableKey, PublishableKeyId, StoreId, StoreRole};
 use secrecy::SecretString;
 
 use crate::{
@@ -20,7 +17,6 @@ pub struct CreatePublishableKeyInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub name: String,
-    pub scopes: Vec<String>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -52,12 +48,7 @@ impl PublishableKeyManagement {
         input: CreatePublishableKeyInput,
     ) -> Result<CreatePublishableKeyOutput, ApplicationError> {
         authorize_publishable_key_management(&input.actor)?;
-        let scopes = input
-            .scopes
-            .iter()
-            .map(|scope| parse_scope(scope))
-            .collect::<Result<Vec<_>, _>>()?;
-        let publishable_key = PublishableKey::issue(input.store_id, input.name, scopes)?;
+        let publishable_key = PublishableKey::issue(input.store_id, input.name)?;
         let material = self.generator.generate();
         let status = self
             .repository
@@ -124,19 +115,12 @@ impl PublishableKeyAuthentication {
     pub async fn authenticate(
         &self,
         presented_key: &SecretString,
-        required_scopes: &[PublishableKeyScope],
     ) -> Result<MachineActor, ApplicationError> {
         let actor = self
             .repository
             .authenticate(presented_key)
             .await?
             .ok_or(ApplicationError::Unauthorized)?;
-        if required_scopes
-            .iter()
-            .any(|required_scope| !actor.scopes.contains(required_scope))
-        {
-            return Err(ApplicationError::Forbidden);
-        }
         Ok(actor)
     }
 }
@@ -148,20 +132,6 @@ fn authorize_publishable_key_management(actor: &AdminActor) -> Result<(), Applic
             StoreRole::Member => Err(ApplicationError::Forbidden),
         },
         AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
-    }
-}
-
-fn parse_scope(value: &str) -> Result<PublishableKeyScope, ApplicationError> {
-    PublishableKeyScope::parse(value)
-        .ok_or_else(|| invalid_enum("scopes", "contains an unknown scope"))
-}
-
-fn invalid_enum(field: &'static str, reason: &'static str) -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![FieldViolation {
-            field,
-            reason: reason.into(),
-        }],
     }
 }
 

@@ -12,7 +12,7 @@
         "operationId": "listStorefrontProducts",
         "tags": ["Catalog"],
         "summary": "List active and published Products with active prices",
-        "security": [{ "publishableKey": ["catalog:read"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/Currency" },
           { "name": "q", "in": "query", "description": "Store-isolated full-text search", "schema": { "type": "string", "minLength": 1, "maxLength": 200 } },
@@ -43,7 +43,7 @@
         "operationId": "getStorefrontProduct",
         "tags": ["Catalog"],
         "summary": "Get one active and published Product by handle",
-        "security": [{ "publishableKey": ["catalog:read"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           {
             "name": "handle",
@@ -75,7 +75,7 @@
         "operationId": "listStorefrontCollections",
         "tags": ["Catalog"],
         "summary": "List active Collections published to the current Sales Channel",
-        "security": [{ "publishableKey": ["catalog:read"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Locale" }],
         "responses": {
           "200": { "description": "Storefront Collection page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionCollectionEnvelope" } } } },
@@ -90,7 +90,7 @@
         "operationId": "getStorefrontCollection",
         "tags": ["Catalog"],
         "summary": "Get an active Collection published to the current Sales Channel",
-        "security": [{ "publishableKey": ["catalog:read"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [{ "name": "handle", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } }, { "$ref": "#/components/parameters/Locale" }],
         "responses": {
           "200": { "description": "Storefront Collection", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionEnvelope" } } } },
@@ -107,7 +107,7 @@
         "tags": ["Analytics"],
         "summary": "Collect a bounded batch of consent-aware first-party behavior events",
         "description": "Browser events are untrusted observations and cannot declare commercial amounts, Order state, Payment state, or other authoritative outcomes.",
-        "security": [{ "publishableKey": ["analytics:write"] }],
+        "security": [{ "publishableKey": [] }],
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectAnalyticsEvents" } } }
@@ -127,7 +127,7 @@
         "tags": ["Analytics"],
         "summary": "Link a Storefront Visitor to the authenticated Customer",
         "description": "Requires current analytics-storage consent and an effective Store Analytics Policy that enables identity linking. Customer identity is never returned.",
-        "security": [{ "publishableKey": ["analytics:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CustomerSession" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
@@ -149,7 +149,7 @@
         "operationId": "createShopperSession",
         "tags": ["Carts"],
         "summary": "Create an anonymous possession-bound shopper session",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "responses": {
           "201": { "description": "Shopper session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShopperSessionEnvelope" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
@@ -162,7 +162,7 @@
         "operationId": "createCart",
         "tags": ["Carts"],
         "summary": "Create an active Cart using the current Price List",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/IdempotencyKey" }
@@ -186,7 +186,7 @@
         "operationId": "getCart",
         "tags": ["Carts"],
         "summary": "Get a Cart",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -204,7 +204,7 @@
         "operationId": "setCartLine",
         "tags": ["Carts"],
         "summary": "Add a Cart line or replace its quantity and current snapshot",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ProductVariantId" },
@@ -226,7 +226,7 @@
         "operationId": "removeCartLine",
         "tags": ["Carts"],
         "summary": "Remove a Cart line",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ProductVariantId" },
@@ -249,7 +249,7 @@
         "operationId": "quoteShippingOptions",
         "tags": ["Checkout"],
         "summary": "Quote active Shipping Services for a Cart destination",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -270,7 +270,7 @@
         "operationId": "createCheckout",
         "tags": ["Checkout"],
         "summary": "Freeze Cart prices and reserve tracked inventory atomically",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CartId" },
           { "$ref": "#/components/parameters/ShopperToken" },
@@ -300,7 +300,7 @@
         "operationId": "getCheckout",
         "tags": ["Checkout"],
         "summary": "Get an immutable Checkout snapshot",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CheckoutId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -318,7 +318,7 @@
         "operationId": "createOrder",
         "tags": ["Orders"],
         "summary": "Create an Order from an immutable Checkout snapshot",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CheckoutId" },
           { "$ref": "#/components/parameters/ShopperToken" },
@@ -340,7 +340,7 @@
         "operationId": "getOrder",
         "tags": ["Orders"],
         "summary": "Get an Order and its transition audit trail",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/OrderId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -358,7 +358,7 @@
         "operationId": "exchangeOrderTrackingKey",
         "tags": ["Orders"],
         "summary": "Exchange an emailed Order tracking key for a short-lived session",
-        "security": [{ "publishableKey": ["orders:read"] }],
+        "security": [{ "publishableKey": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExchangeOrderTrackingKey" } } } },
         "responses": {
           "201": { "description": "Tracking session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingSessionEnvelope" } } } },
@@ -372,7 +372,7 @@
         "operationId": "getTrackedOrder",
         "tags": ["Orders"],
         "summary": "Read one Order with a short-lived tracking session",
-        "security": [{ "publishableKey": ["orders:read"] }],
+        "security": [{ "publishableKey": [] }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingAccess" } } } },
         "responses": {
           "200": { "description": "Order", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
@@ -386,7 +386,7 @@
         "operationId": "associateCustomer",
         "tags": ["Customers"],
         "summary": "Associate the possession-bound shopper with the authenticated Store Customer",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/ShopperToken" },
           { "$ref": "#/components/parameters/CustomerSession" },
@@ -406,7 +406,7 @@
         "operationId": "getCustomer",
         "tags": ["Customers"],
         "summary": "Get the authenticated Store Customer and saved addresses",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }],
         "responses": {
           "200": { "description": "Customer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
@@ -419,7 +419,7 @@
         "operationId": "updateCustomer",
         "tags": ["Customers"],
         "summary": "Update the authenticated Store Customer phone",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateCustomer" } } } },
         "responses": {
@@ -436,7 +436,7 @@
         "operationId": "createCustomerAddress",
         "tags": ["Customers"],
         "summary": "Create a saved address for the authenticated Store Customer",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCustomerAddress" } } } },
         "responses": {
@@ -454,7 +454,7 @@
         "operationId": "deleteCustomerAddress",
         "tags": ["Customers"],
         "summary": "Delete a saved address without changing Checkout or Order snapshots",
-        "security": [{ "publishableKey": ["carts:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "name": "address_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
           { "$ref": "#/components/parameters/CustomerSession" },
@@ -473,7 +473,7 @@
         "operationId": "listCustomerOrders",
         "tags": ["Customers", "Orders"],
         "summary": "List Order history for the authenticated Store Customer",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/CustomerSession" },
           { "$ref": "#/components/parameters/Cursor" },
@@ -493,7 +493,7 @@
         "operationId": "createPaymentAttempt",
         "tags": ["Payments"],
         "summary": "Create a Payment Attempt and enqueue a provider command atomically",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/OrderId" },
           { "$ref": "#/components/parameters/ShopperToken" },
@@ -516,7 +516,7 @@
         "operationId": "getPaymentAttempt",
         "tags": ["Payments"],
         "summary": "Get a Payment Attempt visible to this Store and Sales Channel",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/PaymentAttemptId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -535,7 +535,7 @@
         "tags": ["Payments"],
         "summary": "Retrieve the short-lived client action for a pending Payment Attempt",
         "description": "Returns provider-neutral client handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
-        "security": [{ "publishableKey": ["checkout:write"] }],
+        "security": [{ "publishableKey": [] }],
         "parameters": [
           { "$ref": "#/components/parameters/PaymentAttemptId" },
           { "$ref": "#/components/parameters/ShopperToken" }
@@ -556,7 +556,7 @@
       "publishableKey": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A Store-scoped publishable key with the scope declared by the operation."
+        "description": "An active Store-scoped Publishable Key."
       }
     },
     "parameters": {

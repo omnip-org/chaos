@@ -69,6 +69,10 @@ The bootstrap uses one file per business schema: `0002_identity.sql`,
 `0003_commerce.sql`, and `0004_integration.sql`. Large schema files use
 `-- === Capability ===` section markers so humans and tools can jump directly
 to a capability without inferring schema ownership from multiple files.
+Within each capability, define objects in dependency order: types, tables,
+indexes, routines, triggers, row-level security, policies, and grants. Keep a
+routine beside the tables it operates on instead of grouping every routine at
+the end of a large schema file.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.
 

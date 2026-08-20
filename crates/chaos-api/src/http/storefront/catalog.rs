@@ -299,14 +299,6 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO commerce.publishable_key_scopes (publishable_key_id, scope) \
-             VALUES ($1, 'catalog:read')",
-        )
-        .bind(key_id.as_uuid())
-        .execute(pool)
-        .await
-        .unwrap();
         material
     }
 

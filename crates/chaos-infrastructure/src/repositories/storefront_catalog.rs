@@ -669,7 +669,7 @@ mod tests {
     use chaos_application::ports::{MachineActor, StorefrontCatalogRepository};
     use chaos_domain::{
         identity::UserId,
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -862,7 +862,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            scopes: vec![PublishableKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         };
         let indexer = crate::repositories::PostgresSearchIndexer::new(runtime_pool.clone());

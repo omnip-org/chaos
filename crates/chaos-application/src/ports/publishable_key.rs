@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chaos_domain::{
     identity::UserId,
-    store::{PublishableKey, PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+    store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
 };
 use secrecy::SecretString;
 use time::OffsetDateTime;
@@ -32,7 +32,6 @@ pub struct PublishableKeyListItem {
     pub name: String,
     pub key_identifier: String,
     pub display_suffix: String,
-    pub scopes: Vec<PublishableKeyScope>,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
 }
@@ -42,7 +41,6 @@ pub struct MachineActor {
     pub publishable_key_id: PublishableKeyId,
     pub store_id: StoreId,
     pub sales_channel_id: Option<SalesChannelId>,
-    pub scopes: Vec<PublishableKeyScope>,
     /// The human member who created this key. Used as the audit actor for
     /// mutations that require a real `identity.users` row (e.g. Collection
     /// events) when this key drives the mutation instead of a person.

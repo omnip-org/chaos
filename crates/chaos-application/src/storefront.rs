@@ -122,7 +122,7 @@ mod tests {
     use async_trait::async_trait;
     use chaos_domain::{
         identity::UserId,
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, SalesChannelId, StoreId},
     };
 
     use super::*;
@@ -160,7 +160,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            scopes: vec![PublishableKeyScope::CatalogRead],
             created_by_user_id: UserId::new(),
         }
     }

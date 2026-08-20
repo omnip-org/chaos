@@ -1,5 +1,8 @@
 -- === Store foundation ===
 
+-- Objects within every capability are ordered as types, tables, indexes,
+-- routines, triggers, row-level security, policies, and privileges.
+
 CREATE SCHEMA commerce;
 
 COMMENT ON SCHEMA commerce IS
@@ -20,15 +23,6 @@ CREATE TYPE commerce.sales_channel_kind AS ENUM (
 CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
 
 CREATE TYPE commerce.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
-
-CREATE TYPE commerce.publishable_key_scope AS ENUM (
-    'analytics:write',
-    'catalog:read',
-    'carts:write',
-    'checkout:write',
-    'orders:read',
-    'reviews:write'
-);
 
 CREATE TABLE commerce.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -190,25 +184,6 @@ CREATE TABLE commerce.publishable_keys (
     )
 );
 
-CREATE TABLE commerce.publishable_key_scopes (
-    publishable_key_id           UUID                      NOT NULL,
-    scope                commerce.publishable_key_scope    NOT NULL,
-
-    PRIMARY KEY (publishable_key_id, scope),
-    FOREIGN KEY (publishable_key_id)
-        REFERENCES commerce.publishable_keys(id) ON DELETE CASCADE,
-    CONSTRAINT publishable_key_scopes_publishable_scope_check CHECK (
-        scope IN (
-            'analytics:write',
-            'catalog:read',
-            'carts:write',
-            'checkout:write',
-            'orders:read',
-            'reviews:write'
-        )
-    )
-);
-
 CREATE INDEX store_memberships_user_idx
     ON commerce.store_memberships (user_id, store_id);
 
@@ -251,10 +226,9 @@ CREATE FUNCTION commerce.authenticate_publishable_key(
     presented_secret_digest  BYTEA
 )
 RETURNS TABLE (
-    publishable_key_id           UUID,
+    publishable_key_id   UUID,
     store_id             UUID,
     sales_channel_id     UUID,
-    scopes               TEXT[],
     created_by_user_id   UUID
 )
 LANGUAGE SQL
@@ -265,18 +239,13 @@ AS $$
     SELECT publishable_key.id,
            publishable_key.store_id,
            sales_channel.id,
-           ARRAY(
-               SELECT publishable_key_scope.scope::TEXT
-               FROM commerce.publishable_key_scopes AS publishable_key_scope
-               WHERE publishable_key_scope.publishable_key_id = publishable_key.id
-               ORDER BY publishable_key_scope.scope::TEXT
-           ),
            publishable_key.created_by_user_id
     FROM commerce.publishable_keys AS publishable_key
     INNER JOIN commerce.stores AS store
         ON store.id = publishable_key.store_id
     LEFT JOIN commerce.sales_channels AS sales_channel
         ON sales_channel.store_id = publishable_key.store_id
+       AND sales_channel.status = 'active'
        AND sales_channel.id = COALESCE(
            publishable_key.sales_channel_id,
            (
@@ -311,8 +280,6 @@ ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.sales_channels ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.publishable_keys ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.publishable_key_scopes ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.stores
     USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -394,26 +361,6 @@ CREATE POLICY store_isolation ON commerce.publishable_keys
     WITH CHECK (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.publishable_key_scopes
-    USING (
-        EXISTS (
-            SELECT 1
-            FROM commerce.publishable_keys AS publishable_key
-            WHERE publishable_key.id = publishable_key_scopes.publishable_key_id
-              AND publishable_key.store_id =
-                    nullif(current_setting('app.store_id', true), '')::uuid
-        )
-    )
-    WITH CHECK (
-        EXISTS (
-            SELECT 1
-            FROM commerce.publishable_keys AS publishable_key
-            WHERE publishable_key.id = publishable_key_scopes.publishable_key_id
-              AND publishable_key.store_id =
-                    nullif(current_setting('app.store_id', true), '')::uuid
-        )
     );
 
 REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT, BYTEA) FROM PUBLIC;
@@ -2547,9 +2494,6 @@ CREATE TABLE commerce.order_tracking_sessions (
     CONSTRAINT order_tracking_sessions_expiry_check CHECK (expires_at > created_at)
 );
 
-CREATE INDEX order_tracking_sessions_expiry_idx
-    ON commerce.order_tracking_sessions (expires_at, id);
-
 CREATE TABLE commerce.order_addresses (
     store_id             UUID               NOT NULL,
     order_id             UUID               NOT NULL,
@@ -3471,6 +3415,9 @@ CREATE INDEX orders_channel_created_idx
 CREATE INDEX orders_customer_created_idx
     ON commerce.orders (store_id, customer_id, created_at DESC, id DESC
     ) WHERE customer_id IS NOT NULL;
+
+CREATE INDEX order_tracking_sessions_expiry_idx
+    ON commerce.order_tracking_sessions (expires_at, id);
 
 CREATE INDEX order_transitions_order_time_idx
     ON commerce.order_transitions (store_id,

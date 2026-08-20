@@ -5,7 +5,7 @@ use chaos_domain::{
         PaymentAttemptId, PaymentProviderAccount, PaymentProviderAccountId, PaymentSecretReference,
     },
     sales::OrderId,
-    store::{PublishableKeyScope, StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -485,9 +485,7 @@ pub fn retry_at(now: OffsetDateTime, attempts: u32) -> OffsetDateTime {
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {
-    if actor.sales_channel_id.is_some()
-        && actor.scopes.contains(&PublishableKeyScope::CheckoutWrite)
-    {
+    if actor.sales_channel_id.is_some() {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

@@ -5,7 +5,6 @@ use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{ShippingSelection, ShippingServiceId},
     sales::{CartId, CheckoutContact, CheckoutId, CheckoutIdentity, OrderId, PostalAddress},
-    store::PublishableKeyScope,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -137,7 +136,7 @@ impl StorefrontSales {
         &self,
         input: CreateCartInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         let currency = input
             .currency
             .as_deref()
@@ -154,7 +153,7 @@ impl StorefrontSales {
         actor: &ShopperActor,
         cart_id: CartId,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&actor.machine)?;
         self.repository
             .get_cart(actor, cart_id)
             .await?
@@ -165,7 +164,7 @@ impl StorefrontSales {
         &self,
         input: SetCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         if !(1..=999).contains(&input.quantity) {
             return Err(validation("quantity", "must be between 1 and 999"));
         }
@@ -184,7 +183,7 @@ impl StorefrontSales {
         &self,
         input: RemoveCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CartsWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         self.repository
             .remove_cart_line(
                 &input.actor,
@@ -199,7 +198,7 @@ impl StorefrontSales {
         &self,
         input: CreateCheckoutInput,
     ) -> Result<CheckoutDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         let identity = CheckoutIdentity::new(
             CheckoutContact::new(input.contact.email, input.contact.phone)?,
             postal_address(input.billing_address)?,
@@ -223,7 +222,7 @@ impl StorefrontSales {
         &self,
         input: QuoteShippingInput,
     ) -> Result<Vec<ShippingSelection>, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         let country = input.destination_country.trim().to_ascii_uppercase();
         if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
             return Err(validation(
@@ -241,7 +240,7 @@ impl StorefrontSales {
         actor: &ShopperActor,
         checkout_id: CheckoutId,
     ) -> Result<CheckoutDetail, ApplicationError> {
-        require_storefront_scope(&actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&actor.machine)?;
         self.repository
             .get_checkout(actor, checkout_id)
             .await?
@@ -255,7 +254,7 @@ impl StorefrontSales {
         &self,
         input: CreateOrderInput,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_scope(&input.actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&input.actor.machine)?;
         self.repository
             .create_order(
                 &input.actor,
@@ -271,7 +270,7 @@ impl StorefrontSales {
         actor: &ShopperActor,
         order_id: OrderId,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_scope(&actor.machine, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&actor.machine)?;
         self.repository
             .get_order(actor, order_id)
             .await?
@@ -287,7 +286,7 @@ impl StorefrontSales {
         tracking_key: &secrecy::SecretString,
         now: OffsetDateTime,
     ) -> Result<crate::ports::OrderTrackingSession, ApplicationError> {
-        require_storefront_scope(actor, PublishableKeyScope::OrdersRead)?;
+        require_storefront_actor(actor)?;
         self.repository
             .exchange_order_tracking_key(actor, tracking_key, now)
             .await?
@@ -300,7 +299,7 @@ impl StorefrontSales {
         access_token: &secrecy::SecretString,
         now: OffsetDateTime,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_scope(actor, PublishableKeyScope::OrdersRead)?;
+        require_storefront_actor(actor)?;
         self.repository
             .get_tracked_order(actor, access_token, now)
             .await?
@@ -322,11 +321,8 @@ fn postal_address(input: PostalAddressInput) -> Result<PostalAddress, Applicatio
     .map_err(ApplicationError::from)
 }
 
-fn require_storefront_scope(
-    actor: &MachineActor,
-    required_scope: PublishableKeyScope,
-) -> Result<(), ApplicationError> {
-    if actor.sales_channel_id.is_some() && actor.scopes.contains(&required_scope) {
+fn require_storefront_actor(actor: &MachineActor) -> Result<(), ApplicationError> {
+    if actor.sales_channel_id.is_some() {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

@@ -148,7 +148,7 @@ mod tests {
     use chaos_domain::{
         identity::UserId,
         sales::ShopperId,
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId, StoreId},
+        store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use secrecy::SecretString;
 
@@ -159,7 +159,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            scopes: vec![PublishableKeyScope::CartsWrite],
             created_by_user_id: UserId::new(),
         }
     }

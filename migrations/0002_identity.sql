@@ -3,9 +3,13 @@ CREATE SCHEMA identity;
 COMMENT ON SCHEMA identity IS
     'Users and external login identities';
 
+-- Types
+
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 
 CREATE TYPE identity.identity_provider AS ENUM ('apple', 'google');
+
+-- Tables
 
 CREATE TABLE identity.users (
     id          UUID                    NOT NULL,
@@ -75,11 +79,15 @@ CREATE TABLE identity.access_keys (
     )
 );
 
+-- Indexes
+
 CREATE INDEX external_identities_user_idx
     ON identity.external_identities (user_id, provider);
 
 CREATE INDEX access_keys_user_id_idx
     ON identity.access_keys (user_id, id);
+
+-- Privileges
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA identity TO chaos_identity;

@@ -7,7 +7,7 @@ use chaos_domain::{
         InventoryLocation, InventoryLocationCode, InventoryLocationId, InventoryReservation,
         InventoryReservationId, InventoryReservationLine, StockItemId,
     },
-    store::{PublishableKeyScope, StoreId},
+    store::StoreId,
 };
 use time::OffsetDateTime;
 
@@ -159,13 +159,7 @@ impl InventoryManagement {
         &self,
         input: ReserveInventoryInput,
     ) -> Result<InventoryReservationId, ApplicationError> {
-        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
-        if input.actor.sales_channel_id.is_none() {
-            return Err(validation(
-                "sales_channel_id",
-                "machine credential must resolve a Sales Channel",
-            ));
-        }
+        require_storefront_actor(&input.actor)?;
         let lines = input
             .lines
             .into_iter()
@@ -188,7 +182,7 @@ impl InventoryManagement {
         &self,
         input: TransitionInventoryReservationInput,
     ) -> Result<InventoryReservationDetail, ApplicationError> {
-        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&input.actor)?;
         self.repository
             .transition_reservation(
                 &input.actor,
@@ -204,7 +198,7 @@ impl InventoryManagement {
         &self,
         input: TransitionInventoryReservationInput,
     ) -> Result<InventoryReservationDetail, ApplicationError> {
-        require_machine_scope(&input.actor, PublishableKeyScope::CheckoutWrite)?;
+        require_storefront_actor(&input.actor)?;
         self.repository
             .transition_reservation(
                 &input.actor,
@@ -237,11 +231,8 @@ fn require_inventory_writer(actor: &AdminActor) -> Result<(), ApplicationError> 
     }
 }
 
-fn require_machine_scope(
-    actor: &MachineActor,
-    required: PublishableKeyScope,
-) -> Result<(), ApplicationError> {
-    if actor.scopes.contains(&required) {
+fn require_storefront_actor(actor: &MachineActor) -> Result<(), ApplicationError> {
+    if actor.sales_channel_id.is_some() {
         Ok(())
     } else {
         Err(ApplicationError::Forbidden)

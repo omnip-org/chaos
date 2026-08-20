@@ -627,7 +627,6 @@ mod tests {
             publishable_key_id: chaos_domain::store::PublishableKeyId::new(),
             store_id,
             sales_channel_id: None,
-            scopes: vec![chaos_domain::store::PublishableKeyScope::CatalogRead],
             created_by_user_id: owner_id,
         });
 

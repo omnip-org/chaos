@@ -10,11 +10,7 @@ use chaos_application::{
     ports::{CustomerActor, MachineActor, ShopperActor},
     store::StoreActor,
 };
-use chaos_domain::{
-    FieldViolation,
-    identity::UserId,
-    store::{PublishableKeyScope, StoreId},
-};
+use chaos_domain::{FieldViolation, identity::UserId, store::StoreId};
 use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -99,14 +95,14 @@ impl FromRequestParts<ApiState> for StorefrontMachine {
         let token = bearer_token(&parts.headers)?;
         let actor = state
             .publishable_key_authentication
-            .authenticate(&token, &[PublishableKeyScope::CatalogRead])
+            .authenticate(&token)
             .await?;
         Ok(Self(actor))
     }
 }
 
 macro_rules! storefront_machine_extractor {
-    ($name:ident, $scope:expr) => {
+    ($name:ident) => {
         impl FromRequestParts<ApiState> for $name {
             type Rejection = ApiError;
 
@@ -117,7 +113,7 @@ macro_rules! storefront_machine_extractor {
                 let token = bearer_token(&parts.headers)?;
                 let actor = state
                     .publishable_key_authentication
-                    .authenticate(&token, &[$scope])
+                    .authenticate(&token)
                     .await?;
                 Ok(Self(actor))
             }
@@ -125,12 +121,12 @@ macro_rules! storefront_machine_extractor {
     };
 }
 
-storefront_machine_extractor!(CartMachine, PublishableKeyScope::CartsWrite);
-storefront_machine_extractor!(AnalyticsMachine, PublishableKeyScope::AnalyticsWrite);
-storefront_machine_extractor!(OrderLookupMachine, PublishableKeyScope::OrdersRead);
+storefront_machine_extractor!(CartMachine);
+storefront_machine_extractor!(AnalyticsMachine);
+storefront_machine_extractor!(OrderLookupMachine);
 
 macro_rules! storefront_shopper_extractor {
-    ($name:ident, $scope:expr) => {
+    ($name:ident) => {
         impl FromRequestParts<ApiState> for $name {
             type Rejection = ApiError;
 
@@ -141,7 +137,7 @@ macro_rules! storefront_shopper_extractor {
                 let token = bearer_token(&parts.headers)?;
                 let machine = state
                     .publishable_key_authentication
-                    .authenticate(&token, &[$scope])
+                    .authenticate(&token)
                     .await?;
                 let credential = shopper_credential(&parts.headers)?;
                 let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
@@ -154,11 +150,11 @@ macro_rules! storefront_shopper_extractor {
     };
 }
 
-storefront_shopper_extractor!(CartShopper, PublishableKeyScope::CartsWrite);
-storefront_shopper_extractor!(CheckoutShopper, PublishableKeyScope::CheckoutWrite);
+storefront_shopper_extractor!(CartShopper);
+storefront_shopper_extractor!(CheckoutShopper);
 
 macro_rules! customer_machine_extractor {
-    ($name:ident, $scope:expr) => {
+    ($name:ident) => {
         impl FromRequestParts<ApiState> for $name {
             type Rejection = ApiError;
             async fn from_request_parts(
@@ -168,7 +164,7 @@ macro_rules! customer_machine_extractor {
                 let token = bearer_token(&parts.headers)?;
                 let machine = state
                     .publishable_key_authentication
-                    .authenticate(&token, &[$scope])
+                    .authenticate(&token)
                     .await?;
                 let session = customer_session_token(&parts.headers)?;
                 let user_id = state.identity_auth.authenticate(&session)?;
@@ -178,9 +174,9 @@ macro_rules! customer_machine_extractor {
     };
 }
 
-customer_machine_extractor!(CustomerMachine, PublishableKeyScope::CartsWrite);
-customer_machine_extractor!(CustomerCheckout, PublishableKeyScope::CheckoutWrite);
-customer_machine_extractor!(AnalyticsCustomer, PublishableKeyScope::AnalyticsWrite);
+customer_machine_extractor!(CustomerMachine);
+customer_machine_extractor!(CustomerCheckout);
+customer_machine_extractor!(AnalyticsCustomer);
 
 impl FromRequestParts<ApiState> for CustomerSession {
     type Rejection = ApiError;

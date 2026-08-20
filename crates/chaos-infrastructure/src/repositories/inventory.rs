@@ -954,7 +954,7 @@ mod tests {
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
-        store::{PublishableKeyId, PublishableKeyScope, SalesChannelId},
+        store::{PublishableKeyId, SalesChannelId},
     };
     use sqlx::postgres::PgPoolOptions;
     use time::Duration;
@@ -1139,7 +1139,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            scopes: vec![PublishableKeyScope::CheckoutWrite],
             created_by_user_id: user_id,
         };
         let now = OffsetDateTime::now_utc();

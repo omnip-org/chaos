@@ -214,14 +214,6 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.publishable_key_scopes (publishable_key_id, scope) \
-                 VALUES ($1, 'catalog:read')",
-            )
-            .bind(key_id)
-            .execute(&pool)
-            .await
-            .unwrap();
         }
         for (customer_id, address_id, shopper_id, store_id, channel_id, label) in [
             (
@@ -332,12 +324,6 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
-        let visible_scope_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.publishable_key_scopes WHERE scope = 'catalog:read'",
-        )
-        .fetch_one(transaction.connection())
-        .await
-        .unwrap();
         let visible_customer_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.customers ORDER BY id")
                 .fetch_all(transaction.connection())
@@ -367,7 +353,6 @@ mod tests {
         assert_eq!(visible_product_ids, vec![product_a]);
         assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
         assert_eq!(visible_promotion_ids, vec![promotion_a]);
-        assert_eq!(visible_scope_count, 1);
         assert_eq!(visible_customer_ids, vec![customer_a]);
         assert_eq!(visible_customer_address_ids, vec![customer_address_a]);
         assert_eq!(visible_shopper_ids, vec![shopper_a]);

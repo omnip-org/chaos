@@ -21,8 +21,6 @@ use crate::{
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreatePublishableKeyParams {
     pub name: String,
-    /// Storefront scope strings, e.g. ["catalog:read", "checkout:write"].
-    pub scopes: Vec<String>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -85,7 +83,6 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 name: params.name,
-                scopes: params.scopes,
                 idempotency,
             })
             .await
@@ -95,7 +92,6 @@ impl ChaosMcp {
                 "name": output.publishable_key.name(),
                 "key_identifier": output.key_identifier,
                 "display_suffix": output.display_suffix,
-                "scopes": output.publishable_key.scopes().iter().map(|scope| scope.as_str()).collect::<Vec<_>>(),
                 "secret": output.plaintext.expose_secret(),
             }))),
             Err(error) => Ok(tool_error(error)),
@@ -211,7 +207,6 @@ fn publishable_key_summary(
         "name": item.name,
         "key_identifier": item.key_identifier,
         "display_suffix": item.display_suffix,
-        "scopes": item.scopes.iter().map(|scope| scope.as_str()).collect::<Vec<_>>(),
         "created_at": format_time(item.created_at),
         "revoked_at": item.revoked_at.map(format_time),
     })

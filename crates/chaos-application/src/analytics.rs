@@ -6,7 +6,7 @@ use chaos_domain::{
         AnalyticsSettings, BrowserCollectionBasis, BrowserCollectionMode, BrowserEvent,
         ConsentSnapshot,
     },
-    store::{PublishableKeyScope, StoreId, StoreRole},
+    store::{StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
 
@@ -182,13 +182,7 @@ impl AnalyticsPrivacy {
         &self,
         input: LinkAnalyticsIdentityInput,
     ) -> Result<VisitorCustomerLink, ApplicationError> {
-        if input.actor.machine.sales_channel_id.is_none()
-            || !input
-                .actor
-                .machine
-                .scopes
-                .contains(&PublishableKeyScope::AnalyticsWrite)
-        {
+        if input.actor.machine.sales_channel_id.is_none() {
             return Err(ApplicationError::Forbidden);
         }
         if input.visitor_id.is_nil()
