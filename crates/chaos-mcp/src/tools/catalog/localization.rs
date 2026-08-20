@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -150,7 +150,7 @@ pub struct RemoveMediaTranslationParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = localization_tool_router, vis = "pub(super)")]
+#[tool_router(router = localization_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(description = "List the enabled locales and default locale for the selected Store.")]
     async fn list_store_locales(

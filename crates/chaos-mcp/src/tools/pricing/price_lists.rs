@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -99,7 +99,7 @@ pub struct ChangePriceListStatusParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = price_lists_tool_router, vis = "pub(super)")]
+#[tool_router(router = price_lists_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "List price lists in the selected Store, including draft \

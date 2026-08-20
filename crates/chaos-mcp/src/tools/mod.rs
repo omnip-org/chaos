@@ -1,21 +1,8 @@
-mod analytics;
-mod collections;
-mod fulfillment;
-mod inventory;
-mod localization;
-mod media;
-mod orders;
-mod payment_providers;
-mod payments;
-mod price_lists;
-mod products;
-mod promotions;
-mod provider_secrets;
-mod publishable_keys;
-mod reviews;
-mod store_admin;
-mod stores;
-mod tax_rules;
+mod catalog;
+mod integrations;
+mod operations;
+mod pricing;
+mod store;
 
 use std::sync::Arc;
 
@@ -31,7 +18,7 @@ use chaos_application::{
     identity::AccessKeyAuthentication,
     inventory::InventoryManagement,
     payments::{PaymentProviderAdministration, PaymentService},
-    ports::Clock,
+    ports::{AdminActor, Clock},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::OrderManagement,
     store::{
@@ -39,7 +26,7 @@ use chaos_application::{
         StoreMembershipManagement, StoreQueries,
     },
 };
-use rmcp::{handler::server::router::tool::ToolRouter, tool_handler};
+use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
 
 /// Shared handles to the application-layer use cases the MCP surface calls.
 /// Mirrors `ApiState` in `chaos-api`, but scoped to only what MCP tools need.
@@ -105,6 +92,22 @@ impl ChaosMcp {
                 + Self::publishable_keys_tool_router()
                 + Self::analytics_tool_router()
                 + Self::provider_secrets_tool_router(),
+        }
+    }
+
+    async fn store_actor(
+        &self,
+        parts: &http::request::Parts,
+    ) -> Result<chaos_application::store::StoreActor, CallToolResult> {
+        match crate::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            parts,
+        )
+        .await?
+        {
+            AdminActor::Store(actor) => Ok(actor),
+            AdminActor::Machine(_) => unreachable!("MCP authentication returns a User actor"),
         }
     }
 }

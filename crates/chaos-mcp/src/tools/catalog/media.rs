@@ -16,7 +16,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -65,7 +65,7 @@ pub struct ArchiveProductMediaParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = media_tool_router, vis = "pub(super)")]
+#[tool_router(router = media_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Upload an image for a product in the selected Store, in \

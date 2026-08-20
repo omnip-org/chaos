@@ -61,6 +61,20 @@ HTTP delivery code is grouped by public responsibility under
 - `operations/` contains health and metrics;
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 
+MCP delivery keeps protocol concerns separate from commerce capabilities under
+`crates/chaos-mcp/src/`:
+
+- `router.rs`, `auth.rs`, `error.rs`, and `mutation.rs` own MCP transport,
+  authentication, error mapping, confirmation, and idempotency behavior;
+- `tools/mod.rs` owns shared MCP state and is the single tool-router assembly
+  point;
+- `tools/store/`, `catalog/`, `pricing/`, `operations/`, and `integrations/`
+  group tool implementations by product capability.
+
+Moving a tool between capability modules must not rename the public tool or
+change its input schema. Protocol-version changes belong in the MCP boundary,
+not in application use cases.
+
 ## Contracts and operations
 
 - `openapi/` contains the generated or reviewed HTTP contracts.

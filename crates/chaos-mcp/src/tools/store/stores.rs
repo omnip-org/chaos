@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -66,7 +66,7 @@ pub struct LeaveStoreParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = stores_tool_router, vis = "pub(super)")]
+#[tool_router(router = stores_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Create a Store owned by the authenticated User. This tool does not use \

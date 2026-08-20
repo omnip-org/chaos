@@ -1,6 +1,6 @@
 use chaos_application::{
     payments::{CreatePaymentProviderAccountInput, UpdatePaymentProviderAccountInput},
-    ports::{AdminActor, PaymentProviderAccountDetail},
+    ports::PaymentProviderAccountDetail,
 };
 use chaos_domain::payments::PaymentProviderAccountId;
 use rmcp::{
@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -57,7 +57,7 @@ pub struct UpdatePaymentProviderParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = payment_providers_tool_router, vis = "pub(super)")]
+#[tool_router(router = payment_providers_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(description = "List Payment Provider accounts in the selected Store.")]
     async fn list_payment_provider_accounts(
@@ -210,24 +210,6 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(provider_json(value))),
             Err(error) => Ok(tool_error(error)),
-        }
-    }
-}
-
-impl ChaosMcp {
-    pub(super) async fn store_actor(
-        &self,
-        parts: &http::request::Parts,
-    ) -> Result<chaos_application::store::StoreActor, CallToolResult> {
-        match crate::auth::authenticate_mcp(
-            &self.state.access_key_authentication,
-            &self.state.store_queries,
-            parts,
-        )
-        .await?
-        {
-            AdminActor::Store(actor) => Ok(actor),
-            AdminActor::Machine(_) => unreachable!("MCP authentication returns a User actor"),
         }
     }
 }

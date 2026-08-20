@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -71,7 +71,7 @@ pub struct ConfigureAnalyticsDestinationParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = analytics_tool_router, vis = "pub(super)")]
+#[tool_router(router = analytics_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(description = "Get the analytics policy for the selected Store.")]
     async fn get_analytics_policy(

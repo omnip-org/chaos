@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use super::ChaosMcp;
+use crate::tools::ChaosMcp;
 use crate::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
@@ -29,7 +29,7 @@ pub struct CreateRefundParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = payments_tool_router, vis = "pub(super)")]
+#[tool_router(router = payments_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Refund some or all of a payment attempt in the selected Store. Requires \
