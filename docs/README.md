@@ -5,6 +5,17 @@ Keep product language consistent with [`product-model.md`](product-model.md), an
 preserve the dependency direction in
 [`adr/0001-ddd-workspace-boundaries.md`](adr/0001-ddd-workspace-boundaries.md).
 
+## Documentation map
+
+| Document | Authority |
+| --- | --- |
+| [`product-model.md`](product-model.md) | Current product terms and ownership boundaries |
+| [`architecture.md`](architecture.md) | Current runtime, authentication, authorization, and reliability model |
+| [`database-conventions.md`](database-conventions.md) | Required schema, SQL, isolation, migration, money, and time rules |
+| [`deployment.md`](deployment.md) | Production topology, secrets, bootstrap, rollout, and rollback |
+| [`postgresql-extensions.md`](postgresql-extensions.md) | PostgreSQL image and extension lifecycle |
+| [`adr/`](adr/) | Historical decisions and their status; an amended ADR must be read with its named successor |
+
 ## Runtime entry points
 
 | Runtime | Entry point | Responsibility |

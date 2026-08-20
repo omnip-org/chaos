@@ -18,7 +18,6 @@ Run the language check before committing:
 ./scripts/check-language.sh
 ```
 
-
 Enable the repository-provided commit-message check once per clone:
 
 ```bash
@@ -44,7 +43,8 @@ docs(architecture): document blue-green deployment
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo test --workspace --all-targets --all-features
 npm test --prefix packages/js
+npm run build --prefix packages/storefront-template
 ./scripts/check-language.sh
 ```

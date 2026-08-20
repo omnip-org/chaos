@@ -19,7 +19,7 @@ This is a narrow, scoped carve-out, not a reversal of ADR 0009:
 - The endpoint is read-only. There is no idempotency key to collide and no mutation to attribute to the wrong shopper — the two concerns ADR 0009's rejected-alternative reasoning was protecting.
 - The lookup is scoped to one Order by its own UUIDv7 primary key within the credential's Store and Sales Channel; it cannot list, filter, or enumerate.
 
-`StorefrontSales::get_order_by_id` (`chaos-application/src/sales/mod.rs`) and the new `OrderLookupMachine` extractor (`chaos-api/src/http/extract.rs`) implement this alongside the existing shopper-bound `get_order`, which remains available for a shopper still in possession of their token. Infrastructure reuses `load_order` unchanged — it never filtered by shopper in the first place — and simply skips the `ensure_order_owner` check that only the possession-bound path calls.
+`StorefrontSales::get_order_by_id` (`crates/chaos-application/src/sales/mod.rs`) and the `OrderLookupMachine` extractor (`crates/chaos-api/src/http/shared/extract.rs`) implement this alongside the existing shopper-bound `get_order`, which remains available for a shopper still in possession of their token. Infrastructure reuses `load_order` unchanged — it never filtered by shopper in the first place — and simply skips the `ensure_order_owner` check that only the possession-bound path calls.
 
 ## Consequences
 

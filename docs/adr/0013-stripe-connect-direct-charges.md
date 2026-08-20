@@ -31,7 +31,7 @@ The PaymentIntent client secret is never persisted. A possession-bound shopper r
 
 Provider credentials are never persisted in plaintext. The secret adapter resolves `env://CHAOS_PAYMENT_SECRET_*` references from the environment and `enc://` references by decrypting an AES-256-GCM-sealed value stored in PostgreSQL. A Stripe credential secret is a JSON object with `secret_key` and `publishable_key`. A webhook reference resolves to the raw Stripe endpoint signing secret. The secret resolver is an application port so another deployment adapter can replace it without changing payment use cases.
 
-Stripe webhook verification uses the exact request bytes and accepts a timestamp only within five minutes. The untrusted Connect account identifier selects only an opaque webhook-secret reference. Signature verification completes before merchant and Store context is resolved or the event is inserted into the durable inbox.
+Stripe webhook verification uses the exact request bytes and accepts a timestamp only within five minutes. The untrusted Connect account identifier selects only an opaque webhook-secret reference. Signature verification completes before Store context is resolved or the event is inserted into the durable inbox.
 
 ## Consequences
 

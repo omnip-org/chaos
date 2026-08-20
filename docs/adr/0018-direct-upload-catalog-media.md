@@ -5,7 +5,7 @@
 
 ## Context
 
-Catalog images and videos are large binary objects with different scaling, availability, and security characteristics from transactional PostgreSQL data. Proxying uploads through the commerce API consumes application memory and bandwidth, while accepting arbitrary merchant URLs and fetching them server-side creates an SSRF boundary. A database row alone also cannot prove that the expected object was uploaded successfully.
+Catalog images and videos are large binary objects with different scaling, availability, and security characteristics from transactional PostgreSQL data. Proxying uploads through the commerce API consumes application memory and bandwidth, while accepting arbitrary client URLs and fetching them server-side creates an SSRF boundary. A database row alone also cannot prove that the expected object was uploaded successfully.
 
 ## Decision
 
@@ -15,7 +15,7 @@ Creation records a `pending_upload` asset with a server-generated object key, no
 
 Completion performs a bounded object metadata request through the storage port and compares object key, media type, byte count, and checksum with the authoritative pending record. Only an exact match transitions the asset to `ready`. Missing or mismatched objects remain pending and return a conflict. `archived` is terminal and immediately removes the asset from Storefront reads. Runtime writes append immutable Media events and cannot delete Media roots or audit evidence.
 
-The public URL is derived from the configured asset origin and server-owned object key; clients cannot submit it. The API never fetches merchant-controlled URLs. Storefront media is returned only when the parent Store, Sales Channel, Product, Product publication, and Media Asset are all active or ready as applicable.
+The public URL is derived from the configured asset origin and server-owned object key; clients cannot submit it. The API never fetches client-controlled URLs. Storefront media is returned only when the parent Store, Sales Channel, Product, Product publication, and Media Asset are all active or ready as applicable.
 
 ## Consequences
 

@@ -55,14 +55,12 @@ The data volumes are `external: true`, so `down -v` cannot delete them — use `
 
 The custom PostgreSQL 18 image includes `pg_cron`, `pgmq`, and `pg_partman`. The initial migration activates them with isolated extension-owned schemas. See [PostgreSQL extensions](docs/postgresql-extensions.md) for lifecycle and security requirements.
 
-For the production rollout procedure (registry image, zero-downtime `deploy/deploy.sh`) see [Production Deployment](docs/deployment.md).
-
 ## Development commands
 
 ```bash
-cargo fmt --check
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo test --workspace --all-targets --all-features
 npm test --prefix packages/js
 npm run build --prefix packages/storefront-template
 ./scripts/check-language.sh

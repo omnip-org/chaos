@@ -4,7 +4,7 @@
 
 PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and Publishable Keys. There is no merchant-account schema or aggregate. A User-owned MCP credential is an `identity.access_key`; a Storefront credential is a `commerce.publishable_key`.
+`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and Publishable Keys. There is no merchant-account schema or aggregate. A User-owned MCP credential is stored in `identity.access_keys`; a Storefront credential is stored in `commerce.publishable_keys`.
 
 Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned transactional data and rebuildable Storefront read models. `integration` contains idempotency, inbox/outbox delivery, notifications, and analytical processing state.
 
@@ -32,6 +32,16 @@ Constraints follow `<table>_<columns-or-rule>_<kind>`, where kind is `pkey`, `ke
 - Currency codes use uppercase ISO 4217 `char(3)` values.
 
 Money uses integer minor units and a currency. Never use floating point for money, rates, tax, or exact quantities. Negative values require an explicit domain reason and constraint.
+
+Persisted instants use PostgreSQL `timestamptz` and Rust
+`time::OffsetDateTime`. PostgreSQL generates persistence metadata such as
+`created_at`; business decision times enter domain and application operations
+explicitly through the application `Clock` port. Truncate production instants
+to PostgreSQL microsecond precision, serialize public timestamps with the
+shared RFC 3339 HTTP type, and use `std::time::Instant` for elapsed process
+time. Local system time must not directly drive persistence, comparisons,
+retries, expiry, or signatures. Introduce calendar or named-time-zone types
+only for explicit Store-local rules.
 
 ## Identity
 

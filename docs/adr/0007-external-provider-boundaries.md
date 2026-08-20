@@ -35,7 +35,7 @@ Provider SDK types, error types, event names, credentials, and payloads remain i
 
 The adapter maps provider-neutral commands to Stripe Payment Intents and Refunds, supplies a stable idempotency key derived from the Chaos operation or outbox event, and maps provider outcomes into the existing payment state machines. Raw Stripe webhook bodies are verified before parsing or tenant resolution, stored in the durable inbox, deduplicated by provider event identity, and processed without assuming event order.
 
-Stripe Connect is a separate product decision, not an adapter detail. Before implementing onboarding, the product must decide the merchant of record, charge flow, fee payer, negative-balance liability, dispute ownership, and payout model. Store configuration records only external account references and capability state. API keys and webhook secrets live in a secret manager; PostgreSQL stores secret references and rotation metadata, never recoverable credentials.
+Stripe Connect is a separate product decision, not an adapter detail. Before implementing onboarding, the product must decide the merchant of record, charge flow, fee payer, negative-balance liability, dispute ownership, and payout model. Store configuration records only external account references and capability state. Provider credentials are stored only as opaque encrypted references; PostgreSQL never stores recoverable plaintext credentials.
 
 ### Shipping and logistics
 
@@ -49,7 +49,7 @@ A separate `logistics` bounded context is deferred. It becomes justified only wh
 
 ### Notifications
 
-Notifications are an integration capability, not the source of truth for authentication, Orders, Payments, or Fulfillments. Domain and application workflows emit semantic events such as `identity.sign_in_link_requested`, `order.confirmed`, `fulfillment.shipped`, or `refund.succeeded`. Notification policy decides whether an event produces email, SMS, push, or no delivery.
+Notifications are an integration capability, not the source of truth for authentication, Orders, Payments, or Fulfillments. Domain and application workflows emit semantic events such as `order.confirmed`, `fulfillment.shipped`, or `refund.succeeded`. Notification policy decides whether an event produces email, SMS, push, or no delivery.
 
 The notification application boundary owns delivery requests, templates and template versions, recipient policy, suppression state, and delivery status. An `EmailProvider` port is implemented by a Resend adapter. Ordinary business transactions write notification requests or semantic events atomically to an outbox; notification workers render an approved template and send with a stable provider idempotency key.
 

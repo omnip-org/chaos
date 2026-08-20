@@ -39,7 +39,7 @@ chaos-api -------------> chaos-application -> chaos-domain
 
 chaos-mcp -------------> chaos-application -> chaos-domain
 
-chaos-worker ----------> chaos-application
+chaos-api (Worker) ----> chaos-application
        +---------------> chaos-infrastructure
 ```
 

@@ -16,7 +16,7 @@ Add a second `PaymentProvider` adapter, `stripe_checkout`, alongside the existin
 - `stripe` creates PaymentIntents (`POST v1/payment_intents`) and returns `PaymentClientAction { type: "confirm_payment", client_token: <PaymentIntent client secret> }`, unchanged from ADR 0013.
 - `stripe_checkout` creates Checkout Sessions (`POST v1/checkout/sessions`, `mode=payment`, `ui_mode=embedded_page`, one aggregate order-total line item) and returns `PaymentClientAction { type: "mount_embedded_checkout", client_token: <Checkout Session client secret> }`. The storefront passes this secret to Stripe's Embedded Checkout component and never logs, caches, or places it in a URL.
 
-A merchant selects the flow by configuring a `payment_provider_accounts` row with `provider = "stripe_checkout"` instead of `"stripe"` — the same mechanism already used to configure any provider account, requiring no new domain concept. `provider` was already a free-form string with no enum constraint.
+A Store selects the flow by configuring a `payment_provider_accounts` row with `provider = "stripe_checkout"` instead of `"stripe"` — the same mechanism already used to configure any Provider account, requiring no new domain concept. `provider` was already a free-form string with no enum constraint.
 
 `return_url` is supplied by the storefront when creating the Payment Attempt (`stripe_checkout` requires it; `stripe` ignores it). It is carried through the durable outbox event rather than stored on `payment_attempts`, because it is consumed only once when the Worker creates the Checkout Session. HTTPS is required except for HTTP loopback URLs used during local development.
 

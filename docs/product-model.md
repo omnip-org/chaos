@@ -2,7 +2,7 @@
 
 ## User
 
-A person who operates Chaos. A user authenticates through one or more external identity providers and may participate in multiple Stores.
+A person who operates Chaos. A User authenticates through a configured external identity provider and may participate in multiple Stores. Explicit linking of another Provider identity is not supported yet.
 
 ## External Identity
 
