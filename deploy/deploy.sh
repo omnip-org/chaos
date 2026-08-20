@@ -13,8 +13,8 @@ if grep -vE '^\s*#' .env | grep -q 'CHANGE_ME'; then
 fi
 
 COMPOSE="docker compose -f docker-compose.yaml"
-HEALTH_URL="${HEALTH_URL:-https://127.0.0.1/health/live}"
 ORIGIN_HOST="${ORIGIN_HOST:-chaos.omnip.org}"
+HEALTH_URL="${HEALTH_URL:-https://${ORIGIN_HOST}/health/live}"
 
 $COMPOSE config --quiet
 

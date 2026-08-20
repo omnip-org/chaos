@@ -55,7 +55,7 @@ cd deploy
 ./deploy.sh
 ```
 
-If the NGINX `server_name` is not `chaos.omnip.org`, pass the matching value as `ORIGIN_HOST` when invoking the script so its final origin health probe uses the correct Host header.
+If the NGINX `server_name` is not `chaos.omnip.org`, pass the matching value as `ORIGIN_HOST` when invoking the script so its final public gateway health probe uses the correct host.
 
 With no `CHAOS_IMAGE` set, this deploys `ghcr.io/omnip-org/chaos:latest` — whatever Release most recently published. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); starts PostgreSQL and Redis; applies migrations once; rolls blue and green independently; starts the gateway; and runs health probes. If a replica fails to become healthy the rollout aborts before touching the second replica, so the previous version keeps serving.
 
@@ -68,10 +68,10 @@ CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./deploy.sh
 
 Release tags every image with both `:VERSION` and `:latest`, and `deploy.sh` never removes other locally-cached same-repo tags (only dangling layers) — a pinned rollback is usually a re-pull of a tag Docker already has cached, not a cold fetch.
 
-Verify the origin and Cloudflare paths (replace the Host name if the NGINX configuration uses a different origin name):
+Verify the Cloudflare gateway and configured public API paths:
 
 ```bash
-curl --insecure --fail --header 'Host: chaos.omnip.org' https://127.0.0.1/health/live
+curl --fail https://chaos.omnip.org/health/live
 curl --fail https://api.example.com/health/ready
 ```
 
