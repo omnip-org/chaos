@@ -233,7 +233,7 @@ impl FulfillmentRepository for PostgresFulfillmentRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "INSERT INTO integration.outbox_events \
+            "INSERT INTO integration.event_outbox \
              (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, 'fulfillment', $3, $4, $5)",
         )
@@ -485,7 +485,7 @@ impl FulfillmentEventQueue for PostgresFulfillmentRepository {
             Err(failure) => (false, failure),
         };
         let finished: Option<bool> =
-            sqlx::query_scalar("SELECT integration.finish_outbox_event($1, $2, $3, $4, $5, $6)")
+            sqlx::query_scalar("SELECT integration.finish_event_outbox($1, $2, $3, $4, $5, $6)")
                 .bind(job_id)
                 .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
                 .bind(succeeded)
@@ -705,7 +705,7 @@ async fn coordinate_return_refund(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO integration.outbox_events \
+        "INSERT INTO integration.event_outbox \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES ($1,$2,'refund',$3,'refund.create_requested',$4)",
     )
@@ -1269,7 +1269,7 @@ async fn insert_return_outbox(
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO integration.outbox_events \
+        "INSERT INTO integration.event_outbox \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES ($1, $2, 'return', $3, 'return.completed', $4)",
     )

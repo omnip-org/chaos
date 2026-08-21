@@ -6,7 +6,7 @@ use chaos_domain::{
     inventory::InventoryReservationId,
     pricing::{PriceListId, PromotionSnapshot, TaxRuleSnapshot},
     sales::{
-        CartId, CartStatus, CheckoutId, CheckoutIdentity, CustomerId, OrderDeliveryStatus,
+        CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderDeliveryStatus,
         OrderFulfillmentStatus, OrderId, OrderStatus, ShopperId,
     },
 };
@@ -67,7 +67,6 @@ pub struct CheckoutLineItem {
 pub struct CheckoutDetail {
     pub id: CheckoutId,
     pub shopper_id: ShopperId,
-    pub customer_id: Option<CustomerId>,
     pub cart_id: CartId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -119,7 +118,6 @@ pub struct OrderDetail {
     pub id: OrderId,
     pub order_number: chaos_domain::sales::OrderNumber,
     pub shopper_id: ShopperId,
-    pub customer_id: Option<CustomerId>,
     pub checkout_id: CheckoutId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
@@ -153,7 +151,6 @@ pub struct OrderTrackingSession {
 pub struct OrderListFilter {
     pub order_number: Option<String>,
     pub status: Option<OrderStatus>,
-    pub customer_id: Option<CustomerId>,
     pub email: Option<String>,
 }
 
@@ -171,6 +168,8 @@ pub struct CheckoutExpiryJob {
 
 #[async_trait]
 pub trait StorefrontSalesRepository: Send + Sync {
+    async fn create_shopper(&self, actor: &MachineActor) -> Result<ShopperId, ApplicationError>;
+
     async fn create_cart(
         &self,
         actor: &ShopperActor,

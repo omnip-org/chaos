@@ -124,7 +124,7 @@ async fn list_products(
     let after = query
         .cursor
         .as_deref()
-        .map(|cursor| decode_cursor(cursor, CursorKind::StorefrontProduct))
+        .map(|cursor| decode_cursor(cursor, CursorKind::Product))
         .transpose()?
         .map(ProductId::from_uuid);
     let page = state
@@ -142,7 +142,7 @@ async fn list_products(
     let next_cursor = page.has_more.then(|| {
         page.items
             .last()
-            .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::StorefrontProduct))
+            .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Product))
     });
     Ok(
         ApiResponse::ok(page.items.into_iter().map(product_data).collect())

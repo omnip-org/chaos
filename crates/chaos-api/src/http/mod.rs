@@ -4,8 +4,6 @@ mod analytics;
 mod auth;
 #[path = "storefront/collections.rs"]
 mod collection;
-#[path = "storefront/customers.rs"]
-mod customer;
 #[path = "shared/error.rs"]
 mod error;
 #[path = "shared/extract.rs"]
@@ -44,7 +42,7 @@ use chaos_application::{
     payments::{PaymentProviderAdministration, PaymentService},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
-    sales::{CustomerService, OrderManagement, StorefrontSales},
+    sales::{OrderManagement, StorefrontSales},
     store::{
         CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
         PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
@@ -66,8 +64,8 @@ use chaos_infrastructure::{
     repositories::{
         PostgresAnalyticsEventRepository, PostgresCatalogLocalizationRepository,
         PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
-        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresFulfillmentRepository,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
@@ -93,8 +91,7 @@ use crate::lifecycle::Lifecycle;
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
     AnalyticsShopper, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
-    CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession, OrderLookupMachine,
-    StoreContext, StorefrontMachine,
+    CheckoutShopper, OrderLookupMachine, StoreContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -132,7 +129,6 @@ pub struct ApiState {
     pub analytics_administration: Arc<AnalyticsAdministration>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
-    pub customer_service: Arc<CustomerService>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
@@ -307,10 +303,6 @@ impl ApiState {
         let storefront_sales = StorefrontSales::new(Arc::new(
             PostgresStorefrontSalesRepository::new(infrastructure.runtime_pool()),
         ));
-        let customer_service = CustomerService::new(Arc::new(PostgresCustomerRepository::new(
-            infrastructure.runtime_pool(),
-            infrastructure.identity_pool(),
-        )));
         let order_management = OrderManagement::new(Arc::new(
             PostgresOrderManagementRepository::new(infrastructure.runtime_pool()),
         ));
@@ -403,7 +395,6 @@ impl ApiState {
             analytics_administration: Arc::new(analytics_administration),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
-            customer_service: Arc::new(customer_service),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             payment_provider_administration: Arc::new(payment_provider_administration),
@@ -459,7 +450,6 @@ pub fn router(state: ApiState) -> Router {
         .nest("/store/v1", review::storefront_routes())
         .nest("/store/v1", analytics::storefront_routes())
         .nest("/store/v1", storefront_sales::routes())
-        .nest("/store/v1", customer::routes())
         .nest("/openapi", openapi::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)

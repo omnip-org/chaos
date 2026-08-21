@@ -16,12 +16,7 @@ use crate::{
     },
 };
 
-mod customer;
 mod order_management;
-pub use customer::{
-    AssociateCustomerInput, CreateCustomerAddressInput, CustomerService,
-    DeleteCustomerAddressInput, UpdateCustomerInput,
-};
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 
 const EXPIRY_LEASE_TIMEOUT: Duration = Duration::minutes(1);
@@ -130,6 +125,14 @@ impl CheckoutExpiryWorkers {
 impl StorefrontSales {
     pub fn new(repository: Arc<dyn StorefrontSalesRepository>) -> Self {
         Self { repository }
+    }
+
+    pub async fn create_shopper(
+        &self,
+        actor: &MachineActor,
+    ) -> Result<chaos_domain::sales::ShopperId, ApplicationError> {
+        require_storefront_actor(actor)?;
+        self.repository.create_shopper(actor).await
     }
 
     pub async fn create_cart(

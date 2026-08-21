@@ -499,7 +499,7 @@ mod tests {
         assert!(page.items[0].revoked_at.is_some());
 
         sqlx::query(
-            "DELETE FROM integration.idempotency_records \
+            "DELETE FROM integration.idempotency_keys \
              WHERE scope = 'store' AND scope_id = $1",
         )
         .bind(store_id.as_uuid())

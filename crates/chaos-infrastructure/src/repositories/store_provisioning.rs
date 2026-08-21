@@ -313,7 +313,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "DELETE FROM integration.idempotency_records \
+            "DELETE FROM integration.idempotency_keys \
              WHERE scope = 'user' AND scope_id = $1",
         )
         .bind(owner_user_id.as_uuid())

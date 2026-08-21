@@ -17,7 +17,7 @@ use chaos_domain::{
         TaxRuleId, TaxRuleSnapshot,
     },
     sales::{
-        CheckoutContact, CheckoutId, CheckoutIdentity, CustomerId, Order, OrderDeliveryStatus,
+        CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderDeliveryStatus,
         OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
     },
     store::StoreId,
@@ -50,7 +50,6 @@ const CANCEL_OPERATION: &str = "orders.cancel.v1";
 type HeaderRow = (
     Uuid,
     Uuid,
-    Option<Uuid>,
     Uuid,
     Option<Uuid>,
     Uuid,
@@ -137,20 +136,16 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             "SELECT DISTINCT o.id FROM commerce.orders o \
              JOIN commerce.order_contacts contact ON contact.store_id = o.store_id \
                AND contact.order_id = o.id \
-             LEFT JOIN commerce.customer_shopper_links link ON link.store_id = o.store_id \
-               AND link.shopper_id = o.shopper_id \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
                AND ($3::text IS NULL OR o.status::text = $3) \
-               AND ($4::uuid IS NULL OR o.customer_id = $4 OR link.customer_id = $4) \
-               AND ($5::text IS NULL OR contact.email = lower($5)) \
-               AND ($6::text IS NULL OR o.order_number = upper($6)) \
-             ORDER BY o.id DESC LIMIT $7",
+               AND ($4::text IS NULL OR contact.email = lower($4)) \
+               AND ($5::text IS NULL OR o.order_number = upper($5)) \
+             ORDER BY o.id DESC LIMIT $6",
         )
         .bind(store_id.as_uuid())
         .bind(after)
         .bind(filter.status.map(OrderStatus::as_str))
-        .bind(filter.customer_id.map(CustomerId::as_uuid))
         .bind(filter.email.as_deref())
         .bind(filter.order_number.as_deref())
         .bind(i64::from(limit) + 1)
@@ -317,7 +312,7 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, HeaderRow>(
-        "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
@@ -388,27 +383,26 @@ async fn load_order(
         id: OrderId::from_uuid(row.0),
         order_number: OrderNumber::parse(order_number)?,
         shopper_id: ShopperId::from_uuid(row.1),
-        customer_id: row.2.map(CustomerId::from_uuid),
-        checkout_id: CheckoutId::from_uuid(row.3),
-        inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.5),
-        currency: CurrencyCode::parse(&row.6)?,
+        checkout_id: CheckoutId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: CurrencyCode::parse(&row.5)?,
         locale: Locale::parse(&locale)?,
-        status: OrderStatus::parse(&row.7).ok_or_else(corrupt_state)?,
+        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
             .ok_or_else(corrupt_state)?,
         delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
             .ok_or_else(corrupt_state)?,
         identity,
-        subtotal_amount_minor: row.8,
-        discount_amount_minor: row.9,
-        tax_amount_minor: row.10,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
         tax_rule,
         promotion,
-        tax_inclusive: row.11,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.12,
-        total_amount_minor: row.13,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -448,8 +442,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.14,
-        updated_at: row.15,
+        created_at: row.13,
+        updated_at: row.14,
     }))
 }
 

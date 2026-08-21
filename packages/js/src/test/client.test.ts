@@ -38,7 +38,34 @@ test("does not construct browser analytics during SSR", () => {
   assert.equal(client.analytics, undefined);
 });
 
-test("acquires a shopper session lazily on first cart mutation and reuses it", async () => {
+test("creates a shopper session when a browser client initializes", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: {}, configurable: true });
+  const requests: string[] = [];
+  try {
+    createStorefrontClient({
+      publishableKey: "pk_test",
+      storage: null,
+      analytics: false,
+      fetch: (async (url: string) => {
+        requests.push(url);
+        return jsonResponse(201, { data: { shopper_token: "browser-shopper-token" } });
+      }) as unknown as typeof fetch,
+    });
+
+    await Promise.resolve();
+    assert.equal(requests.length, 1);
+    assert.match(requests[0]!, /\/shopper-sessions$/);
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, "document", descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, "document");
+    }
+  }
+});
+
+test("acquires a shopper session on the first shopper-scoped request and reuses it", async () => {
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
   let sequence = 0;
   const storage = new MemoryStorage();

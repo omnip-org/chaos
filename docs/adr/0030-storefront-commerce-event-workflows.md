@@ -12,7 +12,7 @@ signed shopper token
         ↓
 Storefront API mutation / browser observation
         ↓
-integration.commerce_events
+integration.analytics_events
         ↓
 Analytics delivery task
         ↓
@@ -35,12 +35,12 @@ The event recorder and destination delivery are separate application services:
 - `AnalyticsEventRecorder` consumes durable server outbox events and accepts
   browser observations into the ledger.
 - `AnalyticsDeliveryWorker` schedules eligible ledger rows into
-  `analytics_event_deliveries`, then calls the Provider adapter with bounded
+  `analytics_deliveries`, then calls the Provider adapter with bounded
   retries and stable event IDs.
 
-`integration.outbox_events` remains because it is a durable workflow input for
-cross-context commerce work. It is not an audit log. `webhook_inbox` and
-idempotency records remain for Provider and command correctness.
+`integration.event_outbox` remains because it is a durable workflow input for
+cross-context commerce work. It is not an audit log. `provider_webhooks` and
+`idempotency_keys` remain for Provider and command correctness.
 
 The current audit surface is intentionally limited. Order and fulfillment
 transition tables remain because they are queried by business flows or used as
@@ -52,8 +52,8 @@ table is not created until a real reader exists.
 
 ## Consequences
 
-- All funnel events can be queried by `shopper_id` without a visitor/customer
-  link table.
+- A website visit creates one persisted Shopper. All funnel events can then be
+  queried by `shopper_id` without a visitor-to-Customer link table.
 - Meta delivery failure does not block recording or commerce mutations.
 - Adding a destination creates Provider task behavior rather than another event
   ledger or another audit table.

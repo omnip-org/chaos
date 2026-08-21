@@ -21,9 +21,9 @@ SELECT pgmq.create('chaos_fulfillment_events');
 SELECT pgmq.create('chaos_search_events');
 SELECT pgmq.create('chaos_analytics_events');
 SELECT pgmq.create('chaos_webhooks');
-SELECT pgmq.create('chaos_analytics_destinations');
+SELECT pgmq.create('chaos_analytics_deliveries');
 
-CREATE TABLE integration.idempotency_records (
+CREATE TABLE integration.idempotency_keys (
     id                   UUID                             NOT NULL PRIMARY KEY,
     scope                integration.idempotency_scope    NOT NULL,
     scope_id             UUID                             NOT NULL,
@@ -37,23 +37,23 @@ CREATE TABLE integration.idempotency_records (
     updated_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (scope, scope_id, operation, idempotency_key),
-    CONSTRAINT idempotency_records_operation_length_check CHECK (
+    CONSTRAINT idempotency_keys_operation_length_check CHECK (
         length(operation) BETWEEN 1 AND 120
     ),
-    CONSTRAINT idempotency_records_key_length_check CHECK (
+    CONSTRAINT idempotency_keys_key_length_check CHECK (
         octet_length(idempotency_key) BETWEEN 1 AND 255
     ),
-    CONSTRAINT idempotency_records_request_fingerprint_length_check CHECK (
+    CONSTRAINT idempotency_keys_request_fingerprint_length_check CHECK (
         octet_length(request_fingerprint) = 32
     ),
-    CONSTRAINT idempotency_records_response_completion_check CHECK (
+    CONSTRAINT idempotency_keys_response_completion_check CHECK (
         (response_status IS NULL AND response_body IS NULL AND completed_at IS NULL)
         OR
         (response_status BETWEEN 200 AND 599 AND response_body IS NOT NULL AND completed_at IS NOT NULL)
     )
 );
 
-CREATE TABLE integration.webhook_inbox (
+CREATE TABLE integration.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
     provider             TEXT        NOT NULL,
@@ -73,30 +73,30 @@ CREATE TABLE integration.webhook_inbox (
         REFERENCES commerce.stores(id),
     FOREIGN KEY (store_id, provider_account_id)
         REFERENCES commerce.provider_accounts(store_id, id),
-    CONSTRAINT webhook_inbox_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT webhook_inbox_completion_check CHECK (
+    CONSTRAINT provider_webhooks_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT provider_webhooks_completion_check CHECK (
         processed_at IS NULL OR failed_at IS NULL
     )
 );
 
-CREATE TABLE integration.event_consumer_registry (
+CREATE TABLE integration.event_consumers (
     event_type      TEXT PRIMARY KEY,
     consumer_owner  TEXT,
     description     TEXT NOT NULL,
 
-    CONSTRAINT event_consumer_registry_event_type_check CHECK (
+    CONSTRAINT event_consumers_event_type_check CHECK (
         event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
     ),
-    CONSTRAINT event_consumer_registry_owner_check CHECK (
+    CONSTRAINT event_consumers_owner_check CHECK (
         consumer_owner IS NULL
         OR consumer_owner ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
     ),
-    CONSTRAINT event_consumer_registry_description_check CHECK (
+    CONSTRAINT event_consumers_description_check CHECK (
         length(trim(description)) BETWEEN 1 AND 255
     )
 );
 
-CREATE TABLE integration.outbox_events (
+CREATE TABLE integration.event_outbox (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
     aggregate_type       TEXT        NOT NULL,
@@ -112,19 +112,19 @@ CREATE TABLE integration.outbox_events (
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (event_type)
-        REFERENCES integration.event_consumer_registry(event_type),
-    CONSTRAINT outbox_events_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT outbox_events_completion_check CHECK (
+        REFERENCES integration.event_consumers(event_type),
+    CONSTRAINT event_outbox_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT event_outbox_completion_check CHECK (
         processed_at IS NULL OR failed_at IS NULL
     )
 );
 
-CREATE INDEX webhook_inbox_claim_idx
-    ON integration.webhook_inbox (created_at, id)
+CREATE INDEX provider_webhooks_claim_idx
+    ON integration.provider_webhooks (created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
 
-CREATE INDEX outbox_events_pending_idx
-    ON integration.outbox_events (created_at, id)
+CREATE INDEX event_outbox_pending_idx
+    ON integration.event_outbox (created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
 
 CREATE FUNCTION integration.event_consumer_backlog()
@@ -145,8 +145,8 @@ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
            0,
            count(event.id) FILTER (WHERE event.failed_at IS NOT NULL),
            count(event.id) FILTER (WHERE event.processed_at IS NOT NULL)
-      FROM integration.event_consumer_registry AS registry
-      LEFT JOIN integration.outbox_events AS event
+      FROM integration.event_consumers AS registry
+      LEFT JOIN integration.event_outbox AS event
         ON event.event_type = registry.event_type
      GROUP BY registry.event_type, registry.consumer_owner
      ORDER BY registry.event_type;
@@ -165,11 +165,11 @@ AS $$
         WHEN 'search.product_indexer' THEN 'chaos_search_events'
         WHEN 'analytics.event_ingestor' THEN 'chaos_analytics_events'
     END
-      FROM integration.event_consumer_registry AS registry
+      FROM integration.event_consumers AS registry
      WHERE registry.event_type = event_queue_name.event_type;
 $$;
 
-CREATE FUNCTION integration.enqueue_outbox_event()
+CREATE FUNCTION integration.enqueue_event_outbox()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -210,7 +210,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.claim_routed_outbox_events(
+CREATE FUNCTION integration.claim_routed_event_outbox(
     queue_name TEXT,
     batch_size INTEGER
 )
@@ -258,7 +258,7 @@ BEGIN
                event.payload,
                event.created_at
           INTO target
-          FROM integration.outbox_events AS event
+          FROM integration.event_outbox AS event
          WHERE event.pgmq_message_id = message.msg_id
            AND event.processed_at IS NULL
            AND event.failed_at IS NULL;
@@ -279,7 +279,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.claim_outbox_events(
+CREATE FUNCTION integration.claim_event_outbox(
     batch_size INTEGER
 )
 RETURNS TABLE (
@@ -295,7 +295,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
-      FROM integration.claim_routed_outbox_events(
+      FROM integration.claim_routed_event_outbox(
                'chaos_payment_commands', batch_size
            ) AS event;
 $$;
@@ -316,7 +316,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
-      FROM integration.claim_routed_outbox_events(
+      FROM integration.claim_routed_event_outbox(
                'chaos_fulfillment_events', batch_size
            ) AS event;
 $$;
@@ -356,7 +356,7 @@ BEGIN
                event.event_type,
                event.payload
           INTO target
-          FROM integration.webhook_inbox AS event
+          FROM integration.provider_webhooks AS event
          WHERE event.pgmq_message_id = message.msg_id
            AND event.processed_at IS NULL
            AND event.failed_at IS NULL;
@@ -376,7 +376,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.finish_outbox_event(
+CREATE FUNCTION integration.finish_event_outbox(
     event_id UUID,
     attempts INTEGER,
     succeeded BOOLEAN,
@@ -397,7 +397,7 @@ BEGIN
     SELECT event.pgmq_message_id,
            integration.event_queue_name(event.event_type)
       INTO message_id, queue_name
-      FROM integration.outbox_events AS event
+      FROM integration.event_outbox AS event
      WHERE event.id = event_id
        AND event.processed_at IS NULL
        AND event.failed_at IS NULL
@@ -407,14 +407,14 @@ BEGIN
     END IF;
 
     IF succeeded OR attempts >= greatest(max_attempts, 1) THEN
-        UPDATE integration.outbox_events AS event
+        UPDATE integration.event_outbox AS event
            SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
                failed_at = CASE WHEN succeeded THEN NULL ELSE finished_at END,
                last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
          WHERE event.id = event_id;
         PERFORM pgmq.delete(queue_name, message_id);
     ELSE
-        UPDATE integration.outbox_events AS event
+        UPDATE integration.event_outbox AS event
            SET last_error = left(failure, 2000)
          WHERE event.id = event_id;
         PERFORM pgmq.set_vt(
@@ -446,7 +446,7 @@ DECLARE
 BEGIN
     SELECT event.pgmq_message_id
       INTO message_id
-      FROM integration.webhook_inbox AS event
+      FROM integration.provider_webhooks AS event
      WHERE event.id = event_id
        AND event.processed_at IS NULL
        AND event.failed_at IS NULL
@@ -455,14 +455,14 @@ BEGIN
         RETURN false;
     END IF;
     IF succeeded OR attempts >= greatest(max_attempts, 1) THEN
-        UPDATE integration.webhook_inbox AS event
+        UPDATE integration.provider_webhooks AS event
            SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
                failed_at = CASE WHEN succeeded THEN NULL ELSE finished_at END,
                last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
          WHERE event.id = event_id;
         PERFORM pgmq.delete('chaos_webhooks', message_id);
     ELSE
-        UPDATE integration.webhook_inbox AS event
+        UPDATE integration.provider_webhooks AS event
            SET last_error = left(failure, 2000)
          WHERE event.id = event_id;
         PERFORM pgmq.set_vt(
@@ -475,13 +475,13 @@ BEGIN
 END;
 $$;
 
-ALTER TABLE integration.idempotency_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.idempotency_keys ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE integration.webhook_inbox ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE integration.outbox_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.event_outbox ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
+CREATE POLICY idempotency_scope_isolation ON integration.idempotency_keys
     USING (
         (scope = 'user' AND scope_id =
             nullif(current_setting('app.user_id', true), '')::uuid)
@@ -503,7 +503,7 @@ CREATE POLICY idempotency_scope_isolation ON integration.idempotency_records
             nullif(current_setting('app.shopper_id', true), '')::uuid)
     );
 
-CREATE POLICY store_isolation ON integration.webhook_inbox
+CREATE POLICY store_isolation ON integration.provider_webhooks
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -513,7 +513,7 @@ CREATE POLICY store_isolation ON integration.webhook_inbox
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON integration.outbox_events
+CREATE POLICY store_isolation ON integration.event_outbox
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -523,7 +523,7 @@ CREATE POLICY store_isolation ON integration.outbox_events
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-INSERT INTO integration.event_consumer_registry (event_type, consumer_owner, description)
+INSERT INTO integration.event_consumers (event_type, consumer_owner, description)
 VALUES
     ('payment.create_requested', 'payments.provider_dispatch',
      'Dispatches a Payment Attempt command to its configured provider'),
@@ -550,25 +550,25 @@ VALUES
     ('analytics.refund.succeeded', 'analytics.event_ingestor',
      'Records an authoritative Refund event in the Commerce Event ledger');
 
-CREATE TRIGGER outbox_events_enqueue
-BEFORE INSERT ON integration.outbox_events
-FOR EACH ROW EXECUTE FUNCTION integration.enqueue_outbox_event();
+CREATE TRIGGER event_outbox_enqueue
+BEFORE INSERT ON integration.event_outbox
+FOR EACH ROW EXECUTE FUNCTION integration.enqueue_event_outbox();
 
-CREATE TRIGGER webhook_inbox_enqueue
-BEFORE INSERT ON integration.webhook_inbox
+CREATE TRIGGER provider_webhooks_enqueue
+BEFORE INSERT ON integration.provider_webhooks
 FOR EACH ROW EXECUTE FUNCTION integration.enqueue_webhook_event();
 
 REVOKE ALL ON FUNCTION integration.event_queue_name(TEXT) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.enqueue_outbox_event() FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.enqueue_event_outbox() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event() FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.claim_routed_outbox_events(
+REVOKE ALL ON FUNCTION integration.claim_routed_event_outbox(
     TEXT, INTEGER
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.claim_outbox_events(
+REVOKE ALL ON FUNCTION integration.claim_event_outbox(
     INTEGER
 ) FROM PUBLIC;
 
@@ -580,7 +580,7 @@ REVOKE ALL ON FUNCTION integration.claim_webhook_events(
     INTEGER
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.finish_outbox_event(
+REVOKE ALL ON FUNCTION integration.finish_event_outbox(
     UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 
@@ -590,7 +590,7 @@ REVOKE ALL ON FUNCTION integration.finish_webhook_event(
 
 REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.claim_outbox_events(
+GRANT EXECUTE ON FUNCTION integration.claim_event_outbox(
     INTEGER
 )
     TO chaos_runtime;
@@ -605,7 +605,7 @@ GRANT EXECUTE ON FUNCTION integration.claim_webhook_events(
 )
     TO chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION integration.finish_outbox_event(
+GRANT EXECUTE ON FUNCTION integration.finish_event_outbox(
     UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
 
@@ -619,10 +619,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
-    ON integration.event_consumer_registry FROM chaos_runtime;
+    ON integration.event_consumers FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
-    ON integration.webhook_inbox, integration.outbox_events FROM chaos_runtime;
+    ON integration.provider_webhooks, integration.event_outbox FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
@@ -636,8 +636,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 
 
-CREATE INDEX webhook_inbox_provider_account_idx
-    ON integration.webhook_inbox (provider_account_id, created_at, id)
+CREATE INDEX provider_webhooks_provider_account_idx
+    ON integration.provider_webhooks (provider_account_id, created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
 
 -- === Analytics workflow ===
@@ -651,7 +651,7 @@ CREATE TYPE integration.browser_collection_mode AS ENUM ('opt_in', 'opt_out');
 
 CREATE TYPE integration.browser_collection_basis AS ENUM ('consent', 'store_policy', 'server');
 
-CREATE TYPE integration.commerce_event_name AS ENUM (
+CREATE TYPE integration.analytics_event_name AS ENUM (
     'page_view',
     'view_content',
     'search',
@@ -663,7 +663,7 @@ CREATE TYPE integration.commerce_event_name AS ENUM (
     'view_duration'
 );
 
-CREATE TABLE integration.analytics_settings (
+CREATE TABLE integration.analytics_policy (
     store_id                    UUID        NOT NULL PRIMARY KEY,
     revision                    INTEGER     NOT NULL,
     collection_enabled          BOOLEAN     NOT NULL,
@@ -673,13 +673,13 @@ CREATE TABLE integration.analytics_settings (
     updated_at                  TIMESTAMPTZ NOT NULL,
 
     FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT analytics_settings_revision_check CHECK (revision > 0)
+    CONSTRAINT analytics_policy_revision_check CHECK (revision > 0)
 );
 
-ALTER TABLE integration.analytics_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.analytics_settings FORCE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_policy ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_policy FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.analytics_settings
+CREATE POLICY store_isolation ON integration.analytics_policy
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -707,7 +707,7 @@ AS $$
            event.payload,
            event.occurred_at,
            event.attempts
-      FROM integration.claim_routed_outbox_events(
+      FROM integration.claim_routed_event_outbox(
                'chaos_analytics_events', batch_size
            ) AS event;
 $$;
@@ -715,18 +715,17 @@ $$;
 -- Partitioned append-only event ledger. It has no retention policy and no
 -- foreign key into delivery rows, so operators can remove old partitions
 -- deliberately after clearing delivery observations.
-CREATE TABLE integration.commerce_events (
+CREATE TABLE integration.analytics_events (
     id                          UUID                            NOT NULL,
     event_id                    UUID                            NOT NULL,
     store_id                    UUID                            NOT NULL,
     sales_channel_id            UUID                            NOT NULL,
-    event_name                  integration.commerce_event_name NOT NULL,
+    event_name                  integration.analytics_event_name NOT NULL,
     source                      integration.event_source         NOT NULL,
     collection_basis            integration.browser_collection_basis NOT NULL,
     schema_version              SMALLINT                        NOT NULL,
-    shopper_id                  UUID,
+    shopper_id                  UUID                            NOT NULL,
     session_id                  UUID,
-    customer_id                 UUID,
     product_id                  UUID,
     product_variant_id          UUID,
     cart_id                     UUID,
@@ -750,54 +749,57 @@ CREATE TABLE integration.commerce_events (
     -- PostgreSQL requires the partition key in parent primary/unique keys.
     -- Global event-id deduplication is therefore guarded in the repository by
     -- a transaction-scoped advisory lock plus an existence check.
-    CONSTRAINT commerce_events_received_id_pkey PRIMARY KEY (received_at, id),
-    CONSTRAINT commerce_events_store_received_event_key
+    CONSTRAINT analytics_events_received_id_pkey PRIMARY KEY (received_at, id),
+    CONSTRAINT analytics_events_store_received_event_key
         UNIQUE (store_id, received_at, event_id),
-    CONSTRAINT commerce_events_schema_version_check CHECK (schema_version = 1),
-    CONSTRAINT commerce_events_identity_check CHECK (
+    CONSTRAINT analytics_events_schema_version_check CHECK (schema_version = 1),
+    CONSTRAINT analytics_events_identity_check CHECK (
         (shopper_id IS NULL OR shopper_id <> '00000000-0000-0000-0000-000000000000'::uuid)
         AND (session_id IS NULL OR session_id <> '00000000-0000-0000-0000-000000000000'::uuid)
     ),
-    CONSTRAINT commerce_events_browser_shape_check CHECK (
+    CONSTRAINT analytics_events_browser_shape_check CHECK (
         (source = 'browser' AND shopper_id IS NOT NULL AND session_id IS NOT NULL
             AND collection_basis IN ('consent', 'store_policy')
             AND (collection_basis = 'store_policy' OR analytics_storage_consent)
             AND consent_policy_version IS NOT NULL)
         OR (source = 'server' AND collection_basis = 'server')
     ),
-    CONSTRAINT commerce_events_server_event_check CHECK (
+    CONSTRAINT analytics_events_server_event_check CHECK (
         source = 'browser'
-        OR event_name IN ('add_to_cart', 'initiate_checkout', 'add_payment_info', 'purchase', 'refund')
+        OR (
+            shopper_id IS NOT NULL
+            AND event_name IN ('add_to_cart', 'initiate_checkout', 'add_payment_info', 'purchase', 'refund')
+        )
     ),
-    CONSTRAINT commerce_events_path_check CHECK (
+    CONSTRAINT analytics_events_path_check CHECK (
         path IS NULL OR (
             path LIKE '/%' AND octet_length(path) <= 1024
             AND position('?' IN path) = 0 AND position('#' IN path) = 0
         )
     ),
-    CONSTRAINT commerce_events_money_shape_check CHECK (
+    CONSTRAINT analytics_events_money_shape_check CHECK (
         (value_minor IS NULL AND currency IS NULL)
         OR (value_minor IS NOT NULL AND value_minor >= 0
             AND currency ~ '^[A-Z]{3}$')
     ),
-    CONSTRAINT commerce_events_consent_check CHECK (
+    CONSTRAINT analytics_events_consent_check CHECK (
         NOT advertising_storage_consent OR analytics_storage_consent
     ),
-    CONSTRAINT commerce_events_provider_eligibility_check CHECK (
+    CONSTRAINT analytics_events_provider_eligibility_check CHECK (
         NOT provider_eligible
         OR (analytics_storage_consent AND advertising_storage_consent)
         OR collection_basis IN ('store_policy', 'server')
     ),
-    CONSTRAINT commerce_events_policy_check CHECK (
+    CONSTRAINT analytics_events_policy_check CHECK (
         consent_policy_version IS NULL
         OR consent_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
     ),
-    CONSTRAINT commerce_events_revision_check CHECK (settings_revision > 0),
-    CONSTRAINT commerce_events_properties_check CHECK (
+    CONSTRAINT analytics_events_revision_check CHECK (settings_revision > 0),
+    CONSTRAINT analytics_events_properties_check CHECK (
         jsonb_typeof(properties) = 'object'
         AND octet_length(properties::text) <= 32768
     ),
-    CONSTRAINT commerce_events_time_check CHECK (
+    CONSTRAINT analytics_events_time_check CHECK (
         occurred_at >= received_at - INTERVAL '24 hours'
         AND occurred_at <= received_at + INTERVAL '5 minutes'
     )
@@ -806,7 +808,7 @@ CREATE TABLE integration.commerce_events (
 -- pg_partman owns child partition creation. No retention parameters are set:
 -- old partitions remain until an operator explicitly removes them.
 SELECT partman.create_partition(
-    p_parent_table := 'integration.commerce_events',
+    p_parent_table := 'integration.analytics_events',
     p_control := 'received_at',
     p_interval := '1 day',
     p_premake := 7,
@@ -815,35 +817,32 @@ SELECT partman.create_partition(
     p_jobmon := false
 );
 
-CREATE INDEX commerce_events_shopper_path_idx
-    ON integration.commerce_events (store_id, shopper_id, occurred_at, id)
+CREATE INDEX analytics_events_shopper_path_idx
+    ON integration.analytics_events (store_id, shopper_id, occurred_at, id)
     WHERE shopper_id IS NOT NULL;
 
-CREATE INDEX commerce_events_customer_path_idx
-    ON integration.commerce_events (store_id, customer_id, occurred_at, id)
-    WHERE customer_id IS NOT NULL;
 
-CREATE INDEX commerce_events_channel_time_idx
-    ON integration.commerce_events (store_id, sales_channel_id, occurred_at DESC, id DESC);
+CREATE INDEX analytics_events_channel_time_idx
+    ON integration.analytics_events (store_id, sales_channel_id, occurred_at DESC, id DESC);
 
-CREATE INDEX commerce_events_event_key_idx
-    ON integration.commerce_events (store_id, event_id);
+CREATE INDEX analytics_events_event_key_idx
+    ON integration.analytics_events (store_id, event_id);
 
-CREATE INDEX commerce_events_store_id_idx
-    ON integration.commerce_events (store_id, id DESC);
+CREATE INDEX analytics_events_store_id_idx
+    ON integration.analytics_events (store_id, id DESC);
 
-ALTER TABLE integration.commerce_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.commerce_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_events FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.commerce_events
+CREATE POLICY store_isolation ON integration.analytics_events
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-GRANT SELECT, INSERT ON integration.commerce_events TO chaos_runtime;
-REVOKE UPDATE, DELETE ON integration.commerce_events FROM chaos_runtime;
+GRANT SELECT, INSERT ON integration.analytics_events TO chaos_runtime;
+REVOKE UPDATE, DELETE ON integration.analytics_events FROM chaos_runtime;
 
 -- Generic Analytics destination configuration and delivery state.
-CREATE TABLE integration.analytics_connections (
+CREATE TABLE integration.analytics_destinations (
     id                          UUID        NOT NULL PRIMARY KEY,
     store_id                    UUID        NOT NULL,
     provider                    TEXT        NOT NULL,
@@ -858,28 +857,28 @@ CREATE TABLE integration.analytics_connections (
     UNIQUE (store_id, id),
     UNIQUE (store_id, provider),
     FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT analytics_connections_provider_check CHECK (
+    CONSTRAINT analytics_destinations_provider_check CHECK (
         provider ~ '^[a-z][a-z0-9_]{1,31}$'
     ),
-    CONSTRAINT analytics_connections_account_check CHECK (
+    CONSTRAINT analytics_destinations_account_check CHECK (
         octet_length(external_account_reference) BETWEEN 1 AND 255
     ),
-    CONSTRAINT analytics_connections_secret_check CHECK (
+    CONSTRAINT analytics_destinations_secret_check CHECK (
         credential_secret_reference ~
             '^(enc://[A-Za-z0-9_-]+|env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96})$'
         AND octet_length(credential_secret_reference) <= 518
     ),
-    CONSTRAINT analytics_connections_configuration_check CHECK (
+    CONSTRAINT analytics_destinations_configuration_check CHECK (
         jsonb_typeof(configuration) = 'object'
         AND octet_length(configuration::text) <= 16384
     )
 );
 
-CREATE TABLE integration.analytics_event_deliveries (
+CREATE TABLE integration.analytics_deliveries (
     id                  UUID        NOT NULL PRIMARY KEY,
     store_id            UUID        NOT NULL,
-    connection_id       UUID        NOT NULL,
-    commerce_event_id   UUID        NOT NULL,
+    destination_id       UUID        NOT NULL,
+    analytics_event_id   UUID        NOT NULL,
     delivery_status     integration.delivery_status NOT NULL DEFAULT 'pending',
     pgmq_message_id     BIGINT      NOT NULL UNIQUE,
     delivered_at        TIMESTAMPTZ,
@@ -889,30 +888,30 @@ CREATE TABLE integration.analytics_event_deliveries (
     updated_at          TIMESTAMPTZ NOT NULL,
 
     UNIQUE (store_id, id),
-    UNIQUE (store_id, connection_id, commerce_event_id),
+    UNIQUE (store_id, destination_id, analytics_event_id),
     FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, connection_id)
-        REFERENCES integration.analytics_connections(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT analytics_event_deliveries_completion_check CHECK (
+    FOREIGN KEY (store_id, destination_id)
+        REFERENCES integration.analytics_destinations(store_id, id) ON DELETE CASCADE,
+    CONSTRAINT analytics_deliveries_completion_check CHECK (
         (delivery_status = 'processed' AND delivered_at IS NOT NULL)
         OR (delivery_status <> 'processed' AND delivered_at IS NULL)
     ),
-    CONSTRAINT analytics_event_deliveries_reference_check CHECK (
+    CONSTRAINT analytics_deliveries_reference_check CHECK (
         provider_reference IS NULL OR octet_length(provider_reference) <= 512
     ),
-    CONSTRAINT analytics_event_deliveries_error_check CHECK (
+    CONSTRAINT analytics_deliveries_error_check CHECK (
         last_error IS NULL OR octet_length(last_error) <= 2048
     )
 );
 
-CREATE INDEX analytics_event_deliveries_claim_idx
-    ON integration.analytics_event_deliveries (created_at, id)
+CREATE INDEX analytics_deliveries_claim_idx
+    ON integration.analytics_deliveries (created_at, id)
     WHERE delivery_status = 'pending';
 
-CREATE FUNCTION integration.claim_analytics_event_deliveries(
+CREATE FUNCTION integration.claim_analytics_deliveries(
     batch_size INTEGER
 )
-RETURNS TABLE (id UUID, store_id UUID, connection_id UUID, commerce_event_id UUID, attempts INTEGER)
+RETURNS TABLE (id UUID, store_id UUID, destination_id UUID, analytics_event_id UUID, attempts INTEGER)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog
@@ -924,27 +923,27 @@ BEGIN
     FOR message IN
         SELECT queued.msg_id, queued.read_ct
           FROM pgmq.read(
-                   'chaos_analytics_destinations',
+                   'chaos_analytics_deliveries',
                    120,
                    greatest(least(batch_size, 100), 1),
                    '{}'::jsonb
                ) AS queued
     LOOP
-        SELECT delivery.id, delivery.store_id, delivery.connection_id,
-               delivery.commerce_event_id
+        SELECT delivery.id, delivery.store_id, delivery.destination_id,
+               delivery.analytics_event_id
           INTO target
-          FROM integration.analytics_event_deliveries AS delivery
+          FROM integration.analytics_deliveries AS delivery
          WHERE delivery.pgmq_message_id = message.msg_id
            AND delivery.delivery_status = 'pending';
         IF NOT FOUND THEN
-            PERFORM pgmq.delete('chaos_analytics_destinations', message.msg_id);
+            PERFORM pgmq.delete('chaos_analytics_deliveries', message.msg_id);
             CONTINUE;
         END IF;
 
         id := target.id;
         store_id := target.store_id;
-        connection_id := target.connection_id;
-        commerce_event_id := target.commerce_event_id;
+        destination_id := target.destination_id;
+        analytics_event_id := target.analytics_event_id;
         attempts := message.read_ct;
         RETURN NEXT;
     END LOOP;
@@ -961,7 +960,7 @@ BEGIN
     SELECT message_id
       INTO NEW.pgmq_message_id
       FROM pgmq.send(
-          'chaos_analytics_destinations',
+          'chaos_analytics_deliveries',
           jsonb_build_object('version', 1, 'delivery_id', NEW.id)
       ) AS message_id;
     RETURN NEW;
@@ -988,7 +987,7 @@ DECLARE
 BEGIN
     SELECT delivery.pgmq_message_id
       INTO message_id
-      FROM integration.analytics_event_deliveries AS delivery
+      FROM integration.analytics_deliveries AS delivery
      WHERE delivery.id = delivery_id
        AND delivery.delivery_status = 'pending'
      FOR UPDATE;
@@ -996,7 +995,7 @@ BEGIN
         RETURN false;
     END IF;
     IF succeeded OR NOT retryable OR attempts >= 8 THEN
-        UPDATE integration.analytics_event_deliveries AS delivery
+        UPDATE integration.analytics_deliveries AS delivery
            SET delivery_status = CASE
                    WHEN succeeded THEN 'processed'::integration.delivery_status
                    ELSE 'dead_letter'::integration.delivery_status
@@ -1006,13 +1005,13 @@ BEGIN
                last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2048) END,
                updated_at = finished_at
          WHERE delivery.id = delivery_id;
-        PERFORM pgmq.delete('chaos_analytics_destinations', message_id);
+        PERFORM pgmq.delete('chaos_analytics_deliveries', message_id);
     ELSE
-        UPDATE integration.analytics_event_deliveries AS delivery
+        UPDATE integration.analytics_deliveries AS delivery
            SET last_error = left(failure, 2048), updated_at = finished_at
          WHERE delivery.id = delivery_id;
         PERFORM pgmq.set_vt(
-            'chaos_analytics_destinations',
+            'chaos_analytics_deliveries',
             message_id,
             least(power(2, greatest(attempts - 1, 0))::integer, 300)
         );
@@ -1021,47 +1020,47 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER analytics_event_deliveries_enqueue
-BEFORE INSERT ON integration.analytics_event_deliveries
+CREATE TRIGGER analytics_deliveries_enqueue
+BEFORE INSERT ON integration.analytics_deliveries
 FOR EACH ROW EXECUTE FUNCTION integration.enqueue_analytics_event_delivery();
 
-ALTER TABLE integration.analytics_connections ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.analytics_connections FORCE ROW LEVEL SECURITY;
-ALTER TABLE integration.analytics_event_deliveries ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.analytics_event_deliveries FORCE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_destinations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_destinations FORCE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE integration.analytics_deliveries FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY store_isolation ON integration.analytics_connections
+CREATE POLICY store_isolation ON integration.analytics_destinations
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON integration.analytics_event_deliveries
+CREATE POLICY store_isolation ON integration.analytics_deliveries
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION integration.claim_analytics_event_deliveries(INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.claim_analytics_deliveries(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_analytics_event_delivery(
     UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_analytics_event_delivery() FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.claim_analytics_event_deliveries(INTEGER)
+GRANT EXECUTE ON FUNCTION integration.claim_analytics_deliveries(INTEGER)
     TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_analytics_event_delivery(
     UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ
 ) TO chaos_runtime;
 
 REVOKE UPDATE, DELETE
-    ON integration.analytics_connections,
-       integration.analytics_event_deliveries
+    ON integration.analytics_destinations,
+       integration.analytics_deliveries
     FROM chaos_runtime;
 
-COMMENT ON TABLE integration.analytics_connections IS
+COMMENT ON TABLE integration.analytics_destinations IS
     'Store-scoped configuration for an external analytics destination.';
-COMMENT ON TABLE integration.analytics_event_deliveries IS
+COMMENT ON TABLE integration.analytics_deliveries IS
     'Durable delivery state for an Analytics event and external destination.';
 
 -- Cross-Store scheduling is kept behind one reviewed SECURITY DEFINER routine.
-CREATE FUNCTION integration.schedule_analytics_event_deliveries(
+CREATE FUNCTION integration.schedule_analytics_deliveries(
     batch_size INTEGER
 )
 RETURNS BIGINT
@@ -1075,39 +1074,39 @@ DECLARE
 BEGIN
     WITH candidates AS (
         SELECT event.store_id,
-               event.id AS commerce_event_id,
-               connection.id AS connection_id
-          FROM integration.commerce_events AS event
-          JOIN integration.analytics_connections AS connection
-            ON connection.store_id = event.store_id
-           AND connection.enabled
+               event.id AS analytics_event_id,
+               destination.id AS destination_id
+          FROM integration.analytics_events AS event
+          JOIN integration.analytics_destinations AS destination
+            ON destination.store_id = event.store_id
+           AND destination.enabled
          WHERE event.provider_eligible
            AND NOT EXISTS (
                SELECT 1
-                 FROM integration.analytics_event_deliveries AS delivery
+                 FROM integration.analytics_deliveries AS delivery
                 WHERE delivery.store_id = event.store_id
-                  AND delivery.connection_id = connection.id
-                  AND delivery.commerce_event_id = event.id
+                  AND delivery.destination_id = destination.id
+                  AND delivery.analytics_event_id = event.id
            )
-         ORDER BY event.received_at, event.id, connection.id
+         ORDER BY event.received_at, event.id, destination.id
          LIMIT greatest(least(batch_size, 100), 0)
     )
-    INSERT INTO integration.analytics_event_deliveries (
-        id, store_id, connection_id, commerce_event_id, created_at, updated_at
+    INSERT INTO integration.analytics_deliveries (
+        id, store_id, destination_id, analytics_event_id, created_at, updated_at
     )
-    SELECT uuidv7(), store_id, connection_id, commerce_event_id,
+    SELECT uuidv7(), store_id, destination_id, analytics_event_id,
            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
       FROM candidates
-    ON CONFLICT (store_id, connection_id, commerce_event_id) DO NOTHING;
+    ON CONFLICT (store_id, destination_id, analytics_event_id) DO NOTHING;
 
     GET DIAGNOSTICS scheduled = ROW_COUNT;
     RETURN scheduled;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION integration.schedule_analytics_event_deliveries(INTEGER)
+REVOKE ALL ON FUNCTION integration.schedule_analytics_deliveries(INTEGER)
     FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION integration.schedule_analytics_event_deliveries(INTEGER)
+GRANT EXECUTE ON FUNCTION integration.schedule_analytics_deliveries(INTEGER)
     TO chaos_runtime;
 
 -- A daily database-local job keeps the next set of partitions available.
@@ -1118,16 +1117,16 @@ SELECT cron.schedule(
     'SELECT partman.run_maintenance();'
 );
 
-COMMENT ON TABLE integration.commerce_events IS
+COMMENT ON TABLE integration.analytics_events IS
     'Append-only Store-scoped Analytics event log partitioned daily by received_at; retention is manual.';
-COMMENT ON TABLE integration.analytics_event_deliveries IS
+COMMENT ON TABLE integration.analytics_deliveries IS
     'Provider delivery observations; remove rows before manually dropping event-log partitions.';
 
 -- === Cross-schema reliability constraints ===
 
 ALTER TABLE commerce.order_fulfillment_transitions
     ADD CONSTRAINT order_fulfillment_transitions_source_event_id_fkey
-    FOREIGN KEY (source_event_id) REFERENCES integration.outbox_events(id);
+    FOREIGN KEY (source_event_id) REFERENCES integration.event_outbox(id);
 
 -- === Runtime hardening ===
 
@@ -1135,7 +1134,6 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 REVOKE UPDATE, DELETE
     ON commerce.stock_ledger_entries,
-       commerce.customer_shopper_links,
        commerce.checkout_contacts,
        commerce.checkout_addresses,
        commerce.checkout_lines,
@@ -1161,13 +1159,13 @@ REVOKE DELETE
     FROM chaos_runtime;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
-    ON integration.event_consumer_registry FROM chaos_runtime;
+    ON integration.event_consumers FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
-    ON integration.webhook_inbox,
-       integration.outbox_events,
-       integration.commerce_events,
-       integration.analytics_event_deliveries
+    ON integration.provider_webhooks,
+       integration.event_outbox,
+       integration.analytics_events,
+       integration.analytics_deliveries
     FROM chaos_runtime;
 
 COMMENT ON ROLE chaos_runtime IS
@@ -1180,5 +1178,5 @@ COMMENT ON ROLE chaos_identity IS
 REVOKE ALL ON FUNCTION integration.claim_analytics_events(INTEGER) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION integration.claim_analytics_events(INTEGER) TO chaos_runtime;
 
-COMMENT ON TABLE integration.analytics_settings IS
+COMMENT ON TABLE integration.analytics_policy IS
     'Store-level collection and provider reporting policy.';

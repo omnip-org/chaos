@@ -92,7 +92,6 @@ impl ChaosMcp {
                 OrderListFilter {
                     order_number: params.order_number,
                     status,
-                    customer_id: None,
                     email: None,
                 },
             )

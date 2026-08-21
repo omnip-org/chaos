@@ -22,7 +22,7 @@ use chaos_domain::{
     },
     sales::{
         Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
-        CheckoutIdentity, CommercialAdjustments, CustomerId, Order, OrderDeliveryStatus,
+        CheckoutIdentity, CommercialAdjustments, Order, OrderDeliveryStatus,
         OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
     },
     store::{SalesChannelId, StoreId},
@@ -135,7 +135,6 @@ type CartMediaRow = (
 type CheckoutHeaderRow = (
     Uuid,
     Uuid,
-    Option<Uuid>,
     Uuid,
     Option<Uuid>,
     Uuid,
@@ -168,7 +167,6 @@ type CheckoutLineRow = (
 type OrderHeaderRow = (
     Uuid,
     Uuid,
-    Option<Uuid>,
     Uuid,
     Option<Uuid>,
     Uuid,
@@ -250,6 +248,23 @@ impl PostgresStorefrontSalesRepository {
 
 #[async_trait]
 impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
+    async fn create_shopper(&self, actor: &MachineActor) -> Result<ShopperId, ApplicationError> {
+        let channel_id = require_channel(actor)?;
+        let shopper_id = ShopperId::new();
+        let mut transaction = self.begin(actor).await?;
+        sqlx::query(
+            "INSERT INTO commerce.shoppers (id, store_id, sales_channel_id) VALUES ($1, $2, $3)",
+        )
+        .bind(shopper_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(shopper_id)
+    }
+
     async fn create_cart(
         &self,
         shopper: &ShopperActor,
@@ -284,17 +299,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO commerce.carts \
-             (id, store_id, shopper_id, customer_id, sales_channel_id, price_list_id, currency, locale) \
-             VALUES ($1, $2, $3, \
-                     (SELECT customer_id FROM commerce.customer_shopper_links WHERE \
-                        store_id = $4 AND shopper_id = $5 AND sales_channel_id = $6), $7, $8, $9, $10)",
+             (id, store_id, shopper_id, sales_channel_id, price_list_id, currency, locale) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(cart.id().as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(shopper_id.as_uuid())
-        .bind(actor.store_id.as_uuid())
-        .bind(shopper_id.as_uuid())
-        .bind(channel_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
         .bind(currency.as_str())
@@ -394,7 +404,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .unwrap_or_default();
         if quantity > previous_quantity {
             sqlx::query(
-                "INSERT INTO integration.outbox_events \
+                "INSERT INTO integration.event_outbox \
                  (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
                  VALUES ($1, $2, 'cart', $3, 'analytics.cart.line_added', $4)",
             )
@@ -635,7 +645,7 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         )
         .await?;
         sqlx::query(
-            "INSERT INTO integration.outbox_events \
+            "INSERT INTO integration.event_outbox \
              (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, 'checkout', $3, 'analytics.checkout.initiated', $4)",
         )
@@ -782,9 +792,9 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             let result = sqlx::query(
                 "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, checkout_id, \
-              shopper_id, customer_id, inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
+              shopper_id, inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
               discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             SELECT $1, store_id, $2, sales_channel_id, id, shopper_id, customer_id, \
+             SELECT $1, store_id, $2, sales_channel_id, id, shopper_id, \
                     inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
                     discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $3, $4 \
              FROM commerce.checkouts WHERE store_id = $5 \
@@ -1683,21 +1693,16 @@ async fn insert_checkout(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO commerce.checkouts \
-         (id, store_id, cart_id, shopper_id, customer_id, sales_channel_id, price_list_id, \
+         (id, store_id, cart_id, shopper_id, sales_channel_id, price_list_id, \
           inventory_reservation_id, currency, locale, subtotal_amount_minor, discount_amount_minor, \
           tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at) \
          VALUES ($1, $2, $3, $4, \
-                 (SELECT customer_id FROM commerce.customer_shopper_links WHERE \
-                    store_id = $5 AND shopper_id = $6 AND sales_channel_id = $7), \
-                 $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+                 $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(checkout.id().as_uuid())
     .bind(actor.store_id.as_uuid())
     .bind(checkout.cart_id().as_uuid())
     .bind(shopper_id.as_uuid())
-    .bind(actor.store_id.as_uuid())
-    .bind(shopper_id.as_uuid())
-    .bind(channel_id.as_uuid())
     .bind(channel_id.as_uuid())
     .bind(checkout.price_list_id().as_uuid())
     .bind(
@@ -2449,7 +2454,7 @@ async fn load_checkout(
     checkout_id: CheckoutId,
 ) -> Result<Option<CheckoutDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CheckoutHeaderRow>(
-        "SELECT id, shopper_id, customer_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, cart_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, expires_at, created_at FROM commerce.checkouts \
          WHERE store_id = $1 AND sales_channel_id = $2 AND id = $3",
@@ -2489,29 +2494,28 @@ async fn load_checkout(
     Ok(Some(CheckoutDetail {
         id: CheckoutId::from_uuid(row.0),
         shopper_id: ShopperId::from_uuid(row.1),
-        customer_id: row.2.map(CustomerId::from_uuid),
-        cart_id: CartId::from_uuid(row.3),
-        inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.5),
-        currency: parse_currency(&row.6)?,
+        cart_id: CartId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: parse_currency(&row.5)?,
         locale: parse_locale(&locale)?,
-        status: row.7,
+        status: row.6,
         identity,
-        subtotal_amount_minor: row.8,
-        discount_amount_minor: row.9,
-        tax_amount_minor: row.10,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
         tax_rule,
         promotion,
-        tax_inclusive: row.11,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.12,
-        total_amount_minor: row.13,
-        expires_at: row.14,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
+        expires_at: row.13,
         lines: lines
             .into_iter()
             .map(checkout_line_item)
             .collect::<Result<Vec<_>, _>>()?,
-        created_at: row.15,
+        created_at: row.14,
     }))
 }
 
@@ -2539,7 +2543,7 @@ pub(super) async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT id, shopper_id, customer_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
                 tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
          WHERE store_id = $1 AND sales_channel_id = $2 AND id = $3",
@@ -2610,27 +2614,26 @@ pub(super) async fn load_order(
         id: OrderId::from_uuid(row.0),
         order_number: OrderNumber::parse(order_number)?,
         shopper_id: ShopperId::from_uuid(row.1),
-        customer_id: row.2.map(CustomerId::from_uuid),
-        checkout_id: CheckoutId::from_uuid(row.3),
-        inventory_reservation_id: row.4.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.5),
-        currency: parse_currency(&row.6)?,
+        checkout_id: CheckoutId::from_uuid(row.2),
+        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.4),
+        currency: parse_currency(&row.5)?,
         locale: parse_locale(&locale)?,
-        status: OrderStatus::parse(&row.7).ok_or_else(corrupt_sales_state)?,
+        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_sales_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
             .ok_or_else(corrupt_sales_state)?,
         delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
             .ok_or_else(corrupt_sales_state)?,
         identity,
-        subtotal_amount_minor: row.8,
-        discount_amount_minor: row.9,
-        tax_amount_minor: row.10,
+        subtotal_amount_minor: row.7,
+        discount_amount_minor: row.8,
+        tax_amount_minor: row.9,
         tax_rule,
         promotion,
-        tax_inclusive: row.11,
+        tax_inclusive: row.10,
         shipping,
-        shipping_amount_minor: row.12,
-        total_amount_minor: row.13,
+        shipping_amount_minor: row.11,
+        total_amount_minor: row.12,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -2653,8 +2656,8 @@ pub(super) async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.14,
-        updated_at: row.15,
+        created_at: row.13,
+        updated_at: row.14,
     }))
 }
 
@@ -2725,8 +2728,6 @@ struct CartLineMediaSnapshot {
 struct CheckoutSnapshot {
     id: Uuid,
     shopper_id: Uuid,
-    #[serde(default)]
-    customer_id: Option<Uuid>,
     cart_id: Uuid,
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -2771,8 +2772,6 @@ struct OrderSnapshot {
     id: Uuid,
     order_number: String,
     shopper_id: Uuid,
-    #[serde(default)]
-    customer_id: Option<Uuid>,
     checkout_id: Uuid,
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -2931,7 +2930,6 @@ fn checkout_snapshot(detail: &CheckoutDetail) -> Result<Value, ApplicationError>
     serde_json::to_value(CheckoutSnapshot {
         id: detail.id.as_uuid(),
         shopper_id: detail.shopper_id.as_uuid(),
-        customer_id: detail.customer_id.map(CustomerId::as_uuid),
         cart_id: detail.cart_id.as_uuid(),
         inventory_reservation_id: detail
             .inventory_reservation_id
@@ -2973,7 +2971,6 @@ fn replay_checkout(value: Value) -> Result<CheckoutDetail, ApplicationError> {
     Ok(CheckoutDetail {
         id: CheckoutId::from_uuid(snapshot.id),
         shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
-        customer_id: snapshot.customer_id.map(CustomerId::from_uuid),
         cart_id: CartId::from_uuid(snapshot.cart_id),
         inventory_reservation_id: snapshot
             .inventory_reservation_id
@@ -3010,7 +3007,6 @@ fn order_snapshot(detail: &OrderDetail) -> Result<Value, ApplicationError> {
         id: detail.id.as_uuid(),
         order_number: detail.order_number.as_str().into(),
         shopper_id: detail.shopper_id.as_uuid(),
-        customer_id: detail.customer_id.map(CustomerId::as_uuid),
         checkout_id: detail.checkout_id.as_uuid(),
         inventory_reservation_id: detail
             .inventory_reservation_id
@@ -3065,7 +3061,6 @@ fn replay_order(value: Value) -> Result<OrderDetail, ApplicationError> {
         id: OrderId::from_uuid(snapshot.id),
         order_number: OrderNumber::parse(snapshot.order_number)?,
         shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
-        customer_id: snapshot.customer_id.map(CustomerId::from_uuid),
         checkout_id: CheckoutId::from_uuid(snapshot.checkout_id),
         inventory_reservation_id: snapshot
             .inventory_reservation_id

@@ -10,7 +10,7 @@ A verified `(provider, subject)` pair mapped to one User. Google and Apple are t
 
 ## Store
 
-The tenant and commerce ownership boundary. A Store owns configuration, memberships, Sales Channels, products, variants, publication state, prices, inventory, customers, orders, payment configuration, refunds, and fulfillment configuration.
+The tenant and commerce ownership boundary. A Store owns configuration, memberships, Sales Channels, products, variants, publication state, prices, inventory, Shoppers, orders, payment configuration, refunds, and fulfillment configuration.
 
 ## Store Membership
 
@@ -28,7 +28,14 @@ A Product is Store-owned catalog content. Variants are purchasable combinations 
 
 ## Order
 
-An immutable commercial record after creation, with controlled state transitions. It freezes the selected products, variants, quantities, money, tax, discount, customer contact, addresses, channel, and relevant provider evidence.
+An immutable commercial record after creation, with controlled state transitions. It freezes the selected products, variants, quantities, money, tax, discount, Shopper-linked contact, addresses, channel, and relevant provider evidence. A Shopper who creates an Order is the buyer; there is no separate Customer entity.
+
+## Shopper
+
+A Storefront visitor identity created when the website opens a Shopper session. A
+signed possession token carries its UUID through Cart, Checkout, Payment, Order,
+and Analytics operations. Contact details are captured as Checkout and Order
+snapshots rather than as a separate Customer profile.
 
 ## Payment and Refund
 

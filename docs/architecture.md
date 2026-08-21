@@ -96,16 +96,24 @@ PostgreSQL is the source of truth for catalogs, inventory, orders, payments, ref
 
 Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, tax, discount, address, and Provider evidence required to preserve history. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
-Orders use an internal UUID for joins and idempotency, plus a random customer-facing
+Orders use an internal UUID for joins and idempotency, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
 tracking uses a Chaos-hosted URL with a fragment capability. The browser exchanges the
 one-time-looking long-lived capability for a short-lived, store-bound session; only
 digests are stored after a successful confirmation email delivery.
 
-Analytics uses one append-only, Store-scoped Commerce Event ledger for the
+The Storefront identity is a persisted `commerce.shoppers` row. A website visit
+creates one Shopper through `/store/v1/shopper-sessions`, and the API returns a
+signed possession token for that row. Carts, Checkouts, Orders, Payments, and
+Analytics events carry the same `shopper_id`; there is no Customer entity or
+visitor-to-Customer association table. Contact information and addresses remain
+immutable Checkout and Order snapshots, while an Order-bearing Shopper is the
+buyer for all commerce and analytics purposes.
+
+Analytics uses one append-only, Store-scoped Analytics Event ledger for the
 Storefront conversion path and authoritative server events. External provider
 delivery is a retryable projection of eligible events, with provider-neutral
-connection and delivery records and provider-specific adapters. Provider metrics
+destination and delivery records and provider-specific adapters. Provider metrics
 are not persisted; Chaos does not
 precompute Sessions, attribution, or daily reports without a concrete product
 query. Browser events retain bounded first-touch,
@@ -116,6 +124,13 @@ records whether explicit consent or Store policy was its basis. The default
 `opt_out` policy starts configured Meta Pixel and GA4 projections immediately
 and stops them after a shopper opt-out. Meta Pixel shares stable event IDs with
 CAPI for deduplication. See ADR 0026.
+
+The Integration schema keeps one concise name for each responsibility:
+`idempotency_keys`, `provider_webhooks`, `event_consumers`, `event_outbox`,
+`analytics_policy`, `analytics_events`, `analytics_destinations`, and
+`analytics_deliveries`. The last three form one chain: an internal Analytics
+event is scheduled for a configured destination, then its delivery observation
+is recorded by `destination_id` and `analytics_event_id`.
 
 API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
 

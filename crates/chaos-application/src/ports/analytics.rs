@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use chaos_domain::{
     analytics::{AnalyticsSettings, BrowserEvent},
     identity::UserId,
-    sales::CustomerId,
     store::{SalesChannelId, StoreId},
 };
 use serde_json::Value;
@@ -89,7 +88,7 @@ pub struct AnalyticsEventRecord {
     pub event_id: Uuid,
     pub event_name: String,
     pub source: String,
-    pub shopper_id: Option<Uuid>,
+    pub shopper_id: Uuid,
     pub occurred_at: OffsetDateTime,
     pub received_at: OffsetDateTime,
     pub provider_eligible: bool,
@@ -132,7 +131,7 @@ pub trait AnalyticsEventQueryRepository: Send + Sync {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsConnection {
+pub struct AnalyticsDestination {
     pub id: Uuid,
     pub store_id: StoreId,
     pub provider: String,
@@ -145,7 +144,7 @@ pub struct AnalyticsConnection {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsConnectionConfiguration {
+pub struct AnalyticsDestinationConfiguration {
     pub provider: String,
     pub external_account_reference: String,
     pub credential_secret_reference: String,
@@ -154,30 +153,30 @@ pub struct AnalyticsConnectionConfiguration {
 }
 
 #[async_trait]
-pub trait AnalyticsConnectionRepository: Send + Sync {
-    async fn get_connection(
+pub trait AnalyticsDestinationRepository: Send + Sync {
+    async fn get_destination(
         &self,
         actor: StoreActor,
         store_id: StoreId,
         provider: &str,
-    ) -> Result<Option<AnalyticsConnection>, ApplicationError>;
+    ) -> Result<Option<AnalyticsDestination>, ApplicationError>;
 
-    async fn configure_connection(
+    async fn configure_destination(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        configuration: AnalyticsConnectionConfiguration,
+        configuration: AnalyticsDestinationConfiguration,
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
-    ) -> Result<AnalyticsConnection, ApplicationError>;
+    ) -> Result<AnalyticsDestination, ApplicationError>;
 }
 
 #[derive(Clone, Debug)]
 pub struct AnalyticsDeliveryJob {
     pub id: Uuid,
     pub store_id: StoreId,
-    pub connection_id: Uuid,
-    pub commerce_event_id: Uuid,
+    pub destination_id: Uuid,
+    pub analytics_event_id: Uuid,
     pub attempts: u32,
 }
 
@@ -191,8 +190,7 @@ pub struct AnalyticsDeliveryCommand {
     pub configuration: Value,
     pub event_name: String,
     pub occurred_at: OffsetDateTime,
-    pub shopper_id: Option<Uuid>,
-    pub customer_id: Option<CustomerId>,
+    pub shopper_id: Uuid,
     pub source_url: Option<String>,
     pub value_minor: Option<i64>,
     pub currency: Option<String>,

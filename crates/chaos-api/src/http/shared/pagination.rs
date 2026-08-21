@@ -11,10 +11,9 @@ const CURSOR_VERSION: u8 = 1;
 
 #[derive(Clone, Copy)]
 pub(super) enum CursorKind {
-    StorefrontProduct = 5,
-    CustomerOrder = 10,
-    StorefrontCollection = 15,
-    StorefrontReview = 17,
+    Product = 5,
+    Collection = 15,
+    Review = 17,
 }
 
 pub(super) fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
@@ -91,11 +90,8 @@ mod tests {
     #[test]
     fn cursor_round_trip_is_bound_to_its_resource_kind() {
         let id = Uuid::now_v7();
-        let cursor = encode_cursor(id, CursorKind::StorefrontProduct);
-        assert_eq!(
-            decode_cursor(&cursor, CursorKind::StorefrontProduct).unwrap(),
-            id
-        );
-        assert!(decode_cursor(&cursor, CursorKind::CustomerOrder).is_err());
+        let cursor = encode_cursor(id, CursorKind::Product);
+        assert_eq!(decode_cursor(&cursor, CursorKind::Product).unwrap(), id);
+        assert!(decode_cursor(&cursor, CursorKind::Collection).is_err());
     }
 }

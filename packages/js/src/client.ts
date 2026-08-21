@@ -3,7 +3,6 @@ import { throwForResponse } from "./errors.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { CheckoutResource } from "./resources/checkout.js";
-import { CustomerResource } from "./resources/customer.js";
 import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
@@ -31,10 +30,8 @@ export interface RequestOptions<Query extends object = Record<string, never>> {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Query;
   body?: unknown;
-  /** Attaches the shopper token, acquiring one via createShopperSession() first if none is cached. */
+  /** Attaches the shopper token, acquiring one if the browser has not created a Shopper session yet. */
   requiresShopperToken?: boolean;
-  /** Attaches x-chaos-customer-session if the caller has set one via setCustomerSession(). */
-  requiresCustomerSession?: boolean;
   idempotencyKey?: string;
 }
 
@@ -45,7 +42,6 @@ export class ChaosStorefrontClient {
   private readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   private readonly shopperTokenStorageKey: string;
   readonly randomUUID: () => string;
-  private customerSession: string | null = null;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
 
@@ -54,7 +50,6 @@ export class ChaosStorefrontClient {
   readonly cart: CartResource;
   readonly checkout: CheckoutResource;
   readonly orders: OrdersResource;
-  readonly customer: CustomerResource;
   readonly payments: PaymentsResource;
   readonly analytics?: ChaosStorefrontAnalytics;
 
@@ -80,12 +75,18 @@ export class ChaosStorefrontClient {
       this.shopperTokenCache = null;
     }
 
+    if (globalThis.document) {
+      void this.ensureShopperToken().catch(() => {
+        // A transient identity request must not prevent catalog rendering;
+        // the next shopper-scoped request retries acquisition.
+      });
+    }
+
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
     this.cart = new CartResource(this);
     this.checkout = new CheckoutResource(this);
     this.orders = new OrdersResource(this);
-    this.customer = new CustomerResource(this);
     this.payments = new PaymentsResource(this);
     const analyticsOptions = options.analytics === false ? undefined : options.analytics;
     const analyticsDocument = analyticsOptions?.document ?? globalThis.document;
@@ -100,10 +101,6 @@ export class ChaosStorefrontClient {
         getShopperToken: () => this.ensureShopperToken(),
       });
     }
-  }
-
-  setCustomerSession(token: string | null): void {
-    this.customerSession = token;
   }
 
   getShopperToken(): string | null {
@@ -165,13 +162,6 @@ export class ChaosStorefrontClient {
     if (options.requiresShopperToken) {
       headers["x-chaos-shopper-token"] = await this.ensureShopperToken();
     }
-    if (options.requiresCustomerSession) {
-      if (!this.customerSession) {
-        throw new TypeError("customer session required: call setCustomerSession() first");
-      }
-      headers["x-chaos-customer-session"] = this.customerSession;
-    }
-
     const requestUrl = this.buildUrl(path, options.query ?? {});
 
     const init: RequestInit = { method, headers };

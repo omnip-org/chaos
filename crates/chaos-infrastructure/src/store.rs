@@ -89,10 +89,6 @@ mod tests {
         let tax_rule_b = Uuid::now_v7();
         let promotion_a = Uuid::now_v7();
         let promotion_b = Uuid::now_v7();
-        let customer_a = Uuid::now_v7();
-        let customer_b = Uuid::now_v7();
-        let customer_address_a = Uuid::now_v7();
-        let customer_address_b = Uuid::now_v7();
         let shopper_a = Uuid::now_v7();
         let shopper_b = Uuid::now_v7();
         let provider_account_a = Uuid::now_v7();
@@ -215,56 +211,16 @@ mod tests {
             .await
             .unwrap();
         }
-        for (customer_id, address_id, shopper_id, store_id, channel_id, label) in [
-            (
-                customer_a,
-                customer_address_a,
-                shopper_a,
-                store_a,
-                channel_a,
-                "Home A",
-            ),
-            (
-                customer_b,
-                customer_address_b,
-                shopper_b,
-                store_b,
-                channel_b,
-                "Home B",
-            ),
+        for (shopper_id, store_id, channel_id) in [
+            (shopper_a, store_a, channel_a),
+            (shopper_b, store_b, channel_b),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.customers (id, store_id, user_id, email) \
-                 VALUES ($1, $2, $3, $4)",
+                "INSERT INTO commerce.shoppers (id, store_id, sales_channel_id) \
+                 VALUES ($1, $2, $3)",
             )
-            .bind(customer_id)
-            .bind(store_id)
-            .bind(user_id)
-            .bind(format!("{customer_id}@example.com"))
-            .execute(&pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.customer_addresses \
-                 (id, store_id, customer_id, label, full_name, \
-                  address_line1, locality, country_code) \
-                 VALUES ($1, $2, $3, $4, 'RLS Customer', '1 Main', 'Town', 'US')",
-            )
-            .bind(address_id)
-            .bind(store_id)
-            .bind(customer_id)
-            .bind(label)
-            .execute(&pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.customer_shopper_links \
-                 (store_id, customer_id, shopper_id, sales_channel_id) \
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(store_id)
-            .bind(customer_id)
             .bind(shopper_id)
+            .bind(store_id)
             .bind(channel_id)
             .execute(&pool)
             .await
@@ -320,22 +276,11 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
-        let visible_customer_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.customers ORDER BY id")
+        let visible_shopper_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM commerce.shoppers ORDER BY id")
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
-        let visible_customer_address_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.customer_addresses ORDER BY id")
-                .fetch_all(transaction.connection())
-                .await
-                .unwrap();
-        let visible_shopper_ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT shopper_id FROM commerce.customer_shopper_links ORDER BY shopper_id",
-        )
-        .fetch_all(transaction.connection())
-        .await
-        .unwrap();
         let visible_provider_account_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.provider_accounts ORDER BY id")
                 .fetch_all(transaction.connection())
@@ -349,8 +294,6 @@ mod tests {
         assert_eq!(visible_product_ids, vec![product_a]);
         assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
         assert_eq!(visible_promotion_ids, vec![promotion_a]);
-        assert_eq!(visible_customer_ids, vec![customer_a]);
-        assert_eq!(visible_customer_address_ids, vec![customer_address_a]);
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 

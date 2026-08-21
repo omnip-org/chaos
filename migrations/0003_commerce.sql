@@ -1269,7 +1269,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
-
 -- === Inventory ===
 
 CREATE TYPE commerce.inventory_location_status AS ENUM ('active', 'archived');
@@ -1575,7 +1574,7 @@ $$;
 CREATE FUNCTION commerce.capture_product_change()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 BEGIN
-    INSERT INTO integration.outbox_events (
+    INSERT INTO integration.event_outbox (
         id, store_id, aggregate_type, aggregate_id, event_type, payload
     ) VALUES (
         uuidv7(), NEW.store_id, 'product', NEW.id,
@@ -1602,7 +1601,7 @@ BEGIN
         SELECT 1 FROM commerce.stores
          WHERE id = owning_store_id
     ) THEN
-        INSERT INTO integration.outbox_events (
+        INSERT INTO integration.event_outbox (
             id, store_id, aggregate_type, aggregate_id, event_type, payload
         ) VALUES (
             uuidv7(), owning_store_id, 'product', changed_product_id,
@@ -1640,7 +1639,7 @@ BEGIN
                outbox.store_id,
                outbox.aggregate_id,
                outbox.attempts
-          FROM integration.claim_routed_outbox_events(
+          FROM integration.claim_routed_event_outbox(
                    'chaos_search_events', $1
                ) AS outbox
     LOOP
@@ -1648,12 +1647,12 @@ BEGIN
             PERFORM commerce.refresh_product_document(
                 event.store_id, event.aggregate_id
             );
-            PERFORM integration.finish_outbox_event(
+            PERFORM integration.finish_event_outbox(
                 event.id, event.attempts, true, '', 8, $2
             );
             processed := processed + 1;
         EXCEPTION WHEN OTHERS THEN
-            PERFORM integration.finish_outbox_event(
+            PERFORM integration.finish_event_outbox(
                 event.id, event.attempts, false, SQLERRM, 8, $2
             );
         END;
@@ -1746,89 +1745,26 @@ CREATE TYPE commerce.return_status AS ENUM (
 
 CREATE TYPE commerce.return_disposition AS ENUM ('restock', 'discard');
 
-CREATE TABLE commerce.customers (
+CREATE TABLE commerce.shoppers (
     id                  UUID              NOT NULL PRIMARY KEY,
     store_id            UUID              NOT NULL,
-    user_id             UUID              NOT NULL,
-    email               extensions.citext NOT NULL,
+    sales_channel_id    UUID              NOT NULL,
+    email               extensions.citext,
     phone               TEXT,
+    first_seen_at       TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at        TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
-    UNIQUE (store_id, user_id),
-    UNIQUE (store_id, email),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES identity.users(id),
-    CONSTRAINT customers_email_length_check CHECK (length(trim(email::text)) BETWEEN 3 AND 320),
-    CONSTRAINT customers_phone_format_check CHECK (phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$')
-);
-
-CREATE TABLE commerce.customer_addresses (
-    id                   UUID     NOT NULL PRIMARY KEY,
-    store_id             UUID     NOT NULL,
-    customer_id          UUID     NOT NULL,
-    label                TEXT     NOT NULL,
-    full_name            TEXT     NOT NULL,
-    company              TEXT,
-    address_line1        TEXT     NOT NULL,
-    address_line2        TEXT,
-    locality             TEXT     NOT NULL,
-    administrative_area  TEXT,
-    postal_code          TEXT,
-    country_code         CHAR(2)  NOT NULL,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, customer_id, id),
-    CONSTRAINT customer_addresses_customer_label_key
-        UNIQUE (store_id, customer_id, label),
-    CONSTRAINT customer_addresses_customer_fkey
-        FOREIGN KEY (store_id, customer_id)
-        REFERENCES commerce.customers(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT customer_addresses_label_length_check CHECK (
-        length(trim(label)) BETWEEN 1 AND 64
+    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    FOREIGN KEY (sales_channel_id) REFERENCES commerce.sales_channels(id) ON DELETE CASCADE,
+    CONSTRAINT shoppers_email_length_check CHECK (
+        email IS NULL OR length(trim(email::text)) BETWEEN 3 AND 320
     ),
-    CONSTRAINT customer_addresses_full_name_length_check CHECK (
-        length(trim(full_name)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT customer_addresses_company_length_check CHECK (
-        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT customer_addresses_line1_length_check CHECK (
-        length(trim(address_line1)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT customer_addresses_line2_length_check CHECK (
-        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT customer_addresses_locality_length_check CHECK (
-        length(trim(locality)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT customer_addresses_area_length_check CHECK (
-        administrative_area IS NULL
-        OR length(trim(administrative_area)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT customer_addresses_postal_code_length_check CHECK (
-        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
-    ),
-    CONSTRAINT customer_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
-);
-
-CREATE TABLE commerce.customer_shopper_links (
-    store_id            UUID        NOT NULL,
-    customer_id         UUID        NOT NULL,
-    shopper_id          UUID        NOT NULL,
-    sales_channel_id    UUID        NOT NULL,
-    linked_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (store_id, shopper_id),
-    CONSTRAINT customer_shopper_links_customer_fkey
-        FOREIGN KEY (store_id, customer_id)
-        REFERENCES commerce.customers(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT customer_shopper_links_channel_fkey
-        FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id) ON DELETE CASCADE
+    CONSTRAINT shoppers_phone_format_check CHECK (
+        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
+    )
 );
 
 CREATE TABLE commerce.carts (
@@ -1836,7 +1772,6 @@ CREATE TABLE commerce.carts (
     store_id             UUID                NOT NULL,
     sales_channel_id     UUID                NOT NULL,
     shopper_id           UUID                NOT NULL,
-    customer_id          UUID,
     price_list_id        UUID                NOT NULL,
     currency             CHAR(3)             NOT NULL,
     locale               VARCHAR(63)         NOT NULL DEFAULT 'en-US',
@@ -1851,8 +1786,8 @@ CREATE TABLE commerce.carts (
         REFERENCES commerce.stores(id),
     FOREIGN KEY (sales_channel_id)
         REFERENCES commerce.sales_channels(id),
-    FOREIGN KEY (store_id, customer_id)
-        REFERENCES commerce.customers(store_id, id),
+    FOREIGN KEY (store_id, shopper_id)
+        REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (store_id, price_list_id, currency)
         REFERENCES commerce.price_lists(store_id, id, currency),
     CONSTRAINT carts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
@@ -1901,7 +1836,6 @@ CREATE TABLE commerce.checkouts (
     store_id               UUID                    NOT NULL,
     cart_id                UUID                    NOT NULL,
     shopper_id             UUID                    NOT NULL,
-    customer_id            UUID,
     sales_channel_id       UUID                    NOT NULL,
     price_list_id          UUID                    NOT NULL,
     inventory_reservation_id UUID,
@@ -1927,8 +1861,8 @@ CREATE TABLE commerce.checkouts (
     UNIQUE (store_id, inventory_reservation_id),
     FOREIGN KEY (store_id, cart_id, shopper_id)
         REFERENCES commerce.carts(store_id, id, shopper_id),
-    FOREIGN KEY (store_id, customer_id)
-        REFERENCES commerce.customers(store_id, id),
+    FOREIGN KEY (store_id, shopper_id)
+        REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (sales_channel_id)
         REFERENCES commerce.sales_channels(id),
     FOREIGN KEY (store_id, price_list_id, currency)
@@ -2138,7 +2072,6 @@ CREATE TABLE commerce.orders (
     sales_channel_id         UUID                               NOT NULL,
     checkout_id              UUID                               NOT NULL,
     shopper_id               UUID                               NOT NULL,
-    customer_id              UUID,
     inventory_reservation_id UUID,
     price_list_id            UUID                               NOT NULL,
     currency                 CHAR(3)                            NOT NULL,
@@ -2161,8 +2094,8 @@ CREATE TABLE commerce.orders (
     UNIQUE (store_id, checkout_id),
     FOREIGN KEY (store_id, checkout_id, shopper_id)
         REFERENCES commerce.checkouts(store_id, id, shopper_id),
-    FOREIGN KEY (store_id, customer_id)
-        REFERENCES commerce.customers(store_id, id),
+    FOREIGN KEY (store_id, shopper_id)
+        REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (sales_channel_id)
         REFERENCES commerce.sales_channels(id),
     FOREIGN KEY (store_id, price_list_id, currency)
@@ -3118,15 +3051,11 @@ CREATE TABLE commerce.return_lines (
     )
 );
 
-CREATE INDEX customers_store_created_idx
-    ON commerce.customers (store_id, created_at DESC, id DESC);
+CREATE INDEX shoppers_store_seen_idx
+    ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 
-CREATE INDEX customer_addresses_customer_idx
-    ON commerce.customer_addresses (store_id, customer_id, created_at, id);
-
-CREATE INDEX customer_shopper_links_history_idx
-    ON commerce.customer_shopper_links (store_id, customer_id, sales_channel_id, shopper_id
-    );
+CREATE INDEX shoppers_channel_seen_idx
+    ON commerce.shoppers (store_id, sales_channel_id, last_seen_at DESC, id DESC);
 
 CREATE INDEX carts_channel_updated_idx
     ON commerce.carts (store_id,
@@ -3156,10 +3085,6 @@ CREATE INDEX orders_channel_created_idx
         created_at DESC,
         id DESC
     );
-
-CREATE INDEX orders_customer_created_idx
-    ON commerce.orders (store_id, customer_id, created_at DESC, id DESC
-    ) WHERE customer_id IS NOT NULL;
 
 CREATE INDEX order_tracking_sessions_expiry_idx
     ON commerce.order_tracking_sessions (expires_at, id);
@@ -3572,11 +3497,12 @@ AS $$
               account.credential_secret_reference, label.cancellation_attempts;
 $$;
 
-ALTER TABLE commerce.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.customer_addresses ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.customer_shopper_links ENABLE ROW LEVEL SECURITY;
+CREATE POLICY store_isolation ON commerce.shoppers
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 
@@ -3645,36 +3571,6 @@ ALTER TABLE commerce.returns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.return_lines ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.carts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.customers
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.customer_addresses
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.customer_shopper_links
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -4006,9 +3902,6 @@ GRANT EXECUTE ON FUNCTION commerce.claim_expired_checkouts(
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-REVOKE UPDATE, DELETE
-    ON commerce.customer_shopper_links FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
     ON commerce.checkout_contacts, commerce.checkout_addresses, commerce.checkout_lines,

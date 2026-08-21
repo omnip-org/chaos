@@ -10,8 +10,8 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
-        AnalyticsConnectionRepository, AnalyticsDeliveryError, AnalyticsDeliveryRepository,
+        AnalyticsCollectionRateLimiter, AnalyticsDeliveryError, AnalyticsDeliveryRepository,
+        AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsDestinationRepository,
         AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
         AnalyticsEventQueryRepository, AnalyticsEventRecorderRepository, AnalyticsEventRepository,
         AnalyticsSettingsRepository, IdempotencyRequest, MachineActor, StoreAnalyticsSettings,
@@ -159,19 +159,19 @@ pub struct UpdateAnalyticsSettingsInput {
 
 pub struct AnalyticsAdministration {
     settings: Arc<dyn AnalyticsSettingsRepository>,
-    connections: Arc<dyn AnalyticsConnectionRepository>,
+    destinations: Arc<dyn AnalyticsDestinationRepository>,
     events: Arc<dyn AnalyticsEventQueryRepository>,
 }
 
 impl AnalyticsAdministration {
     pub fn new(
         settings: Arc<dyn AnalyticsSettingsRepository>,
-        connections: Arc<dyn AnalyticsConnectionRepository>,
+        destinations: Arc<dyn AnalyticsDestinationRepository>,
         events: Arc<dyn AnalyticsEventQueryRepository>,
     ) -> Self {
         Self {
             settings,
-            connections,
+            destinations,
             events,
         }
     }
@@ -209,28 +209,28 @@ impl AnalyticsAdministration {
             .await
     }
 
-    pub async fn get_connection(
+    pub async fn get_destination(
         &self,
         actor: StoreActor,
         store_id: StoreId,
         provider: &str,
-    ) -> Result<Option<AnalyticsConnection>, ApplicationError> {
-        self.connections
-            .get_connection(actor, store_id, provider)
+    ) -> Result<Option<AnalyticsDestination>, ApplicationError> {
+        self.destinations
+            .get_destination(actor, store_id, provider)
             .await
     }
 
-    pub async fn configure_connection(
+    pub async fn configure_destination(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        configuration: AnalyticsConnectionConfiguration,
+        configuration: AnalyticsDestinationConfiguration,
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
-    ) -> Result<AnalyticsConnection, ApplicationError> {
+    ) -> Result<AnalyticsDestination, ApplicationError> {
         require_owner(actor)?;
-        self.connections
-            .configure_connection(actor, store_id, configuration, idempotency, now)
+        self.destinations
+            .configure_destination(actor, store_id, configuration, idempotency, now)
             .await
     }
 

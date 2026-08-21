@@ -5,7 +5,6 @@ mod catalog_management;
 mod catalog_read;
 mod clock;
 mod collection;
-mod customer;
 mod fulfillment;
 mod identity;
 mod inventory;
@@ -29,9 +28,9 @@ mod tax;
 
 pub use actor::AdminActor;
 pub use analytics::{
-    AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
-    AnalyticsConnectionRepository, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
+    AnalyticsCollectionRateLimiter, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
     AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsDeliveryRepository,
+    AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsDestinationRepository,
     AnalyticsEventDelivery, AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
     AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRecorderRepository,
     AnalyticsEventRepository, AnalyticsRateLimitDecision, AnalyticsSettingsRepository,
@@ -50,7 +49,6 @@ pub use collection::{
     CollectionDetail, CollectionListItem, CollectionProductItem, CollectionPublicationRecord,
     CollectionRepository, CreateCollectionRecord, StorefrontCollectionItem,
 };
-pub use customer::{CustomerAddressDetail, CustomerDetail, CustomerOrderPage, CustomerRepository};
 pub use fulfillment::{
     CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,
     FulfillmentEventQueue, FulfillmentRepository, PreparedShippingLabelCancellation,
@@ -109,7 +107,7 @@ pub use sales::{
     CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
     OrderPage, OrderTrackingSession, OrderTransitionItem, StorefrontSalesRepository,
 };
-pub use shopper::{CustomerActor, ShopperActor, ShopperCredentialCodec};
+pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,

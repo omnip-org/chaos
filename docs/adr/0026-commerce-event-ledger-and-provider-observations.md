@@ -19,11 +19,11 @@ reports can be introduced when a concrete query requires them.
 
 Analytics owns two small models:
 
-1. `commerce_events` is an append-only, Store-scoped ledger for browser and
+1. `analytics_events` is an append-only, Store-scoped ledger for browser and
    authoritative server events.
-2. `analytics_connections` configures external destinations and
-   `analytics_event_deliveries` records one retryable Provider task per eligible
-   event and connection. Provider-specific configuration stays in bounded JSON
+2. `analytics_destinations` configures external destinations and
+   `analytics_deliveries` records one retryable Provider task per eligible
+   event and destination. Provider-specific configuration stays in bounded JSON
    and provider-specific behavior stays in an adapter.
 
 The initial event vocabulary is:
@@ -55,7 +55,7 @@ receipt times, and bounded properties. Browser events additionally carry the
 verified Storefront `shopper_id`, a browser `session_id`, and the applicable
 consent. The API derives `shopper_id` from the signed
 `x-chaos-shopper-token`; the browser cannot declare or overwrite it.
-Commerce references such as Product, Variant, Cart, Checkout, Order, Customer,
+Commerce references such as Product, Variant, Cart, Checkout, Order,
 and Payment Attempt IDs use typed nullable columns when applicable. Money uses
 integer minor units and an ISO currency.
 
@@ -66,7 +66,7 @@ Referrer host, and consent-gated Meta or Google click IDs. It never stores the
 full Referrer URL. These are immutable source facts, not computed attribution.
 Authoritative payment and refund events remain queryable through their order,
 payment-attempt, and refund IDs. The ledger does not rewrite historical browser
-events or maintain a separate visitor-to-customer identity table. `shopper_id`
+events or maintain a separate visitor-to-shopper identity link table. `shopper_id`
 is the cross-step consumer identity; `session_id` is only a session grouping
 value.
 
@@ -79,7 +79,8 @@ deduplication prevents success-page refreshes from projecting it twice.
 AddPaymentInfo follows the same projection pattern using the Payment Attempt
 ID after the server creates the attempt.
 
-The Storefront SDK obtains the signed shopper token before flushing its bounded
+The Storefront SDK creates or restores the persisted Shopper when a browser
+client initializes, obtains the signed shopper token before flushing its bounded
 unsent queue in session storage,
 retries with stable event IDs, drains all batches, and discards events before
 the server's acceptance window expires. Engagement uses a monotonic clock,
@@ -127,9 +128,9 @@ The following are not part of the target model:
 - commerce-fact duplication;
 - attribution jobs and results;
 - materialized daily Analytics reports;
-- visitor-to-customer identity links;
+- visitor-to-shopper identity links;
 - application-managed event retention and erasure workflows;
-- generic Analytics destinations and export deliveries;
+- provider metric snapshots and automatic erasure workflows;
 - GA4 delivery.
 
 ## Consequences

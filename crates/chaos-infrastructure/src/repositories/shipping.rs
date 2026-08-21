@@ -933,7 +933,7 @@ async fn complete_label_purchase(
         message: "the Fulfillment can no longer accept a Shipping Label",
     })?;
     sqlx::query(
-        "INSERT INTO integration.outbox_events \
+        "INSERT INTO integration.event_outbox \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES (uuidv7(), $1, 'fulfillment', $2, 'fulfillment.shipped', $3)",
     )
@@ -1243,7 +1243,7 @@ impl ShippingTrackingQueue for PostgresShippingServiceRepository {
                     .map_err(database_error)?;
                     if let Some(order_id) = order_id {
                         sqlx::query(
-                            "INSERT INTO integration.outbox_events \
+                            "INSERT INTO integration.event_outbox \
                              (id, store_id, aggregate_type, aggregate_id, \
                               event_type, payload) \
                              VALUES (uuidv7(), $1, 'fulfillment', $2, \

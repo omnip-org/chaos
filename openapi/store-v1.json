@@ -5,526 +5,1064 @@
     "version": "1.0.0",
     "description": "Public Storefront API authenticated by Store-scoped publishable keys."
   },
-  "servers": [{ "url": "/store/v1" }],
+  "servers": [
+    {
+      "url": "/store/v1"
+    }
+  ],
   "paths": {
     "/products": {
       "get": {
         "operationId": "listStorefrontProducts",
-        "tags": ["Catalog"],
+        "tags": [
+          "Catalog"
+        ],
         "summary": "List active and published Products with active prices",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/Currency" },
-          { "name": "q", "in": "query", "description": "Store-isolated full-text search", "schema": { "type": "string", "minLength": 1, "maxLength": 200 } },
-          { "name": "collection", "in": "query", "description": "Active Collection handle published to the current Sales Channel. Results preserve manual Collection order.", "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } },
-          { "$ref": "#/components/parameters/Cursor" },
-          { "$ref": "#/components/parameters/Limit" },
-          { "$ref": "#/components/parameters/Locale" }
+          {
+            "$ref": "#/components/parameters/Currency"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Store-isolated full-text search",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "collection",
+            "in": "query",
+            "description": "Active Collection handle published to the current Sales Channel. Results preserve manual Collection order.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          }
         ],
         "responses": {
           "200": {
             "description": "Storefront Product page",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ProductCollectionEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ProductCollectionEnvelope"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "429": { "$ref": "#/components/responses/RateLimited" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     },
     "/products/{handle}": {
       "get": {
         "operationId": "getStorefrontProduct",
-        "tags": ["Catalog"],
+        "tags": [
+          "Catalog"
+        ],
         "summary": "Get one active and published Product by handle",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
           {
             "name": "handle",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "minLength": 2, "maxLength": 128 }
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 128
+            }
           },
-          { "$ref": "#/components/parameters/Currency" },
-          { "$ref": "#/components/parameters/Locale" }
+          {
+            "$ref": "#/components/parameters/Currency"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          }
         ],
         "responses": {
           "200": {
             "description": "Storefront Product",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ProductEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ProductEnvelope"
+                }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/collections": {
       "get": {
         "operationId": "listStorefrontCollections",
-        "tags": ["Catalog"],
+        "tags": [
+          "Catalog"
+        ],
         "summary": "List active Collections published to the current Sales Channel",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/Cursor" }, { "$ref": "#/components/parameters/Limit" }, { "$ref": "#/components/parameters/Locale" }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          }
+        ],
         "responses": {
-          "200": { "description": "Storefront Collection page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionCollectionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Storefront Collection page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionCollectionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/collections/{handle}": {
       "get": {
         "operationId": "getStorefrontCollection",
-        "tags": ["Catalog"],
+        "tags": [
+          "Catalog"
+        ],
         "summary": "Get an active Collection published to the current Sales Channel",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "name": "handle", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" } }, { "$ref": "#/components/parameters/Locale" }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "handle",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Locale"
+          }
+        ],
         "responses": {
-          "200": { "description": "Storefront Collection", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Storefront Collection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/analytics/events": {
       "post": {
         "operationId": "collectStorefrontAnalyticsEvents",
-        "tags": ["Analytics"],
+        "tags": [
+          "Analytics"
+        ],
         "summary": "Collect a bounded batch of consent-aware first-party behavior events",
         "description": "Browser events carry no consumer identity; the API derives shopper_id from the signed shopper token. Cart, checkout, payment, purchase, and refund outcomes are recorded by authoritative server workflows.",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/ShopperToken" }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
+        ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectAnalyticsEvents" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectAnalyticsEvents"
+              }
+            }
+          }
         },
         "responses": {
-          "200": { "description": "Batch accepted, deduplicated, or discarded according to consent and the effective Store Analytics Policy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsCollectionEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Batch accepted, deduplicated, or discarded according to consent and the effective Store Analytics Policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsCollectionEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/shopper-sessions": {
       "post": {
         "operationId": "createShopperSession",
-        "tags": ["Carts"],
+        "tags": [
+          "Carts"
+        ],
         "summary": "Create an anonymous possession-bound shopper session",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "responses": {
-          "201": { "description": "Shopper session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShopperSessionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "201": {
+            "description": "Shopper session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShopperSessionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
         }
       }
     },
     "/carts": {
       "post": {
         "operationId": "createCart",
-        "tags": ["Carts"],
+        "tags": [
+          "Carts"
+        ],
         "summary": "Create an active Cart using the current Price List",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCart" } } }
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCart"
+              }
+            }
+          }
         },
         "responses": {
-          "201": { "description": "Cart created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "201": {
+            "description": "Cart created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/carts/{cart_id}": {
       "get": {
         "operationId": "getCart",
-        "tags": ["Carts"],
+        "tags": [
+          "Carts"
+        ],
         "summary": "Get a Cart",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/CartId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
         ],
         "responses": {
-          "200": { "description": "Cart", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "200": {
+            "description": "Cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     },
     "/carts/{cart_id}/lines/{product_variant_id}": {
       "put": {
         "operationId": "setCartLine",
-        "tags": ["Carts"],
-        "summary": "Add a Cart line or replace its quantity and current snapshot",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/CartId" },
-          { "$ref": "#/components/parameters/ProductVariantId" },
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+        "tags": [
+          "Carts"
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SetCartLine" } } } },
+        "summary": "Add a Cart line or replace its quantity and current snapshot",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductVariantId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCartLine"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Updated Cart", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Updated Cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       },
       "delete": {
         "operationId": "removeCartLine",
-        "tags": ["Carts"],
+        "tags": [
+          "Carts"
+        ],
         "summary": "Remove a Cart line",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/CartId" },
-          { "$ref": "#/components/parameters/ProductVariantId" },
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductVariantId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "responses": {
-          "200": { "description": "Updated Cart", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CartEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Updated Cart",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CartEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/carts/{cart_id}/shipping-options": {
       "post": {
         "operationId": "quoteShippingOptions",
-        "tags": ["Checkout"],
-        "summary": "Quote active Shipping Services for a Cart destination",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/CartId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+        "tags": [
+          "Checkout"
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/QuoteShippingRequest" } } } },
+        "summary": "Quote active Shipping Services for a Cart destination",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteShippingRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Available Shipping Services", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShippingOptionCollectionEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Available Shipping Services",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShippingOptionCollectionEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/carts/{cart_id}/checkout": {
       "post": {
         "operationId": "createCheckout",
-        "tags": ["Checkout"],
+        "tags": [
+          "Checkout"
+        ],
         "summary": "Freeze Cart prices and reserve tracked inventory atomically",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/CartId" },
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CreateCheckoutRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/CreateCheckoutRequest"
+              }
             }
           }
         },
         "responses": {
-          "201": { "description": "Checkout created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CheckoutEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "201": {
+            "description": "Checkout created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/checkouts/{checkout_id}": {
       "get": {
         "operationId": "getCheckout",
-        "tags": ["Checkout"],
+        "tags": [
+          "Checkout"
+        ],
         "summary": "Get an immutable Checkout snapshot",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/CheckoutId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+          {
+            "$ref": "#/components/parameters/CheckoutId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
         ],
         "responses": {
-          "200": { "description": "Checkout", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CheckoutEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "200": {
+            "description": "Checkout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     },
     "/checkouts/{checkout_id}/order": {
       "post": {
         "operationId": "createOrder",
-        "tags": ["Orders"],
+        "tags": [
+          "Orders"
+        ],
         "summary": "Create an Order from an immutable Checkout snapshot",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/CheckoutId" },
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+          {
+            "$ref": "#/components/parameters/CheckoutId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
         ],
         "responses": {
-          "201": { "description": "Order created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "201": {
+            "description": "Order created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/orders/{order_id}": {
       "get": {
         "operationId": "getOrder",
-        "tags": ["Orders"],
+        "tags": [
+          "Orders"
+        ],
         "summary": "Get an Order and its transition audit trail",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/OrderId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+          {
+            "$ref": "#/components/parameters/OrderId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
         ],
         "responses": {
-          "200": { "description": "Order", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "200": {
+            "description": "Order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     },
     "/order-tracking-sessions": {
       "post": {
         "operationId": "exchangeOrderTrackingKey",
-        "tags": ["Orders"],
+        "tags": [
+          "Orders"
+        ],
         "summary": "Exchange an emailed Order tracking key for a short-lived session",
-        "security": [{ "publishableKey": [] }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ExchangeOrderTrackingKey" } } } },
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExchangeOrderTrackingKey"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Tracking session created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingSessionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
+          "201": {
+            "description": "Tracking session created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderTrackingSessionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
         }
       }
     },
     "/order-tracking-orders": {
       "post": {
         "operationId": "getTrackedOrder",
-        "tags": ["Orders"],
+        "tags": [
+          "Orders"
+        ],
         "summary": "Read one Order with a short-lived tracking session",
-        "security": [{ "publishableKey": [] }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderTrackingAccess" } } } },
-        "responses": {
-          "200": { "description": "Order", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" }
-        }
-      }
-    },
-    "/customer/associate": {
-      "post": {
-        "operationId": "associateCustomer",
-        "tags": ["Customers"],
-        "summary": "Associate the possession-bound shopper with the authenticated Store Customer",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/CustomerSession" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+        "security": [
+          {
+            "publishableKey": []
+          }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderTrackingAccess"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Customer associated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
-    "/customer": {
-      "get": {
-        "operationId": "getCustomer",
-        "tags": ["Customers"],
-        "summary": "Get the authenticated Store Customer and saved addresses",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }],
-        "responses": {
-          "200": { "description": "Customer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      },
-      "put": {
-        "operationId": "updateCustomer",
-        "tags": ["Customers"],
-        "summary": "Update the authenticated Store Customer phone",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateCustomer" } } } },
-        "responses": {
-          "200": { "description": "Customer updated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
-    "/customer/addresses": {
-      "post": {
-        "operationId": "createCustomerAddress",
-        "tags": ["Customers"],
-        "summary": "Create a saved address for the authenticated Store Customer",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [{ "$ref": "#/components/parameters/CustomerSession" }, { "$ref": "#/components/parameters/IdempotencyKey" }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateCustomerAddress" } } } },
-        "responses": {
-          "201": { "description": "Saved address created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerAddressEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
-    "/customer/addresses/{address_id}": {
-      "delete": {
-        "operationId": "deleteCustomerAddress",
-        "tags": ["Customers"],
-        "summary": "Delete a saved address without changing Checkout or Order snapshots",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "name": "address_id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-          { "$ref": "#/components/parameters/CustomerSession" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
-        "responses": {
-          "200": { "description": "Saved address deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CustomerMutationEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
-        }
-      }
-    },
-    "/customer/orders": {
-      "get": {
-        "operationId": "listCustomerOrders",
-        "tags": ["Customers", "Orders"],
-        "summary": "List Order history for the authenticated Store Customer",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/CustomerSession" },
-          { "$ref": "#/components/parameters/Cursor" },
-          { "$ref": "#/components/parameters/Limit" }
-        ],
-        "responses": {
-          "200": { "description": "Customer Order page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderCollectionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "200": {
+            "description": "Order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
         }
       }
     },
     "/orders/{order_id}/payment-attempts": {
       "post": {
         "operationId": "createPaymentAttempt",
-        "tags": ["Payments"],
-        "summary": "Create a Payment Attempt and enqueue a provider command atomically",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/OrderId" },
-          { "$ref": "#/components/parameters/ShopperToken" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
+        "tags": [
+          "Payments"
         ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePaymentAttempt" } } } },
+        "summary": "Create a Payment Attempt and enqueue a provider command atomically",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/OrderId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePaymentAttempt"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Payment Attempt created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentAttemptEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
+          "201": {
+            "description": "Payment Attempt created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAttemptEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
         }
       }
     },
     "/payment-attempts/{payment_attempt_id}": {
       "get": {
         "operationId": "getPaymentAttempt",
-        "tags": ["Payments"],
+        "tags": [
+          "Payments"
+        ],
         "summary": "Get a Payment Attempt visible to this Store and Sales Channel",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/PaymentAttemptId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+          {
+            "$ref": "#/components/parameters/PaymentAttemptId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
         ],
         "responses": {
-          "200": { "description": "Payment Attempt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentAttemptEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" }
+          "200": {
+            "description": "Payment Attempt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentAttemptEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     },
     "/payment-attempts/{payment_attempt_id}/client-action": {
       "get": {
         "operationId": "getPaymentClientAction",
-        "tags": ["Payments"],
+        "tags": [
+          "Payments"
+        ],
         "summary": "Retrieve the short-lived client action for a pending Payment Attempt",
         "description": "Returns provider-neutral client handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
-        "security": [{ "publishableKey": [] }],
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
         "parameters": [
-          { "$ref": "#/components/parameters/PaymentAttemptId" },
-          { "$ref": "#/components/parameters/ShopperToken" }
+          {
+            "$ref": "#/components/parameters/PaymentAttemptId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          }
         ],
         "responses": {
-          "200": { "description": "Payment client action. The response includes `Cache-Control: no-store`.", "headers": { "Cache-Control": { "schema": { "type": "string", "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaymentClientActionEnvelope" } } } },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "503": { "$ref": "#/components/responses/Unavailable" }
+          "200": {
+            "description": "Payment client action. The response includes `Cache-Control: no-store`.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentClientActionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
         }
       }
     }
@@ -543,309 +1081,758 @@
         "in": "query",
         "required": false,
         "description": "Enabled Store currency. Defaults to the Store default currency.",
-        "schema": { "type": "string", "pattern": "^[A-Z]{3}$" }
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
       },
       "Cursor": {
         "name": "cursor",
         "in": "query",
         "required": false,
-        "schema": { "type": "string" }
+        "schema": {
+          "type": "string"
+        }
       },
       "Limit": {
         "name": "limit",
         "in": "query",
         "required": false,
-        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
       },
       "IdempotencyKey": {
         "name": "Idempotency-Key",
         "in": "header",
         "required": true,
-        "schema": { "type": "string", "minLength": 1, "maxLength": 255 }
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
       },
       "ShopperToken": {
         "name": "x-chaos-shopper-token",
         "in": "header",
         "required": true,
-        "description": "Signed possession credential returned by shopper-session creation and echoed by Cart creation. Never place this value in URLs or logs.",
-        "schema": { "type": "string", "minLength": 1 }
-      },
-      "CustomerSession": {
-        "name": "x-chaos-customer-session",
-        "in": "header",
-        "required": true,
-        "description": "Opaque verified User session used in addition to the Store publishable key.",
-        "schema": { "type": "string", "minLength": 1 }
+        "description": "Signed shopper credential returned when the website visitor session is created. Never place this value in URLs or logs.",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "CartId": {
         "name": "cart_id",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "ProductVariantId": {
         "name": "product_variant_id",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "CheckoutId": {
         "name": "checkout_id",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "OrderId": {
         "name": "order_id",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "PaymentAttemptId": {
         "name": "payment_attempt_id",
         "in": "path",
         "required": true,
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "Locale": {
         "name": "locale",
         "in": "query",
         "required": false,
         "description": "Enabled Store Locale. Omit to use the Store default.",
-        "schema": { "$ref": "#/components/schemas/Locale" }
+        "schema": {
+          "$ref": "#/components/schemas/Locale"
+        }
       }
     },
     "schemas": {
       "AnalyticsConsent": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["analytics_storage", "advertising_storage", "policy_version"],
+        "required": [
+          "analytics_storage",
+          "advertising_storage",
+          "policy_version"
+        ],
         "properties": {
-          "analytics_storage": { "type": "boolean" },
-          "advertising_storage": { "type": "boolean" },
-          "policy_version": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$" }
+          "analytics_storage": {
+            "type": "boolean"
+          },
+          "advertising_storage": {
+            "type": "boolean"
+          },
+          "policy_version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          }
         }
       },
       "TrafficTouchpoint": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "source": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "medium": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "campaign": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "campaign_id": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "term": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "content": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 },
-          "fbclid": { "type": "string", "minLength": 1, "maxLength": 512 },
-          "gclid": { "type": "string", "minLength": 1, "maxLength": 512 }
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "medium": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "campaign": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "campaign_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "term": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "referrer_domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "fbclid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "gclid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
         }
       },
       "TrafficAttribution": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["first", "session"],
+        "required": [
+          "first",
+          "session"
+        ],
         "properties": {
-          "first": { "$ref": "#/components/schemas/TrafficTouchpoint" },
-          "session": { "$ref": "#/components/schemas/TrafficTouchpoint" },
-          "last_non_direct": { "$ref": "#/components/schemas/TrafficTouchpoint" }
+          "first": {
+            "$ref": "#/components/schemas/TrafficTouchpoint"
+          },
+          "session": {
+            "$ref": "#/components/schemas/TrafficTouchpoint"
+          },
+          "last_non_direct": {
+            "$ref": "#/components/schemas/TrafficTouchpoint"
+          }
         }
       },
       "PageViewProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path"],
+        "required": [
+          "path"
+        ],
         "properties": {
-          "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^/[^?#]*$" },
-          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "referrer_domain": { "type": "string", "minLength": 1, "maxLength": 253 }
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^/[^?#]*$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "referrer_domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 253
+          }
         }
       },
       "ViewContentProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["product_id"],
+        "required": [
+          "product_id"
+        ],
         "properties": {
-          "product_id": { "type": "string", "format": "uuid" },
-          "product_variant_id": { "type": "string", "format": "uuid" }
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_variant_id": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       },
       "SearchProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["query"],
+        "required": [
+          "query"
+        ],
         "properties": {
-          "query": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "result_count": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "result_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000
+          }
         }
       },
       "ViewDurationProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["page_view_event_id", "active_milliseconds"],
+        "required": [
+          "page_view_event_id",
+          "active_milliseconds"
+        ],
         "properties": {
-          "page_view_event_id": { "type": "string", "format": "uuid" },
-          "active_milliseconds": { "type": "integer", "minimum": 1, "maximum": 60000 }
+          "page_view_event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "active_milliseconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60000
+          }
         }
       },
       "BrowserAnalyticsEvent": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["event_id", "event_name", "schema_version", "occurred_at", "session_id", "consent", "collection_basis", "properties"],
+        "required": [
+          "event_id",
+          "event_name",
+          "schema_version",
+          "occurred_at",
+          "session_id",
+          "consent",
+          "collection_basis",
+          "properties"
+        ],
         "properties": {
-          "event_id": { "type": "string", "format": "uuid" },
-          "event_name": { "type": "string", "enum": ["page_view", "view_content", "search", "view_duration"] },
-          "schema_version": { "type": "integer", "const": 1 },
-          "occurred_at": { "type": "string", "format": "date-time" },
-          "session_id": { "type": "string", "format": "uuid" },
-          "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
-          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] },
-          "traffic": { "$ref": "#/components/schemas/TrafficAttribution" },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "type": "string",
+            "enum": [
+              "page_view",
+              "view_content",
+              "search",
+              "view_duration"
+            ]
+          },
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/AnalyticsConsent"
+          },
+          "collection_basis": {
+            "type": "string",
+            "enum": [
+              "consent",
+              "store_policy"
+            ]
+          },
+          "traffic": {
+            "$ref": "#/components/schemas/TrafficAttribution"
+          },
           "properties": {
             "oneOf": [
-              { "$ref": "#/components/schemas/PageViewProperties" },
-              { "$ref": "#/components/schemas/ViewContentProperties" },
-              { "$ref": "#/components/schemas/SearchProperties" },
-              { "$ref": "#/components/schemas/ViewDurationProperties" }
+              {
+                "$ref": "#/components/schemas/PageViewProperties"
+              },
+              {
+                "$ref": "#/components/schemas/ViewContentProperties"
+              },
+              {
+                "$ref": "#/components/schemas/SearchProperties"
+              },
+              {
+                "$ref": "#/components/schemas/ViewDurationProperties"
+              }
             ]
           }
         },
         "allOf": [
-          { "if": { "properties": { "event_name": { "const": "page_view" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/PageViewProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "view_content" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewContentProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "search" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/SearchProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "view_duration" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewDurationProperties" } } } }
+          {
+            "if": {
+              "properties": {
+                "event_name": {
+                  "const": "page_view"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "properties": {
+                  "$ref": "#/components/schemas/PageViewProperties"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "event_name": {
+                  "const": "view_content"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "properties": {
+                  "$ref": "#/components/schemas/ViewContentProperties"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "event_name": {
+                  "const": "search"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "properties": {
+                  "$ref": "#/components/schemas/SearchProperties"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "event_name": {
+                  "const": "view_duration"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "properties": {
+                  "$ref": "#/components/schemas/ViewDurationProperties"
+                }
+              }
+            }
+          }
         ]
       },
       "CollectAnalyticsEvents": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["events"],
+        "required": [
+          "events"
+        ],
         "properties": {
-          "events": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/BrowserAnalyticsEvent" } }
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/BrowserAnalyticsEvent"
+            }
+          }
         }
       },
       "AnalyticsCollectionResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["received", "stored", "duplicates", "discarded_for_consent", "discarded_for_settings", "settings_revision"],
+        "required": [
+          "received",
+          "stored",
+          "duplicates",
+          "discarded_for_consent",
+          "discarded_for_settings",
+          "settings_revision"
+        ],
         "properties": {
-          "received": { "type": "integer", "minimum": 1, "maximum": 20 },
-          "stored": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "duplicates": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "discarded_for_consent": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "discarded_for_settings": { "type": "integer", "minimum": 0, "maximum": 20 },
-          "settings_revision": { "type": "integer", "minimum": 1 }
+          "received": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "stored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "duplicates": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "discarded_for_consent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "discarded_for_settings": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "settings_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       },
       "AnalyticsCollectionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsCollectionResult" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AnalyticsCollectionResult"
+          }
+        }
       },
       "Price": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["amount_minor", "currency", "tax_inclusive"],
+        "required": [
+          "amount_minor",
+          "currency",
+          "tax_inclusive"
+        ],
         "properties": {
-          "amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "tax_inclusive": { "type": "boolean" }
+          "amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "tax_inclusive": {
+            "type": "boolean"
+          }
         }
       },
       "ProductOptionValue": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "value", "position"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "value",
+          "position"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "value": { "type": "string" },
-          "position": { "type": "integer", "minimum": 0 }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "value": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "ProductOption": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "name", "position", "values"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "position",
+          "values"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "name": { "type": "string" },
-          "position": { "type": "integer", "minimum": 0 },
-          "values": { "type": "array", "items": { "$ref": "#/components/schemas/ProductOptionValue" } }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductOptionValue"
+            }
+          }
         }
       },
       "ProductSelectedOption": {
-        "type": "object", "additionalProperties": false,
-        "required": ["option_id", "option_value_id"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "option_id",
+          "option_value_id"
+        ],
         "properties": {
-          "option_id": { "type": "string", "format": "uuid" },
-          "option_value_id": { "type": "string", "format": "uuid" }
+          "option_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "option_value_id": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       },
       "ProductCollectionReference": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "handle", "title"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "handle",
+          "title"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "handle": { "type": "string" },
-          "title": { "type": "string" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
         }
       },
       "ProductVariant": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "title", "requires_shipping", "price", "selected_options"],
+        "required": [
+          "id",
+          "title",
+          "requires_shipping",
+          "price",
+          "selected_options"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "title": { "type": "string" },
-          "sku": { "type": "string" },
-          "requires_shipping": { "type": "boolean" },
-          "price": { "$ref": "#/components/schemas/Price" },
-          "selected_options": { "type": "array", "items": { "$ref": "#/components/schemas/ProductSelectedOption" } },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "requires_shipping": {
+            "type": "boolean"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "selected_options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductSelectedOption"
+            }
+          },
           "metadata": {}
         }
       },
       "Product": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "handle", "locale", "title", "description", "options", "media", "variants", "collections"],
+        "required": [
+          "id",
+          "handle",
+          "locale",
+          "title",
+          "description",
+          "options",
+          "media",
+          "variants",
+          "collections"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "handle": { "type": "string" },
-          "locale": { "$ref": "#/components/schemas/Locale" },
-          "title": { "type": "string" },
-          "description": { "type": "string" },
-          "options": { "type": "array", "items": { "$ref": "#/components/schemas/ProductOption" } },
-          "media": { "type": "array", "items": { "$ref": "#/components/schemas/ProductMedia" } },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductOption"
+            }
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductMedia"
+            }
+          },
           "variants": {
             "type": "array",
             "minItems": 1,
-            "items": { "$ref": "#/components/schemas/ProductVariant" }
+            "items": {
+              "$ref": "#/components/schemas/ProductVariant"
+            }
           },
-          "collections": { "type": "array", "items": { "$ref": "#/components/schemas/ProductCollectionReference" } },
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductCollectionReference"
+            }
+          },
           "metadata": {}
         }
       },
       "ProductMedia": {
-        "type": "object", "additionalProperties": false,
-        "required": ["id", "media_type", "kind", "alt_text", "position", "url"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "media_type",
+          "kind",
+          "alt_text",
+          "position",
+          "url"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" }, "product_variant_id": { "type": "string", "format": "uuid" },
-          "media_type": { "type": "string" }, "kind": { "type": "string", "enum": ["image", "video"] }, "alt_text": { "type": "string", "maxLength": 500 },
-          "position": { "type": "integer", "minimum": 0, "maximum": 99 }, "url": { "type": "string", "format": "uri", "pattern": "^https://" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_variant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "alt_text": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          }
         }
       },
       "CreateCart": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "locale": { "$ref": "#/components/schemas/Locale" }
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          }
         }
       },
       "ShopperSession": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["shopper_token"],
+        "required": [
+          "shopper_token"
+        ],
         "properties": {
           "shopper_token": {
             "type": "string",
@@ -856,84 +1843,251 @@
       "ShopperSessionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/ShopperSession" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ShopperSession"
+          }
+        }
       },
       "SetCartLine": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["quantity"],
+        "required": [
+          "quantity"
+        ],
         "properties": {
-          "quantity": { "type": "integer", "format": "int32", "minimum": 1, "maximum": 999 }
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 999
+          }
         }
       },
       "CartLine": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["product_id", "product_variant_id", "product_title", "variant_title", "requires_shipping", "track_inventory", "quantity", "unit_price_amount_minor", "subtotal_amount_minor", "tax_inclusive", "media"],
+        "required": [
+          "product_id",
+          "product_variant_id",
+          "product_title",
+          "variant_title",
+          "requires_shipping",
+          "track_inventory",
+          "quantity",
+          "unit_price_amount_minor",
+          "subtotal_amount_minor",
+          "tax_inclusive",
+          "media"
+        ],
         "properties": {
-          "product_id": { "type": "string", "format": "uuid" },
-          "product_variant_id": { "type": "string", "format": "uuid" },
-          "product_title": { "type": "string" },
-          "variant_title": { "type": "string" },
-          "sku": { "type": "string" },
-          "requires_shipping": { "type": "boolean" },
-          "track_inventory": { "type": "boolean" },
-          "quantity": { "type": "integer", "format": "int32", "minimum": 1, "maximum": 999 },
-          "unit_price_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_inclusive": { "type": "boolean" },
-          "media": { "type": "array", "items": { "$ref": "#/components/schemas/ProductMedia" } }
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_variant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_title": {
+            "type": "string"
+          },
+          "variant_title": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "requires_shipping": {
+            "type": "boolean"
+          },
+          "track_inventory": {
+            "type": "boolean"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "unit_price_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_inclusive": {
+            "type": "boolean"
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductMedia"
+            }
+          }
         }
       },
       "Cart": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "price_list_id", "currency", "locale", "status", "version", "lines", "subtotal_amount_minor", "created_at", "updated_at"],
+        "required": [
+          "id",
+          "price_list_id",
+          "currency",
+          "locale",
+          "status",
+          "version",
+          "lines",
+          "subtotal_amount_minor",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "price_list_id": { "type": "string", "format": "uuid" },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "locale": { "$ref": "#/components/schemas/Locale" },
-          "status": { "type": "string", "enum": ["active", "completed", "abandoned"] },
-          "version": { "type": "integer", "format": "int64", "minimum": 0 },
-          "lines": { "type": "array", "items": { "$ref": "#/components/schemas/CartLine" } },
-          "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" },
-          "shopper_token": {
+          "id": {
             "type": "string",
-            "description": "Returned only by Cart creation. Persist securely and send as x-chaos-shopper-token for this resource lineage."
+            "format": "uuid"
+          },
+          "price_list_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "completed",
+              "abandoned"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CartLine"
+            }
+          },
+          "subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
       "CheckoutLine": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["product_id", "product_variant_id", "product_title", "variant_title", "requires_shipping", "quantity", "unit_price_amount_minor", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "total_amount_minor", "tax_inclusive"],
+        "required": [
+          "product_id",
+          "product_variant_id",
+          "product_title",
+          "variant_title",
+          "requires_shipping",
+          "quantity",
+          "unit_price_amount_minor",
+          "subtotal_amount_minor",
+          "discount_amount_minor",
+          "tax_amount_minor",
+          "total_amount_minor",
+          "tax_inclusive"
+        ],
         "properties": {
-          "product_id": { "type": "string", "format": "uuid" },
-          "product_variant_id": { "type": "string", "format": "uuid" },
-          "product_title": { "type": "string" },
-          "variant_title": { "type": "string" },
-          "sku": { "type": "string" },
-          "requires_shipping": { "type": "boolean" },
-          "track_inventory": { "type": "boolean" },
-          "quantity": { "type": "integer", "format": "int32", "minimum": 1, "maximum": 999 },
-          "unit_price_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_inclusive": { "type": "boolean" }
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_variant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_title": {
+            "type": "string"
+          },
+          "variant_title": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "requires_shipping": {
+            "type": "boolean"
+          },
+          "track_inventory": {
+            "type": "boolean"
+          },
+          "quantity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "unit_price_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "discount_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_inclusive": {
+            "type": "boolean"
+          }
         }
       },
       "CheckoutContact": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["email"],
+        "required": [
+          "email"
+        ],
         "properties": {
-          "email": { "type": "string", "format": "email", "maxLength": 320 },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 320
+          },
           "phone": {
             "type": "string",
             "pattern": "^\\+[1-9][0-9]{7,14}$",
@@ -944,27 +2098,74 @@
       "PostalAddress": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["full_name", "address_line1", "locality", "country_code"],
+        "required": [
+          "full_name",
+          "address_line1",
+          "locality",
+          "country_code"
+        ],
         "properties": {
-          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
-          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" }
+          "full_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "company": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "address_line1": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "address_line2": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "locality": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "administrative_area": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "postal_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          },
+          "country_code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          }
         }
       },
       "CreateCheckoutRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["contact", "billing_address"],
+        "required": [
+          "contact",
+          "billing_address"
+        ],
         "properties": {
-          "contact": { "$ref": "#/components/schemas/CheckoutContact" },
-          "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
+          "contact": {
+            "$ref": "#/components/schemas/CheckoutContact"
+          },
+          "billing_address": {
+            "$ref": "#/components/schemas/PostalAddress"
+          },
           "shipping_address": {
-            "allOf": [{ "$ref": "#/components/schemas/PostalAddress" }],
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PostalAddress"
+              }
+            ],
             "description": "Required when any Cart line requires shipping"
           },
           "shipping_service_id": {
@@ -973,7 +2174,9 @@
             "description": "Required for shippable Carts and revalidated when Checkout is created"
           },
           "promotion_code": {
-            "type": "string", "minLength": 1, "maxLength": 64,
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
             "description": "Optional redemption code revalidated when Checkout is created"
           }
         }
@@ -981,265 +2184,652 @@
       "QuoteShippingRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["destination_country"],
-        "properties": { "destination_country": { "type": "string", "pattern": "^[A-Za-z]{2}$" } }
+        "required": [
+          "destination_country"
+        ],
+        "properties": {
+          "destination_country": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2}$"
+          }
+        }
       },
       "ShippingOption": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["service_id", "code", "name", "amount_minor", "currency", "estimated_min_days", "estimated_max_days"],
+        "required": [
+          "service_id",
+          "code",
+          "name",
+          "amount_minor",
+          "currency",
+          "estimated_min_days",
+          "estimated_max_days"
+        ],
         "properties": {
-          "service_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
-          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-          "amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "estimated_min_days": { "type": "integer", "minimum": 0, "maximum": 365 },
-          "estimated_max_days": { "type": "integer", "minimum": 0, "maximum": 365 }
+          "service_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,64}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "estimated_min_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 365
+          },
+          "estimated_max_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 365
+          }
         }
       },
       "ShippingOptionCollectionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/ShippingOption" } } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShippingOption"
+            }
+          }
+        }
       },
       "TaxCalculation": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["rule_id", "code", "name", "country_code", "rate_basis_points"],
+        "required": [
+          "rule_id",
+          "code",
+          "name",
+          "country_code",
+          "rate_basis_points"
+        ],
         "properties": {
-          "rule_id": { "type": "string", "format": "uuid" },
-          "code": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
-          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
-          "rate_basis_points": { "type": "integer", "minimum": 0, "maximum": 10000 }
+          "rule_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,64}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "country_code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "rate_basis_points": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
         }
       },
       "PromotionCalculation": {
-        "type": "object", "additionalProperties": false,
-        "required": ["promotion_id", "handle", "name", "trigger", "value_kind", "currency", "minimum_subtotal_amount_minor", "priority"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "promotion_id",
+          "handle",
+          "name",
+          "trigger",
+          "value_kind",
+          "currency",
+          "minimum_subtotal_amount_minor",
+          "priority"
+        ],
         "properties": {
-          "promotion_id": { "type": "string", "format": "uuid" },
-          "handle": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
-          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-          "trigger": { "type": "string", "enum": ["automatic", "code"] },
-          "redemption_code": { "type": "string", "pattern": "^[A-Z0-9-]{1,64}$" },
-          "value_kind": { "type": "string", "enum": ["percentage", "fixed_amount"] },
-          "rate_basis_points": { "type": "integer", "minimum": 1, "maximum": 10000 },
-          "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
-          "maximum_amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "minimum_subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "priority": { "type": "integer", "minimum": 0, "maximum": 32767 },
-          "starts_at": { "type": "string", "format": "date-time" },
-          "ends_at": { "type": "string", "format": "date-time" }
+          "promotion_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,64}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "code"
+            ]
+          },
+          "redemption_code": {
+            "type": "string",
+            "pattern": "^[A-Z0-9-]{1,64}$"
+          },
+          "value_kind": {
+            "type": "string",
+            "enum": [
+              "percentage",
+              "fixed_amount"
+            ]
+          },
+          "rate_basis_points": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "maximum_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "minimum_subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 32767
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "Checkout": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "cart_id", "price_list_id", "currency", "locale", "status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "expires_at", "lines", "created_at"],
+        "required": [
+          "id",
+          "cart_id",
+          "price_list_id",
+          "currency",
+          "locale",
+          "status",
+          "contact",
+          "billing_address",
+          "subtotal_amount_minor",
+          "discount_amount_minor",
+          "tax_amount_minor",
+          "tax_rule",
+          "tax_inclusive",
+          "shipping_amount_minor",
+          "total_amount_minor",
+          "expires_at",
+          "lines",
+          "created_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "cart_id": { "type": "string", "format": "uuid" },
-          "customer_id": { "type": "string", "format": "uuid" },
-          "inventory_reservation_id": { "type": "string", "format": "uuid" },
-          "price_list_id": { "type": "string", "format": "uuid" },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "locale": { "$ref": "#/components/schemas/Locale" },
-          "status": { "type": "string", "enum": ["pending", "completed", "expired"] },
-          "contact": { "$ref": "#/components/schemas/CheckoutContact" },
-          "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
-          "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
-          "shipping": { "$ref": "#/components/schemas/ShippingOption" },
-          "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_rule": { "$ref": "#/components/schemas/TaxCalculation" },
-          "promotion": { "$ref": "#/components/schemas/PromotionCalculation" },
-          "tax_inclusive": { "type": "boolean" },
-          "shipping_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "lines": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/CheckoutLine" } },
-          "created_at": { "type": "string", "format": "date-time" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cart_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "inventory_reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "price_list_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "completed",
+              "expired"
+            ]
+          },
+          "contact": {
+            "$ref": "#/components/schemas/CheckoutContact"
+          },
+          "billing_address": {
+            "$ref": "#/components/schemas/PostalAddress"
+          },
+          "shipping_address": {
+            "$ref": "#/components/schemas/PostalAddress"
+          },
+          "shipping": {
+            "$ref": "#/components/schemas/ShippingOption"
+          },
+          "subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "discount_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_rule": {
+            "$ref": "#/components/schemas/TaxCalculation"
+          },
+          "promotion": {
+            "$ref": "#/components/schemas/PromotionCalculation"
+          },
+          "tax_inclusive": {
+            "type": "boolean"
+          },
+          "shipping_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/CheckoutLine"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "CartEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/Cart" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Cart"
+          }
+        }
       },
       "CheckoutEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/Checkout" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Checkout"
+          }
+        }
       },
       "OrderLine": {
         "allOf": [
-          { "$ref": "#/components/schemas/CheckoutLine" },
+          {
+            "$ref": "#/components/schemas/CheckoutLine"
+          },
           {
             "type": "object",
-            "required": ["track_inventory"],
-            "properties": { "track_inventory": { "type": "boolean" } }
+            "required": [
+              "track_inventory"
+            ],
+            "properties": {
+              "track_inventory": {
+                "type": "boolean"
+              }
+            }
           }
         ]
       },
       "OrderTransition": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "to_status", "kind", "occurred_at"],
+        "required": [
+          "id",
+          "to_status",
+          "kind",
+          "occurred_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "from_status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
-          "to_status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
-          "kind": { "type": "string", "enum": ["created", "confirmed", "cancelled"] },
-          "occurred_at": { "type": "string", "format": "date-time" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "from_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "to_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "created",
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "Order": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "order_number", "checkout_id", "price_list_id", "currency", "locale", "status", "fulfillment_status", "delivery_status", "contact", "billing_address", "subtotal_amount_minor", "discount_amount_minor", "tax_amount_minor", "tax_rule", "tax_inclusive", "shipping_amount_minor", "total_amount_minor", "lines", "transitions", "created_at", "updated_at"],
+        "required": [
+          "id",
+          "order_number",
+          "checkout_id",
+          "price_list_id",
+          "currency",
+          "locale",
+          "status",
+          "fulfillment_status",
+          "delivery_status",
+          "contact",
+          "billing_address",
+          "subtotal_amount_minor",
+          "discount_amount_minor",
+          "tax_amount_minor",
+          "tax_rule",
+          "tax_inclusive",
+          "shipping_amount_minor",
+          "total_amount_minor",
+          "lines",
+          "transitions",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "order_number": { "type": "string", "pattern": "^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$" },
-          "checkout_id": { "type": "string", "format": "uuid" },
-          "customer_id": { "type": "string", "format": "uuid" },
-          "inventory_reservation_id": { "type": "string", "format": "uuid" },
-          "price_list_id": { "type": "string", "format": "uuid" },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "locale": { "$ref": "#/components/schemas/Locale" },
-          "status": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
-          "fulfillment_status": { "type": "string", "enum": ["unfulfilled", "partially_fulfilled", "fulfilled"] },
-          "delivery_status": { "type": "string", "enum": ["not_delivered", "partially_delivered", "delivered"] },
-          "contact": { "$ref": "#/components/schemas/CheckoutContact" },
-          "billing_address": { "$ref": "#/components/schemas/PostalAddress" },
-          "shipping_address": { "$ref": "#/components/schemas/PostalAddress" },
-          "shipping": { "$ref": "#/components/schemas/ShippingOption" },
-          "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "discount_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_rule": { "$ref": "#/components/schemas/TaxCalculation" },
-          "promotion": { "$ref": "#/components/schemas/PromotionCalculation" },
-          "tax_inclusive": { "type": "boolean" },
-          "shipping_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "total_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "lines": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/OrderLine" } },
-          "transitions": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/OrderTransition" } },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "order_number": {
+            "type": "string",
+            "pattern": "^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$"
+          },
+          "checkout_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "inventory_reservation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "price_list_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled"
+            ]
+          },
+          "fulfillment_status": {
+            "type": "string",
+            "enum": [
+              "unfulfilled",
+              "partially_fulfilled",
+              "fulfilled"
+            ]
+          },
+          "delivery_status": {
+            "type": "string",
+            "enum": [
+              "not_delivered",
+              "partially_delivered",
+              "delivered"
+            ]
+          },
+          "contact": {
+            "$ref": "#/components/schemas/CheckoutContact"
+          },
+          "billing_address": {
+            "$ref": "#/components/schemas/PostalAddress"
+          },
+          "shipping_address": {
+            "$ref": "#/components/schemas/PostalAddress"
+          },
+          "shipping": {
+            "$ref": "#/components/schemas/ShippingOption"
+          },
+          "subtotal_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "discount_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "tax_rule": {
+            "$ref": "#/components/schemas/TaxCalculation"
+          },
+          "promotion": {
+            "$ref": "#/components/schemas/PromotionCalculation"
+          },
+          "tax_inclusive": {
+            "type": "boolean"
+          },
+          "shipping_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/OrderLine"
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/OrderTransition"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "OrderEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/Order" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Order"
+          }
+        }
       },
       "ExchangeOrderTrackingKey": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["tracking_key"],
-        "properties": { "tracking_key": { "type": "string", "pattern": "^otk_[A-Za-z0-9_-]{43}$" } }
+        "required": [
+          "tracking_key"
+        ],
+        "properties": {
+          "tracking_key": {
+            "type": "string",
+            "pattern": "^otk_[A-Za-z0-9_-]{43}$"
+          }
+        }
       },
       "OrderTrackingAccess": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["access_token"],
-        "properties": { "access_token": { "type": "string", "pattern": "^ots_[A-Za-z0-9_-]{43}$" } }
+        "required": [
+          "access_token"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "pattern": "^ots_[A-Za-z0-9_-]{43}$"
+          }
+        }
       },
       "OrderTrackingSession": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["access_token", "expires_at", "order"],
+        "required": [
+          "access_token",
+          "expires_at",
+          "order"
+        ],
         "properties": {
-          "access_token": { "type": "string", "pattern": "^ots_[A-Za-z0-9_-]{43}$" },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "order": { "$ref": "#/components/schemas/Order" }
+          "access_token": {
+            "type": "string",
+            "pattern": "^ots_[A-Za-z0-9_-]{43}$"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "order": {
+            "$ref": "#/components/schemas/Order"
+          }
         }
       },
       "OrderTrackingSessionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/OrderTrackingSession" } }
-      },
-      "UpdateCustomer": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": { "phone": { "type": ["string", "null"], "pattern": "^\\+[1-9][0-9]{7,14}$" } }
-      },
-      "CreateCustomerAddress": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["label", "full_name", "address_line1", "locality", "country_code"],
+        "required": [
+          "data"
+        ],
         "properties": {
-          "label": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
-          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" }
+          "data": {
+            "$ref": "#/components/schemas/OrderTrackingSession"
+          }
         }
       },
-      "CustomerAddress": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "label", "full_name", "address_line1", "locality", "country_code", "created_at", "updated_at"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "label": { "type": "string", "minLength": 1, "maxLength": 64 },
-          "full_name": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "company": { "type": "string", "minLength": 1, "maxLength": 200 },
-          "address_line1": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "address_line2": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "locality": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "administrative_area": { "type": "string", "minLength": 1, "maxLength": 100 },
-          "postal_code": { "type": "string", "minLength": 1, "maxLength": 32 },
-          "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "Customer": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "email", "addresses", "created_at", "updated_at"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "email": { "type": "string", "format": "email" },
-          "phone": { "type": "string", "pattern": "^\\+[1-9][0-9]{7,14}$" },
-          "addresses": { "type": "array", "items": { "$ref": "#/components/schemas/CustomerAddress" } },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "CustomerEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Customer" } } },
-      "CustomerAddressEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/CustomerAddress" } } },
-      "CustomerMutationEnvelope": { "type": "object", "required": ["data"], "properties": { "data": { "type": "object", "required": ["customer_id"], "properties": { "customer_id": { "type": "string", "format": "uuid" } } } } },
       "OrderCollectionEnvelope": {
         "type": "object",
-        "required": ["data", "meta"],
+        "required": [
+          "data",
+          "meta"
+        ],
         "properties": {
-          "data": { "type": "array", "items": { "$ref": "#/components/schemas/Order" } },
-          "meta": { "$ref": "#/components/schemas/Meta" }
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Order"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
         }
       },
       "CreatePaymentAttempt": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["provider"],
+        "required": [
+          "provider"
+        ],
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["stripe_checkout"],
+            "enum": [
+              "stripe_checkout"
+            ],
             "description": "The only payment provider supported by this deployment."
           },
           "return_url": {
@@ -1252,101 +2842,252 @@
       "PaymentAttempt": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "order_id", "provider", "amount_minor", "currency", "status", "created_at", "updated_at"],
+        "required": [
+          "id",
+          "order_id",
+          "provider",
+          "amount_minor",
+          "currency",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "order_id": { "type": "string", "format": "uuid" },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "order_id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "provider": {
             "type": "string",
-            "enum": ["stripe_checkout"]
+            "enum": [
+              "stripe_checkout"
+            ]
           },
-          "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
-          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
-          "status": { "type": "string", "enum": ["pending", "authorized", "captured", "failed", "cancelled"] },
-          "provider_reference": { "type": "string" },
-          "failure_code": { "type": "string" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "authorized",
+              "captured",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "provider_reference": {
+            "type": "string"
+          },
+          "failure_code": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "PaymentAttemptEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/PaymentAttempt" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PaymentAttempt"
+          }
+        }
       },
       "PaymentClientAction": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["provider", "type", "public_key", "client_token"],
+        "required": [
+          "provider",
+          "type",
+          "public_key",
+          "client_token"
+        ],
         "properties": {
           "provider": {
             "type": "string",
-            "enum": ["stripe_checkout"]
+            "enum": [
+              "stripe_checkout"
+            ]
           },
           "type": {
             "type": "string",
-            "enum": ["confirm_payment", "mount_embedded_checkout"],
+            "enum": [
+              "confirm_payment",
+              "mount_embedded_checkout"
+            ],
             "description": "confirm_payment: client_token is a PaymentIntent client secret for Stripe.js/Elements confirmation. mount_embedded_checkout: client_token is an Embedded Checkout Session client secret."
           },
-          "public_key": { "type": "string", "minLength": 1 },
-          "client_token": { "type": "string", "minLength": 1 }
+          "public_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "client_token": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "PaymentClientActionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/PaymentClientAction" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PaymentClientAction"
+          }
+        }
       },
       "Page": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["has_more"],
+        "required": [
+          "has_more"
+        ],
         "properties": {
-          "has_more": { "type": "boolean" },
-          "next_cursor": { "type": "string" }
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
         }
       },
       "Meta": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["page"],
-        "properties": { "page": { "$ref": "#/components/schemas/Page" } }
+        "required": [
+          "page"
+        ],
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          }
+        }
       },
       "ProductEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/Product" } }
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Product"
+          }
+        }
       },
       "ProductCollectionEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["data", "meta"],
+        "required": [
+          "data",
+          "meta"
+        ],
         "properties": {
           "data": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/Product" }
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
           },
-          "meta": { "$ref": "#/components/schemas/Meta" }
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
         }
       },
       "Collection": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "handle", "locale", "title", "description", "product_count"],
+        "required": [
+          "id",
+          "handle",
+          "locale",
+          "title",
+          "description",
+          "product_count"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "handle": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$" },
-          "locale": { "$ref": "#/components/schemas/Locale" },
-          "title": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "description": { "type": "string", "maxLength": 100000 },
-          "product_count": { "type": "integer", "minimum": 0, "maximum": 1000 }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "handle": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
+          },
+          "locale": {
+            "$ref": "#/components/schemas/Locale"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 100000
+          },
+          "product_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
         }
       },
-      "CollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data"], "properties": { "data": { "$ref": "#/components/schemas/Collection" } } },
-      "CollectionCollectionEnvelope": { "type": "object", "additionalProperties": false, "required": ["data", "meta"], "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Collection" } }, "meta": { "$ref": "#/components/schemas/Meta" } } },
+      "CollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Collection"
+          }
+        }
+      },
+      "CollectionCollectionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Collection"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
       "Locale": {
         "type": "string",
         "description": "Canonical enabled Store Locale (BCP 47 without extensions or private use).",
@@ -1356,67 +3097,144 @@
       "ErrorDetail": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["field", "reason"],
+        "required": [
+          "field",
+          "reason"
+        ],
         "properties": {
-          "field": { "type": "string" },
-          "reason": { "type": "string" }
+          "field": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
         }
       },
       "Error": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "message"],
+        "required": [
+          "code",
+          "message"
+        ],
         "properties": {
-          "code": { "type": "string" },
-          "message": { "type": "string" },
-          "details": { "type": "array", "items": { "$ref": "#/components/schemas/ErrorDetail" } }
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ErrorDetail"
+            }
+          }
         }
       },
       "ErrorEnvelope": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["error"],
-        "properties": { "error": { "$ref": "#/components/schemas/Error" } }
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/Error"
+          }
+        }
       }
     },
     "responses": {
       "Unauthorized": {
         "description": "Missing or invalid publishable key",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "Forbidden": {
         "description": "Credential class or scope is not allowed",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "NotFound": {
         "description": "Resource not found or not visible to this Store credential",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "BadRequest": {
         "description": "Malformed request",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "Conflict": {
         "description": "Idempotency conflict, terminal Cart, stale price, or insufficient inventory",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "ValidationFailed": {
         "description": "Invalid header, body, query, or path value",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "RateLimited": {
         "description": "Store, Sales Channel, or Shopper collection budget exceeded",
         "headers": {
           "Retry-After": {
             "description": "Seconds until the current fixed collection window expires",
-            "schema": { "type": "integer", "minimum": 1, "maximum": 60 }
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60
+            }
           }
         },
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       },
       "Unavailable": {
         "description": "A required dependency is temporarily unavailable",
-        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
       }
     }
   }

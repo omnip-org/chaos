@@ -53,7 +53,7 @@ async fn list_storefront_collections(
     let after = query
         .cursor
         .as_deref()
-        .map(|value| decode_cursor(value, CursorKind::StorefrontCollection))
+        .map(|value| decode_cursor(value, CursorKind::Collection))
         .transpose()?
         .map(CollectionId::from_uuid);
     let page = state
@@ -65,7 +65,7 @@ async fn list_storefront_collections(
         .then(|| {
             page.items
                 .last()
-                .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::StorefrontCollection))
+                .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Collection))
         })
         .flatten();
     Ok(

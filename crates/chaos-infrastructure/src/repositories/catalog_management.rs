@@ -536,7 +536,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "DELETE FROM integration.idempotency_records \
+            "DELETE FROM integration.idempotency_keys \
              WHERE scope = 'store' AND scope_id = $1",
         )
         .bind(store_id.as_uuid())
@@ -648,7 +648,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "DELETE FROM integration.idempotency_records \
+            "DELETE FROM integration.idempotency_keys \
              WHERE scope = 'store' AND scope_id = $1",
         )
         .bind(store_id.as_uuid())

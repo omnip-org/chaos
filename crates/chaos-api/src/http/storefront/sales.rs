@@ -19,7 +19,7 @@ use chaos_domain::{
     catalog::ProductVariantId,
     fulfillment::{ShippingSelection, ShippingServiceId},
     pricing::{PromotionSnapshot, TaxRuleSnapshot},
-    sales::{CartId, CheckoutId, OrderId, ShopperId},
+    sales::{CartId, CheckoutId, OrderId},
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -180,8 +180,6 @@ struct CartData {
     subtotal_amount_minor: i64,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shopper_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -211,8 +209,6 @@ struct CheckoutLineData {
 struct CheckoutData {
     id: Uuid,
     cart_id: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    customer_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -273,8 +269,6 @@ pub(super) struct OrderData {
     id: Uuid,
     order_number: String,
     checkout_id: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    customer_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
@@ -375,7 +369,8 @@ async fn create_shopper_session(
     State(state): State<ApiState>,
     CartMachine(actor): CartMachine,
 ) -> Result<ApiResponse<ShopperSessionData>, ApiError> {
-    let shopper_token = state.shopper_credentials.issue(&actor, ShopperId::new())?;
+    let shopper_id = state.storefront_sales.create_shopper(&actor).await?;
+    let shopper_token = state.shopper_credentials.issue(&actor, shopper_id)?;
     Ok(ApiResponse::created(ShopperSessionData {
         shopper_token: shopper_token.expose_secret().to_owned(),
     }))
@@ -388,7 +383,6 @@ async fn create_cart(
     ApiJson(body): ApiJson<CreateCartBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
     let idempotency = body_request(&headers, "create_cart", &body)?;
-    let machine = actor.machine.clone();
     let cart = state
         .storefront_sales
         .create_cart(CreateCartInput {
@@ -398,11 +392,7 @@ async fn create_cart(
             idempotency,
         })
         .await?;
-    let shopper_token = state.shopper_credentials.issue(&machine, cart.shopper_id)?;
-    Ok(ApiResponse::created(cart_data(
-        cart,
-        Some(shopper_token.expose_secret().to_owned()),
-    )?))
+    Ok(ApiResponse::created(cart_data(cart)?))
 }
 
 async fn get_cart(
@@ -414,7 +404,7 @@ async fn get_cart(
         .storefront_sales
         .get_cart(&actor, CartId::from_uuid(path.cart_id))
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart, None)?))
+    Ok(ApiResponse::ok(cart_data(cart)?))
 }
 
 async fn set_cart_line(
@@ -439,7 +429,7 @@ async fn set_cart_line(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart, None)?))
+    Ok(ApiResponse::ok(cart_data(cart)?))
 }
 
 async fn remove_cart_line(
@@ -462,7 +452,7 @@ async fn remove_cart_line(
             idempotency,
         })
         .await?;
-    Ok(ApiResponse::ok(cart_data(cart, None)?))
+    Ok(ApiResponse::ok(cart_data(cart)?))
 }
 
 async fn create_checkout(
@@ -682,10 +672,7 @@ fn body_request<T: Serialize>(
     })
 }
 
-fn cart_data(
-    cart: CartDetail,
-    shopper_token: Option<String>,
-) -> Result<CartData, ApplicationError> {
+fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
     Ok(CartData {
         id: cart.id.as_uuid(),
         price_list_id: cart.price_list_id.as_uuid(),
@@ -697,7 +684,6 @@ fn cart_data(
         subtotal_amount_minor: cart.subtotal_amount_minor,
         created_at: cart.created_at.into(),
         updated_at: cart.updated_at.into(),
-        shopper_token,
     })
 }
 
@@ -734,7 +720,6 @@ fn checkout_data(checkout: CheckoutDetail) -> Result<CheckoutData, ApplicationEr
     Ok(CheckoutData {
         id: checkout.id.as_uuid(),
         cart_id: checkout.cart_id.as_uuid(),
-        customer_id: checkout.customer_id.map(|id| id.as_uuid()),
         inventory_reservation_id: checkout.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: checkout.price_list_id.as_uuid(),
         currency: checkout.currency.as_str().to_owned(),
@@ -781,7 +766,6 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         id: order.id.as_uuid(),
         order_number: order.order_number.as_str().into(),
         checkout_id: order.checkout_id.as_uuid(),
-        customer_id: order.customer_id.map(|id| id.as_uuid()),
         inventory_reservation_id: order.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),

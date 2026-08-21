@@ -117,7 +117,7 @@ async fn list_product_reviews(
     let after = query
         .cursor
         .as_deref()
-        .map(|value| decode_cursor(value, CursorKind::StorefrontReview))
+        .map(|value| decode_cursor(value, CursorKind::Review))
         .transpose()?
         .map(ReviewId::from_uuid);
     let page = state
@@ -131,7 +131,7 @@ async fn list_product_reviews(
                 .iter()
                 .rev()
                 .find(|item| item.parent_review_id.is_none())
-                .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::StorefrontReview))
+                .map(|item| encode_cursor(item.id.as_uuid(), CursorKind::Review))
         })
         .flatten();
     Ok(ApiResponse::ok(nest_replies(page.items)).with_meta(page_meta(page.has_more, next_cursor)))

@@ -708,7 +708,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         .await
         .map_err(database_error)?;
         sqlx::query(
-            "INSERT INTO integration.outbox_events \
+            "INSERT INTO integration.event_outbox \
              (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.initiated', $4)",
         )
@@ -885,7 +885,7 @@ impl PaymentRepository for PostgresPaymentRepository {
         .ok_or_else(provider_unavailable)?;
         set_config(&mut transaction, "app.store_id", account.1).await?;
         let result = sqlx::query(
-            "INSERT INTO integration.webhook_inbox \
+            "INSERT INTO integration.provider_webhooks \
              (id, store_id, provider, provider_account_id, provider_event_id, event_type, \
               payload, verified_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -1208,7 +1208,7 @@ impl IntegrationQueue for PostgresPaymentRepository {
     async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
             "SELECT id, store_id, event_type, payload, attempts \
-             FROM integration.claim_outbox_events($1)",
+             FROM integration.claim_event_outbox($1)",
         )
         .bind(i32::from(limit.clamp(1, 100)))
         .fetch_all(&self.pool)
@@ -1267,7 +1267,7 @@ async fn insert_outbox(
     return_url: Option<&str>,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO integration.outbox_events \
+        "INSERT INTO integration.event_outbox \
          (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
@@ -1487,7 +1487,7 @@ async fn apply_payment_event(
         )
         .await?;
         sqlx::query(
-            "INSERT INTO integration.outbox_events \
+            "INSERT INTO integration.event_outbox \
              (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.captured', $4)",
         )
@@ -1628,7 +1628,7 @@ async fn apply_refund_event(
     .map_err(database_error)?;
     if refund.status() == RefundStatus::Succeeded {
         sqlx::query(
-            "INSERT INTO integration.outbox_events \
+            "INSERT INTO integration.event_outbox \
              (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
              VALUES ($1, $2, 'refund', $3, 'analytics.refund.succeeded', $4)",
         )
@@ -1684,7 +1684,7 @@ async fn finish_outbox_job(
         Err(failure) => (false, failure),
     };
     let finished: Option<bool> =
-        sqlx::query_scalar("SELECT integration.finish_outbox_event($1, $2, $3, $4, $5, $6)")
+        sqlx::query_scalar("SELECT integration.finish_event_outbox($1, $2, $3, $4, $5, $6)")
             .bind(job_id)
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)

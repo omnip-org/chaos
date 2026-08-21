@@ -44,7 +44,7 @@ preserve the dependency direction in
 | Products, variants, collections, media | `catalog` | MCP catalog tools and catalog repositories | `commerce` |
 | Prices, promotions, and tax | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
 | Stock and reservations | `inventory` | MCP inventory tools and inventory repository | `commerce` |
-| Carts, checkout, customers, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
+| Shopper, carts, checkout, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
 | Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
 | Webhooks, outbox, and idempotency | application ports | Worker loops and integration repositories | `integration` |
@@ -80,11 +80,10 @@ not in application use cases.
 
 - `openapi/` contains the generated or reviewed HTTP contracts.
 - `packages/js/` is the Storefront JavaScript client.
-- `migrations/0002_identity.sql`, `0003_commerce.sql`, and
-  `0004_integration.sql` are the original business-schema bootstrap files;
-  later numbered migrations, including integration capability changes, fix
-  forward from that baseline. `0001_platform.sql` and
-  `0005_runtime_hardening.sql` own platform setup and final grants.
+- `migrations/0001_platform.sql`, `0002_identity.sql`, `0003_commerce.sql`,
+  and `0004_integration.sql` are the fresh bootstrap schema. The commerce
+  schema persists one `commerce.shoppers` identity per website visit; cart,
+  checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS
   certificate used behind Cloudflare.
 - `scripts/storefront-demo.mjs` exercises the supported commerce flow.

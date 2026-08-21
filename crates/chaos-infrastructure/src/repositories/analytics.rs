@@ -6,7 +6,6 @@ use chaos_domain::{
         TrafficAttribution, TrafficTouchpoint,
     },
     identity::UserId,
-    sales::CustomerId,
     store::StoreId,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +17,7 @@ use uuid::Uuid;
 use super::idempotency::{self, IdempotencyScope};
 
 const UPDATE_SETTINGS_OPERATION: &str = "analytics.update_settings";
-const CONFIGURE_CONNECTION_OPERATION: &str = "analytics.configure_connection";
+const CONFIGURE_DESTINATION_OPERATION: &str = "analytics.configure_destination";
 
 pub struct PostgresAnalyticsEventRepository {
     pool: PgPool,
@@ -51,7 +50,7 @@ struct SettingsSnapshot {
 }
 
 #[derive(Deserialize, Serialize)]
-struct ConnectionSnapshot {
+struct DestinationSnapshot {
     id: Uuid,
     store_id: Uuid,
     provider: String,
@@ -114,7 +113,7 @@ async fn load_settings(
     tx: &mut Transaction<'_, Postgres>,
     store: StoreId,
 ) -> Result<Option<SettingsRow>, ApplicationError> {
-    sqlx::query_as("SELECT store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at FROM integration.analytics_settings WHERE store_id=$1").bind(store.as_uuid()).fetch_optional(&mut **tx).await.map_err(db)
+    sqlx::query_as("SELECT store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at FROM integration.analytics_policy WHERE store_id=$1").bind(store.as_uuid()).fetch_optional(&mut **tx).await.map_err(db)
 }
 
 #[async_trait]
@@ -156,7 +155,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, actor.store_id.as_uuid(), None).await?;
-        let provider_enabled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM integration.analytics_connections WHERE store_id=$1 AND enabled)").bind(actor.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
+        let provider_enabled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM integration.analytics_destinations WHERE store_id=$1 AND enabled)").bind(actor.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
         let mut count = 0;
         for event in events {
             let mut columns = browser_columns(event.properties());
@@ -179,7 +178,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             .await
             .map_err(db)?;
             let duplicate: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM integration.commerce_events WHERE store_id=$1 AND event_id=$2)",
+                "SELECT EXISTS(SELECT 1 FROM integration.analytics_events WHERE store_id=$1 AND event_id=$2)",
             )
             .bind(actor.store_id.as_uuid())
             .bind(event.event_id())
@@ -189,7 +188,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
             let id: Option<Uuid> = if duplicate {
                 None
             } else {
-                sqlx::query_scalar("INSERT INTO integration.commerce_events (id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,session_id,product_id,product_variant_id,cart_id,checkout_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),$1,$2,$3,$4::integration.commerce_event_name,'browser',$5::integration.browser_collection_basis,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id")
+                sqlx::query_scalar("INSERT INTO integration.analytics_events (id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,session_id,product_id,product_variant_id,cart_id,checkout_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),$1,$2,$3,$4::integration.analytics_event_name,'browser',$5::integration.browser_collection_basis,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id")
                     .bind(event.event_id())
                     .bind(actor.store_id.as_uuid())
                     .bind(channel.as_uuid())
@@ -278,7 +277,7 @@ impl AnalyticsSettingsRepository for PostgresAnalyticsEventRepository {
             tx.commit().await.map_err(db)?;
             return Ok(result);
         }
-        let r:SettingsRow=sqlx::query_as("INSERT INTO integration.analytics_settings(store_id,revision,collection_enabled,browser_collection_mode,provider_reporting_enabled,updated_by,updated_at) VALUES($1,1,$2,$3::integration.browser_collection_mode,$4,$5,$6) ON CONFLICT(store_id) DO UPDATE SET revision=integration.analytics_settings.revision+1,collection_enabled=EXCLUDED.collection_enabled,browser_collection_mode=EXCLUDED.browser_collection_mode,provider_reporting_enabled=EXCLUDED.provider_reporting_enabled,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at").bind(store.as_uuid()).bind(p.collection_enabled()).bind(p.browser_collection_mode().as_str()).bind(p.provider_reporting_enabled()).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
+        let r:SettingsRow=sqlx::query_as("INSERT INTO integration.analytics_policy(store_id,revision,collection_enabled,browser_collection_mode,provider_reporting_enabled,updated_by,updated_at) VALUES($1,1,$2,$3::integration.browser_collection_mode,$4,$5,$6) ON CONFLICT(store_id) DO UPDATE SET revision=integration.analytics_policy.revision+1,collection_enabled=EXCLUDED.collection_enabled,browser_collection_mode=EXCLUDED.browser_collection_mode,provider_reporting_enabled=EXCLUDED.provider_reporting_enabled,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at").bind(store.as_uuid()).bind(p.collection_enabled()).bind(p.browser_collection_mode().as_str()).bind(p.provider_reporting_enabled()).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
         let result = row_settings(r)?;
         idempotency::complete(
             &mut tx,
@@ -311,7 +310,7 @@ impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
             Uuid,
             String,
             String,
-            Option<Uuid>,
+            Uuid,
             OffsetDateTime,
             OffsetDateTime,
             bool,
@@ -326,19 +325,19 @@ impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
                         'provider_reference', d.provider_reference,
                         'last_error', d.last_error
                     ) ORDER BY c.provider) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb)
-             FROM integration.commerce_events e
-             LEFT JOIN integration.analytics_event_deliveries d
-               ON d.store_id=e.store_id AND d.commerce_event_id=e.id
-             LEFT JOIN integration.analytics_connections c
-               ON c.store_id=d.store_id AND c.id=d.connection_id
+             FROM integration.analytics_events e
+             LEFT JOIN integration.analytics_deliveries d
+               ON d.store_id=e.store_id AND d.analytics_event_id=e.id
+             LEFT JOIN integration.analytics_destinations c
+               ON c.store_id=d.store_id AND c.id=d.destination_id
              WHERE e.store_id=$1
                AND ($3::uuid IS NULL OR e.id < $3)
                AND ($4::text IS NULL OR e.event_name::text=$4)
                AND ($5::text IS NULL OR e.source::text=$5)
                AND ($6::text IS NULL OR EXISTS (
-                   SELECT 1 FROM integration.analytics_event_deliveries filter_delivery
+                   SELECT 1 FROM integration.analytics_deliveries filter_delivery
                     WHERE filter_delivery.store_id=e.store_id
-                      AND filter_delivery.commerce_event_id=e.id
+                      AND filter_delivery.analytics_event_id=e.id
                       AND filter_delivery.delivery_status::text=$6
                ))
                AND ($7::uuid IS NULL OR e.shopper_id=$7)
@@ -401,18 +400,18 @@ impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
-impl AnalyticsConnectionRepository for PostgresAnalyticsEventRepository {
-    async fn get_connection(
+impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
+    async fn get_destination(
         &self,
         actor: StoreActor,
         store: StoreId,
         provider: &str,
-    ) -> Result<Option<AnalyticsConnection>, ApplicationError> {
+    ) -> Result<Option<AnalyticsDestination>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
-        let r:Option<(Uuid,String,String,String,Value,bool,OffsetDateTime,OffsetDateTime)>=sqlx::query_as("SELECT id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_at,updated_at FROM integration.analytics_connections WHERE store_id=$1 AND provider=$2").bind(store.as_uuid()).bind(provider).fetch_optional(&mut *tx).await.map_err(db)?;
+        let r:Option<(Uuid,String,String,String,Value,bool,OffsetDateTime,OffsetDateTime)>=sqlx::query_as("SELECT id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_at,updated_at FROM integration.analytics_destinations WHERE store_id=$1 AND provider=$2").bind(store.as_uuid()).bind(provider).fetch_optional(&mut *tx).await.map_err(db)?;
         tx.commit().await.map_err(db)?;
-        Ok(r.map(|r| AnalyticsConnection {
+        Ok(r.map(|r| AnalyticsDestination {
             id: r.0,
             store_id: store,
             provider: r.1,
@@ -424,30 +423,30 @@ impl AnalyticsConnectionRepository for PostgresAnalyticsEventRepository {
             updated_at: r.7,
         }))
     }
-    async fn configure_connection(
+    async fn configure_destination(
         &self,
         actor: StoreActor,
         store: StoreId,
-        c: AnalyticsConnectionConfiguration,
+        c: AnalyticsDestinationConfiguration,
         request: &IdempotencyRequest,
         now: OffsetDateTime,
-    ) -> Result<AnalyticsConnection, ApplicationError> {
+    ) -> Result<AnalyticsDestination, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut tx,
             &IdempotencyScope::Store(store.as_uuid()),
-            CONFIGURE_CONNECTION_OPERATION,
+            CONFIGURE_DESTINATION_OPERATION,
             request,
         )
         .await?
         {
-            let result = connection_from_snapshot(snapshot)?;
+            let result = destination_from_snapshot(snapshot)?;
             tx.commit().await.map_err(db)?;
             return Ok(result);
         }
-        let r:(Uuid,String,String,String,Value,bool,OffsetDateTime,OffsetDateTime)=sqlx::query_as("INSERT INTO integration.analytics_connections(id,store_id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_by,created_at,updated_at) VALUES(uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT(store_id,provider) DO UPDATE SET external_account_reference=EXCLUDED.external_account_reference,credential_secret_reference=EXCLUDED.credential_secret_reference,configuration=EXCLUDED.configuration,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at RETURNING id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_at,updated_at").bind(store.as_uuid()).bind(c.provider).bind(c.external_account_reference).bind(c.credential_secret_reference).bind(c.configuration).bind(c.enabled).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
-        let result = AnalyticsConnection {
+        let r:(Uuid,String,String,String,Value,bool,OffsetDateTime,OffsetDateTime)=sqlx::query_as("INSERT INTO integration.analytics_destinations(id,store_id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_by,created_at,updated_at) VALUES(uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$8) ON CONFLICT(store_id,provider) DO UPDATE SET external_account_reference=EXCLUDED.external_account_reference,credential_secret_reference=EXCLUDED.credential_secret_reference,configuration=EXCLUDED.configuration,enabled=EXCLUDED.enabled,updated_at=EXCLUDED.updated_at RETURNING id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_at,updated_at").bind(store.as_uuid()).bind(c.provider).bind(c.external_account_reference).bind(c.credential_secret_reference).bind(c.configuration).bind(c.enabled).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
+        let result = AnalyticsDestination {
             id: r.0,
             store_id: store,
             provider: r.1,
@@ -461,10 +460,10 @@ impl AnalyticsConnectionRepository for PostgresAnalyticsEventRepository {
         idempotency::complete(
             &mut tx,
             &IdempotencyScope::Store(store.as_uuid()),
-            CONFIGURE_CONNECTION_OPERATION,
+            CONFIGURE_DESTINATION_OPERATION,
             request,
             200,
-            connection_snapshot(&result)?,
+            destination_snapshot(&result)?,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -499,7 +498,7 @@ impl AnalyticsEventRecorderRepository for PostgresAnalyticsEventRepository {
     ) -> Result<(), ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let provider_reporting_enabled:bool=sqlx::query_scalar("SELECT COALESCE((SELECT provider_reporting_enabled FROM integration.analytics_settings WHERE store_id=$1),false) AND EXISTS (SELECT 1 FROM integration.analytics_connections WHERE store_id=$1 AND enabled)").bind(job.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
+        let provider_reporting_enabled:bool=sqlx::query_scalar("SELECT COALESCE((SELECT provider_reporting_enabled FROM integration.analytics_policy WHERE store_id=$1),false) AND EXISTS (SELECT 1 FROM integration.analytics_destinations WHERE store_id=$1 AND enabled)").bind(job.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
         let _ = insert_server(&mut tx, job, now, provider_reporting_enabled).await?;
         tx.commit().await.map_err(db)?;
         Ok(())
@@ -512,7 +511,7 @@ impl AnalyticsEventRecorderRepository for PostgresAnalyticsEventRepository {
     ) -> Result<(), ApplicationError> {
         let (ok, e) = result.map_or_else(|e| (false, e), |_| (true, String::new()));
         let done: Option<bool> =
-            sqlx::query_scalar("SELECT integration.finish_outbox_event($1,$2,$3,$4,8,$5)")
+            sqlx::query_scalar("SELECT integration.finish_event_outbox($1,$2,$3,$4,8,$5)")
                 .bind(job.id)
                 .bind(i32::try_from(job.attempts).unwrap_or(i32::MAX))
                 .bind(ok)
@@ -536,7 +535,7 @@ impl AnalyticsEventRecorderRepository for PostgresAnalyticsEventRepository {
 impl AnalyticsDeliveryRepository for PostgresAnalyticsEventRepository {
     async fn schedule_deliveries(&self, limit: u16) -> Result<usize, ApplicationError> {
         let scheduled: Option<i64> =
-            sqlx::query_scalar("SELECT integration.schedule_analytics_event_deliveries($1)")
+            sqlx::query_scalar("SELECT integration.schedule_analytics_deliveries($1)")
                 .bind(i64::from(limit))
                 .fetch_one(&self.pool)
                 .await
@@ -548,13 +547,13 @@ impl AnalyticsDeliveryRepository for PostgresAnalyticsEventRepository {
         &self,
         limit: u16,
     ) -> Result<Vec<AnalyticsDeliveryJob>, ApplicationError> {
-        let r:Vec<(Uuid,Uuid,Uuid,Uuid,i32)>=sqlx::query_as("SELECT id,store_id,connection_id,commerce_event_id,attempts FROM integration.claim_analytics_event_deliveries($1)").bind(i32::from(limit)).fetch_all(&self.pool).await.map_err(db)?;
+        let r:Vec<(Uuid,Uuid,Uuid,Uuid,i32)>=sqlx::query_as("SELECT id,store_id,destination_id,analytics_event_id,attempts FROM integration.claim_analytics_deliveries($1)").bind(i32::from(limit)).fetch_all(&self.pool).await.map_err(db)?;
         Ok(r.into_iter()
             .map(|r| AnalyticsDeliveryJob {
                 id: r.0,
                 store_id: StoreId::from_uuid(r.1),
-                connection_id: r.2,
-                commerce_event_id: r.3,
+                destination_id: r.2,
+                analytics_event_id: r.3,
                 attempts: u32::try_from(r.4).unwrap_or(u32::MAX),
             })
             .collect())
@@ -565,7 +564,27 @@ impl AnalyticsDeliveryRepository for PostgresAnalyticsEventRepository {
     ) -> Result<AnalyticsDeliveryCommand, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let r:(Uuid,String,String,String,Value,String,OffsetDateTime,Option<Uuid>,Option<Uuid>,Option<String>,Option<i64>,Option<String>,Value)=sqlx::query_as("SELECT e.event_id,c.provider,c.external_account_reference,c.credential_secret_reference,c.configuration,e.event_name::text,e.occurred_at,e.shopper_id,e.customer_id,e.properties->>'source_url',e.value_minor,e.currency,e.properties || jsonb_strip_nulls(jsonb_build_object('content_ids',CASE WHEN e.product_variant_id IS NOT NULL THEN jsonb_build_array(e.product_variant_id::text) WHEN e.product_id IS NOT NULL THEN jsonb_build_array(e.product_id::text) END,'path',e.path,'order_id',e.order_id,'payment_attempt_id',e.payment_attempt_id,'refund_id',e.refund_id)) FROM integration.analytics_event_deliveries d JOIN integration.commerce_events e ON e.store_id=d.store_id AND e.id=d.commerce_event_id JOIN integration.analytics_connections c ON c.store_id=d.store_id AND c.id=d.connection_id WHERE d.store_id=$1 AND d.id=$2 AND d.delivery_status='pending' AND c.enabled").bind(job.store_id.as_uuid()).bind(job.id).fetch_one(&mut *tx).await.map_err(db)?;
+        let r: (
+            Uuid,
+            String,
+            String,
+            String,
+            Value,
+            String,
+            OffsetDateTime,
+            Uuid,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Value,
+        ) = sqlx::query_as(
+            "SELECT e.event_id,destination.provider,destination.external_account_reference,destination.credential_secret_reference,destination.configuration,e.event_name::text,e.occurred_at,e.shopper_id,e.properties->>'source_url',e.value_minor,e.currency,e.properties || jsonb_strip_nulls(jsonb_build_object('content_ids',CASE WHEN e.product_variant_id IS NOT NULL THEN jsonb_build_array(e.product_variant_id::text) WHEN e.product_id IS NOT NULL THEN jsonb_build_array(e.product_id::text) END,'path',e.path,'order_id',e.order_id,'payment_attempt_id',e.payment_attempt_id,'refund_id',e.refund_id)) FROM integration.analytics_deliveries delivery JOIN integration.analytics_events e ON e.store_id=delivery.store_id AND e.id=delivery.analytics_event_id JOIN integration.analytics_destinations destination ON destination.store_id=delivery.store_id AND destination.id=delivery.destination_id WHERE delivery.store_id=$1 AND delivery.id=$2 AND delivery.delivery_status='pending' AND destination.enabled",
+        )
+        .bind(job.store_id.as_uuid())
+        .bind(job.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
         tx.commit().await.map_err(db)?;
         Ok(AnalyticsDeliveryCommand {
             delivery_id: job.id,
@@ -577,11 +596,10 @@ impl AnalyticsDeliveryRepository for PostgresAnalyticsEventRepository {
             event_name: r.5,
             occurred_at: r.6,
             shopper_id: r.7,
-            customer_id: r.8.map(CustomerId::from_uuid),
-            source_url: r.9,
-            value_minor: r.10,
-            currency: r.11,
-            properties: r.12,
+            source_url: r.8,
+            value_minor: r.9,
+            currency: r.10,
+            properties: r.11,
         })
     }
     async fn finish_delivery(
@@ -652,7 +670,7 @@ async fn insert_server(
         } else {
             "any"
         };
-        let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,customer_id,checkout_id,order_id,payment_attempt_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),CASE WHEN $6='purchase' THEN o.id ELSE a.id END,a.store_id,o.sales_channel_id,$6::integration.commerce_event_name,'server','server',1,o.shopper_id,o.customer_id,o.checkout_id,o.id,a.id,a.amount_minor,a.currency,true,false,$3 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$1,$2 FROM commerce.payment_attempts a JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=a.store_id WHERE a.store_id=$4 AND a.id=$5 AND ($7 = 'any' OR a.status::text=$7) AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=a.store_id AND duplicate.event_id=CASE WHEN $6='purchase' THEN o.id ELSE a.id END) RETURNING id";
+        let query = "INSERT INTO integration.analytics_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,checkout_id,order_id,payment_attempt_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),CASE WHEN $6='purchase' THEN o.id ELSE a.id END,a.store_id,o.sales_channel_id,$6::integration.analytics_event_name,'server','server',1,o.shopper_id,o.checkout_id,o.id,a.id,a.amount_minor,a.currency,true,false,$3 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$1,$2 FROM commerce.payment_attempts a JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_policy s ON s.store_id=a.store_id WHERE a.store_id=$4 AND a.id=$5 AND ($7 = 'any' OR a.status::text=$7) AND NOT EXISTS (SELECT 1 FROM integration.analytics_events duplicate WHERE duplicate.store_id=a.store_id AND duplicate.event_id=CASE WHEN $6='purchase' THEN o.id ELSE a.id END) RETURNING id";
         return sqlx::query_scalar(query)
             .bind(job.occurred_at)
             .bind(now)
@@ -666,7 +684,7 @@ async fn insert_server(
             .map_err(db);
     }
     if name == "refund" {
-        let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,customer_id,checkout_id,order_id,payment_attempt_id,refund_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,r.store_id,o.sales_channel_id,'refund','server','server',1,o.shopper_id,o.customer_id,o.checkout_id,o.id,a.id,r.id,r.amount_minor,r.currency,true,false,$4 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$2,$3 FROM commerce.refunds r JOIN commerce.payment_attempts a ON a.store_id=r.store_id AND a.id=r.payment_attempt_id JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=r.store_id WHERE r.store_id=$5 AND r.id=$6 AND r.status='succeeded' AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=r.store_id AND duplicate.event_id=$1) RETURNING id";
+        let query = "INSERT INTO integration.analytics_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,checkout_id,order_id,payment_attempt_id,refund_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,r.store_id,o.sales_channel_id,'refund','server','server',1,o.shopper_id,o.checkout_id,o.id,a.id,r.id,r.amount_minor,r.currency,true,false,$4 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$2,$3 FROM commerce.refunds r JOIN commerce.payment_attempts a ON a.store_id=r.store_id AND a.id=r.payment_attempt_id JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_policy s ON s.store_id=r.store_id WHERE r.store_id=$5 AND r.id=$6 AND r.status='succeeded' AND NOT EXISTS (SELECT 1 FROM integration.analytics_events duplicate WHERE duplicate.store_id=r.store_id AND duplicate.event_id=$1) RETURNING id";
         return sqlx::query_scalar(query)
             .bind(job.aggregate_id)
             .bind(job.occurred_at)
@@ -688,7 +706,7 @@ async fn insert_server(
                 code: "invalid_analytics_event_payload",
                 message: "the AddToCart event is missing a Product Variant",
             })?;
-        let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,customer_id,cart_id,product_variant_id,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,c.store_id,c.sales_channel_id,'add_to_cart','server','server',1,c.shopper_id,c.customer_id,c.id,$2,true,false,$3 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),$4,$5,$6 FROM commerce.carts c LEFT JOIN integration.analytics_settings s ON s.store_id=c.store_id WHERE c.store_id=$7 AND c.id=$8 AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=c.store_id AND duplicate.event_id=$1) RETURNING id";
+        let query = "INSERT INTO integration.analytics_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,cart_id,product_variant_id,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,c.store_id,c.sales_channel_id,'add_to_cart','server','server',1,c.shopper_id,c.id,$2,true,false,$3 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),$4,$5,$6 FROM commerce.carts c LEFT JOIN integration.analytics_policy s ON s.store_id=c.store_id WHERE c.store_id=$7 AND c.id=$8 AND NOT EXISTS (SELECT 1 FROM integration.analytics_events duplicate WHERE duplicate.store_id=c.store_id AND duplicate.event_id=$1) RETURNING id";
         return sqlx::query_scalar(query)
             .bind(job.id)
             .bind(variant_id)
@@ -702,7 +720,7 @@ async fn insert_server(
             .await
             .map_err(db);
     }
-    let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,customer_id,cart_id,checkout_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,c.store_id,c.sales_channel_id,'initiate_checkout','server','server',1,c.shopper_id,c.customer_id,c.cart_id,c.id,c.total_amount_minor,c.currency,true,false,$2 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),$3,$4,$5 FROM commerce.checkouts c LEFT JOIN integration.analytics_settings s ON s.store_id=c.store_id WHERE c.store_id=$6 AND c.id=$7 AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=c.store_id AND duplicate.event_id=$1) RETURNING id";
+    let query = "INSERT INTO integration.analytics_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,cart_id,checkout_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,c.store_id,c.sales_channel_id,'initiate_checkout','server','server',1,c.shopper_id,c.cart_id,c.id,c.total_amount_minor,c.currency,true,false,$2 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),$3,$4,$5 FROM commerce.checkouts c LEFT JOIN integration.analytics_policy s ON s.store_id=c.store_id WHERE c.store_id=$6 AND c.id=$7 AND NOT EXISTS (SELECT 1 FROM integration.analytics_events duplicate WHERE duplicate.store_id=c.store_id AND duplicate.event_id=$1) RETURNING id";
     sqlx::query_scalar(query)
         .bind(job.id)
         .bind(provider_reporting_enabled)
@@ -872,8 +890,8 @@ fn settings_from_snapshot(value: Value) -> Result<StoreAnalyticsSettings, Applic
     })
 }
 
-fn connection_snapshot(item: &AnalyticsConnection) -> Result<Value, ApplicationError> {
-    snapshot_value(ConnectionSnapshot {
+fn destination_snapshot(item: &AnalyticsDestination) -> Result<Value, ApplicationError> {
+    snapshot_value(DestinationSnapshot {
         id: item.id,
         store_id: item.store_id.as_uuid(),
         provider: item.provider.clone(),
@@ -886,9 +904,9 @@ fn connection_snapshot(item: &AnalyticsConnection) -> Result<Value, ApplicationE
     })
 }
 
-fn connection_from_snapshot(value: Value) -> Result<AnalyticsConnection, ApplicationError> {
-    let item: ConnectionSnapshot = parse_snapshot(value)?;
-    Ok(AnalyticsConnection {
+fn destination_from_snapshot(value: Value) -> Result<AnalyticsDestination, ApplicationError> {
+    let item: DestinationSnapshot = parse_snapshot(value)?;
+    Ok(AnalyticsDestination {
         id: item.id,
         store_id: StoreId::from_uuid(item.store_id),
         provider: item.provider,
@@ -980,7 +998,7 @@ mod tests {
         .unwrap();
         sqlx::query("INSERT INTO commerce.sales_channels(id,store_id,code,name,kind,is_default) VALUES($1,$2,'web','Web','web',true)")
             .bind(channel_id.as_uuid()).bind(store_id.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO integration.analytics_connections(id,store_id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_by,created_at,updated_at) VALUES(uuidv7(),$1,'meta','12345','env://CHAOS_ANALYTICS_SECRET_TEST','{}',true,$2,$3,$3)")
+        sqlx::query("INSERT INTO integration.analytics_destinations(id,store_id,provider,external_account_reference,credential_secret_reference,configuration,enabled,created_by,created_at,updated_at) VALUES(uuidv7(),$1,'meta','12345','env://CHAOS_ANALYTICS_SECRET_TEST','{}',true,$2,$3,$3)")
             .bind(store_id.as_uuid()).bind(user_id.as_uuid()).bind(now).execute(&pool).await.unwrap();
 
         let actor = MachineActor {
@@ -1073,7 +1091,7 @@ mod tests {
             .await
             .unwrap();
         let status: String = sqlx::query_scalar(
-            "SELECT delivery_status::text FROM integration.analytics_event_deliveries WHERE id=$1",
+            "SELECT delivery_status::text FROM integration.analytics_deliveries WHERE id=$1",
         )
         .bind(job.id)
         .fetch_one(&pool)
@@ -1112,7 +1130,6 @@ mod tests {
             BrowserCollectionMode::OptOut
         );
 
-        let customer_id = Uuid::now_v7();
         let shopper_id = Uuid::now_v7();
         let price_list_id = Uuid::now_v7();
         let cart_id = Uuid::now_v7();
@@ -1127,27 +1144,24 @@ mod tests {
             .unwrap();
         sqlx::query("INSERT INTO commerce.price_lists(id,store_id,code,name,currency,status) VALUES($1,$2,'default','Default','USD','active')")
             .bind(price_list_id).bind(store_id.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO commerce.customers(id,store_id,user_id,email) VALUES($1,$2,$3,$4)",
-        )
-        .bind(customer_id)
-        .bind(store_id.as_uuid())
-        .bind(user_id.as_uuid())
-        .bind(format!("customer-{}@example.com", customer_id.simple()))
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO commerce.carts(id,store_id,sales_channel_id,shopper_id,customer_id,price_list_id,currency) VALUES($1,$2,$3,$4,$5,$6,'USD')")
-            .bind(cart_id).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(shopper_id).bind(customer_id).bind(price_list_id).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO commerce.checkouts(id,store_id,cart_id,shopper_id,customer_id,sales_channel_id,price_list_id,currency,subtotal_amount_minor,discount_amount_minor,tax_amount_minor,tax_inclusive,shipping_amount_minor,total_amount_minor,expires_at,status,closed_at) VALUES($1,$2,$3,$4,$5,$6,$7,'USD',1000,0,0,false,0,1000,$8,'completed',$9)")
-            .bind(checkout_id).bind(store_id.as_uuid()).bind(cart_id).bind(shopper_id).bind(customer_id).bind(channel_id.as_uuid()).bind(price_list_id).bind(now + Duration::hours(1)).bind(now).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO commerce.orders(id,store_id,order_number,sales_channel_id,checkout_id,shopper_id,customer_id,price_list_id,currency,subtotal_amount_minor,discount_amount_minor,tax_amount_minor,tax_inclusive,shipping_amount_minor,total_amount_minor,status) VALUES($1,$2,'W-20260820-TEST0001',$3,$4,$5,$6,$7,'USD',1000,0,0,false,0,1000,'confirmed')")
-            .bind(order_id).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(checkout_id).bind(shopper_id).bind(customer_id).bind(price_list_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO commerce.shoppers(id,store_id,sales_channel_id) VALUES($1,$2,$3)")
+            .bind(shopper_id)
+            .bind(store_id.as_uuid())
+            .bind(channel_id.as_uuid())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO commerce.carts(id,store_id,sales_channel_id,shopper_id,price_list_id,currency) VALUES($1,$2,$3,$4,$5,'USD')")
+            .bind(cart_id).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(shopper_id).bind(price_list_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO commerce.checkouts(id,store_id,cart_id,shopper_id,sales_channel_id,price_list_id,currency,subtotal_amount_minor,discount_amount_minor,tax_amount_minor,tax_inclusive,shipping_amount_minor,total_amount_minor,expires_at,status,closed_at) VALUES($1,$2,$3,$4,$5,$6,'USD',1000,0,0,false,0,1000,$7,'completed',$8)")
+            .bind(checkout_id).bind(store_id.as_uuid()).bind(cart_id).bind(shopper_id).bind(channel_id.as_uuid()).bind(price_list_id).bind(now + Duration::hours(1)).bind(now).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO commerce.orders(id,store_id,order_number,sales_channel_id,checkout_id,shopper_id,price_list_id,currency,subtotal_amount_minor,discount_amount_minor,tax_amount_minor,tax_inclusive,shipping_amount_minor,total_amount_minor,status) VALUES($1,$2,'W-20260820-TEST0001',$3,$4,$5,$6,'USD',1000,0,0,false,0,1000,'confirmed')")
+            .bind(order_id).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(checkout_id).bind(shopper_id).bind(price_list_id).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO commerce.provider_accounts(id,store_id,provider,created_by_user_id) VALUES($1,$2,'sandbox',$3)")
             .bind(provider_account_id).bind(store_id.as_uuid()).bind(user_id.as_uuid()).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO commerce.payment_attempts(id,store_id,order_id,shopper_id,provider_account_id,amount_minor,currency,status) VALUES($1,$2,$3,$4,$5,1000,'USD','captured')")
             .bind(payment_attempt_id).bind(store_id.as_uuid()).bind(order_id).bind(shopper_id).bind(provider_account_id).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,session_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),uuidv7(),$1,$2,'page_view','browser','consent',1,$3,uuidv7(),'/landing',true,false,false,'test-v1',1,$4,$5,$6)")
+        sqlx::query("INSERT INTO integration.analytics_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,shopper_id,session_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),uuidv7(),$1,$2,'page_view','browser','consent',1,$3,uuidv7(),'/landing',true,false,false,'test-v1',1,$4,$5,$6)")
             .bind(store_id.as_uuid())
             .bind(channel_id.as_uuid())
             .bind(shopper_id)
@@ -1171,21 +1185,21 @@ mod tests {
             .await
             .unwrap();
         let purchase_event_id: Uuid = sqlx::query_scalar(
-            "SELECT event_id FROM integration.commerce_events WHERE order_id=$1 AND event_name='purchase'",
+            "SELECT event_id FROM integration.analytics_events WHERE order_id=$1 AND event_name='purchase'",
         )
         .bind(order_id)
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(purchase_event_id, order_id);
-        let first: (bool, Option<Uuid>, Option<String>) = sqlx::query_as(
-            "SELECT provider_eligible,shopper_id,properties#>>'{traffic,session,source}' FROM integration.commerce_events WHERE event_id=$1",
+        let first: (bool, Uuid, Option<String>) = sqlx::query_as(
+            "SELECT provider_eligible,shopper_id,properties#>>'{traffic,session,source}' FROM integration.analytics_events WHERE event_id=$1",
         )
         .bind(order_id)
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(first, (true, Some(shopper_id), None));
+        assert_eq!(first, (true, shopper_id, None));
 
         let replayed_capture = ServerCommerceEventJob {
             attempts: 1,
@@ -1197,7 +1211,7 @@ mod tests {
             .await
             .unwrap();
         let purchase_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM integration.commerce_events WHERE order_id=$1 AND event_name='purchase'",
+            "SELECT count(*) FROM integration.analytics_events WHERE order_id=$1 AND event_name='purchase'",
         )
         .bind(order_id)
         .fetch_one(&pool)
@@ -1216,7 +1230,7 @@ mod tests {
             .await
             .unwrap();
         let payment_info_event_id: Uuid = sqlx::query_scalar(
-            "SELECT event_id FROM integration.commerce_events WHERE payment_attempt_id=$1 AND event_name='add_payment_info'",
+            "SELECT event_id FROM integration.analytics_events WHERE payment_attempt_id=$1 AND event_name='add_payment_info'",
         )
         .bind(payment_attempt_id)
         .fetch_one(&pool)

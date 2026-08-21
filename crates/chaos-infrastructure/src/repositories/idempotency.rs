@@ -32,7 +32,7 @@ pub(super) async fn reserve(
     request: &IdempotencyRequest,
 ) -> Result<Option<Value>, ApplicationError> {
     let inserted = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO integration.idempotency_records \
+        "INSERT INTO integration.idempotency_keys \
          (id, scope, scope_id, operation, idempotency_key, request_fingerprint) \
          VALUES (uuidv7(), $1::integration.idempotency_scope, $2, $3, $4, $5) \
          ON CONFLICT (scope, scope_id, operation, idempotency_key) DO NOTHING \
@@ -53,7 +53,7 @@ pub(super) async fn reserve(
 
     let record = sqlx::query_as::<_, (Vec<u8>, Option<Value>)>(
         "SELECT request_fingerprint, response_body \
-         FROM integration.idempotency_records \
+         FROM integration.idempotency_keys \
          WHERE scope = $1::integration.idempotency_scope \
            AND scope_id = $2 \
            AND operation = $3 \
@@ -91,7 +91,7 @@ pub(super) async fn complete(
     response_body: Value,
 ) -> Result<(), ApplicationError> {
     let result = sqlx::query(
-        "UPDATE integration.idempotency_records \
+        "UPDATE integration.idempotency_keys \
          SET response_status = $5, \
              response_body = $6, \
              completed_at = CURRENT_TIMESTAMP, \

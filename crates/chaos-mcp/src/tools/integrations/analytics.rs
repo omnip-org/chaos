@@ -1,6 +1,8 @@
 use chaos_application::{
     analytics::UpdateAnalyticsSettingsInput,
-    ports::{AnalyticsConnection, AnalyticsEventPage, AnalyticsEventQuery, StoreAnalyticsSettings},
+    ports::{
+        AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery, StoreAnalyticsSettings,
+    },
 };
 use chaos_domain::analytics::BrowserCollectionMode;
 use rmcp::{
@@ -24,7 +26,7 @@ use crate::{
 pub struct EmptyParams {}
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-pub struct UpdateAnalyticsSettingsParams {
+pub struct UpdateAnalyticsPolicyParams {
     /// Master switch for storing Analytics events in this Store.
     pub collection_enabled: bool,
     /// Consent policy used by browser collection. `opt_out` permits collection under the Store policy; `opt_in` requires consent.
@@ -43,14 +45,14 @@ pub enum BrowserCollectionModeParam {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-pub struct ConfigureMetaConnectionParams {
+pub struct ConfigureMetaDestinationParams {
     /// Meta Dataset ID that receives Conversions API events.
     pub dataset_id: String,
     /// Secret reference for the Meta access token. The secret value itself must never be sent here.
     pub credential_secret_reference: String,
     /// Optional Meta Test Events Code. When present, events are routed to Meta's test view.
     pub test_event_code: Option<String>,
-    /// Connection-level switch. This enables this analytics destination; Store `provider_reporting_enabled` must also be true before events are queued.
+    /// Destination-level switch. This enables this analytics destination; Store `provider_reporting_enabled` must also be true before events are queued.
     pub enabled: bool,
     pub confirm: bool,
     pub idempotency_key: String,
@@ -90,9 +92,9 @@ pub enum AnalyticsDeliveryStatusParam {
 #[tool_router(router = analytics_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Get Analytics settings for the selected Store. `provider_reporting_enabled` allows eligible events to be queued for enabled analytics destinations."
+        description = "Get the Analytics collection policy for the selected Store. `provider_reporting_enabled` allows eligible events to be queued for enabled analytics destinations."
     )]
-    async fn get_analytics_settings(
+    async fn get_analytics_policy(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(_params): Parameters<EmptyParams>,
@@ -114,12 +116,12 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update the Analytics Store policy. `provider_reporting_enabled` controls whether eligible events are queued for configured analytics destinations. Owner role and confirmation are required."
+        description = "Update the Analytics collection policy. `provider_reporting_enabled` controls whether eligible events are queued for configured analytics destinations. Owner role and confirmation are required."
     )]
-    async fn update_analytics_settings(
+    async fn update_analytics_policy(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<UpdateAnalyticsSettingsParams>,
+        Parameters(params): Parameters<UpdateAnalyticsPolicyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
@@ -153,9 +155,9 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Get the Meta Conversions API connection for the selected Store. The connection-level `enabled` switch and Store-level `provider_reporting_enabled` switch must both be true before delivery. Credentials are never returned."
+        description = "Get the Meta Conversions API destination for the selected Store. The destination-level `enabled` switch and Store-level `provider_reporting_enabled` switch must both be true before delivery. Credentials are never returned."
     )]
-    async fn get_meta_connection(
+    async fn get_meta_destination(
         &self,
         Extension(parts): Extension<http::request::Parts>,
         Parameters(_params): Parameters<EmptyParams>,
@@ -165,13 +167,13 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let connection = match self
+        let destination = match self
             .state
             .analytics_administration
-            .get_connection(actor, store_id, "meta")
+            .get_destination(actor, store_id, "meta")
             .await
         {
-            Ok(connection) => connection,
+            Ok(destination) => destination,
             Err(error) => return Ok(tool_error(error)),
         };
         let settings = match self
@@ -183,18 +185,18 @@ impl ChaosMcp {
             Ok(settings) => settings,
             Err(error) => return Ok(tool_error(error)),
         };
-        Ok(text_result(connection.map_or(Value::Null, |item| {
+        Ok(text_result(destination.map_or(Value::Null, |item| {
             meta_json(item, settings.settings.provider_reporting_enabled())
         })))
     }
 
     #[tool(
-        description = "Configure the Meta Dataset, access-token secret reference, optional Test Events Code, and connection-level `enabled` switch for the selected Store. Store-level `provider_reporting_enabled` must also be true before events are queued. Owner role and confirmation are required."
+        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and destination-level `enabled` switch for the selected Store. Store-level `provider_reporting_enabled` must also be true before events are queued. Owner role and confirmation are required."
     )]
-    async fn configure_meta_connection(
+    async fn configure_meta_destination(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ConfigureMetaConnectionParams>,
+        Parameters(params): Parameters<ConfigureMetaDestinationParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
@@ -226,17 +228,17 @@ impl ChaosMcp {
         }
         let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-        let configuration = chaos_application::ports::AnalyticsConnectionConfiguration {
+        let configuration = chaos_application::ports::AnalyticsDestinationConfiguration {
             provider: "meta".into(),
             external_account_reference: params.dataset_id,
             credential_secret_reference: params.credential_secret_reference,
             configuration: json!({ "test_event_code": params.test_event_code }),
             enabled: params.enabled,
         };
-        let connection = match self
+        let destination = match self
             .state
             .analytics_administration
-            .configure_connection(
+            .configure_destination(
                 actor,
                 store_id,
                 configuration,
@@ -245,7 +247,7 @@ impl ChaosMcp {
             )
             .await
         {
-            Ok(connection) => connection,
+            Ok(destination) => destination,
             Err(error) => return Ok(tool_error(error)),
         };
         let settings = match self
@@ -258,7 +260,7 @@ impl ChaosMcp {
             Err(error) => return Ok(tool_error(error)),
         };
         Ok(text_result(meta_json(
-            connection,
+            destination,
             settings.settings.provider_reporting_enabled(),
         )))
     }
@@ -332,7 +334,7 @@ fn settings_json(item: StoreAnalyticsSettings) -> Value {
     })
 }
 
-fn meta_json(item: AnalyticsConnection, provider_reporting_enabled: bool) -> Value {
+fn meta_json(item: AnalyticsDestination, provider_reporting_enabled: bool) -> Value {
     let test_event_code_configured = item
         .configuration
         .get("test_event_code")

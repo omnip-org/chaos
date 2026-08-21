@@ -293,6 +293,15 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
         machine,
         shopper_id: ShopperId::new(),
     };
+    sqlx::query(
+        "INSERT INTO commerce.shoppers (id, store_id, sales_channel_id) VALUES ($1, $2, $3)",
+    )
+    .bind(actor.shopper_id.as_uuid())
+    .bind(store_id.as_uuid())
+    .bind(channel_id.as_uuid())
+    .execute(&owner_pool)
+    .await
+    .unwrap();
     let repository = Arc::new(PostgresStorefrontSalesRepository::new(runtime_pool.clone()));
     let service = Arc::new(StorefrontSales::new(repository.clone()));
     let cart = service

@@ -7,7 +7,7 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    ports::{CustomerActor, MachineActor, ShopperActor},
+    ports::{MachineActor, ShopperActor},
     store::StoreActor,
 };
 use chaos_domain::{FieldViolation, identity::UserId, store::StoreId};
@@ -80,9 +80,6 @@ pub struct CartMachine(pub MachineActor);
 pub struct OrderLookupMachine(pub MachineActor);
 pub struct CartShopper(pub ShopperActor);
 pub struct CheckoutShopper(pub ShopperActor);
-pub struct CustomerSession(pub UserId);
-pub struct CustomerMachine(pub CustomerActor);
-pub struct CustomerCheckout(pub CustomerActor);
 
 impl FromRequestParts<ApiState> for StorefrontMachine {
     type Rejection = ApiError;
@@ -152,41 +149,6 @@ storefront_shopper_extractor!(CartShopper);
 storefront_shopper_extractor!(CheckoutShopper);
 storefront_shopper_extractor!(AnalyticsShopper);
 
-macro_rules! customer_machine_extractor {
-    ($name:ident) => {
-        impl FromRequestParts<ApiState> for $name {
-            type Rejection = ApiError;
-            async fn from_request_parts(
-                parts: &mut Parts,
-                state: &ApiState,
-            ) -> Result<Self, Self::Rejection> {
-                let token = bearer_token(&parts.headers)?;
-                let machine = state
-                    .publishable_key_authentication
-                    .authenticate(&token)
-                    .await?;
-                let session = customer_session_token(&parts.headers)?;
-                let user_id = state.identity_auth.authenticate(&session)?;
-                Ok(Self(CustomerActor { machine, user_id }))
-            }
-        }
-    };
-}
-
-customer_machine_extractor!(CustomerMachine);
-customer_machine_extractor!(CustomerCheckout);
-
-impl FromRequestParts<ApiState> for CustomerSession {
-    type Rejection = ApiError;
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &ApiState,
-    ) -> Result<Self, Self::Rejection> {
-        let session = customer_session_token(&parts.headers)?;
-        Ok(Self(state.identity_auth.authenticate(&session)?))
-    }
-}
-
 impl FromRequestParts<ApiState> for AuthenticatedUser {
     type Rejection = ApiError;
 
@@ -213,15 +175,6 @@ fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
 fn shopper_credential(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers
         .get("x-chaos-shopper-token")
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .ok_or(ApplicationError::Unauthorized)?;
-    Ok(SecretString::from(value.to_owned()))
-}
-
-fn customer_session_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
-    let value = headers
-        .get("x-chaos-customer-session")
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .ok_or(ApplicationError::Unauthorized)?;

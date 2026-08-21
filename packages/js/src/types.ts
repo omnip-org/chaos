@@ -124,8 +124,6 @@ export interface Cart {
   subtotal_amount_minor: number;
   created_at: string;
   updated_at: string;
-  /** Returned only by Cart creation. Persist and echo as x-chaos-shopper-token. */
-  shopper_token?: string;
 }
 
 export interface SetCartLineRequest {
@@ -218,7 +216,6 @@ export interface CheckoutLine {
 export interface Checkout {
   id: UUID;
   cart_id: UUID;
-  customer_id?: UUID;
   inventory_reservation_id?: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
@@ -255,7 +252,6 @@ export interface Order {
   id: UUID;
   order_number: string;
   checkout_id: UUID;
-  customer_id?: UUID;
   inventory_reservation_id?: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
@@ -285,46 +281,6 @@ export interface OrderTrackingSession {
   access_token: string;
   expires_at: string;
   order: Order;
-}
-
-export interface UpdateCustomerRequest {
-  phone?: string | null;
-}
-
-export interface CreateCustomerAddressRequest {
-  label: string;
-  full_name: string;
-  company?: string;
-  address_line1: string;
-  address_line2?: string;
-  locality: string;
-  administrative_area?: string;
-  postal_code?: string;
-  country_code: string;
-}
-
-export interface CustomerAddress {
-  id: UUID;
-  label: string;
-  full_name: string;
-  company?: string;
-  address_line1: string;
-  address_line2?: string;
-  locality: string;
-  administrative_area?: string;
-  postal_code?: string;
-  country_code: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Customer {
-  id: UUID;
-  email: string;
-  phone?: string;
-  addresses: CustomerAddress[];
-  created_at: string;
-  updated_at: string;
 }
 
 export interface CreatePaymentAttemptRequest {
@@ -369,10 +325,6 @@ export interface DataEnvelope<T> {
 export interface PageEnvelope<T> {
   data: T[];
   meta: Meta;
-}
-
-export interface CustomerMutationResult {
-  customer_id: UUID;
 }
 
 export interface ErrorDetail {
