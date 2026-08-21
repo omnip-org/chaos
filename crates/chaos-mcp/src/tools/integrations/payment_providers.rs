@@ -34,11 +34,9 @@ pub struct GetPaymentProviderParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreatePaymentProviderParams {
-    /// Payment adapter: `stripe` uses PaymentIntents; `stripe_checkout` uses Stripe Embedded Checkout.
+    /// The only supported payment adapter in this deployment: Stripe Embedded Checkout.
     pub provider: String,
     pub display_name: String,
-    /// Internal label for the Stripe account that owns the supplied API keys, for example `platform:store-test`. Stripe Connect accounts and `acct_...` routing are not supported.
-    pub external_account_reference: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`. The stored value must be JSON containing `secret_key` and `publishable_key`.
     pub credential_secret_reference: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`, containing the Stripe endpoint signing secret (`whsec_...`).
@@ -52,9 +50,6 @@ pub struct CreatePaymentProviderParams {
 pub struct UpdatePaymentProviderParams {
     pub payment_provider_account_id: String,
     pub display_name: String,
-    /// Optional internal label for the Stripe account owning the API keys, for example `platform:store-test`. Stripe Connect account IDs are not supported.
-    #[serde(default)]
-    pub external_account_reference: Option<String>,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`.
     pub credential_secret_reference: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`.
@@ -97,7 +92,7 @@ impl ChaosMcp {
                 let items = page
                     .items
                     .into_iter()
-                    .map(provider_json)
+                    .map(|value| provider_json(value, &self.state.public_base_url))
                     .collect::<Vec<_>>();
                 let next_cursor = page
                     .has_more
@@ -138,13 +133,16 @@ impl ChaosMcp {
             .get(actor, store_id, id)
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(value))),
+            Ok(value) => Ok(text_result(provider_json(
+                value,
+                &self.state.public_base_url,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
-        description = "Create and readiness-check a Payment Provider account in the selected Store. Use provider `stripe` for PaymentIntents or `stripe_checkout` for Embedded Checkout. This deployment supports only the Stripe account owning the supplied API keys, identified by an internal `platform:<label>` reference; Stripe Connect and `acct_...` routing are not supported. Requires confirmation."
+        description = "Create and readiness-check a Stripe Embedded Checkout account in the selected Store. The only supported provider is `stripe_checkout`; Stripe Connect is not supported. The result includes the exact Stripe Webhook Endpoint URL and the event types to enable in Stripe Dashboard. Requires confirmation."
     )]
     async fn create_payment_provider_account(
         &self,
@@ -168,7 +166,6 @@ impl ChaosMcp {
                 store_id,
                 provider: params.provider,
                 display_name: params.display_name,
-                external_account_reference: params.external_account_reference,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
                 enabled: params.enabled,
@@ -177,13 +174,16 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(value))),
+            Ok(value) => Ok(text_result(provider_json(
+                value,
+                &self.state.public_base_url,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
-        description = "Update and re-check a Payment Provider account in the selected Store. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. Requires confirmation."
+        description = "Update and re-check the Stripe Embedded Checkout account in the selected Store. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. The Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
     )]
     async fn update_payment_provider_account(
         &self,
@@ -211,7 +211,6 @@ impl ChaosMcp {
                 store_id,
                 id,
                 display_name: params.display_name,
-                external_account_reference: params.external_account_reference,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
                 enabled: params.enabled,
@@ -220,7 +219,10 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(value))),
+            Ok(value) => Ok(text_result(provider_json(
+                value,
+                &self.state.public_base_url,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -233,12 +235,18 @@ fn invalid_id(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn provider_json(value: PaymentProviderAccountDetail) -> serde_json::Value {
+fn provider_json(value: PaymentProviderAccountDetail, public_base_url: &str) -> serde_json::Value {
+    let id = value.account.id().as_uuid();
+    let webhook_path = format!("/webhooks/v1/payments/{}/{}", value.account.provider(), id);
+    let webhook_url = format!(
+        "{}/{}",
+        public_base_url.trim_end_matches('/'),
+        webhook_path.trim_start_matches('/')
+    );
     json!({
-        "id": value.account.id().as_uuid(),
+        "id": id,
         "provider": value.account.provider(),
         "display_name": value.account.display_name(),
-        "external_account_reference": value.account.external_account_reference(),
         "enabled": value.account.enabled(),
         "credentials_configured": value.credentials_configured,
         "readiness_status": value.readiness_status.as_str(),
@@ -247,6 +255,18 @@ fn provider_json(value: PaymentProviderAccountDetail) -> serde_json::Value {
         "readiness_blocker_codes": value.readiness_blocker_codes,
         "credential_rotation_expires_at": value.credential_rotation_expires_at.map(|v| v.to_string()),
         "webhook_rotation_expires_at": value.webhook_rotation_expires_at.map(|v| v.to_string()),
+        "stripe_setup": {
+            "webhook_url": webhook_url,
+            "signature_header": "Stripe-Signature",
+            "events_to_enable": [
+                "checkout.session.completed",
+                "checkout.session.async_payment_succeeded",
+                "checkout.session.async_payment_failed",
+                "checkout.session.expired"
+            ],
+            "signing_secret": "Use the whsec_... signing secret from Stripe Dashboard → Developers → Webhooks → this endpoint",
+            "mode": "Use Stripe Test mode with sk_test_/pk_test_ keys and Live mode with sk_live_/pk_live_ keys"
+        },
         "created_at": value.created_at.to_string(),
         "updated_at": value.updated_at.to_string(),
     })

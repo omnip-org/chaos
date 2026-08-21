@@ -33,9 +33,9 @@ Provider SDK types, error types, event names, credentials, and payloads remain i
 
 `payments` remains a bounded context because Payment Attempts, captures, Refunds, settlement currency, and reconciliation are business records. A Stripe adapter implements payment application ports; Stripe does not become a domain module.
 
-The adapter maps provider-neutral commands to Stripe Payment Intents and Refunds, supplies a stable idempotency key derived from the Chaos operation or outbox event, and maps provider outcomes into the existing payment state machines. Raw Stripe webhook bodies are verified before parsing or tenant resolution, stored in the durable inbox, deduplicated by provider event identity, and processed without assuming event order.
+The initial adapter maps provider-neutral payment commands to Stripe Embedded Checkout Sessions, supplies a stable idempotency key derived from the Chaos operation or outbox event, and maps Checkout Session outcomes into the existing payment state machines. Raw Stripe webhook bodies are verified against the exact endpoint account before Store resolution, stored in the durable inbox, deduplicated by Provider Account and provider event identity, and processed without assuming event order. Refund-provider support is a later payment-integration increment.
 
-Stripe Connect is a separate product decision, not an adapter detail. Before implementing onboarding, the product must decide the merchant of record, charge flow, fee payer, negative-balance liability, dispute ownership, and payout model. Store configuration records only external account references and capability state. Provider credentials are stored only as opaque encrypted references; PostgreSQL never stores recoverable plaintext credentials.
+Stripe Connect is not supported by the initial adapter. Each Store configures the direct Stripe account that owns its API keys; the Chaos Provider Account UUID, not a Stripe account label, routes webhooks. Provider credentials are stored only as opaque encrypted references; PostgreSQL never stores recoverable plaintext credentials.
 
 ### Shipping and logistics
 

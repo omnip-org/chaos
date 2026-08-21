@@ -62,7 +62,6 @@ type ProviderAccountRow = (
     Uuid,
     String,
     String,
-    String,
     bool,
     bool,
     String,
@@ -80,7 +79,8 @@ type ProviderAccountRow = (
 struct WebhookPayload {
     id: String,
     event_type: String,
-    account: String,
+    #[serde(default)]
+    _account: Option<String>,
     object: String,
     #[serde(rename = "aggregate_id")]
     _aggregate_id: Uuid,
@@ -121,7 +121,6 @@ impl PaymentProvider for SandboxPaymentProvider {
                 "{}_client_token",
                 command.provider_reference
             )),
-            account_reference: command.external_account_reference,
         })
     }
 }
@@ -134,7 +133,6 @@ impl PaymentProviderOnboarding for SandboxPaymentProvider {
 
     async fn check_readiness(
         &self,
-        _external_account_reference: &str,
         _credential_secret_reference: &PaymentSecretReference,
         checked_at: OffsetDateTime,
     ) -> Result<PaymentProviderReadiness, ApplicationError> {
@@ -168,6 +166,7 @@ impl PaymentWebhookVerifier for HmacPaymentWebhookVerifier {
     async fn verify(
         &self,
         provider: &str,
+        provider_account_id: Uuid,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -207,9 +206,9 @@ impl PaymentWebhookVerifier for HmacPaymentWebhookVerifier {
             })?;
         Ok(VerifiedWebhookEvent {
             provider: provider.to_owned(),
+            provider_account_id,
             provider_event_id: event.id,
             event_type: event.event_type,
-            external_account_reference: event.account,
             object_reference: event.object,
             failure_code: event.failure_code,
             payload: raw,
@@ -293,7 +292,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
     ) -> Result<PaymentProviderAccountPage, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
-            "SELECT id, provider, display_name, external_account_reference, enabled, \
+            "SELECT id, provider, display_name, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
                     readiness_status, readiness_checked_at, readiness_valid_until, \
                     COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
@@ -355,17 +354,16 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         sqlx::query(
             "INSERT INTO commerce.provider_accounts \
              (id, store_id, provider, display_name, \
-              external_account_reference, credential_secret_reference, webhook_secret_reference, \
+              credential_secret_reference, webhook_secret_reference, \
               readiness_status, readiness_snapshot, readiness_checked_at, \
               readiness_valid_until, readiness_reconcile_at, \
               enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
         .bind(account.provider())
         .bind(account.display_name())
-        .bind(account.external_account_reference())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
         .bind(readiness.map_or(
@@ -426,7 +424,6 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
             "UPDATE commerce.provider_accounts SET display_name = $3, \
-                    external_account_reference = $10, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
                              AND credential_secret_reference IS DISTINCT FROM $4 \
@@ -448,45 +445,41 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                     readiness_status = CASE \
                         WHEN $7::text IS NOT NULL THEN $7 \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 THEN 'unchecked' \
+                        THEN 'unchecked' \
                         ELSE readiness_status END, \
                     readiness_snapshot = CASE \
                         WHEN $7::text IS NOT NULL THEN $8::jsonb \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
+                        THEN NULL \
                         ELSE readiness_snapshot END, \
                     readiness_checked_at = CASE \
                         WHEN $7::text IS NOT NULL THEN $9::timestamptz \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
+                        THEN NULL \
                         ELSE readiness_checked_at END, \
                     readiness_valid_until = CASE \
                         WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '24 hours' \
                         WHEN $7::text IS NOT NULL THEN NULL \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
+                        THEN NULL \
                         ELSE readiness_valid_until END, \
                     readiness_reconcile_at = CASE \
                         WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '6 hours' \
                         WHEN $7::text IS NOT NULL THEN NULL \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
+                        THEN NULL \
                         ELSE readiness_reconcile_at END, \
                     readiness_locked_by = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_locked_by END, \
                     readiness_locked_at = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_locked_at END, \
                     readiness_reconcile_attempts = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN 0 ELSE readiness_reconcile_attempts END, \
                     readiness_last_error = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_last_error END, \
                     enabled = $6, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
@@ -504,7 +497,6 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .bind(readiness.map(|value| readiness_status(value).as_str()))
         .bind(readiness.map(|value| &value.configuration))
         .bind(readiness.map(|value| value.checked_at))
-        .bind(account.external_account_reference())
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
@@ -532,21 +524,21 @@ impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
     async fn webhook_configurations(
         &self,
         provider: &str,
-        external_account_reference: Option<&str>,
+        provider_account_id: Uuid,
     ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT external_account_reference, secret_reference \
+        sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT provider_account_id, secret_reference \
              FROM commerce.resolve_provider_webhook_secret_references($1, $2)",
         )
         .bind(provider)
-        .bind(external_account_reference)
+        .bind(provider_account_id)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|(external_account_reference, reference)| {
+        .map(|(provider_account_id, reference)| {
             Ok(PaymentWebhookConfiguration {
-                external_account_reference,
+                provider_account_id,
                 secret_reference: PaymentSecretReference::new(
                     "webhook_secret_reference",
                     reference,
@@ -566,9 +558,9 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
     ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, String, String, String, i32)>(
+        sqlx::query_as::<_, (Uuid, Uuid, String, String, i32)>(
             "SELECT provider_account_id, store_id, provider, \
-                    external_account_reference, credential_secret_reference, attempts \
+                    credential_secret_reference, attempts \
              FROM commerce.claim_provider_readiness_checks($1, $2, $3, $4)",
         )
         .bind(worker_id)
@@ -584,12 +576,11 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
                 provider_account_id: PaymentProviderAccountId::from_uuid(row.0),
                 store_id: StoreId::from_uuid(row.1),
                 provider: row.2,
-                external_account_reference: row.3,
                 credential_secret_reference: PaymentSecretReference::new(
                     "credential_secret_reference",
-                    row.4,
+                    row.3,
                 )?,
-                attempts: u32::try_from(row.5)
+                attempts: u32::try_from(row.4)
                     .map_err(|error| ApplicationError::Unexpected(error.into()))?,
             })
         })
@@ -886,7 +877,7 @@ impl PaymentRepository for PostgresPaymentRepository {
              FROM commerce.resolve_provider_account($1, $2)",
         )
         .bind(&event.provider)
-        .bind(&event.external_account_reference)
+        .bind(event.provider_account_id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
@@ -894,17 +885,17 @@ impl PaymentRepository for PostgresPaymentRepository {
         set_config(&mut transaction, "app.store_id", account.1).await?;
         let result = sqlx::query(
             "INSERT INTO integration.webhook_inbox \
-             (id, store_id, provider, provider_event_id, event_type, \
-              external_account_reference, payload, verified_at) \
+             (id, store_id, provider, provider_account_id, provider_event_id, event_type, \
+              payload, verified_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
-             ON CONFLICT (provider, provider_event_id) DO NOTHING",
+             ON CONFLICT (provider_account_id, provider_event_id) DO NOTHING",
         )
         .bind(Uuid::now_v7())
         .bind(account.1)
         .bind(&event.provider)
+        .bind(event.provider_account_id)
         .bind(&event.provider_event_id)
         .bind(&event.event_type)
-        .bind(&event.external_account_reference)
         .bind(&event.payload)
         .bind(event.verified_at)
         .execute(&mut *transaction)
@@ -974,9 +965,9 @@ impl PaymentRepository for PostgresPaymentRepository {
         let provider = outbox_provider(job)?;
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let row = if job.event_type == "payment.create_requested" {
-            sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
+            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>)>(
                 "SELECT attempt.amount_minor, attempt.currency::text, \
-                        account.external_account_reference, account.credential_secret_reference, \
+                        account.id, account.credential_secret_reference, \
                         NULL::text \
                  FROM commerce.payment_attempts AS attempt \
                  INNER JOIN commerce.provider_accounts AS account \
@@ -993,9 +984,9 @@ impl PaymentRepository for PostgresPaymentRepository {
             .await
             .map_err(database_error)?
         } else if job.event_type == "refund.create_requested" {
-            sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
+            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>)>(
                 "SELECT refund.amount_minor, refund.currency::text, \
-                        account.external_account_reference, account.credential_secret_reference, \
+                        account.id, account.credential_secret_reference, \
                         attempt.provider_reference \
                  FROM commerce.refunds AS refund \
                  INNER JOIN commerce.payment_attempts AS attempt \
@@ -1030,12 +1021,12 @@ impl PaymentRepository for PostgresPaymentRepository {
         }
         let return_url = outbox_return_url(job);
         Ok(ProviderCommand {
+            provider_account_id: PaymentProviderAccountId::from_uuid(row.2),
             event_type: job.event_type.clone(),
             aggregate_id,
             amount_minor: row.0,
             currency: CurrencyCode::parse(&row.1)?,
             idempotency_key: job.id.to_string(),
-            external_account_reference: row.2,
             credential_secret_reference: PaymentSecretReference::new(
                 "credential_secret_reference",
                 row.3,
@@ -1108,9 +1099,9 @@ impl PaymentRepository for PostgresPaymentRepository {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let row = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT account.provider, attempt.provider_reference, \
-                    account.external_account_reference, account.credential_secret_reference \
+        let row = sqlx::query_as::<_, (String, Uuid, String, String)>(
+            "SELECT account.provider, account.id, attempt.provider_reference, \
+                    account.credential_secret_reference \
              FROM commerce.payment_attempts AS attempt \
              INNER JOIN commerce.provider_accounts AS account \
                ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
@@ -1134,8 +1125,8 @@ impl PaymentRepository for PostgresPaymentRepository {
             Ok((
                 row.0,
                 ProviderClientActionCommand {
-                    provider_reference: row.1,
-                    external_account_reference: row.2,
+                    provider_account_id: PaymentProviderAccountId::from_uuid(row.1),
+                    provider_reference: row.2,
                     credential_secret_reference: PaymentSecretReference::new(
                         "credential_secret_reference",
                         row.3,
@@ -1878,7 +1869,7 @@ async fn load_provider_account(
     id: PaymentProviderAccountId,
 ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
-        "SELECT id, provider, display_name, external_account_reference, enabled, \
+        "SELECT id, provider, display_name, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
                 readiness_status, readiness_checked_at, readiness_valid_until, \
                 COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
@@ -1904,22 +1895,21 @@ fn provider_account_detail(
             row.1,
             row.2,
             row.3,
-            row.4,
         )?,
-        credentials_configured: row.5,
-        readiness_status: match row.6.as_str() {
+        credentials_configured: row.4,
+        readiness_status: match row.5.as_str() {
             "unchecked" => PaymentProviderReadinessStatus::Unchecked,
             "ready" => PaymentProviderReadinessStatus::Ready,
             "action_required" => PaymentProviderReadinessStatus::ActionRequired,
             _ => return Err(corrupt_state()),
         },
-        readiness_checked_at: row.7,
-        readiness_valid_until: row.8,
-        readiness_blocker_codes: serde_json::from_value(row.9).map_err(|_| corrupt_state())?,
-        credential_rotation_expires_at: row.10,
-        webhook_rotation_expires_at: row.11,
-        created_at: row.12,
-        updated_at: row.13,
+        readiness_checked_at: row.6,
+        readiness_valid_until: row.7,
+        readiness_blocker_codes: serde_json::from_value(row.8).map_err(|_| corrupt_state())?,
+        credential_rotation_expires_at: row.9,
+        webhook_rotation_expires_at: row.10,
+        created_at: row.11,
+        updated_at: row.12,
     })
 }
 
@@ -1971,10 +1961,6 @@ fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
             Some("provider_accounts_store_provider_key") => (
                 "payment_provider_already_configured",
                 "the Payment Provider is already configured for this Store",
-            ),
-            Some("provider_accounts_provider_external_account_reference_key") => (
-                "payment_provider_account_already_linked",
-                "the external Payment Provider account is already linked",
             ),
             _ => return database_error(error),
         };

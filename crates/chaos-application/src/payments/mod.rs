@@ -45,7 +45,6 @@ pub struct CreatePaymentProviderAccountInput {
     pub store_id: StoreId,
     pub provider: String,
     pub display_name: String,
-    pub external_account_reference: String,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
     pub enabled: bool,
@@ -58,7 +57,6 @@ pub struct UpdatePaymentProviderAccountInput {
     pub store_id: StoreId,
     pub id: PaymentProviderAccountId,
     pub display_name: String,
-    pub external_account_reference: Option<String>,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
     pub enabled: bool,
@@ -112,12 +110,11 @@ impl PaymentProviderAdministration {
         input: CreatePaymentProviderAccountInput,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
         require_provider_administrator(input.actor)?;
-        let mut account = PaymentProviderAccount::create(
-            input.provider,
-            input.display_name,
-            input.external_account_reference,
-            input.enabled,
-        )?;
+        if !self.onboarding.contains_key(input.provider.as_str()) {
+            return Err(unsupported_provider());
+        }
+        let mut account =
+            PaymentProviderAccount::create(input.provider, input.display_name, input.enabled)?;
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
             input.credential_secret_reference,
@@ -157,14 +154,12 @@ impl PaymentProviderAdministration {
             .get(input.actor, input.store_id, input.id)
             .await?
             .ok_or_else(|| provider_account_not_found(input.id))?;
+        if !self.onboarding.contains_key(detail.account.provider()) {
+            return Err(unsupported_provider());
+        }
         detail
             .account
             .update_administration(input.display_name, input.enabled)?;
-        if let Some(external_account_reference) = input.external_account_reference {
-            detail
-                .account
-                .update_external_account_reference(external_account_reference)?;
-        }
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
             input.credential_secret_reference,
@@ -212,11 +207,7 @@ impl PaymentProviderAdministration {
                         message: "The Payment Provider cannot be enabled by this deployment",
                     })?;
             let readiness = provider
-                .check_readiness(
-                    account.external_account_reference(),
-                    &credential_secret_reference,
-                    checked_at,
-                )
+                .check_readiness(&credential_secret_reference, checked_at)
                 .await?;
             Some(readiness)
         } else {
@@ -336,6 +327,7 @@ impl PaymentService {
     pub async fn receive_webhook(
         &self,
         provider: &str,
+        provider_account_id: Uuid,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -348,7 +340,13 @@ impl PaymentService {
                 id: provider.to_owned(),
             })?;
         let event = verifier
-            .verify(provider, signature, payload, received_at)
+            .verify(
+                provider,
+                provider_account_id,
+                signature,
+                payload,
+                received_at,
+            )
             .await?;
         self.repository.ingest_webhook(&event).await
     }
@@ -435,11 +433,7 @@ impl PaymentWorkers {
         for job in &jobs {
             let result = match self.onboarding.get(&job.provider) {
                 Some(provider) => provider
-                    .check_readiness(
-                        &job.external_account_reference,
-                        &job.credential_secret_reference,
-                        now,
-                    )
+                    .check_readiness(&job.credential_secret_reference, now)
                     .await
                     .map_err(|error| error.to_string()),
                 None => Err("Provider onboarding adapter is not configured".into()),
@@ -509,6 +503,13 @@ fn provider_account_not_found(id: PaymentProviderAccountId) -> ApplicationError 
     ApplicationError::NotFound {
         resource: "payment_provider_account",
         id: id.as_uuid().to_string(),
+    }
+}
+
+fn unsupported_provider() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "payment_provider_not_supported",
+        message: "Only stripe_checkout is supported by this deployment",
     }
 }
 

@@ -31,6 +31,7 @@ use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, too
 /// Mirrors `ApiState` in `chaos-api`, but scoped to only what MCP tools need.
 #[derive(Clone)]
 pub struct McpState {
+    pub public_base_url: String,
     pub access_key_authentication: Arc<AccessKeyAuthentication>,
     pub store_queries: Arc<StoreQueries>,
     pub store_membership_management: Arc<StoreMembershipManagement>,

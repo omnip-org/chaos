@@ -15,9 +15,8 @@ use chaos_infrastructure::{
     config::Settings,
     meta::MetaConversionsDestination,
     providers::{
-        easypost::EasyPostShippingProvider,
-        email::ResendEmailProvider,
-        stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider},
+        easypost::EasyPostShippingProvider, email::ResendEmailProvider,
+        stripe::StripeCheckoutPaymentProvider,
     },
     repositories::{
         PostgresAnalyticsEventRepository, PostgresEmailDeliveryRepository,
@@ -58,24 +57,15 @@ impl WorkerRuntime {
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
-            settings.stripe_api_base_url.clone(),
-            settings.dependency_timeout,
-            dynamic_secrets.clone(),
-        )?);
         let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
             dynamic_secrets.clone(),
         )?);
-        let payment_providers = vec![
-            stripe_payment_provider.clone() as Arc<dyn PaymentProvider>,
-            stripe_checkout_payment_provider.clone() as Arc<dyn PaymentProvider>,
-        ];
-        let payment_onboarding = vec![
-            stripe_payment_provider as Arc<dyn PaymentProviderOnboarding>,
-            stripe_checkout_payment_provider as Arc<dyn PaymentProviderOnboarding>,
-        ];
+        let payment_providers =
+            vec![stripe_checkout_payment_provider.clone() as Arc<dyn PaymentProvider>];
+        let payment_onboarding =
+            vec![stripe_checkout_payment_provider as Arc<dyn PaymentProviderOnboarding>];
         let payment_workers = PaymentWorkers::new(
             payment_repository.clone(),
             payment_repository.clone(),

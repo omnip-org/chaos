@@ -85,7 +85,7 @@ use chaos_infrastructure::{
     secret::DynamicSecretResolver,
     shopper::HmacShopperCredentialCodec,
     state::AppState,
-    stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider, StripeWebhookVerifier},
+    stripe::{StripeCheckoutPaymentProvider, StripeWebhookVerifier},
 };
 use secrecy::ExposeSecret as _;
 use tower_http::{
@@ -107,6 +107,7 @@ pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, Respons
 pub struct ApiState {
     pub infrastructure: AppState,
     pub lifecycle: Lifecycle,
+    pub public_base_url: String,
     pub identity_auth: Arc<dyn IdentityAuthentication>,
     pub access_key_management: Arc<AccessKeyManagement>,
     pub access_key_authentication: Arc<AccessKeyAuthentication>,
@@ -326,37 +327,22 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let payment_secrets = dynamic_secrets.clone();
-        let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
-            settings.stripe_api_base_url.clone(),
-            settings.dependency_timeout,
-            payment_secrets.clone(),
-        )?);
         let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
             payment_secrets.clone(),
         )?);
-        let providers = vec![
-            stripe_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
-            stripe_checkout_payment_provider.clone()
-                as Arc<dyn chaos_application::ports::PaymentProvider>,
-        ];
+        let providers = vec![stripe_checkout_payment_provider.clone()
+            as Arc<dyn chaos_application::ports::PaymentProvider>];
         let payment_onboarding = vec![
-            stripe_payment_provider as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
             stripe_checkout_payment_provider
                 as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
         ];
-        let webhook_verifiers = vec![
-            Arc::new(StripeWebhookVerifier::new(
-                payment_repository.clone(),
-                payment_secrets.clone(),
-            )) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
-            Arc::new(StripeWebhookVerifier::for_provider(
-                "stripe_checkout",
-                payment_repository.clone(),
-                payment_secrets,
-            )) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
-        ];
+        let webhook_verifiers = vec![Arc::new(StripeWebhookVerifier::new(
+            payment_repository.clone(),
+            payment_secrets,
+        ))
+            as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>];
         let payment_service = PaymentService::new(
             payment_repository.clone(),
             webhook_verifiers,
@@ -408,6 +394,7 @@ impl ApiState {
         Ok(Self {
             infrastructure,
             lifecycle,
+            public_base_url: settings.public_base_url.to_string(),
             identity_auth: Arc::new(identity_auth),
             access_key_management: Arc::new(access_key_management),
             access_key_authentication: Arc::new(access_key_authentication),
@@ -456,6 +443,7 @@ impl ApiState {
 pub fn router(state: ApiState) -> Router {
     let mcp_router = chaos_mcp::router(
         chaos_mcp::McpState {
+            public_base_url: state.public_base_url.clone(),
             access_key_authentication: state.access_key_authentication.clone(),
             store_queries: state.store_queries.clone(),
             store_membership_management: state.store_membership_management.clone(),
@@ -543,6 +531,7 @@ mod tests {
             ),
             auth_jwt_lifetime_seconds: 3600,
             mcp_allowed_hosts: vec!["localhost".into()],
+            public_base_url: "http://localhost:8080/".parse().unwrap(),
             google_client_id: Some("test-google-client".into()),
             apple_client_id: None,
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),

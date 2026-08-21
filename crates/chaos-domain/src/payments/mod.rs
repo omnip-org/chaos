@@ -40,7 +40,6 @@ pub struct PaymentProviderAccount {
     id: PaymentProviderAccountId,
     provider: String,
     display_name: String,
-    external_account_reference: String,
     enabled: bool,
 }
 
@@ -48,14 +47,12 @@ impl PaymentProviderAccount {
     pub fn create(
         provider: impl Into<String>,
         display_name: impl Into<String>,
-        external_account_reference: impl Into<String>,
         enabled: bool,
     ) -> Result<Self, DomainError> {
         Self::rehydrate(
             PaymentProviderAccountId::new(),
             provider,
             display_name,
-            external_account_reference,
             enabled,
         )
     }
@@ -64,12 +61,10 @@ impl PaymentProviderAccount {
         id: PaymentProviderAccountId,
         provider: impl Into<String>,
         display_name: impl Into<String>,
-        external_account_reference: impl Into<String>,
         enabled: bool,
     ) -> Result<Self, DomainError> {
         let provider = provider.into();
         let display_name = display_name.into();
-        let external_account_reference = external_account_reference.into();
         if provider.is_empty()
             || provider.len() > 64
             || !provider
@@ -82,16 +77,10 @@ impl PaymentProviderAccount {
             ));
         }
         validate_printable("display_name", &display_name, 120)?;
-        validate_printable(
-            "external_account_reference",
-            &external_account_reference,
-            255,
-        )?;
         Ok(Self {
             id,
             provider,
             display_name,
-            external_account_reference,
             enabled,
         })
     }
@@ -105,9 +94,6 @@ impl PaymentProviderAccount {
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
-    pub fn external_account_reference(&self) -> &str {
-        &self.external_account_reference
-    }
     pub const fn enabled(&self) -> bool {
         self.enabled
     }
@@ -120,20 +106,6 @@ impl PaymentProviderAccount {
         validate_printable("display_name", &display_name, 120)?;
         self.display_name = display_name;
         self.enabled = enabled;
-        Ok(())
-    }
-
-    pub fn update_external_account_reference(
-        &mut self,
-        external_account_reference: impl Into<String>,
-    ) -> Result<(), DomainError> {
-        let external_account_reference = external_account_reference.into();
-        validate_printable(
-            "external_account_reference",
-            &external_account_reference,
-            255,
-        )?;
-        self.external_account_reference = external_account_reference;
         Ok(())
     }
 }
@@ -541,8 +513,8 @@ mod tests {
 
     #[test]
     fn provider_accounts_validate_canonical_names_and_opaque_secret_references() {
-        assert!(PaymentProviderAccount::create("stripe", "Stripe", "acct_123", false).is_ok());
-        assert!(PaymentProviderAccount::create("Stripe", "Stripe", "acct_123", false).is_err());
+        assert!(PaymentProviderAccount::create("stripe_checkout", "Stripe", false).is_ok());
+        assert!(PaymentProviderAccount::create("Stripe", "Stripe", false).is_err());
         assert!(
             PaymentSecretReference::new("credential_secret_reference", "enc://c3RyaXBlLWxpdmU")
                 .is_ok()

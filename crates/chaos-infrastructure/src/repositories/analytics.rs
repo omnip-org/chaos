@@ -1322,8 +1322,8 @@ mod tests {
             .bind(checkout_id).bind(store_id.as_uuid()).bind(cart_id).bind(shopper_id).bind(customer_id).bind(channel_id.as_uuid()).bind(price_list_id).bind(now + Duration::hours(1)).bind(now).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO commerce.orders(id,store_id,order_number,sales_channel_id,checkout_id,shopper_id,customer_id,price_list_id,currency,subtotal_amount_minor,discount_amount_minor,tax_amount_minor,tax_inclusive,shipping_amount_minor,total_amount_minor,status) VALUES($1,$2,'W-20260820-TEST0001',$3,$4,$5,$6,$7,'USD',1000,0,0,false,0,1000,'confirmed')")
             .bind(order_id).bind(store_id.as_uuid()).bind(channel_id.as_uuid()).bind(checkout_id).bind(shopper_id).bind(customer_id).bind(price_list_id).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO commerce.provider_accounts(id,store_id,provider,external_account_reference,created_by_user_id) VALUES($1,$2,'sandbox',$3,$4)")
-            .bind(provider_account_id).bind(store_id.as_uuid()).bind(provider_account_id.to_string()).bind(user_id.as_uuid()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO commerce.provider_accounts(id,store_id,provider,created_by_user_id) VALUES($1,$2,'sandbox',$3)")
+            .bind(provider_account_id).bind(store_id.as_uuid()).bind(user_id.as_uuid()).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO commerce.payment_attempts(id,store_id,order_id,shopper_id,provider_account_id,amount_minor,currency,status) VALUES($1,$2,$3,$4,$5,1000,'USD','captured')")
             .bind(payment_attempt_id).bind(store_id.as_uuid()).bind(order_id).bind(shopper_id).bind(provider_account_id).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO integration.visitor_customer_links(id,store_id,visitor_id,customer_id,consent_policy_version,advertising_storage_consent,collection_basis,settings_revision,linked_at,retention_expires_at) VALUES(uuidv7(),$1,$2,$3,'test-v1',false,'store_policy',1,$4,$5)")

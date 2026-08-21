@@ -54,6 +54,7 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         auth_jwt_secret: SecretString::from("test-jwt-secret-that-is-at-least-32-bytes"),
         auth_jwt_lifetime_seconds: 3600,
         mcp_allowed_hosts: vec!["localhost".into()],
+        public_base_url: "http://localhost:8080/".parse().unwrap(),
         google_client_id: Some("test-google-client".into()),
         apple_client_id: None,
         storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),

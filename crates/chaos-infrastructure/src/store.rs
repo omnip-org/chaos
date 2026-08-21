@@ -270,18 +270,14 @@ mod tests {
             .await
             .unwrap();
         }
-        for (id, store_id, external_reference) in [
-            (provider_account_a, store_a, "rls-provider-a"),
-            (provider_account_b, store_b, "rls-provider-b"),
-        ] {
+        for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(
                 "INSERT INTO commerce.provider_accounts \
-                 (id, store_id, provider, external_account_reference) \
-                 VALUES ($1, $2, 'testpay', $3)",
+                 (id, store_id, provider) \
+                 VALUES ($1, $2, 'testpay')",
             )
             .bind(id)
             .bind(store_id)
-            .bind(external_reference)
             .execute(&pool)
             .await
             .unwrap();

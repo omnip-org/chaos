@@ -36,7 +36,10 @@ pub(super) fn routes() -> Router<ApiState> {
             "/store/v1/payment-attempts/{payment_attempt_id}/client-action",
             get(get_client_action),
         )
-        .route("/webhooks/v1/payments/{provider}", post(receive_webhook))
+        .route(
+            "/webhooks/v1/payments/{provider}/{provider_account_id}",
+            post(receive_webhook),
+        )
         .layer(DefaultBodyLimit::max(64 * 1024))
 }
 
@@ -53,6 +56,7 @@ struct AttemptPath {
 #[derive(Deserialize)]
 struct WebhookPath {
     provider: String,
+    provider_account_id: Uuid,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -85,7 +89,6 @@ struct PaymentClientActionData {
     r#type: &'static str,
     public_key: String,
     client_token: String,
-    account_reference: String,
 }
 
 #[derive(Serialize)]
@@ -177,18 +180,19 @@ async fn receive_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<ApiResponse<WebhookReceiptData>, ApiError> {
-    let signature_header = if path.provider == "stripe" {
-        "stripe-signature"
-    } else {
-        "x-payment-signature"
-    };
     let signature = headers
-        .get(signature_header)
+        .get("stripe-signature")
         .and_then(|value| value.to_str().ok())
         .ok_or(ApplicationError::Unauthorized)?;
     let accepted = state
         .payment_service
-        .receive_webhook(&path.provider, signature, &body, state.clock.now())
+        .receive_webhook(
+            &path.provider,
+            path.provider_account_id,
+            signature,
+            &body,
+            state.clock.now(),
+        )
         .await?;
     Ok(ApiResponse::new(
         StatusCode::ACCEPTED,
@@ -202,7 +206,6 @@ fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
         r#type: value.kind,
         public_key: value.public_key.expose_secret().to_owned(),
         client_token: value.client_token.expose_secret().to_owned(),
-        account_reference: value.account_reference,
     }
 }
 

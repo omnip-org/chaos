@@ -89,9 +89,9 @@ pub struct RefundDetail {
 
 pub struct VerifiedWebhookEvent {
     pub provider: String,
+    pub provider_account_id: Uuid,
     pub provider_event_id: String,
     pub event_type: String,
-    pub external_account_reference: String,
     pub object_reference: String,
     pub failure_code: Option<String>,
     pub payload: Value,
@@ -99,7 +99,7 @@ pub struct VerifiedWebhookEvent {
 }
 
 pub struct PaymentWebhookConfiguration {
-    pub external_account_reference: String,
+    pub provider_account_id: Uuid,
     pub secret_reference: chaos_domain::payments::PaymentSecretReference,
 }
 
@@ -115,18 +115,17 @@ pub struct PaymentProviderReadinessJob {
     pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
     pub store_id: StoreId,
     pub provider: String,
-    pub external_account_reference: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub attempts: u32,
 }
 
 pub struct ProviderCommand {
+    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
     pub event_type: String,
     pub aggregate_id: Uuid,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
-    pub external_account_reference: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub payment_provider_reference: Option<String>,
     /// Required by embedded Checkout Session adapters; unused by
@@ -139,8 +138,8 @@ pub struct ProviderCommandResult {
 }
 
 pub struct ProviderClientActionCommand {
+    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
     pub provider_reference: String,
-    pub external_account_reference: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
 }
 
@@ -153,7 +152,6 @@ pub struct PaymentClientAction {
     pub kind: &'static str,
     pub public_key: SecretString,
     pub client_token: SecretString,
-    pub account_reference: String,
 }
 
 #[async_trait]
@@ -177,7 +175,6 @@ pub trait PaymentProviderOnboarding: Send + Sync {
 
     async fn check_readiness(
         &self,
-        external_account_reference: &str,
         credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
         checked_at: OffsetDateTime,
     ) -> Result<PaymentProviderReadiness, ApplicationError>;
@@ -209,6 +206,7 @@ pub trait PaymentWebhookVerifier: Send + Sync {
     async fn verify(
         &self,
         provider: &str,
+        provider_account_id: Uuid,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -220,7 +218,7 @@ pub trait PaymentWebhookConfigurationRepository: Send + Sync {
     async fn webhook_configurations(
         &self,
         provider: &str,
-        external_account_reference: Option<&str>,
+        provider_account_id: Uuid,
     ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError>;
 }
 

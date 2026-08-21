@@ -1,32 +1,85 @@
-# ADR 0024: Add Stripe Embedded Checkout Alongside PaymentIntents
+# ADR 0024: Use Stripe Embedded Checkout as the Initial Payment Provider
 
 - Status: Accepted
-- Date: 2026-08-18
+- Date: 2026-08-21
 
 ## Context
 
-ADR 0013 committed to Stripe PaymentIntents confirmed client-side with Stripe.js Elements. That remains the right default for storefronts that want a fully custom payment UI. The reference storefront instead uses Stripe Embedded Checkout so the payment form remains inside the storefront while card-data handling stays within Stripe-hosted UI. Stripe models this as a Checkout Session with its own object id prefix (`cs_`) and webhook event family (`checkout.session.*`).
+Chaos initially carried two Stripe payment adapters: a PaymentIntent adapter and
+an Embedded Checkout adapter. The first production flow is Stripe Embedded
+Checkout, so supporting both adapters created two client contracts and two
+webhook event families before the product needed them.
 
-The existing `PaymentClientAction` contract assumed a single response shape: a PaymentIntent client secret for `stripe.confirmPayment()`. Embedded Checkout also needs a short-lived client secret, but the browser passes it to Stripe's `EmbeddedCheckoutProvider` instead. A widened action kind keeps this distinction explicit without introducing another Store API resource.
+Stripe Checkout creates a Checkout Session with a `cs_` identifier. The browser
+receives its short-lived client secret through the provider-neutral
+`PaymentClientAction` contract and passes it to Stripe's Embedded Checkout
+component. Chaos never persists that client secret.
+
+Payment webhooks are Store-scoped integration input. A Stripe event for a
+direct Stripe account does not carry a Chaos Store identifier, and Stripe
+Connect routing is intentionally outside this product. A shared webhook URL
+therefore cannot be used as the routing identity.
 
 ## Decision
 
-Add a second `PaymentProvider` adapter, `stripe_checkout`, alongside the existing `stripe` adapter. Both use the Stripe account owning the configured API key, represented by a Store-unique internal `external_account_reference` beginning with `platform:`. Stripe Connect accounts and `Stripe-Account` routing are not supported. The adapters share credential handling and a pinned API version, but differ in which Stripe resource they create and how they report the resulting client action:
+The initial deployment supports only `stripe_checkout`:
 
-- `stripe` creates PaymentIntents (`POST v1/payment_intents`) and returns `PaymentClientAction { type: "confirm_payment", client_token: <PaymentIntent client secret> }`, unchanged from ADR 0013.
-- `stripe_checkout` creates Checkout Sessions (`POST v1/checkout/sessions`, `mode=payment`, `ui_mode=embedded_page`, one aggregate order-total line item) and returns `PaymentClientAction { type: "mount_embedded_checkout", client_token: <Checkout Session client secret> }`. The storefront passes this secret to Stripe's Embedded Checkout component and never logs, caches, or places it in a URL.
+- creates Checkout Sessions with `mode=payment` and `ui_mode=embedded_page`;
+- requires a secure or loopback `return_url` from the storefront;
+- returns `PaymentClientAction { type: "mount_embedded_checkout" }`;
+- uses the direct Stripe account that owns the configured API key;
+- does not support Stripe Connect, `Stripe-Account`, or platform labels;
+- treats Stripe's `acct_...` value returned by `/v1/account` as diagnostic
+  readiness metadata only.
 
-A Store selects the flow by configuring a `payment_provider_accounts` row with `provider = "stripe_checkout"` instead of `"stripe"` — the same mechanism already used to configure any Provider account, requiring no new domain concept. `provider` was already a free-form string with no enum constraint.
+Each configured payment account has a unique Webhook Endpoint route:
 
-`return_url` is supplied by the storefront when creating the Payment Attempt (`stripe_checkout` requires it; `stripe` ignores it). It is carried through the durable outbox event rather than stored on `payment_attempts`, because it is consumed only once when the Worker creates the Checkout Session. HTTPS is required except for HTTP loopback URLs used during local development.
+```text
+POST /webhooks/v1/payments/stripe_checkout/{provider_account_id}
+```
 
-Webhook verification is available at the provider-specific endpoints `POST /webhooks/v1/payments/stripe` and `POST /webhooks/v1/payments/stripe_checkout`. This keeps webhook-secret resolution aligned with the configured provider account. The supported account webhook envelope omits a Connect `account` field, and verification uses the configured Store-unique `platform:` reference. `map_stripe_event` handles `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, and `checkout.session.expired`, alongside the existing `payment_intent.*`/`refund.*` events, feeding the same downstream Payment Attempt state machine. No new status or persistence column is required: `provider_reference` stores the Checkout Session id (`cs_...`) as it stores a PaymentIntent id (`pi_...`).
+`provider_account_id` is the UUID generated by Chaos. It is the explicit
+routing identity; the Webhook signing secret authenticates the request. The
+verifier queries only that Provider Account, tries its active and still-valid
+previous signing secret, and then writes the event with the resolved Store
+binding. It never scans all Stores and never selects the first matching secret.
 
-Checkout Sessions have no separate authorization step — a fully paid session goes straight from nothing to `checkout.session.completed`. This maps onto the existing auto-authorize-then-capture shortcut that already exists for PaymentIntents whose `payment_intent.succeeded` event arrives while the Attempt is still `pending` (used when a provider's automatic capture skips a distinct authorization event). `checkout.session.completed` only triggers this when the event's `payment_status` is `paid` or `no_payment_required`; a `payment_status` of `unpaid` means an async payment method was selected and the checkout form was submitted, but funds have not settled — that case intentionally emits no state transition and waits for the `checkout.session.async_payment_succeeded`/`async_payment_failed` follow-up event.
+The durable Webhook inbox stores `provider_account_id` and uses
+`(provider_account_id, provider_event_id)` for provider-event idempotency. The
+old `external_account_reference` field and its `platform:<label>` semantics
+are removed from payment configuration and webhook routing.
+
+The only Stripe events enabled and mapped in the initial Checkout integration
+are:
+
+- `checkout.session.completed` with `payment_status=paid` or
+  `no_payment_required` → `payment.captured`;
+- `checkout.session.async_payment_succeeded` → `payment.captured`;
+- `checkout.session.async_payment_failed` → `payment.failed`;
+- `checkout.session.expired` → `payment.cancelled`.
+
+An ordinary `checkout.session.completed` event with `payment_status=unpaid`
+does not transition the Payment Attempt; the asynchronous follow-up event is
+authoritative. Refund execution and refund webhook processing are not part of
+this initial `stripe_checkout` provider and will be designed separately.
+
+Stripe webhook requests are verified against the exact raw request bytes,
+with the standard `Stripe-Signature` header and a five-minute timestamp
+tolerance. A Connect-style event envelope containing `account` is rejected.
 
 ## Consequences
 
-- Stripe-specific wire types and authentication remain in infrastructure; the shared HTTP plumbing (credential resolution, form POST, authenticated GET) is factored into a small internal `StripeHttp` helper both adapters hold, avoiding duplicated request/response handling between the two adapters.
-- `PaymentClientAction.kind`/OpenAPI `type` has two legal values with different consumers. Callers must branch on `type` and treat both token forms as short-lived secrets.
-- `return_url` is shopper-browser supplied. Storefronts must construct it from their own trusted origin; the API permits only HTTPS or local loopback HTTP.
-- Two Stripe-backed provider accounts can be configured per Store (one `stripe`, one `stripe_checkout`) since `payment_provider_accounts` allows one row per distinct `provider` value. Both use the shared account-readiness check against the account owning the configured API keys.
+- Provider Account UUIDs provide a clear, deterministic Store route without
+  adding another routing secret.
+- Webhook configuration is an explicit one-account lookup, so duplicate
+  signing secrets cannot cause cross-Store misrouting.
+- The Stripe API account identity is validated by `/v1/account` and recorded
+  only in the readiness snapshot; it is not confused with Chaos routing.
+- MCP configuration returns the exact Webhook URL, the `Stripe-Signature`
+  header, the four required event names, the signing-secret location, and the
+  Test/Live mode guidance.
+- Existing Webhook endpoints using the removed unscoped URL must be replaced
+  in Stripe Dashboard before the new deployment receives events.
+- Migration `0006_stripe_checkout_webhook_routing.sql` refuses to guess how any
+  legacy `stripe` PaymentIntent account should be converted. Such accounts must
+  be removed or archived deliberately before the migration is applied.

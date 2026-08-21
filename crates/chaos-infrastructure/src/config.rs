@@ -23,6 +23,7 @@ pub struct Settings {
     pub auth_jwt_secret: SecretString,
     pub auth_jwt_lifetime_seconds: u32,
     pub mcp_allowed_hosts: Vec<String>,
+    pub public_base_url: Url,
     pub google_client_id: Option<String>,
     pub apple_client_id: Option<String>,
     /// Deprecated fallback; notification jobs should carry the Store URL.
@@ -117,6 +118,7 @@ impl Settings {
             auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
             auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
+            public_base_url: parse_or("PUBLIC_BASE_URL", "http://localhost:8080/")?,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
