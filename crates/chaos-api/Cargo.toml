@@ -21,8 +21,6 @@ chaos-domain = { path = "../chaos-domain" }
 chaos-infrastructure = { path = "../chaos-infrastructure" }
 chaos-mcp = { path = "../chaos-mcp" }
 rustls.workspace = true
-metrics.workspace = true
-metrics-exporter-prometheus.workspace = true
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true

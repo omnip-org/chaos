@@ -20,7 +20,7 @@ preserve the dependency direction in
 
 | Runtime | Entry point | Responsibility |
 | --- | --- | --- |
-| HTTP API | `crates/chaos-api/src/main.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, health, and metrics |
+| HTTP API | `crates/chaos-api/src/main.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, and health |
 | MCP | `crates/chaos-mcp/src/router.rs` | AI-operated Store administration authenticated by User Access Keys |
 | Worker | `crates/chaos-api/src/bin/chaos-worker.rs` | Durable polling and Provider reconciliation outside API replicas |
 | Migration job | `crates/chaos-api/src/bin/chaos-migrate.rs` | Applies SQL migrations before an application rollout |
@@ -59,7 +59,7 @@ HTTP delivery code is grouped by public responsibility under
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
 - `webhooks/` contains Provider callback endpoints;
-- `operations/` contains health and metrics;
+- `operations/` contains health checks;
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 
 MCP delivery keeps protocol concerns separate from commerce capabilities under

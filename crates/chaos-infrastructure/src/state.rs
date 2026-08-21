@@ -3,8 +3,6 @@ use std::time::Duration;
 use anyhow::Context;
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{config::Settings, store::StoreTransaction};
 use chaos_domain::store::StoreId;
@@ -158,20 +156,6 @@ impl AppState {
         };
 
         tokio::try_join!(postgres, identity_postgres, analytics_postgres, redis)?;
-        Ok(())
-    }
-
-    pub async fn record_worker_heartbeat(
-        &self,
-        instance_id: Uuid,
-        observed_at: OffsetDateTime,
-    ) -> anyhow::Result<()> {
-        sqlx::query("SELECT integration.record_worker_heartbeat($1, $2)")
-            .bind(instance_id)
-            .bind(observed_at)
-            .execute(&self.postgres)
-            .await
-            .context("failed to record Worker heartbeat")?;
         Ok(())
     }
 }

@@ -50,60 +50,6 @@ CREATE TABLE integration.idempotency_records (
     )
 );
 
-CREATE TABLE integration.worker_heartbeats (
-    component       TEXT        NOT NULL PRIMARY KEY,
-    instance_id     UUID        NOT NULL,
-    started_at      TIMESTAMPTZ NOT NULL,
-    heartbeat_at    TIMESTAMPTZ NOT NULL,
-
-    CONSTRAINT worker_heartbeats_component_check CHECK (
-        component = 'worker'
-    ),
-    CONSTRAINT worker_heartbeats_time_check CHECK (
-        heartbeat_at >= started_at
-    )
-);
-
-CREATE FUNCTION integration.record_worker_heartbeat(
-    worker_instance_id UUID,
-    observed_at TIMESTAMPTZ
-)
-RETURNS VOID
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    INSERT INTO integration.worker_heartbeats (
-        component, instance_id, started_at, heartbeat_at
-    ) VALUES (
-        'worker', worker_instance_id, observed_at, observed_at
-    )
-    ON CONFLICT (component) DO UPDATE
-       SET instance_id = EXCLUDED.instance_id,
-           started_at = CASE
-               WHEN integration.worker_heartbeats.instance_id = EXCLUDED.instance_id
-                   THEN integration.worker_heartbeats.started_at
-               ELSE EXCLUDED.started_at
-           END,
-           heartbeat_at = EXCLUDED.heartbeat_at;
-$$;
-
-CREATE FUNCTION integration.worker_health()
-RETURNS TABLE (heartbeat_age_seconds DOUBLE PRECISION, healthy BOOLEAN)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT COALESCE(
-               extract(epoch FROM CURRENT_TIMESTAMP - max(heartbeat_at)),
-               1000000000
-           )::DOUBLE PRECISION,
-           COALESCE(max(heartbeat_at) >= CURRENT_TIMESTAMP - INTERVAL '30 seconds', false)
-      FROM integration.worker_heartbeats;
-$$;
-
 CREATE TABLE integration.webhook_inbox (
     id                         UUID        NOT NULL PRIMARY KEY,
     store_id                   UUID        NOT NULL,
@@ -175,43 +121,6 @@ CREATE INDEX webhook_inbox_claim_idx
 CREATE INDEX outbox_events_pending_idx
     ON integration.outbox_events (created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
-
-CREATE FUNCTION integration.queue_metrics()
-RETURNS TABLE (pending BIGINT, dead_letter BIGINT, oldest_pending_seconds DOUBLE PRECISION)
-LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-BEGIN
-    RETURN QUERY
-    WITH configured_queues(queue_name) AS (
-        VALUES
-            ('chaos_payment_commands'::TEXT),
-            ('chaos_fulfillment_events'::TEXT),
-            ('chaos_search_events'::TEXT),
-            ('chaos_analytics_events'::TEXT),
-            ('chaos_webhooks'::TEXT),
-            ('chaos_email'::TEXT),
-            ('chaos_meta'::TEXT)
-    ), queue_state AS (
-        SELECT COALESCE(sum(metrics.queue_length), 0)::BIGINT AS pending,
-               COALESCE(max(metrics.oldest_msg_age_sec), 0)::DOUBLE PRECISION
-                   AS oldest_pending_seconds
-          FROM pgmq.metrics_all() AS metrics
-          INNER JOIN configured_queues AS configured
-            ON configured.queue_name = metrics.queue_name
-    ), dead_state AS (
-        SELECT
-            (SELECT count(*) FROM integration.outbox_events WHERE failed_at IS NOT NULL)
-            + (SELECT count(*) FROM integration.webhook_inbox WHERE failed_at IS NOT NULL)
-            + (SELECT count(*) FROM integration.email_deliveries
-                WHERE delivery_status = 'dead_letter')
-            + (SELECT count(*) FROM integration.meta_event_deliveries
-                WHERE delivery_status = 'dead_letter') AS dead_letter
-    )
-    SELECT queue_state.pending,
-           dead_state.dead_letter,
-           queue_state.oldest_pending_seconds
-      FROM queue_state CROSS JOIN dead_state;
-END;
-$$;
 
 CREATE FUNCTION integration.event_consumer_backlog()
 RETURNS TABLE (
@@ -646,12 +555,6 @@ REVOKE ALL ON FUNCTION integration.enqueue_outbox_event() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event() FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.record_worker_heartbeat(
-    UUID, TIMESTAMPTZ
-) FROM PUBLIC;
-
-REVOKE ALL ON FUNCTION integration.worker_health() FROM PUBLIC;
-
 REVOKE ALL ON FUNCTION integration.claim_routed_outbox_events(
     TEXT, INTEGER
 ) FROM PUBLIC;
@@ -701,24 +604,13 @@ GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(
     UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION integration.queue_metrics() TO chaos_runtime;
-
 GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION integration.record_worker_heartbeat(
-    UUID, TIMESTAMPTZ
-) TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION integration.worker_health() TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
     ON integration.event_consumer_registry FROM chaos_runtime;
-
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE
-    ON integration.worker_heartbeats FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
     ON integration.webhook_inbox, integration.outbox_events FROM chaos_runtime;
@@ -898,34 +790,6 @@ BEGIN
       ) AS message_id;
     RETURN NEW;
 END;
-$$;
-
-CREATE FUNCTION integration.email_delivery_metrics()
-RETURNS TABLE (
-    pending BIGINT,
-    processing BIGINT,
-    dead_letter BIGINT,
-    suppressed BIGINT,
-    oldest_pending_seconds DOUBLE PRECISION
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT count(*) FILTER (WHERE delivery.delivery_status = 'pending'),
-           0,
-           count(*) FILTER (WHERE delivery.delivery_status = 'dead_letter'),
-           count(*) FILTER (WHERE delivery.delivery_status = 'suppressed'),
-           COALESCE(
-               extract(
-                   epoch FROM CURRENT_TIMESTAMP -
-                       (min(delivery.created_at)
-                            FILTER (WHERE delivery.delivery_status = 'pending'))
-               ),
-               0
-           )::DOUBLE PRECISION
-      FROM integration.email_deliveries AS delivery;
 $$;
 
 CREATE FUNCTION integration.claim_email_deliveries(
@@ -1232,8 +1096,6 @@ REVOKE ALL ON FUNCTION integration.record_resend_webhook(
     UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.email_delivery_metrics() FROM PUBLIC;
-
 GRANT EXECUTE ON FUNCTION integration.claim_email_deliveries(
     INTEGER
 ) TO chaos_runtime;
@@ -1245,8 +1107,6 @@ GRANT EXECUTE ON FUNCTION integration.finish_email_delivery(
 GRANT EXECUTE ON FUNCTION integration.record_resend_webhook(
     UUID, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
 ) TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION integration.email_delivery_metrics() TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;

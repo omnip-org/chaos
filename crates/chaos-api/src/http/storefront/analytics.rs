@@ -255,7 +255,7 @@ async fn collect_events(
         .await
         .inspect_err(|error| {
             if matches!(error, ApplicationError::RateLimited { .. }) {
-                ::metrics::counter!("chaos_analytics_collection_rate_limited_total").increment(1);
+                tracing::debug!("analytics collection request rate limited");
             }
         })?;
     Ok(ApiResponse::ok(collection_result_data(result)))

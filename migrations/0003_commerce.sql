@@ -3557,34 +3557,6 @@ AS $$
               checkout.inventory_reservation_id;
 $$;
 
-CREATE FUNCTION commerce.provider_readiness_metrics()
-RETURNS TABLE (
-    due BIGINT,
-    retrying BIGINT,
-    expiring_within_six_hours BIGINT,
-    action_required BIGINT
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT count(*) FILTER (
-               WHERE account.enabled
-                 AND account.readiness_reconcile_at <= CURRENT_TIMESTAMP
-           ),
-           count(*) FILTER (
-               WHERE account.enabled
-                 AND account.readiness_reconcile_attempts > 0
-           ),
-           count(*) FILTER (
-               WHERE account.enabled
-                 AND account.readiness_valid_until <= CURRENT_TIMESTAMP + INTERVAL '6 hours'
-           ),
-           count(*) FILTER (WHERE account.readiness_status = 'action_required')
-      FROM commerce.provider_accounts AS account;
-$$;
-
 CREATE FUNCTION commerce.resolve_provider_account(
     requested_provider                   TEXT,
     requested_external_account_reference TEXT
@@ -3759,73 +3731,6 @@ AS $$
      WHERE account.id = requested_provider_account_id
        AND account.readiness_locked_by = worker_id
     RETURNING true;
-$$;
-
-CREATE FUNCTION commerce.shipping_tracking_metrics()
-RETURNS TABLE (
-    due BIGINT,
-    processing BIGINT,
-    dead_letter BIGINT,
-    oldest_due_seconds DOUBLE PRECISION
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT count(*) FILTER (
-               WHERE label.next_tracking_refresh_at <= CURRENT_TIMESTAMP
-           ),
-           count(*) FILTER (WHERE label.tracking_locked_by IS NOT NULL),
-           count(*) FILTER (
-               WHERE label.next_tracking_refresh_at IS NULL
-                 AND label.tracking_attempts >= 8
-                 AND label.tracking_last_error IS NOT NULL
-           ),
-           COALESCE(
-               extract(
-                   epoch FROM CURRENT_TIMESTAMP -
-                       (min(label.next_tracking_refresh_at)
-                            FILTER (WHERE label.next_tracking_refresh_at <= CURRENT_TIMESTAMP))
-               ),
-               0
-           )::DOUBLE PRECISION
-      FROM commerce.shipping_labels AS label
-     WHERE label.purchase_state = 'purchased'
-       AND label.provider_tracker_reference IS NOT NULL;
-$$;
-
-CREATE FUNCTION commerce.shipping_cancellation_metrics()
-RETURNS TABLE (
-    due BIGINT,
-    processing BIGINT,
-    dead_letter BIGINT,
-    oldest_due_seconds DOUBLE PRECISION
-)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT count(*) FILTER (
-               WHERE label.cancellation_reconcile_at <= CURRENT_TIMESTAMP
-           ),
-           count(*) FILTER (WHERE label.cancellation_locked_by IS NOT NULL),
-           count(*) FILTER (
-               WHERE label.cancellation_reconcile_at IS NULL
-                 AND label.cancellation_attempts >= 8
-                 AND label.cancellation_last_error IS NOT NULL
-           ),
-           COALESCE(
-               extract(
-                   epoch FROM CURRENT_TIMESTAMP -
-                       (min(label.cancellation_reconcile_at)
-                            FILTER (WHERE label.cancellation_reconcile_at <= CURRENT_TIMESTAMP))
-               ),
-               0
-           )::DOUBLE PRECISION
-      FROM commerce.shipping_labels AS label
-     WHERE label.cancellation_status = 'submitted';
 $$;
 
 CREATE FUNCTION commerce.claim_shipping_tracking(
@@ -4462,8 +4367,6 @@ REVOKE ALL ON FUNCTION commerce.finish_provider_readiness_check(
     UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION commerce.provider_readiness_metrics() FROM PUBLIC;
-
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
 
 GRANT EXECUTE
@@ -4478,8 +4381,6 @@ GRANT EXECUTE ON FUNCTION commerce.finish_provider_readiness_check(
     UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT
 )
     TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION commerce.provider_readiness_metrics() TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
@@ -4501,10 +4402,6 @@ REVOKE ALL ON FUNCTION commerce.claim_shipping_cancellations(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION commerce.shipping_tracking_metrics() FROM PUBLIC;
-
-REVOKE ALL ON FUNCTION commerce.shipping_cancellation_metrics() FROM PUBLIC;
-
 GRANT EXECUTE ON FUNCTION commerce.claim_shipping_tracking(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) TO chaos_runtime;
@@ -4512,10 +4409,6 @@ GRANT EXECUTE ON FUNCTION commerce.claim_shipping_tracking(
 GRANT EXECUTE ON FUNCTION commerce.claim_shipping_cancellations(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 ) TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION commerce.shipping_tracking_metrics() TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION commerce.shipping_cancellation_metrics() TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;

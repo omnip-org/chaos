@@ -12,8 +12,6 @@ mod error;
 mod extract;
 #[path = "operations/health.rs"]
 mod health;
-#[path = "operations/metrics.rs"]
-mod metrics;
 #[path = "webhooks/notification.rs"]
 mod notification;
 #[path = "shared/openapi.rs"]
@@ -89,7 +87,6 @@ use chaos_infrastructure::{
     state::AppState,
     stripe::{StripeCheckoutPaymentProvider, StripePaymentProvider, StripeWebhookVerifier},
 };
-use metrics_exporter_prometheus::PrometheusHandle;
 use secrecy::ExposeSecret as _;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -110,7 +107,6 @@ pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, Respons
 pub struct ApiState {
     pub infrastructure: AppState,
     pub lifecycle: Lifecycle,
-    pub metrics: PrometheusHandle,
     pub identity_auth: Arc<dyn IdentityAuthentication>,
     pub access_key_management: Arc<AccessKeyManagement>,
     pub access_key_authentication: Arc<AccessKeyAuthentication>,
@@ -160,7 +156,6 @@ impl ApiState {
         lifecycle: Lifecycle,
         settings: &Settings,
     ) -> anyhow::Result<Self> {
-        let metrics = crate::telemetry::init_metrics()?;
         let identity_providers = [
             settings
                 .google_client_id
@@ -412,7 +407,6 @@ impl ApiState {
         Ok(Self {
             infrastructure,
             lifecycle,
-            metrics,
             identity_auth: Arc::new(identity_auth),
             access_key_management: Arc::new(access_key_management),
             access_key_authentication: Arc::new(access_key_authentication),
@@ -497,7 +491,6 @@ pub fn router(state: ApiState) -> Router {
     );
     Router::new()
         .nest("/health", health::routes())
-        .nest("/metrics", metrics::routes())
         .nest("/identity/v1", auth::routes())
         .merge(payment::routes())
         .merge(notification::routes())
@@ -510,7 +503,6 @@ pub fn router(state: ApiState) -> Router {
         .nest("/openapi", openapi::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
-        .layer(axum::middleware::from_fn(metrics::track_http_request))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -594,45 +586,6 @@ mod tests {
             serde_json::from_slice::<Value>(&body).unwrap()["data"]["status"],
             "ok"
         );
-    }
-
-    #[tokio::test]
-    async fn metrics_expose_bounded_http_request_series() {
-        let app = router(test_state());
-        let response = app
-            .clone()
-            .oneshot(Request::get("/health/live").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["content-type"],
-            "text/plain; version=0.0.4; charset=utf-8"
-        );
-
-        // The read limit here is a generous sanity ceiling, not a tight
-        // assertion on payload size: chaos_http_request_duration_seconds is a
-        // 10-bucket histogram, and the process-wide Prometheus registry
-        // (telemetry::init_metrics, a OnceLock) accumulates one label series
-        // per distinct (method, route, status) triple exercised by every test
-        // in this binary, not just this one — so the body only grows as the
-        // test suite does and must not be bounded to a size tied to today's
-        // route/test count.
-        let body = to_bytes(response.into_body(), 8 * 1024 * 1024)
-            .await
-            .unwrap();
-        let body = std::str::from_utf8(&body).unwrap();
-        assert!(body.contains("chaos_http_requests_total"));
-        assert!(body.contains("method=\"GET\""));
-        assert!(body.contains("route=\"/health/live\""));
-        assert!(body.contains("status=\"200\""));
-        assert!(body.contains("chaos_http_request_duration_seconds_bucket"));
     }
 
     #[tokio::test]

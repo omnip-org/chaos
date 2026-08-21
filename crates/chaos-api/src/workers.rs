@@ -6,11 +6,6 @@ pub async fn run(
     lifecycle: Lifecycle,
     worker_shutdown_timeout: std::time::Duration,
 ) {
-    let heartbeat_worker = tokio::spawn(heartbeat_worker_loop(
-        runtime.infrastructure.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
     let payment_worker = tokio::spawn(payment_worker_loop(
         runtime.payment_workers.clone(),
         runtime.clock.clone(),
@@ -54,25 +49,7 @@ pub async fn run(
             checkout_expiry_worker,
             worker_shutdown_timeout
         ),
-        drain_worker("heartbeat", heartbeat_worker, worker_shutdown_timeout),
     );
-}
-
-async fn heartbeat_worker_loop(
-    infrastructure: chaos_infrastructure::state::AppState,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let instance_id = Uuid::now_v7();
-    while lifecycle.is_accepting_traffic() {
-        if let Err(error) = infrastructure
-            .record_worker_heartbeat(instance_id, clock.now())
-            .await
-        {
-            tracing::warn!(%instance_id, %error, "Worker heartbeat failed");
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    }
 }
 
 struct PollBackoff {
@@ -119,8 +96,6 @@ async fn analytics_worker_loop(
         let mut processed = 0usize;
         match workers.run_server_event_batch(now, 100).await {
             Ok(count) => {
-                ::metrics::counter!("chaos_analytics_server_events_claimed_total")
-                    .increment(count as u64);
                 processed += count;
             }
             Err(error) => {
@@ -129,8 +104,6 @@ async fn analytics_worker_loop(
         }
         match workers.run_meta_delivery_batch(now, 10).await {
             Ok(count) => {
-                ::metrics::counter!("chaos_analytics_meta_deliveries_claimed_total")
-                    .increment(count as u64);
                 processed += count;
             }
             Err(error) => {
@@ -139,11 +112,7 @@ async fn analytics_worker_loop(
         }
         if now >= next_retention_at {
             match workers.run_retention_batch(now, 1000).await {
-                Ok(result) => {
-                    ::metrics::counter!("chaos_analytics_retention_events_deleted_total")
-                        .increment(result.commerce_events_deleted);
-                    ::metrics::counter!("chaos_analytics_retention_visitor_links_deleted_total")
-                        .increment(result.visitor_links_deleted);
+                Ok(_result) => {
                     next_retention_at = now + time::Duration::minutes(1);
                 }
                 Err(error) => {
@@ -154,13 +123,7 @@ async fn analytics_worker_loop(
         }
         if now >= next_erasure_at {
             match workers.run_erasure_batch(now, 100).await {
-                Ok(result) => {
-                    ::metrics::counter!("chaos_analytics_erasure_requests_completed_total")
-                        .increment(result.requests_completed);
-                    ::metrics::counter!("chaos_analytics_erasure_events_deleted_total")
-                        .increment(result.commerce_events_deleted);
-                    ::metrics::counter!("chaos_analytics_erasure_visitor_links_deleted_total")
-                        .increment(result.visitor_links_deleted);
+                Ok(_result) => {
                     next_erasure_at = now + time::Duration::seconds(1);
                 }
                 Err(error) => {

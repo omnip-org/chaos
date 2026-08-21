@@ -38,9 +38,8 @@ retry. PGMQ `read_ct` is the attempt count.
 
 Claims also delete envelopes whose authoritative row no longer exists or is
 already terminal. This handles Store deletion and administrative cleanup without
-leaving invisible messages to cycle forever. Queue metrics aggregate all seven
-configured PGMQ queues; dead-letter counts come from authoritative integration
-rows rather than a second message archive.
+leaving invisible messages to cycle forever. Queue state remains in PGMQ and
+authoritative integration rows; no second message archive is maintained.
 
 Application ports describe domain-specific jobs; PGMQ remains an infrastructure
 detail. The runtime role has no direct PGMQ privileges and calls only reviewed

@@ -26,7 +26,7 @@ The MCP HTTP transport is stateless. Protocol context and authentication are sup
 
 Stores issue only Publishable Keys for Sales Channels. These keys carry storefront capabilities and may select a Sales Channel; they cannot invoke MCP or administration use cases.
 
-Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for identity bootstrap, storefront and channel traffic, provider webhooks, health, and metrics.
+Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for identity bootstrap, storefront and channel traffic, provider webhooks, and health checks.
 
 ## Code structure
 

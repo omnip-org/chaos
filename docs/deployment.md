@@ -2,7 +2,7 @@
 
 ## Topology
 
-Cloudflare terminates public TLS and proxies to the host gateway. The gateway load-balances the blue and green API replicas. One independently restartable Worker service runs background consumers and has no public listener. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL, Redis, and metrics must not be publicly reachable.
+Cloudflare terminates public TLS and proxies to the host gateway. The gateway load-balances the blue and green API replicas. One independently restartable Worker service runs background consumers and has no public listener. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL and Redis must not be publicly reachable.
 
 API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because PGMQ visibility timeouts, retry counters, and idempotent consumers coordinate concurrent claims.
 
@@ -103,13 +103,5 @@ To enable order email for a Store, create `notification_credential` and
 references, a verified sender, and `enabled: true`. Configure Resend to deliver webhooks
 to the `webhook_path` returned by that tool. Repeating the operation with new secret
 references rotates the Store without restarting Chaos.
-
-## Monitoring alerts
-
-The API `/metrics` endpoint exports dependency, Worker heartbeat, queue backlog, and
-dead-letter gauges. Load `deploy/monitoring/alerts.yml` into an existing
-Prometheus-compatible ruler after configuring it to scrape that endpoint. Chaos does not
-deploy a monitoring stack or notification receiver; the rule file is the minimal alerting
-contract for the surrounding platform.
 
 Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

@@ -11,7 +11,7 @@ Users may operate multiple Stores. A Store-scoped secret key forces an AI client
 
 Private Access Keys belong to Users in the Identity context. Authentication resolves `access_key_id` and `user_id`. Each MCP request explicitly selects a Store, rechecks current membership, and carries the Key identity into the Store actor used by application use cases. Stores issue only Publishable Sales Channel Keys with storefront capabilities.
 
-The HTTP API retains only identity bootstrap, storefront and channel operations, Provider webhooks, health, and metrics. Store administration is provided through MCP tools.
+The HTTP API retains only identity bootstrap, storefront and channel operations, Provider webhooks, and health checks. Store administration is provided through MCP tools.
 
 Background polling runs in the independently deployed `chaos-worker` binary. API replicas do not start Workers. Queue consumers remain lease-based, idempotent, and safe with multiple Worker replicas; no correctness invariant relies on running exactly one process.
 
