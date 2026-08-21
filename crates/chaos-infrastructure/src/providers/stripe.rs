@@ -80,7 +80,7 @@ impl StripeHttp {
         &self,
         path: &str,
         credentials: &StripeCredentials,
-        connected_account: &str,
+        account_reference: &str,
         idempotency_key: &str,
         form: &[(String, String)],
     ) -> Result<StripeObject, ApplicationError> {
@@ -89,7 +89,7 @@ impl StripeHttp {
             .post(self.endpoint(path)?)
             .headers(stripe_headers(
                 credentials.secret_key.expose_secret(),
-                connected_account,
+                account_reference,
                 Some(idempotency_key),
             )?)
             .form(form)
@@ -106,7 +106,7 @@ impl StripeHttp {
         &self,
         path_prefix: &str,
         credentials: &StripeCredentials,
-        connected_account: &str,
+        account_reference: &str,
         provider_reference: &str,
         expected_prefix: &str,
     ) -> Result<StripeObject, ApplicationError> {
@@ -118,7 +118,7 @@ impl StripeHttp {
             .get(self.endpoint(&format!("{path_prefix}{provider_reference}"))?)
             .headers(stripe_headers(
                 credentials.secret_key.expose_secret(),
-                connected_account,
+                account_reference,
                 None,
             )?)
             .send()
@@ -132,16 +132,12 @@ impl StripeHttp {
         secret_key: &str,
         external_account_reference: &str,
     ) -> Result<StripeAccount, ApplicationError> {
-        let path = if is_platform_account(external_account_reference) {
-            "v1/account".to_owned()
-        } else if valid_stripe_identifier(external_account_reference, "acct_") {
-            format!("v1/accounts/{external_account_reference}")
-        } else {
+        if !is_platform_account(external_account_reference) {
             return Err(provider_invalid_response());
-        };
+        }
         let response = self
             .client
-            .get(self.endpoint(&path)?)
+            .get(self.endpoint("v1/account")?)
             .headers(stripe_platform_headers(secret_key)?)
             .send()
             .await
@@ -168,14 +164,14 @@ impl StripePaymentProvider {
     async fn retrieve_payment_intent(
         &self,
         credentials: &StripeCredentials,
-        connected_account: &str,
+        account_reference: &str,
         provider_reference: &str,
     ) -> Result<StripeObject, ApplicationError> {
         self.http
             .retrieve_object(
                 "v1/payment_intents/",
                 credentials,
-                connected_account,
+                account_reference,
                 provider_reference,
                 "pi_",
             )
@@ -301,17 +297,15 @@ impl PaymentProviderOnboarding for StripePaymentProvider {
 }
 
 /// Stripe account readiness shared by every Stripe-backed adapter. The
-/// A `platform:...` reference uses the account owning the configured Stripe
-/// credentials; an `acct_...` reference uses Stripe Connect.
+/// A `platform:...` reference is an internal label for the account owning the
+/// configured Stripe credentials. Stripe Connect is not supported.
 async fn stripe_account_readiness(
     http: &StripeHttp,
     external_account_reference: &str,
     credential_secret_reference: &PaymentSecretReference,
     checked_at: OffsetDateTime,
 ) -> Result<PaymentProviderReadiness, ApplicationError> {
-    if !is_platform_account(external_account_reference)
-        && !valid_stripe_identifier(external_account_reference, "acct_")
-    {
+    if !is_platform_account(external_account_reference) {
         return Err(provider_invalid_response());
     }
     let credentials = http.credentials(credential_secret_reference).await?;
@@ -321,14 +315,7 @@ async fn stripe_account_readiness(
             external_account_reference,
         )
         .await?;
-    let connected = !is_platform_account(external_account_reference);
-    if connected && account.id != external_account_reference {
-        return Err(provider_invalid_response());
-    }
-
     let card_payments = account.capabilities.card_payments.as_deref();
-    let fee_payer = account.controller.fees.payer.as_deref();
-    let losses_payer = account.controller.losses.payments.as_deref();
     let requirements_due =
         account.requirements.currently_due.len() + account.requirements.past_due.len();
     let mut blocker_codes = Vec::new();
@@ -347,24 +334,15 @@ async fn stripe_account_readiness(
     if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
         blocker_codes.push("requirements_due".into());
     }
-    if connected && fee_payer != Some("account") {
-        blocker_codes.push("fee_payer_mismatch".into());
-    }
-    if connected && losses_payer != Some("stripe") {
-        blocker_codes.push("loss_liability_mismatch".into());
-    }
-
     let ready = blocker_codes.is_empty();
     let configuration = serde_json::json!({
-        "account_reference": account.id,
+        "account_reference": external_account_reference,
         "ready": ready,
         "blocker_codes": &blocker_codes,
         "accepts_payments": account.charges_enabled,
         "supports_payouts": account.payouts_enabled,
         "details_submitted": account.details_submitted,
         "card_payments": card_payments,
-        "fee_payer": fee_payer,
-        "losses_payer": losses_payer,
         "requirements_due": requirements_due,
         "disabled_reason": account.requirements.disabled_reason,
     });
@@ -556,16 +534,12 @@ impl PaymentWebhookVerifier for StripeWebhookVerifier {
         if !valid_stripe_identifier(&envelope.id, "evt_") {
             return Err(invalid_webhook());
         }
-        if envelope
-            .account
-            .as_deref()
-            .is_some_and(|account| !valid_stripe_identifier(account, "acct_"))
-        {
+        if envelope.account.is_some() {
             return Err(invalid_webhook());
         }
         let configurations = self
             .configurations
-            .webhook_configurations(provider, envelope.account.as_deref())
+            .webhook_configurations(provider, None)
             .await?;
         if configurations.is_empty() {
             return Err(ApplicationError::Unauthorized);
@@ -639,7 +613,6 @@ struct StripeObject {
 
 #[derive(Deserialize)]
 struct StripeAccount {
-    id: String,
     #[serde(default)]
     charges_enabled: bool,
     #[serde(default)]
@@ -649,8 +622,6 @@ struct StripeAccount {
     #[serde(default)]
     capabilities: StripeAccountCapabilities,
     #[serde(default)]
-    controller: StripeAccountController,
-    #[serde(default)]
     requirements: StripeAccountRequirements,
 }
 
@@ -658,26 +629,6 @@ struct StripeAccount {
 struct StripeAccountCapabilities {
     #[serde(default)]
     card_payments: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct StripeAccountController {
-    #[serde(default)]
-    fees: StripeAccountFees,
-    #[serde(default)]
-    losses: StripeAccountLosses,
-}
-
-#[derive(Default, Deserialize)]
-struct StripeAccountFees {
-    #[serde(default)]
-    payer: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct StripeAccountLosses {
-    #[serde(default)]
-    payments: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -803,12 +754,10 @@ fn map_stripe_event(
 
 fn stripe_headers(
     secret_key: &str,
-    connected_account: &str,
+    account_reference: &str,
     idempotency_key: Option<&str>,
 ) -> Result<HeaderMap, ApplicationError> {
-    if !is_platform_account(connected_account)
-        && !valid_stripe_identifier(connected_account, "acct_")
-    {
+    if !is_platform_account(account_reference) {
         return Err(provider_invalid_response());
     }
     let mut authorization =
@@ -816,12 +765,6 @@ fn stripe_headers(
     authorization.set_sensitive(true);
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, authorization);
-    if !is_platform_account(connected_account) {
-        headers.insert(
-            "stripe-account",
-            HeaderValue::from_str(connected_account).map_err(|_| provider_invalid_response())?,
-        );
-    }
     headers.insert(
         "stripe-version",
         HeaderValue::from_static(STRIPE_API_VERSION),
@@ -1056,7 +999,6 @@ mod tests {
             external_account_reference: Option<&str>,
         ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
             let reference = match (provider, external_account_reference) {
-                ("stripe", Some("acct_connected")) => "acct_connected",
                 ("stripe_checkout", None) => TEST_STRIPE_PLATFORM_ACCOUNT,
                 _ => return Ok(Vec::new()),
             };
@@ -1105,12 +1047,6 @@ mod tests {
             }
             ("GET", "/v1/payment_intents/pi_created") => {
                 r#"{"id":"pi_created","client_secret":"pi_created_secret_value"}"#
-            }
-            ("GET", "/v1/accounts/acct_connected") => {
-                r#"{"id":"acct_connected","charges_enabled":true,"payouts_enabled":true,"details_submitted":true,"capabilities":{"card_payments":"active"},"controller":{"fees":{"payer":"account"},"losses":{"payments":"stripe"}},"requirements":{"currently_due":[],"past_due":[],"disabled_reason":null}}"#
-            }
-            ("GET", "/v1/accounts/acct_not_ready") => {
-                r#"{"id":"acct_not_ready","charges_enabled":false,"payouts_enabled":false,"details_submitted":false,"capabilities":{"card_payments":"inactive"},"controller":{"fees":{"payer":"application"},"losses":{"payments":"application"}},"requirements":{"currently_due":["business_profile.url"],"past_due":[],"disabled_reason":"requirements.past_due"}}"#
             }
             ("GET", "/v1/account") => {
                 r#"{"id":"acct_platform","charges_enabled":true,"payouts_enabled":true,"details_submitted":true,"capabilities":{"card_payments":"active"},"requirements":{"currently_due":[],"past_due":[],"disabled_reason":null}}"#
@@ -1163,7 +1099,7 @@ mod tests {
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "payment-command".into(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
                 return_url: None,
@@ -1174,7 +1110,7 @@ mod tests {
         let action = provider
             .client_action(ProviderClientActionCommand {
                 provider_reference: created.provider_reference.clone(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference.clone(),
             })
             .await
@@ -1191,7 +1127,7 @@ mod tests {
                 amount_minor: 400,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "refund-command".into(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: Some(created.provider_reference),
                 return_url: None,
@@ -1201,36 +1137,24 @@ mod tests {
         assert_eq!(refunded.provider_reference, "re_created");
         let checked_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
         let readiness = provider
-            .check_readiness("acct_connected", &reference, checked_at)
+            .check_readiness(TEST_STRIPE_PLATFORM_ACCOUNT, &reference, checked_at)
             .await
             .unwrap();
         assert!(readiness.ready);
         assert!(readiness.blocker_codes.is_empty());
         assert_eq!(readiness.checked_at, checked_at);
-        assert_eq!(readiness.configuration["fee_payer"], "account");
-        let not_ready = provider
-            .check_readiness("acct_not_ready", &reference, checked_at)
-            .await
-            .unwrap();
-        assert!(!not_ready.ready);
-        assert_eq!(
-            not_ready.blocker_codes,
-            vec![
-                "charges_disabled",
-                "payouts_disabled",
-                "details_incomplete",
-                "card_payments_inactive",
-                "requirements_due",
-                "fee_payer_mismatch",
-                "loss_liability_mismatch"
-            ]
+        assert!(
+            provider
+                .check_readiness("acct_not_supported", &reference, checked_at)
+                .await
+                .is_err()
         );
 
         let requests = state.0.lock().unwrap();
-        assert_eq!(requests.len(), 5);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/v1/payment_intents");
-        assert_eq!(requests[0].headers["stripe-account"], "acct_connected");
+        assert!(requests[0].headers.get("stripe-account").is_none());
         assert_eq!(requests[0].headers["stripe-version"], STRIPE_API_VERSION);
         assert_eq!(requests[0].headers["idempotency-key"], "payment-command");
         assert_eq!(requests[0].headers[AUTHORIZATION], "Bearer sk_test_secret");
@@ -1246,7 +1170,7 @@ mod tests {
             url::form_urlencoded::parse(requests[2].body.as_bytes()).collect();
         assert_eq!(refund_form["payment_intent"], "pi_created");
         assert_eq!(refund_form["amount"], "400");
-        assert_eq!(requests[3].path, "/v1/accounts/acct_connected");
+        assert_eq!(requests[3].path, "/v1/account");
         assert!(requests[3].headers.get("stripe-account").is_none());
         assert_eq!(requests[3].headers["stripe-version"], STRIPE_API_VERSION);
         drop(requests);
@@ -1361,7 +1285,7 @@ mod tests {
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "checkout-command".into(),
-                external_account_reference: "acct_connected".into(),
+                external_account_reference: TEST_STRIPE_PLATFORM_ACCOUNT.into(),
                 credential_secret_reference: reference,
                 payment_provider_reference: None,
                 return_url: None,
@@ -1460,7 +1384,6 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": "evt_1",
             "type": event_type,
-            "account": "acct_connected",
             "data": {"object": object}
         }))
         .unwrap()

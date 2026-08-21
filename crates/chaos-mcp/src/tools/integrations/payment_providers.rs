@@ -34,12 +34,14 @@ pub struct GetPaymentProviderParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreatePaymentProviderParams {
+    /// Payment adapter: `stripe` uses PaymentIntents; `stripe_checkout` uses Stripe Embedded Checkout.
     pub provider: String,
     pub display_name: String,
-    /// Use a unique "platform:..." reference for the Stripe account owning
-    /// the Publishable Key, or an "acct_..." identifier for a Stripe Connect account.
+    /// Internal label for the Stripe account that owns the supplied API keys, for example `platform:store-test`. Stripe Connect accounts and `acct_...` routing are not supported.
     pub external_account_reference: String,
+    /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`. The stored value must be JSON containing `secret_key` and `publishable_key`.
     pub credential_secret_reference: String,
+    /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`, containing the Stripe endpoint signing secret (`whsec_...`).
     pub webhook_secret_reference: String,
     pub enabled: bool,
     pub confirm: bool,
@@ -50,7 +52,12 @@ pub struct CreatePaymentProviderParams {
 pub struct UpdatePaymentProviderParams {
     pub payment_provider_account_id: String,
     pub display_name: String,
+    /// Optional internal label for the Stripe account owning the API keys, for example `platform:store-test`. Stripe Connect account IDs are not supported.
+    #[serde(default)]
+    pub external_account_reference: Option<String>,
+    /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`.
     pub credential_secret_reference: String,
+    /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`.
     pub webhook_secret_reference: String,
     pub enabled: bool,
     pub confirm: bool,
@@ -136,7 +143,9 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Create a Payment Provider account in the selected Store.")]
+    #[tool(
+        description = "Create and readiness-check a Payment Provider account in the selected Store. Use provider `stripe` for PaymentIntents or `stripe_checkout` for Embedded Checkout. This deployment supports only the Stripe account owning the supplied API keys, identified by an internal `platform:<label>` reference; Stripe Connect and `acct_...` routing are not supported. Requires confirmation."
+    )]
     async fn create_payment_provider_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -173,7 +182,9 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Update a Payment Provider account in the selected Store.")]
+    #[tool(
+        description = "Update and re-check a Payment Provider account in the selected Store. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. Requires confirmation."
+    )]
     async fn update_payment_provider_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -200,6 +211,7 @@ impl ChaosMcp {
                 store_id,
                 id,
                 display_name: params.display_name,
+                external_account_reference: params.external_account_reference,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
                 enabled: params.enabled,

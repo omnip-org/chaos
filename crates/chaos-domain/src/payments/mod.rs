@@ -122,6 +122,20 @@ impl PaymentProviderAccount {
         self.enabled = enabled;
         Ok(())
     }
+
+    pub fn update_external_account_reference(
+        &mut self,
+        external_account_reference: impl Into<String>,
+    ) -> Result<(), DomainError> {
+        let external_account_reference = external_account_reference.into();
+        validate_printable(
+            "external_account_reference",
+            &external_account_reference,
+            255,
+        )?;
+        self.external_account_reference = external_account_reference;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]

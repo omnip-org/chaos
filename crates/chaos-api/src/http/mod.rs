@@ -303,6 +303,7 @@ impl ApiState {
         let analytics_administration = AnalyticsAdministration::new(
             analytics_repository.clone(),
             analytics_repository.clone(),
+            analytics_repository.clone(),
         );
         let analytics_privacy = AnalyticsPrivacy::new(analytics_repository);
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));

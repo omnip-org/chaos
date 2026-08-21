@@ -31,7 +31,8 @@ mod tax;
 pub use actor::AdminActor;
 pub use analytics::{
     AnalyticsCollectionRateLimiter, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
-    AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventRepository,
+    AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventPage, AnalyticsEventQuery,
+    AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRepository,
     AnalyticsPrivacyRepository, AnalyticsRateLimitDecision, AnalyticsRetentionResult,
     AnalyticsSettingsRepository, AnalyticsWorkerRepository, MetaConnection,
     MetaConnectionConfiguration, MetaConnectionRepository, MetaDeliveryCommand, MetaDeliveryError,

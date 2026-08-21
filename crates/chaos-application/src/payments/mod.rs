@@ -58,6 +58,7 @@ pub struct UpdatePaymentProviderAccountInput {
     pub store_id: StoreId,
     pub id: PaymentProviderAccountId,
     pub display_name: String,
+    pub external_account_reference: Option<String>,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
     pub enabled: bool,
@@ -159,6 +160,11 @@ impl PaymentProviderAdministration {
         detail
             .account
             .update_administration(input.display_name, input.enabled)?;
+        if let Some(external_account_reference) = input.external_account_reference {
+            detail
+                .account
+                .update_external_account_reference(external_account_reference)?;
+        }
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
             input.credential_secret_reference,

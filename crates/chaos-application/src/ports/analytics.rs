@@ -85,6 +85,46 @@ pub trait AnalyticsSettingsRepository: Send + Sync {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsEventRecord {
+    pub id: Uuid,
+    pub event_id: Uuid,
+    pub event_name: String,
+    pub source: String,
+    pub occurred_at: OffsetDateTime,
+    pub received_at: OffsetDateTime,
+    pub meta_eligible: bool,
+    pub meta_delivery_status: Option<String>,
+    pub meta_delivered_at: Option<OffsetDateTime>,
+    pub meta_provider_reference: Option<String>,
+    pub meta_last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsEventPage {
+    pub events: Vec<AnalyticsEventRecord>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AnalyticsEventQuery {
+    pub before_id: Option<Uuid>,
+    pub event_name: Option<String>,
+    pub source: Option<String>,
+    pub delivery_status: Option<String>,
+}
+
+#[async_trait]
+pub trait AnalyticsEventQueryRepository: Send + Sync {
+    async fn list_events(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        query: AnalyticsEventQuery,
+        limit: u16,
+    ) -> Result<AnalyticsEventPage, ApplicationError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisitorCustomerLink {
     pub id: Uuid,
     pub store_id: StoreId,

@@ -18,10 +18,9 @@ use crate::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateProviderSecretParams {
-    /// One of: payment_credential, payment_webhook, shipping_credential,
-    /// analytics_credential, notification_credential, notification_webhook.
+    /// Secret purpose. For Stripe, use `payment_credential` for a JSON object containing `secret_key` and `publishable_key`, and `payment_webhook` for the raw `whsec_...` signing secret. Other supported kinds are `shipping_credential`, `analytics_credential`, `notification_credential`, and `notification_webhook`.
     pub kind: String,
-    /// The secret value to store, e.g. an Publishable Key or webhook signing secret.
+    /// The secret value to store. It is encrypted immediately and only an opaque `enc://...` reference is returned.
     /// Returned as an opaque reference, never in plaintext, from any read path.
     pub value: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -32,7 +31,9 @@ pub struct CreateProviderSecretParams {
 impl ChaosMcp {
     #[tool(
         description = "Store a provider secret (payment/shipping/analytics/notification credential) in the \
-                        selected Store. The value is encrypted at rest and \
+                        selected Store. For Stripe, payment_credential must be JSON with \
+                        secret_key and publishable_key, while payment_webhook must be the raw \
+                        Stripe whsec_... endpoint signing secret. The value is encrypted at rest and \
                         referenced by an opaque string thereafter; it cannot be read back. \
                         This tool has no idempotency_key parameter because the underlying \
                         operation is not idempotent — calling it twice creates two independent \

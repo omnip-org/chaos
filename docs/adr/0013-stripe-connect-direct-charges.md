@@ -1,5 +1,7 @@
 # ADR 0013: Use Stripe Connect Direct Charges
 
+> Superseded: Chaos does not support Stripe Connect. Stripe payment providers now use only the standard Stripe account that owns the configured API keys; see ADR 0024 for the current `stripe_checkout` account model.
+
 - Status: Accepted
 - Date: 2026-08-16
 

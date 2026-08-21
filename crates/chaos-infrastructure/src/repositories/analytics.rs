@@ -294,6 +294,91 @@ impl AnalyticsSettingsRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
+impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
+    async fn list_events(
+        &self,
+        actor: StoreActor,
+        store: StoreId,
+        query: AnalyticsEventQuery,
+        limit: u16,
+    ) -> Result<AnalyticsEventPage, ApplicationError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
+        let query_limit = i32::from(limit) + 1;
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            String,
+            String,
+            OffsetDateTime,
+            OffsetDateTime,
+            bool,
+            Option<String>,
+            Option<OffsetDateTime>,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT e.id,e.event_id,e.event_name::text,e.source::text,e.occurred_at,e.received_at,
+                    e.meta_eligible,d.delivery_status::text,d.delivered_at,d.provider_reference,d.last_error
+             FROM integration.commerce_events e
+             LEFT JOIN integration.meta_event_deliveries d
+               ON d.store_id=e.store_id AND d.commerce_event_id=e.id
+             WHERE e.store_id=$1
+               AND ($3::uuid IS NULL OR e.id < $3)
+               AND ($4::text IS NULL OR e.event_name::text=$4)
+               AND ($5::text IS NULL OR e.source::text=$5)
+               AND ($6::text IS NULL OR d.delivery_status::text=$6)
+             ORDER BY e.id DESC
+             LIMIT $2",
+        )
+        .bind(store.as_uuid())
+        .bind(query_limit)
+        .bind(query.before_id)
+        .bind(query.event_name)
+        .bind(query.source)
+        .bind(query.delivery_status)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+
+        let has_more = rows.len() > usize::from(limit);
+        let events = rows
+            .into_iter()
+            .take(usize::from(limit))
+            .map(
+                |(
+                    id,
+                    event_id,
+                    event_name,
+                    source,
+                    occurred_at,
+                    received_at,
+                    meta_eligible,
+                    meta_delivery_status,
+                    meta_delivered_at,
+                    meta_provider_reference,
+                    meta_last_error,
+                )| AnalyticsEventRecord {
+                    id,
+                    event_id,
+                    event_name,
+                    source,
+                    occurred_at,
+                    received_at,
+                    meta_eligible,
+                    meta_delivery_status,
+                    meta_delivered_at,
+                    meta_provider_reference,
+                    meta_last_error,
+                },
+            )
+            .collect();
+        Ok(AnalyticsEventPage { events, has_more })
+    }
+}
+
+#[async_trait]
 impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
     async fn link_visitor_to_customer(
         &self,

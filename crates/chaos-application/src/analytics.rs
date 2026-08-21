@@ -14,6 +14,7 @@ use crate::{
     ApplicationError,
     ports::{
         AnalyticsCollectionRateLimiter, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventQueryRepository,
         AnalyticsEventRepository, AnalyticsPrivacyRepository, AnalyticsSettingsRepository,
         AnalyticsWorkerRepository, CustomerActor, IdempotencyRequest, MachineActor, MetaConnection,
         MetaConnectionConfiguration, MetaConnectionRepository, MetaEventDestination,
@@ -254,14 +255,20 @@ pub struct UpdateAnalyticsSettingsInput {
 pub struct AnalyticsAdministration {
     settings: Arc<dyn AnalyticsSettingsRepository>,
     meta: Arc<dyn MetaConnectionRepository>,
+    events: Arc<dyn AnalyticsEventQueryRepository>,
 }
 
 impl AnalyticsAdministration {
     pub fn new(
         settings: Arc<dyn AnalyticsSettingsRepository>,
         meta: Arc<dyn MetaConnectionRepository>,
+        events: Arc<dyn AnalyticsEventQueryRepository>,
     ) -> Self {
-        Self { settings, meta }
+        Self {
+            settings,
+            meta,
+            events,
+        }
     }
 
     pub async fn get_settings(
@@ -319,6 +326,16 @@ impl AnalyticsAdministration {
         self.meta
             .configure_meta_connection(actor, store_id, configuration, idempotency, now)
             .await
+    }
+
+    pub async fn list_events(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        query: AnalyticsEventQuery,
+        limit: u16,
+    ) -> Result<AnalyticsEventPage, ApplicationError> {
+        self.events.list_events(actor, store_id, query, limit).await
     }
 }
 

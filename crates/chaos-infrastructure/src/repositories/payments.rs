@@ -426,6 +426,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
             "UPDATE commerce.provider_accounts SET display_name = $3, \
+                    external_account_reference = $10, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
                              AND credential_secret_reference IS DISTINCT FROM $4 \
@@ -446,37 +447,46 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
                     webhook_secret_reference = $5, \
                     readiness_status = CASE \
                         WHEN $7::text IS NOT NULL THEN $7 \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN 'unchecked' \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 THEN 'unchecked' \
                         ELSE readiness_status END, \
                     readiness_snapshot = CASE \
                         WHEN $7::text IS NOT NULL THEN $8::jsonb \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
                         ELSE readiness_snapshot END, \
                     readiness_checked_at = CASE \
                         WHEN $7::text IS NOT NULL THEN $9::timestamptz \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
                         ELSE readiness_checked_at END, \
                     readiness_valid_until = CASE \
                         WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '24 hours' \
                         WHEN $7::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
                         ELSE readiness_valid_until END, \
                     readiness_reconcile_at = CASE \
                         WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '6 hours' \
                         WHEN $7::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 THEN NULL \
+                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 THEN NULL \
                         ELSE readiness_reconcile_at END, \
                     readiness_locked_by = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_locked_by END, \
                     readiness_locked_at = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_locked_at END, \
                     readiness_reconcile_attempts = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN 0 ELSE readiness_reconcile_attempts END, \
                     readiness_last_error = CASE \
                         WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
+                             OR external_account_reference IS DISTINCT FROM $10 \
                         THEN NULL ELSE readiness_last_error END, \
                     enabled = $6, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
@@ -494,6 +504,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .bind(readiness.map(|value| readiness_status(value).as_str()))
         .bind(readiness.map(|value| &value.configuration))
         .bind(readiness.map(|value| value.checked_at))
+        .bind(account.external_account_reference())
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
