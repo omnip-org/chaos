@@ -13,12 +13,38 @@ export interface Price {
   tax_inclusive: boolean;
 }
 
+export interface ProductOptionValue {
+  id: UUID;
+  value: string;
+  position: number;
+}
+
+export interface ProductOption {
+  id: UUID;
+  name: string;
+  position: number;
+  values: ProductOptionValue[];
+}
+
+export interface ProductSelectedOption {
+  option_id: UUID;
+  option_value_id: UUID;
+}
+
+export interface ProductCollectionReference {
+  id: UUID;
+  handle: string;
+  title: string;
+}
+
 export interface ProductVariant {
   id: UUID;
   title: string;
   sku?: string;
   requires_shipping: boolean;
   price: Price;
+  selected_options: ProductSelectedOption[];
+  metadata?: unknown;
 }
 
 export interface ProductMedia {
@@ -38,7 +64,10 @@ export interface Product {
   title: string;
   description: string;
   media: ProductMedia[];
+  options: ProductOption[];
   variants: ProductVariant[];
+  collections: ProductCollectionReference[];
+  metadata?: unknown;
 }
 
 export interface Collection {

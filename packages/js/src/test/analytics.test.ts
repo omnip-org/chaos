@@ -50,6 +50,8 @@ function harness(
     search?: string;
     referrer?: string;
     privacyMode?: "opt_in" | "opt_out";
+    setInterval?: typeof setInterval;
+    clearInterval?: typeof clearInterval;
     providers?: {
       metaPixel?: { pixelId: string };
       ga4?: { measurementId: string };
@@ -94,8 +96,8 @@ function harness(
     now: () => time,
     monotonicNow: () => elapsed,
     randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
-    setInterval: (() => 1) as unknown as typeof setInterval,
-    clearInterval: (() => {}) as unknown as typeof clearInterval,
+    setInterval: options.setInterval ?? (() => 1) as unknown as typeof setInterval,
+    clearInterval: options.clearInterval ?? (() => {}) as unknown as typeof clearInterval,
     privacyMode: options.privacyMode ?? "opt_in",
     ...(options.providers ? { providers: options.providers } : {}),
     fetch: (async (url: string, options: { body: string }) => {
@@ -125,6 +127,21 @@ function harness(
     },
   };
 }
+
+test("binds timer callbacks to the global receiver", async () => {
+  function brandedTimer(this: unknown): number {
+    assert.equal(this, globalThis);
+    return 1;
+  }
+
+  const environment = harness([], false, {
+    setInterval: brandedTimer as unknown as typeof setInterval,
+    clearInterval: brandedTimer as unknown as typeof clearInterval,
+  });
+  environment.analytics.setConsent({ analyticsStorage: true, advertisingStorage: false, policyVersion: "cmp-v1" });
+  environment.analytics.start();
+  await environment.analytics.stop();
+});
 
 test("initial consent automatically starts page and SPA navigation tracking", async () => {
   const { analytics, window, requests } = harness([{ ok: true, status: 200 }], true);
@@ -229,6 +246,19 @@ test("requeues failed batches with stable event identities for server deduplicat
   const second = JSON.parse(requests[1]!.options.body).events[0];
   assert.equal(first.event_id, eventId);
   assert.deepEqual(second, first);
+});
+
+test("requeues failed batches in opt-out store-policy mode", async () => {
+  const environment = harness([
+    { ok: false, status: 503 },
+    { ok: true, status: 200 },
+  ], false, { privacyMode: "opt_out" });
+  const { analytics, requests } = environment;
+  analytics.pageView();
+  await assert.rejects(analytics.flush(), /HTTP 503/);
+  await analytics.flush();
+
+  assert.equal(requests.length, 2);
 });
 
 test("consent revocation drops unsent events and future engagement", async () => {
