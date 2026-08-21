@@ -966,10 +966,10 @@ impl PaymentRepository for PostgresPaymentRepository {
         let provider = outbox_provider(job)?;
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let row = if job.event_type == "payment.create_requested" {
-            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>)>(
+            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>, Uuid)>(
                 "SELECT attempt.amount_minor, attempt.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        NULL::text \
+                        NULL::text, attempt.order_id \
                  FROM commerce.payment_attempts AS attempt \
                  INNER JOIN commerce.provider_accounts AS account \
                    ON account.store_id = attempt.store_id \
@@ -985,10 +985,10 @@ impl PaymentRepository for PostgresPaymentRepository {
             .await
             .map_err(database_error)?
         } else if job.event_type == "refund.create_requested" {
-            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>)>(
+            sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>, Uuid)>(
                 "SELECT refund.amount_minor, refund.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        attempt.provider_reference \
+                        attempt.provider_reference, attempt.order_id \
                  FROM commerce.refunds AS refund \
                  INNER JOIN commerce.payment_attempts AS attempt \
                    ON attempt.store_id = refund.store_id \
@@ -1046,7 +1046,7 @@ impl PaymentRepository for PostgresPaymentRepository {
                  WHERE contact.store_id = $1 AND contact.order_id = $2",
             )
             .bind(job.store_id)
-            .bind(aggregate_id)
+            .bind(row.5)
             .fetch_optional(&mut *transaction)
             .await
             .map_err(database_error)?
