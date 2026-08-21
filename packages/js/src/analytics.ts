@@ -26,6 +26,8 @@ export interface PageViewInput {
 
 export interface AnalyticsOptions {
   publishableKey: string;
+  /** Returns the signed shopper identity used to associate events with commerce activity. */
+  getShopperToken: () => string | Promise<string>;
   endpoint?: string;
   fetch?: typeof fetch;
   document?: Document;
@@ -56,7 +58,6 @@ interface QueuedEvent {
   event_name: string;
   schema_version: 1;
   occurred_at: string;
-  visitor_id: string;
   session_id: string;
   consent: {
     analytics_storage: boolean;
@@ -89,6 +90,7 @@ interface TrafficAttribution {
 export class ChaosStorefrontAnalytics {
   private readonly endpoint: string;
   private readonly publishableKey: string;
+  private readonly getShopperToken: () => string | Promise<string>;
   private readonly fetchImpl: typeof fetch;
   private readonly documentRef: Document;
   private readonly windowRef: Window & typeof globalThis;
@@ -103,9 +105,7 @@ export class ChaosStorefrontAnalytics {
   private readonly privacyMode: "opt_in" | "opt_out";
   private readonly providers: BrowserProviderAdapters;
 
-  private visitorId: string;
   private sessionId: string;
-  private readonly visitorStorageKey: string;
   private readonly sessionStorageKey: string;
   private readonly queueStorageKey: string;
   private readonly firstTouchStorageKey: string;
@@ -140,6 +140,7 @@ export class ChaosStorefrontAnalytics {
     }
     this.endpoint = options.endpoint ?? "/store/v1/analytics/events";
     this.publishableKey = options.publishableKey;
+    this.getShopperToken = options.getShopperToken;
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.documentRef = options.document ?? globalThis.document;
     this.windowRef = options.window ?? (globalThis as unknown as Window & typeof globalThis);
@@ -168,14 +169,12 @@ export class ChaosStorefrontAnalytics {
     );
 
     const storageNamespace = analyticsStorageNamespace(this.endpoint, this.publishableKey);
-    this.queueStorageKey = `chaos.analytics.${storageNamespace}.queue.v1`;
-    this.visitorStorageKey = `chaos.analytics.${storageNamespace}.visitor_id`;
+    this.queueStorageKey = `chaos.analytics.${storageNamespace}.queue.v2`;
     this.sessionStorageKey = `chaos.analytics.${storageNamespace}.session_id`;
     this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
     this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
     this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
-    this.visitorId = this.randomUUID();
     this.sessionId = this.randomUUID();
     this.consent = { analyticsStorage: false, advertisingStorage: false, policyVersion: "unset" };
     if (options.consent) {
@@ -214,12 +213,10 @@ export class ChaosStorefrontAnalytics {
     if (!effectiveAnalyticsStorage) {
       this.queue = [];
       removeStored(this.sessionStorageRef, this.queueStorageKey);
-      removeStored(this.storage, this.visitorStorageKey);
       removeStored(this.sessionStorageRef, this.sessionStorageKey);
       removeStored(this.storage, this.firstTouchStorageKey);
       removeStored(this.storage, this.lastNonDirectStorageKey);
       removeStored(this.sessionStorageRef, this.sessionTouchStorageKey);
-      this.visitorId = this.randomUUID();
       this.sessionId = this.randomUUID();
       this.traffic = undefined;
       this.accumulatedActiveMs = 0;
@@ -308,26 +305,6 @@ export class ChaosStorefrontAnalytics {
 
   search({ query, resultCount }: { query: string; resultCount?: number }): string | null {
     return this.enqueue("search", compact({ query, result_count: resultCount }));
-  }
-
-  addToCart({
-    cartId,
-    productVariantId,
-    quantity,
-  }: {
-    cartId: string;
-    productVariantId: string;
-    quantity: number;
-  }): string | null {
-    return this.enqueue("add_to_cart", {
-      cart_id: cartId,
-      product_variant_id: productVariantId,
-      quantity,
-    });
-  }
-
-  initiateCheckout({ cartId, checkoutId }: { cartId: string; checkoutId?: string }): string | null {
-    return this.enqueue("initiate_checkout", compact({ cart_id: cartId, checkout_id: checkoutId }));
   }
 
   /** Projects a created Payment Attempt to browser providers once. */
@@ -429,6 +406,7 @@ export class ChaosStorefrontAnalytics {
         headers: {
           authorization: `Bearer ${this.publishableKey}`,
           "content-type": "application/json",
+          "x-chaos-shopper-token": await this.getShopperToken(),
         },
         body: JSON.stringify({ events: batch }),
         keepalive,
@@ -456,7 +434,6 @@ export class ChaosStorefrontAnalytics {
       event_name: eventName,
       schema_version: EVENT_SCHEMA_VERSION,
       occurred_at: new Date(this.now()).toISOString(),
-      visitor_id: this.visitorId,
       session_id: this.sessionId,
       consent: {
         analytics_storage: this.consent.analyticsStorage,
@@ -506,7 +483,6 @@ export class ChaosStorefrontAnalytics {
   }
 
   private enableCollectionStorage(): void {
-    this.visitorId = persistentIdentifier(this.storage, this.visitorStorageKey, this.randomUUID);
     this.sessionId = persistentIdentifier(
       this.sessionStorageRef,
       this.sessionStorageKey,
@@ -983,7 +959,6 @@ function validQueuedEvent(value: unknown): value is QueuedEvent {
     typeof event.event_name === "string" &&
     event.schema_version === EVENT_SCHEMA_VERSION &&
     typeof event.occurred_at === "string" &&
-    isUuid(event.visitor_id) &&
     isUuid(event.session_id) &&
     (event.collection_basis === "consent" || event.collection_basis === "store_policy") &&
     Boolean(

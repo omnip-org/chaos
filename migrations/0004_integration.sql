@@ -538,6 +538,10 @@ VALUES
      'Records an authoritative AddPaymentInfo event in the Commerce Event ledger'),
     ('analytics.payment.captured', 'analytics.event_ingestor',
      'Records an authoritative Purchase event in the Commerce Event ledger'),
+    ('analytics.cart.line_added', 'analytics.event_ingestor',
+     'Records an authoritative AddToCart event in the Commerce Event ledger'),
+    ('analytics.checkout.initiated', 'analytics.event_ingestor',
+     'Records an authoritative InitiateCheckout event in the Commerce Event ledger'),
     ('analytics.refund.succeeded', 'analytics.event_ingestor',
      'Records an authoritative Refund event in the Commerce Event ledger');
 

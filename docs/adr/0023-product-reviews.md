@@ -1,6 +1,6 @@
 # ADR 0023: Product Reviews
 
-- Status: Amended by ADR 0025 and ADR 0028
+- Status: Amended by ADR 0025, ADR 0028, and ADR 0030
 - Date: 2026-08-17
 
 ## Context
@@ -11,7 +11,7 @@ The critical evidence rule carried over from the prior integration this replaces
 
 ## Decision
 
-`commerce.reviews` and `commerce.review_events` (defined in `migrations/0003_commerce.sql`) hold reviews as a Product-owned resource alongside Collections and Media. A review is either a customer-submitted top-level review (`is_staff_reply = false`, `rating` 1-5, no parent) or a staff reply (`is_staff_reply = true`, no rating, parent required) — a `CHECK` constraint enforces this shape at the database layer in addition to the domain layer's own validation, and a matching `CHECK` ties `approved_at`/`approved_by_user_id` presence exactly to `status = 'approved'`.
+`commerce.reviews` holds reviews as a Product-owned resource alongside Collections and Media. A review is either a customer-submitted top-level review (`is_staff_reply = false`, `rating` 1-5, no parent) or a staff reply (`is_staff_reply = true`, no rating, parent required) — a `CHECK` constraint enforces this shape at the database layer in addition to the domain layer's own validation, and a matching `CHECK` ties `approved_at`/`approved_by_user_id` presence exactly to `status = 'approved'`. The separate `commerce.review_events` write-side ledger was removed because no runtime reader depended on it.
 
 **`verified_buyer` is a plain boolean set only by the approving moderator, in the same request as approval.** It is never derived from an Order, Customer, or payment lookup — the MCP `approve_review` tool requires the field explicitly (`{"verified_buyer": true|false}`), forcing a conscious choice rather than defaulting to either value. Chaos does not attempt to automatically match a reviewer to a completed Order; that matching, if a Store wants it, remains a human moderation step outside Chaos, identical in spirit to how this capability worked in the prior integration.
 
@@ -34,4 +34,4 @@ Matching the reviewer's email or Customer identity against a completed Order wou
 
 ### Allow re-approval or un-approval
 
-A mutable moderation status would let a Store fix mistakes without creating a new review, but it would also mean a review's visible history (and any analytics or exports built on top of it) could silently change after the fact. Terminal moderation, consistent with how Orders and Collections already treat their own terminal transitions, keeps the audit trail (`commerce.review_events`) a true record of what happened rather than a log that needs reconciling against current mutable state.
+A mutable moderation status would let a Store fix mistakes without creating a new review, but it would also mean a review's visible history could silently change after the fact. Terminal moderation, consistent with how Orders and Collections already treat their own terminal transitions, keeps the current review state explicit. A generic audit record can be added later when a concrete reader requires it.

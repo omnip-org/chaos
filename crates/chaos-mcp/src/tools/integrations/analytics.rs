@@ -68,6 +68,8 @@ pub struct ListAnalyticsEventsParams {
     pub source: Option<AnalyticsEventSourceParam>,
     /// Optional external provider delivery status filter.
     pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
+    /// Optional signed shopper identifier for tracing one consumer journey.
+    pub shopper_id: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -262,7 +264,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List events stored in the selected Store's internal Analytics ledger and the corresponding external provider delivery observations. Use this to distinguish events that were not eligible, were queued as pending, were processed, or reached dead-letter status. Store members can read event metadata and provider errors; raw event properties are not returned."
+        description = "List events stored in the selected Store's internal Analytics ledger and the corresponding external provider delivery observations. Optional filters include event name, source, delivery status, and shopper_id for tracing one consumer journey. Use this to distinguish events that were not eligible, were queued as pending, were processed, or reached dead-letter status. Store members can read event metadata and provider errors; raw event properties are not returned."
     )]
     async fn list_analytics_events(
         &self,
@@ -290,12 +292,22 @@ impl ChaosMcp {
             AnalyticsDeliveryStatusParam::Processed => "processed".to_owned(),
             AnalyticsDeliveryStatusParam::DeadLetter => "dead_letter".to_owned(),
         });
+        let shopper_id = match params
+            .shopper_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+        {
+            Ok(id) => id,
+            Err(_) => return Ok(invalid("shopper_id", "must be a UUID")),
+        };
         let store_id = actor.store_id();
         let query = AnalyticsEventQuery {
             before_id,
             event_name: params.event_name,
             source,
             delivery_status,
+            shopper_id,
         };
         match self
             .state
@@ -349,6 +361,7 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "event_id": event.event_id,
             "event_name": event.event_name,
             "source": event.source,
+            "shopper_id": event.shopper_id,
             "occurred_at": event.occurred_at.to_string(),
             "received_at": event.received_at.to_string(),
             "provider_eligible": event.provider_eligible,

@@ -62,7 +62,7 @@ function harness(
   let elapsed = 0;
   let sequence = 0;
   let focused = true;
-  const requests: Array<{ url: string; options: { body: string } }> = [];
+  const requests: Array<{ url: string; options: { body: string; headers?: Record<string, string> } }> = [];
   const scripts: Array<{ id: string; src: string; async: boolean }> = [];
   const document = Object.assign(new FakeTarget(), {
     visibilityState: "visible",
@@ -89,6 +89,7 @@ function harness(
   });
   const analytics = createStorefrontAnalytics({
     publishableKey: "pk_test",
+    getShopperToken: () => "shopper-token",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     document: document as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,7 +101,7 @@ function harness(
     clearInterval: options.clearInterval ?? (() => {}) as unknown as typeof clearInterval,
     privacyMode: options.privacyMode ?? "opt_in",
     ...(options.providers ? { providers: options.providers } : {}),
-    fetch: (async (url: string, options: { body: string }) => {
+    fetch: (async (url: string, options: { body: string; headers?: Record<string, string> }) => {
       requests.push({ url, options });
       const response = responses.shift() ?? { ok: true, status: 200 };
       return { ...response, json: async () => ({ data: {} }) } as Response;
@@ -149,11 +150,12 @@ test("initial consent automatically starts page and SPA navigation tracking", as
   await analytics.flush();
 
   const events = JSON.parse(requests[0]!.options.body).events;
+  assert.equal(requests[0]!.options.headers?.["x-chaos-shopper-token"], "shopper-token");
   assert.deepEqual(
     events.map((event: { event_name: string }) => event.event_name),
     ["page_view", "page_view"],
   );
-  assert.match(window.localStorage.keys()[0]!, /^chaos\.analytics\.[a-z0-9]+\.visitor_id$/);
+  assert.equal(window.localStorage.keys().some((key) => key.includes("visitor_id")), false);
 });
 
 test("does not queue or transmit behavior without analytics storage consent", async () => {
@@ -370,10 +372,9 @@ test("maps one stable event identity to Meta Pixel and GA4 in default opt-out mo
       ga4: { measurementId: "G-TEST1234" },
     },
   });
-  const eventId = analytics.addToCart({
-    cartId: "00000000-0000-4000-8000-000000000200",
+  const eventId = analytics.viewContent({
+    productId: "00000000-0000-4000-8000-000000000200",
     productVariantId: "00000000-0000-4000-8000-000000000100",
-    quantity: 2,
   });
 
   assert.deepEqual(
@@ -381,12 +382,12 @@ test("maps one stable event identity to Meta Pixel and GA4 in default opt-out mo
     ["chaos-google-tag", "chaos-meta-pixel"],
   );
   const metaTrack = (window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
-    (call) => call[0] === "track" && call[1] === "AddToCart",
+    (call) => call[0] === "track" && call[1] === "ViewContent",
   );
-  assert.equal(metaTrack?.[1], "AddToCart");
+  assert.equal(metaTrack?.[1], "ViewContent");
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
   const gaTrack = (window as unknown as { dataLayer: unknown[][] }).dataLayer.find(
-    (call) => call[0] === "event" && call[1] === "add_to_cart",
+    (call) => call[0] === "event" && call[1] === "view_item",
   );
   assert.equal((gaTrack?.[2] as { event_id: string }).event_id, eventId);
 });

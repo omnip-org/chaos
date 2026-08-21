@@ -25,7 +25,7 @@ pub trait AnalyticsCollectionRateLimiter: Send + Sync {
         &self,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
-        visitor_event_counts: &[(Uuid, u16)],
+        shopper_event_counts: &[(Uuid, u16)],
         batch_size: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError>;
 }
@@ -89,6 +89,7 @@ pub struct AnalyticsEventRecord {
     pub event_id: Uuid,
     pub event_name: String,
     pub source: String,
+    pub shopper_id: Option<Uuid>,
     pub occurred_at: OffsetDateTime,
     pub received_at: OffsetDateTime,
     pub provider_eligible: bool,
@@ -116,6 +117,7 @@ pub struct AnalyticsEventQuery {
     pub event_name: Option<String>,
     pub source: Option<String>,
     pub delivery_status: Option<String>,
+    pub shopper_id: Option<Uuid>,
 }
 
 #[async_trait]
@@ -189,7 +191,7 @@ pub struct AnalyticsDeliveryCommand {
     pub configuration: Value,
     pub event_name: String,
     pub occurred_at: OffsetDateTime,
-    pub visitor_id: Option<Uuid>,
+    pub shopper_id: Option<Uuid>,
     pub customer_id: Option<CustomerId>,
     pub source_url: Option<String>,
     pub value_minor: Option<i64>,
@@ -230,7 +232,7 @@ pub struct ServerCommerceEventJob {
 }
 
 #[async_trait]
-pub trait AnalyticsWorkerRepository: Send + Sync {
+pub trait AnalyticsEventRecorderRepository: Send + Sync {
     async fn claim_server_events(
         &self,
         limit: u16,
@@ -246,6 +248,11 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
+}
+
+#[async_trait]
+pub trait AnalyticsDeliveryRepository: Send + Sync {
+    async fn schedule_deliveries(&self, limit: u16) -> Result<usize, ApplicationError>;
     async fn claim_deliveries(
         &self,
         limit: u16,

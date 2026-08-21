@@ -91,16 +91,6 @@ impl CollectionRepository for PostgresCollectionRepository {
             .bind(record.content.handle().as_str()).bind(record.content.title()).bind(record.content.description())
             .bind(record.content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(record.created_at)
             .execute(&mut *tx).await.map_err(map_collection_error)?;
-        event(
-            &mut tx,
-            &actor,
-            record.store_id,
-            record.id,
-            "created",
-            (None, None),
-            record.created_at,
-        )
-        .await?;
         complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(record.id)
@@ -198,16 +188,6 @@ impl CollectionRepository for PostgresCollectionRepository {
         let changed=sqlx::query("UPDATE commerce.collections SET handle=$3,title=$4,description=$5,metadata=$6::jsonb,updated_at=$7 WHERE store_id=$1 AND id=$2")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
         require_changed(changed, collection_id)?;
-        event(
-            &mut tx,
-            &actor,
-            store_id,
-            collection_id,
-            "updated",
-            (None, None),
-            now,
-        )
-        .await?;
         complete(&mut tx, &actor, UPDATE, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
@@ -251,22 +231,6 @@ impl CollectionRepository for PostgresCollectionRepository {
                     message: "an archived Collection cannot be reactivated",
                 });
             }
-        }
-        if changed == 1 {
-            event(
-                &mut tx,
-                &actor,
-                store_id,
-                collection_id,
-                if status == CollectionStatus::Active {
-                    "activated"
-                } else {
-                    "archived"
-                },
-                (None, None),
-                now,
-            )
-            .await?;
         }
         complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
@@ -322,19 +286,6 @@ impl CollectionRepository for PostgresCollectionRepository {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        event(
-            &mut tx,
-            &actor,
-            store_id,
-            collection_id,
-            "products_replaced",
-            (
-                None,
-                Some(i32::try_from(ids.len()).map_err(|_| invalid_snapshot())?),
-            ),
-            now,
-        )
-        .await?;
         complete(
             &mut tx,
             &actor,
@@ -388,26 +339,10 @@ impl CollectionRepository for PostgresCollectionRepository {
                 id: sales_channel_id.as_uuid().to_string(),
             });
         }
-        let changed = if published {
-            sqlx::query("INSERT INTO commerce.collection_publications (store_id,collection_id,sales_channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
+        if published {
+            sqlx::query("INSERT INTO commerce.collection_publications (store_id,collection_id,sales_channel_id,published_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).bind(now).execute(&mut *tx).await.map_err(database_error)?;
         } else {
-            sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND sales_channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?.rows_affected()
-        };
-        if changed == 1 {
-            event(
-                &mut tx,
-                &actor,
-                store_id,
-                collection_id,
-                if published {
-                    "published"
-                } else {
-                    "unpublished"
-                },
-                (Some(sales_channel_id), None),
-                now,
-            )
-            .await?;
+            sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND sales_channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
         }
         complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
@@ -585,19 +520,6 @@ fn require_changed(changed: u64, id: CollectionId) -> Result<(), ApplicationErro
     } else {
         Err(not_found(id))
     }
-}
-async fn event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    id: CollectionId,
-    kind: &str,
-    details: (Option<SalesChannelId>, Option<i32>),
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    let (channel, count) = details;
-    sqlx::query("INSERT INTO commerce.collection_events (id,store_id,collection_id,event_kind,actor_user_id,sales_channel_id,product_count,occurred_at) VALUES ($1,$2,$3,$4::commerce.collection_event_kind,$5,$6,$7,$8)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(channel.map(SalesChannelId::as_uuid)).bind(count).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
 }
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,

@@ -47,7 +47,7 @@ CREATE TABLE integration.commerce_events (
     source                      integration.event_source         NOT NULL,
     collection_basis            integration.browser_collection_basis NOT NULL,
     schema_version              SMALLINT                        NOT NULL,
-    visitor_id                  UUID,
+    shopper_id                  UUID,
     session_id                  UUID,
     customer_id                 UUID,
     product_id                  UUID,
@@ -78,11 +78,11 @@ CREATE TABLE integration.commerce_events (
         UNIQUE (store_id, received_at, event_id),
     CONSTRAINT commerce_events_schema_version_check CHECK (schema_version = 1),
     CONSTRAINT commerce_events_identity_check CHECK (
-        (visitor_id IS NULL OR visitor_id <> '00000000-0000-0000-0000-000000000000'::uuid)
+        (shopper_id IS NULL OR shopper_id <> '00000000-0000-0000-0000-000000000000'::uuid)
         AND (session_id IS NULL OR session_id <> '00000000-0000-0000-0000-000000000000'::uuid)
     ),
     CONSTRAINT commerce_events_browser_shape_check CHECK (
-        (source = 'browser' AND visitor_id IS NOT NULL AND session_id IS NOT NULL
+        (source = 'browser' AND shopper_id IS NOT NULL AND session_id IS NOT NULL
             AND collection_basis IN ('consent', 'store_policy')
             AND (collection_basis = 'store_policy' OR analytics_storage_consent)
             AND consent_policy_version IS NOT NULL)
@@ -90,7 +90,7 @@ CREATE TABLE integration.commerce_events (
     ),
     CONSTRAINT commerce_events_server_event_check CHECK (
         source = 'browser'
-        OR event_name IN ('add_payment_info', 'purchase', 'refund')
+        OR event_name IN ('add_to_cart', 'initiate_checkout', 'add_payment_info', 'purchase', 'refund')
     ),
     CONSTRAINT commerce_events_path_check CHECK (
         path IS NULL OR (
@@ -147,7 +147,7 @@ INSERT INTO integration.commerce_events (
     source,
     collection_basis,
     schema_version,
-    visitor_id,
+    shopper_id,
     session_id,
     customer_id,
     product_id,
@@ -205,9 +205,9 @@ FROM integration.commerce_events_legacy;
 
 DROP TABLE integration.commerce_events_legacy;
 
-CREATE INDEX commerce_events_visitor_path_idx
-    ON integration.commerce_events (store_id, visitor_id, occurred_at, id)
-    WHERE visitor_id IS NOT NULL;
+CREATE INDEX commerce_events_shopper_path_idx
+    ON integration.commerce_events (store_id, shopper_id, occurred_at, id)
+    WHERE shopper_id IS NOT NULL;
 
 CREATE INDEX commerce_events_customer_path_idx
     ON integration.commerce_events (store_id, customer_id, occurred_at, id)
@@ -231,6 +231,58 @@ CREATE POLICY store_isolation ON integration.commerce_events
 
 GRANT SELECT, INSERT ON integration.commerce_events TO chaos_runtime;
 REVOKE UPDATE, DELETE ON integration.commerce_events FROM chaos_runtime;
+
+-- Scheduling scans every Store, so it must not depend on a session-level
+-- app.store_id. Keep the cross-Store read and insert behind one reviewed
+-- SECURITY DEFINER routine; the Worker only receives the number of rows made.
+CREATE FUNCTION integration.schedule_analytics_event_deliveries(
+    batch_size INTEGER
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    scheduled BIGINT;
+BEGIN
+    WITH candidates AS (
+        SELECT event.store_id,
+               event.id AS commerce_event_id,
+               connection.id AS connection_id
+          FROM integration.commerce_events AS event
+          JOIN integration.analytics_connections AS connection
+            ON connection.store_id = event.store_id
+           AND connection.enabled
+         WHERE event.provider_eligible
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM integration.analytics_event_deliveries AS delivery
+                WHERE delivery.store_id = event.store_id
+                  AND delivery.connection_id = connection.id
+                  AND delivery.commerce_event_id = event.id
+           )
+         ORDER BY event.received_at, event.id, connection.id
+         LIMIT greatest(least(batch_size, 100), 0)
+    )
+    INSERT INTO integration.analytics_event_deliveries (
+        id, store_id, connection_id, commerce_event_id, created_at, updated_at
+    )
+    SELECT uuidv7(), store_id, connection_id, commerce_event_id,
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      FROM candidates
+    ON CONFLICT (store_id, connection_id, commerce_event_id) DO NOTHING;
+
+    GET DIAGNOSTICS scheduled = ROW_COUNT;
+    RETURN scheduled;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION integration.schedule_analytics_event_deliveries(INTEGER)
+    FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION integration.schedule_analytics_event_deliveries(INTEGER)
+    TO chaos_runtime;
 
 -- A daily database-local job keeps the next set of partitions available.
 -- It does not delete anything.

@@ -67,7 +67,7 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
                     external_id: command
                         .customer_id
                         .map(|id| vec![sha256_hex(id.as_uuid().as_bytes())])
-                        .or_else(|| command.visitor_id.map(|id| vec![sha256_hex(id.as_bytes())]))
+                        .or_else(|| command.shopper_id.map(|id| vec![sha256_hex(id.as_bytes())]))
                         .unwrap_or_default(),
                 },
                 custom_data: custom_data(command),
@@ -218,7 +218,7 @@ mod tests {
             configuration: json!({}),
             event_name: "purchase".into(),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
-            visitor_id: None,
+            shopper_id: None,
             customer_id: None,
             source_url: None,
             value_minor: Some(value_minor),

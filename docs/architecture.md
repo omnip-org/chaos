@@ -106,7 +106,7 @@ Analytics uses one append-only, Store-scoped Commerce Event ledger for the
 Storefront conversion path and authoritative server events. External provider
 delivery is a retryable projection of eligible events, with provider-neutral
 connection and delivery records and provider-specific adapters. Provider metrics
-are not persisted until a concrete reporting requirement exists; Chaos does not
+are not persisted; Chaos does not
 precompute Sessions, attribution, or daily reports without a concrete product
 query. Browser events retain bounded first-touch,
 browser-session, and last-non-direct traffic facts so UTM conversion paths can

@@ -21,8 +21,8 @@ FROM partman.check_default();
 ```
 
 When old data must be removed, use a maintenance window and choose an
-explicit interval. Delivery observations must be deleted before the event
-partitions so that the deliberately decoupled audit tables do not retain
+explicit interval. Provider delivery task rows must be deleted before the event
+partitions so the deliberately decoupled delivery state does not retain
 orphaned rows:
 
 ```sql

@@ -27,7 +27,7 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
         &self,
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
-        visitor_event_counts: &[(Uuid, u16)],
+        shopper_event_counts: &[(Uuid, u16)],
         event_count: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError> {
         let slot = format!("{}:{}", store_id.as_uuid(), sales_channel_id.as_uuid());
@@ -58,10 +58,10 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
             .arg(WINDOW_SECONDS)
             .arg(event_count)
             .arg(STORE_CHANNEL_EVENT_LIMIT);
-        for (visitor_id, count) in visitor_event_counts {
+        for (shopper_id, count) in shopper_event_counts {
             invocation
                 .key(format!(
-                    "chaos:analytics:rate:{{{slot}}}:visitor:{visitor_id}"
+                    "chaos:analytics:rate:{{{slot}}}:shopper:{shopper_id}"
                 ))
                 .arg(*count)
                 .arg(VISITOR_EVENT_LIMIT);
@@ -98,20 +98,20 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_REDIS_URL with a disposable Redis database"]
-    async fn atomically_limits_visitor_and_store_channel_event_volume() {
+    async fn atomically_limits_shopper_and_store_channel_event_volume() {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .expect("TEST_REDIS_URL must identify a disposable Redis database");
         let client = RedisClient::open(redis_url).unwrap();
         let limiter = RedisAnalyticsCollectionRateLimiter::new(client);
         let store_id = StoreId::new();
         let channel_id = SalesChannelId::new();
-        let visitor_id = Uuid::now_v7();
+        let shopper_id = Uuid::now_v7();
 
         let allowed = limiter
             .consume(
                 store_id,
                 channel_id,
-                &[(visitor_id, VISITOR_EVENT_LIMIT)],
+                &[(shopper_id, VISITOR_EVENT_LIMIT)],
                 VISITOR_EVENT_LIMIT,
             )
             .await
@@ -119,7 +119,7 @@ mod tests {
         assert!(allowed.allowed);
 
         let denied = limiter
-            .consume(store_id, channel_id, &[(visitor_id, 1)], 1)
+            .consume(store_id, channel_id, &[(shopper_id, 1)], 1)
             .await
             .unwrap();
         assert!(!denied.allowed);

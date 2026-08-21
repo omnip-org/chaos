@@ -87,7 +87,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             return replay_store_locales(&mut transaction, store_id).await;
         }
         require_store(&mut transaction, store_id).await?;
-        let inserted = sqlx::query(
+        sqlx::query(
             "INSERT INTO commerce.store_locales (store_id,locale,created_by_user_id,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
         )
         .bind(store_id.as_uuid())
@@ -96,20 +96,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         .bind(now)
         .execute(&mut *transaction)
         .await
-        .map_err(database_error)?
-        .rows_affected();
-        if inserted == 1 {
-            locale_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                locale,
-                None,
-                "enabled",
-                now,
-            )
-            .await?;
-        }
+        .map_err(database_error)?;
         complete(&mut transaction, &actor, ENABLE_LOCALE, request).await?;
         let result = load_store_locales(&mut transaction, store_id)
             .await?
@@ -132,21 +119,9 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
             return replay_store_locales(&mut transaction, store_id).await;
         }
         let previous = lock_default_locale(&mut transaction, store_id).await?;
-        let inserted = sqlx::query("INSERT INTO commerce.store_locales (store_id,locale,created_by_user_id,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO commerce.store_locales (store_id,locale,created_by_user_id,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
             .bind(store_id.as_uuid()).bind(locale.as_str()).bind(audit_user_id).bind(now)
-            .execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
-        if inserted == 1 {
-            locale_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                locale,
-                None,
-                "enabled",
-                now,
-            )
-            .await?;
-        }
+            .execute(&mut *transaction).await.map_err(database_error)?;
         if previous != locale.as_str() {
             sqlx::query("UPDATE commerce.stores SET default_locale=$2,updated_at=$3 WHERE id=$1")
                 .bind(store_id.as_uuid())
@@ -155,16 +130,6 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
                 .execute(&mut *transaction)
                 .await
                 .map_err(database_error)?;
-            locale_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                locale,
-                Some(&previous),
-                "default_changed",
-                now,
-            )
-            .await?;
         }
         complete(&mut transaction, &actor, SET_DEFAULT_LOCALE, request).await?;
         let result = load_store_locales(&mut transaction, store_id)
@@ -180,7 +145,7 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         store_id: StoreId,
         locale: &Locale,
         request: &IdempotencyRequest,
-        now: OffsetDateTime,
+        _now: OffsetDateTime,
     ) -> Result<StoreLocaleConfiguration, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         if reserve(&mut transaction, &actor, DISABLE_LOCALE, request).await? {
@@ -193,26 +158,12 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
                 message: "the default Store Locale cannot be disabled",
             });
         }
-        let deleted =
-            sqlx::query("DELETE FROM commerce.store_locales WHERE store_id=$1 AND locale=$2")
-                .bind(store_id.as_uuid())
-                .bind(locale.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(database_error)?
-                .rows_affected();
-        if deleted == 1 {
-            locale_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                locale,
-                None,
-                "disabled",
-                now,
-            )
-            .await?;
-        }
+        sqlx::query("DELETE FROM commerce.store_locales WHERE store_id=$1 AND locale=$2")
+            .bind(store_id.as_uuid())
+            .bind(locale.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
         complete(&mut transaction, &actor, DISABLE_LOCALE, request).await?;
         let result = load_store_locales(&mut transaction, store_id)
             .await?
@@ -276,16 +227,6 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
                 .bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(variant.product_variant_id.as_uuid()).bind(translation.content.locale().as_str()).bind(variant.title.as_str()).bind(audit_user_id).bind(now)
                 .execute(&mut *transaction).await.map_err(database_error)?;
         }
-        product_event(
-            &mut transaction,
-            &actor,
-            store_id,
-            product_id,
-            translation.content.locale(),
-            "upserted",
-            now,
-        )
-        .await?;
         complete(&mut transaction, &actor, UPSERT_PRODUCT, request).await?;
         let result = load_product_translation(
             &mut transaction,
@@ -306,28 +247,16 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         product_id: ProductId,
         locale: &Locale,
         request: &IdempotencyRequest,
-        now: OffsetDateTime,
+        _now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         if reserve(&mut transaction, &actor, REMOVE_PRODUCT, request).await? {
             return Ok(());
         }
         require_product(&mut transaction, store_id, product_id).await?;
-        let deleted = sqlx::query("DELETE FROM commerce.product_translations WHERE store_id=$1 AND product_id=$2 AND locale=$3")
+        sqlx::query("DELETE FROM commerce.product_translations WHERE store_id=$1 AND product_id=$2 AND locale=$3")
             .bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(locale.as_str())
-            .execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
-        if deleted == 1 {
-            product_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                product_id,
-                locale,
-                "removed",
-                now,
-            )
-            .await?;
-        }
+            .execute(&mut *transaction).await.map_err(database_error)?;
         complete(&mut transaction, &actor, REMOVE_PRODUCT, request).await?;
         transaction.commit().await.map_err(database_error)
     }
@@ -371,16 +300,6 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         sqlx::query("INSERT INTO commerce.collection_translations (store_id,collection_id,locale,title,description,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT (store_id,collection_id,locale) DO UPDATE SET title=EXCLUDED.title,description=EXCLUDED.description,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.locale().as_str()).bind(content.title()).bind(content.description()).bind(audit_user_id).bind(now)
             .execute(&mut *transaction).await.map_err(database_error)?;
-        collection_event(
-            &mut transaction,
-            &actor,
-            store_id,
-            collection_id,
-            content.locale(),
-            "upserted",
-            now,
-        )
-        .await?;
         complete(&mut transaction, &actor, UPSERT_COLLECTION, request).await?;
         let result = load_collection_translation(
             &mut transaction,
@@ -401,26 +320,14 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         collection_id: CollectionId,
         locale: &Locale,
         request: &IdempotencyRequest,
-        now: OffsetDateTime,
+        _now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         if reserve(&mut transaction, &actor, REMOVE_COLLECTION, request).await? {
             return Ok(());
         }
         require_collection(&mut transaction, store_id, collection_id).await?;
-        let deleted=sqlx::query("DELETE FROM commerce.collection_translations WHERE store_id=$1 AND collection_id=$2 AND locale=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(locale.as_str()).execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
-        if deleted == 1 {
-            collection_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                collection_id,
-                locale,
-                "removed",
-                now,
-            )
-            .await?;
-        }
+        sqlx::query("DELETE FROM commerce.collection_translations WHERE store_id=$1 AND collection_id=$2 AND locale=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(locale.as_str()).execute(&mut *transaction).await.map_err(database_error)?;
         complete(&mut transaction, &actor, REMOVE_COLLECTION, request).await?;
         transaction.commit().await.map_err(database_error)
     }
@@ -472,17 +379,6 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         require_translatable_locale(&mut transaction, store_id, locale).await?;
         require_media(&mut transaction, store_id, product_id, media_asset_id).await?;
         sqlx::query("INSERT INTO commerce.media_asset_translations (store_id,product_id,media_asset_id,locale,alt_text,updated_by_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT (store_id,product_id,media_asset_id,locale) DO UPDATE SET alt_text=EXCLUDED.alt_text,updated_by_user_id=EXCLUDED.updated_by_user_id,updated_at=EXCLUDED.updated_at").bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(media_asset_id.as_uuid()).bind(locale.as_str()).bind(alt_text.as_str()).bind(audit_user_id).bind(now).execute(&mut *transaction).await.map_err(database_error)?;
-        media_event(
-            &mut transaction,
-            &actor,
-            store_id,
-            product_id,
-            media_asset_id,
-            locale,
-            "upserted",
-            now,
-        )
-        .await?;
         complete(&mut transaction, &actor, UPSERT_MEDIA, request).await?;
         let result = load_media_translation(
             &mut transaction,
@@ -505,27 +401,14 @@ impl CatalogLocalizationRepository for PostgresCatalogLocalizationRepository {
         media_asset_id: MediaAssetId,
         locale: &Locale,
         request: &IdempotencyRequest,
-        now: OffsetDateTime,
+        _now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         if reserve(&mut transaction, &actor, REMOVE_MEDIA, request).await? {
             return Ok(());
         }
         require_media(&mut transaction, store_id, product_id, media_asset_id).await?;
-        let deleted=sqlx::query("DELETE FROM commerce.media_asset_translations WHERE store_id=$1 AND product_id=$2 AND media_asset_id=$3 AND locale=$4").bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(media_asset_id.as_uuid()).bind(locale.as_str()).execute(&mut *transaction).await.map_err(database_error)?.rows_affected();
-        if deleted == 1 {
-            media_event(
-                &mut transaction,
-                &actor,
-                store_id,
-                product_id,
-                media_asset_id,
-                locale,
-                "removed",
-                now,
-            )
-            .await?;
-        }
+        sqlx::query("DELETE FROM commerce.media_asset_translations WHERE store_id=$1 AND product_id=$2 AND media_asset_id=$3 AND locale=$4").bind(store_id.as_uuid()).bind(product_id.as_uuid()).bind(media_asset_id.as_uuid()).bind(locale.as_str()).execute(&mut *transaction).await.map_err(database_error)?;
         complete(&mut transaction, &actor, REMOVE_MEDIA, request).await?;
         transaction.commit().await.map_err(database_error)
     }
@@ -797,56 +680,6 @@ async fn replay_media_translation(
         .ok_or_else(invalid_snapshot)
 }
 
-async fn locale_event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    locale: &Locale,
-    previous: Option<&str>,
-    kind: &str,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO commerce.store_locale_events (id,store_id,locale,previous_locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5::commerce.store_locale_event_kind,$6,$7)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(locale.as_str()).bind(previous).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
-}
-async fn product_event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    product: ProductId,
-    locale: &Locale,
-    kind: &str,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO commerce.product_translation_events (id,store_id,product_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5::commerce.translation_event_kind,$6,$7)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(product.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
-}
-async fn collection_event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    collection: CollectionId,
-    locale: &Locale,
-    kind: &str,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO commerce.collection_translation_events (id,store_id,collection_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5::commerce.translation_event_kind,$6,$7)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(collection.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
-}
-#[allow(clippy::too_many_arguments)]
-async fn media_event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    product: ProductId,
-    media: MediaAssetId,
-    locale: &Locale,
-    kind: &str,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO commerce.media_translation_events (id,store_id,product_id,media_asset_id,locale,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5,$6::commerce.translation_event_kind,$7,$8)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(product.as_uuid()).bind(media.as_uuid()).bind(locale.as_str()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
-}
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,
     actor: &AdminActor,

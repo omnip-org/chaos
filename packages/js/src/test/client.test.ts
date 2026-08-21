@@ -282,7 +282,7 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
   assert.equal(requests[2]?.headers.get("x-chaos-shopper-token"), "shopper-token");
 });
 
-test("semantic SDK operations record conversion events only after successful responses", async () => {
+test("browser SDK observations record only after successful responses", async () => {
   const recorded: Array<[string, unknown]> = [];
   const client = createStorefrontClient({
     publishableKey: "pk_test",
@@ -299,8 +299,6 @@ test("semantic SDK operations record conversion events only after successful res
   mutable.analytics = {
     search: (input) => recorded.push(["search", input]),
     viewContent: (input) => recorded.push(["view_content", input]),
-    addToCart: (input) => recorded.push(["add_to_cart", input]),
-    initiateCheckout: (input) => recorded.push(["initiate_checkout", input]),
   };
   mutable.request = async (path) => {
     if (path === "/products") return { data: [{ id: "product-1" }], meta: { page: { has_more: false } } };
@@ -326,7 +324,5 @@ test("semantic SDK operations record conversion events only after successful res
   assert.deepEqual(recorded, [
     ["search", { query: "shoes", resultCount: 1 }],
     ["view_content", { productId: "product-1" }],
-    ["add_to_cart", { cartId: "cart-1", productVariantId: "variant-1", quantity: 2 }],
-    ["initiate_checkout", { cartId: "cart-1", checkoutId: "checkout-1" }],
   ]);
 });

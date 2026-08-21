@@ -30,7 +30,7 @@ use chaos_domain::{
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -353,6 +353,16 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             return replay_cart(snapshot);
         }
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        let previous_quantity: Option<i32> = sqlx::query_scalar(
+            "SELECT quantity FROM commerce.cart_lines \
+             WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(product_variant_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         let currency = parse_currency(&header.2)?;
         let locale = parse_locale(&header.3)?;
         let row = resolve_variant(
@@ -379,6 +389,27 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         )?;
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
+        let previous_quantity = previous_quantity
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_default();
+        if quantity > previous_quantity {
+            sqlx::query(
+                "INSERT INTO integration.outbox_events \
+                 (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+                 VALUES ($1, $2, 'cart', $3, 'analytics.cart.line_added', $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(actor.store_id.as_uuid())
+            .bind(cart_id.as_uuid())
+            .bind(json!({
+                "cart_id": cart_id.as_uuid(),
+                "product_variant_id": product_variant_id.as_uuid(),
+                "quantity": quantity - previous_quantity,
+            }))
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
             .ok_or_else(|| cart_not_found(cart_id))?;
@@ -603,6 +634,21 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             &locale,
         )
         .await?;
+        sqlx::query(
+            "INSERT INTO integration.outbox_events \
+             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+             VALUES ($1, $2, 'checkout', $3, 'analytics.checkout.initiated', $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout.id().as_uuid())
+        .bind(json!({
+            "cart_id": cart_id.as_uuid(),
+            "checkout_id": checkout.id().as_uuid(),
+        }))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         let result = sqlx::query(
             "UPDATE commerce.carts SET status = 'completed', version = version + 1, \
                     updated_at = CURRENT_TIMESTAMP \

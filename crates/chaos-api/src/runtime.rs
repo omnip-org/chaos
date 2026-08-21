@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use chaos_application::{
-    analytics::AnalyticsWorkers,
+    analytics::{AnalyticsDeliveryWorker, AnalyticsEventRecorder},
     fulfillment::FulfillmentWorkers,
     payments::PaymentWorkers,
     ports::{
@@ -32,7 +32,8 @@ pub struct WorkerRuntime {
     pub infrastructure: AppState,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
-    pub analytics_workers: Arc<AnalyticsWorkers>,
+    pub analytics_event_recorder: Arc<AnalyticsEventRecorder>,
+    pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub clock: Arc<dyn Clock>,
@@ -50,10 +51,12 @@ impl WorkerRuntime {
             settings.dependency_timeout,
             dynamic_secrets.clone(),
         )?);
-        let analytics_workers = AnalyticsWorkers::new(
+        let analytics_event_recorder =
+            Arc::new(AnalyticsEventRecorder::new(analytics_repository.clone()));
+        let analytics_delivery_worker = Arc::new(AnalyticsDeliveryWorker::new(
             analytics_repository,
             [meta_destination as Arc<dyn AnalyticsEventDestination>],
-        );
+        ));
 
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
@@ -100,7 +103,8 @@ impl WorkerRuntime {
             infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
             fulfillment_workers: Arc::new(fulfillment_workers),
-            analytics_workers: Arc::new(analytics_workers),
+            analytics_event_recorder,
+            analytics_delivery_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
             checkout_expiry_workers: Arc::new(CheckoutExpiryWorkers::new(
                 storefront_sales_repository,

@@ -92,7 +92,7 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
+    AnalyticsShopper, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
     CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession, OrderLookupMachine,
     StoreContext, StorefrontMachine,
 };

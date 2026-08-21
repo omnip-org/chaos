@@ -14,12 +14,11 @@ use chaos_domain::{
         TrafficAttribution, TrafficTouchpoint,
     },
     catalog::{ProductId, ProductVariantId},
-    sales::{CartId, CheckoutId},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{AnalyticsMachine, ApiError, ApiJson, ApiResponse, ApiState, response::parse_api_time};
+use super::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState, response::parse_api_time};
 
 pub(super) fn storefront_routes() -> Router<ApiState> {
     Router::new()
@@ -39,7 +38,6 @@ struct BrowserEventBody {
     event_id: Uuid,
     schema_version: u16,
     occurred_at: String,
-    visitor_id: Uuid,
     session_id: Uuid,
     consent: ConsentBody,
     collection_basis: BrowserCollectionBasisBody,
@@ -91,8 +89,6 @@ enum BrowserEventNameBody {
     PageView,
     ViewContent,
     Search,
-    AddToCart,
-    InitiateCheckout,
     ViewDuration,
 }
 
@@ -120,21 +116,6 @@ struct SearchProperties {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AddToCartProperties {
-    cart_id: Uuid,
-    product_variant_id: Uuid,
-    quantity: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InitiateCheckoutProperties {
-    cart_id: Uuid,
-    checkout_id: Option<Uuid>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ViewDurationProperties {
     page_view_event_id: Uuid,
     active_milliseconds: u32,
@@ -152,18 +133,18 @@ struct CollectionResultData {
 
 async fn collect_events(
     State(state): State<ApiState>,
-    AnalyticsMachine(actor): AnalyticsMachine,
+    AnalyticsShopper(shopper): AnalyticsShopper,
     ApiJson(body): ApiJson<CollectEventsBody>,
 ) -> Result<ApiResponse<CollectionResultData>, ApiError> {
     let events = body
         .events
         .into_iter()
-        .map(browser_event)
+        .map(|event| browser_event(event, shopper.shopper_id.as_uuid()))
         .collect::<Result<Vec<_>, _>>()?;
     let result = state
         .analytics_collection
         .collect(CollectBrowserEventsInput {
-            actor,
+            actor: shopper.machine,
             events,
             received_at: state.clock.now(),
         })
@@ -176,7 +157,7 @@ async fn collect_events(
     Ok(ApiResponse::ok(collection_result_data(result)))
 }
 
-fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
+fn browser_event(body: BrowserEventBody, shopper_id: Uuid) -> Result<BrowserEvent, ApiError> {
     let occurred_at = parse_api_time(&body.occurred_at)
         .map_err(|_| invalid_value("events.occurred_at", "must be an RFC 3339 timestamp"))?;
     let consent = ConsentSnapshot::new(
@@ -201,21 +182,6 @@ fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
             let value: SearchProperties = event_properties(body.properties)?;
             BrowserEventProperties::search(value.query, value.result_count)?
         }
-        BrowserEventNameBody::AddToCart => {
-            let value: AddToCartProperties = event_properties(body.properties)?;
-            BrowserEventProperties::add_to_cart(
-                CartId::from_uuid(value.cart_id),
-                ProductVariantId::from_uuid(value.product_variant_id),
-                value.quantity,
-            )?
-        }
-        BrowserEventNameBody::InitiateCheckout => {
-            let value: InitiateCheckoutProperties = event_properties(body.properties)?;
-            BrowserEventProperties::initiate_checkout(
-                CartId::from_uuid(value.cart_id),
-                value.checkout_id.map(CheckoutId::from_uuid),
-            )
-        }
         BrowserEventNameBody::ViewDuration => {
             let value: ViewDurationProperties = event_properties(body.properties)?;
             BrowserEventProperties::view_duration(
@@ -228,7 +194,7 @@ fn browser_event(body: BrowserEventBody) -> Result<BrowserEvent, ApiError> {
         body.event_id,
         body.schema_version,
         occurred_at,
-        body.visitor_id,
+        shopper_id,
         body.session_id,
         consent,
         match body.collection_basis {

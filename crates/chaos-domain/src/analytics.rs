@@ -430,7 +430,7 @@ pub struct BrowserEvent {
     event_id: Uuid,
     schema_version: u16,
     occurred_at: OffsetDateTime,
-    visitor_id: Uuid,
+    shopper_id: Uuid,
     session_id: Uuid,
     consent: ConsentSnapshot,
     collection_basis: BrowserCollectionBasis,
@@ -444,7 +444,7 @@ impl BrowserEvent {
         event_id: Uuid,
         schema_version: u16,
         occurred_at: OffsetDateTime,
-        visitor_id: Uuid,
+        shopper_id: Uuid,
         session_id: Uuid,
         consent: ConsentSnapshot,
         collection_basis: BrowserCollectionBasis,
@@ -457,8 +457,8 @@ impl BrowserEvent {
         if schema_version != BROWSER_EVENT_SCHEMA_VERSION {
             return Err(validation("schema_version", "must equal 1"));
         }
-        if visitor_id.is_nil() {
-            return Err(validation("visitor_id", "must be a non-nil UUID"));
+        if shopper_id.is_nil() {
+            return Err(validation("shopper_id", "must be a non-nil UUID"));
         }
         if session_id.is_nil() {
             return Err(validation("session_id", "must be a non-nil UUID"));
@@ -467,7 +467,7 @@ impl BrowserEvent {
             event_id,
             schema_version,
             occurred_at,
-            visitor_id,
+            shopper_id,
             session_id,
             consent,
             collection_basis,
@@ -488,8 +488,8 @@ impl BrowserEvent {
         self.occurred_at
     }
 
-    pub const fn visitor_id(&self) -> Uuid {
-        self.visitor_id
+    pub const fn shopper_id(&self) -> Uuid {
+        self.shopper_id
     }
 
     pub const fn session_id(&self) -> Uuid {

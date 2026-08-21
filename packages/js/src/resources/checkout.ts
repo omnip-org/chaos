@@ -11,7 +11,6 @@ export class CheckoutResource {
       requiresShopperToken: true,
       idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
     });
-    this.client.analytics?.initiateCheckout({ cartId, checkoutId: response.data.id });
     return response;
   }
 

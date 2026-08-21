@@ -75,7 +75,7 @@ pub struct AuthenticatedUser {
 }
 
 pub struct StorefrontMachine(pub MachineActor);
-pub struct AnalyticsMachine(pub MachineActor);
+pub struct AnalyticsShopper(pub ShopperActor);
 pub struct CartMachine(pub MachineActor);
 pub struct OrderLookupMachine(pub MachineActor);
 pub struct CartShopper(pub ShopperActor);
@@ -121,7 +121,6 @@ macro_rules! storefront_machine_extractor {
 }
 
 storefront_machine_extractor!(CartMachine);
-storefront_machine_extractor!(AnalyticsMachine);
 storefront_machine_extractor!(OrderLookupMachine);
 
 macro_rules! storefront_shopper_extractor {
@@ -151,6 +150,7 @@ macro_rules! storefront_shopper_extractor {
 
 storefront_shopper_extractor!(CartShopper);
 storefront_shopper_extractor!(CheckoutShopper);
+storefront_shopper_extractor!(AnalyticsShopper);
 
 macro_rules! customer_machine_extractor {
     ($name:ident) => {

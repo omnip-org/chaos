@@ -114,16 +114,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         let digest = decode_digest(record.descriptor.sha256_hex())?;
         sqlx::query("INSERT INTO commerce.media_assets (id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::commerce.media_kind,$9,$10,$11,$12,'pending_upload',$13,$14,$14)")
             .bind(record.id.as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(audit_user_id).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
-        event(
-            &mut tx,
-            &actor,
-            record.store_id,
-            record.product_id,
-            record.id,
-            "created",
-            record.created_at,
-        )
-        .await?;
         complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         let row = load(
             &mut tx,
@@ -224,18 +214,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
                 message: "the Media Asset is not pending upload",
             });
         }
-        if changed == 1 {
-            event(
-                &mut tx,
-                &actor,
-                mutation.store_id,
-                mutation.product_id,
-                mutation.media_asset_id,
-                "ready",
-                mutation.changed_at,
-            )
-            .await?;
-        }
         complete(
             &mut tx,
             &actor,
@@ -270,7 +248,7 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
             tx.commit().await.map_err(database_error)?;
             return item(row);
         }
-        let changed=sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_by=$4,archived_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
+        sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_by=$4,archived_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?;
         let row = load(
             &mut tx,
             &actor,
@@ -280,18 +258,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         )
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
-        if changed == 1 {
-            event(
-                &mut tx,
-                &actor,
-                mutation.store_id,
-                mutation.product_id,
-                mutation.media_asset_id,
-                "archived",
-                mutation.changed_at,
-            )
-            .await?;
-        }
         complete(
             &mut tx,
             &actor,
@@ -362,18 +328,6 @@ fn pending(row: MediaRow) -> Result<PendingMediaUpload, ApplicationError> {
         asset: item(row)?,
         object_key,
     })
-}
-async fn event(
-    tx: &mut Transaction<'_, Postgres>,
-    actor: &AdminActor,
-    store: StoreId,
-    product: ProductId,
-    id: MediaAssetId,
-    kind: &str,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query("INSERT INTO commerce.media_events (id,store_id,product_id,media_asset_id,event_kind,actor_user_id,occurred_at) VALUES ($1,$2,$3,$4,$5::commerce.media_event_kind,$6,$7)").bind(Uuid::now_v7()).bind(store.as_uuid()).bind(product.as_uuid()).bind(id.as_uuid()).bind(kind).bind(actor.audit_user_id().as_uuid()).bind(now).execute(&mut **tx).await.map_err(database_error)?;
-    Ok(())
 }
 async fn reserve(
     tx: &mut Transaction<'static, Postgres>,

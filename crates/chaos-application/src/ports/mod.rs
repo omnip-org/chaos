@@ -31,10 +31,10 @@ pub use actor::AdminActor;
 pub use analytics::{
     AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
     AnalyticsConnectionRepository, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
-    AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsEventDelivery,
-    AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
-    AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRepository,
-    AnalyticsRateLimitDecision, AnalyticsSettingsRepository, AnalyticsWorkerRepository,
+    AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsDeliveryRepository,
+    AnalyticsEventDelivery, AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
+    AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRecorderRepository,
+    AnalyticsEventRepository, AnalyticsRateLimitDecision, AnalyticsSettingsRepository,
     ResolvedAnalyticsSettings, ServerCommerceEventJob, StoreAnalyticsSettings,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};

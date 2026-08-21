@@ -24,7 +24,7 @@ export interface ClientOptions {
    * publishableKey/fetch/randomUUID (inherited from this client). Pass
    * `analytics: false` to skip constructing it entirely.
    */
-  analytics?: Omit<AnalyticsOptions, "publishableKey" | "fetch" | "randomUUID"> | false;
+  analytics?: Omit<AnalyticsOptions, "publishableKey" | "fetch" | "randomUUID" | "getShopperToken"> | false;
 }
 
 export interface RequestOptions<Query extends object = Record<string, never>> {
@@ -97,6 +97,7 @@ export class ChaosStorefrontClient {
         publishableKey: this.publishableKey,
         fetch: this.fetchImpl,
         randomUUID: this.randomUUID,
+        getShopperToken: () => this.ensureShopperToken(),
       });
     }
   }

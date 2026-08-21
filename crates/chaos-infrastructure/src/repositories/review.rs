@@ -107,15 +107,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .execute(&mut *tx)
         .await
         .map_err(map_review_write_error)?;
-        event(
-            &mut tx,
-            record.store_id,
-            record.id,
-            "submitted",
-            None,
-            record.created_at,
-        )
-        .await?;
         complete_machine(&mut tx, actor, SUBMIT, request, record.id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(record.id)
@@ -248,17 +239,6 @@ impl ReviewRepository for PostgresReviewRepository {
         if changed == 0 && !review_exists(&mut tx, store_id, review_id).await? {
             return Err(not_found(review_id));
         }
-        if changed == 1 {
-            event(
-                &mut tx,
-                store_id,
-                review_id,
-                status.as_str(),
-                Some(actor.audit_user_id().as_uuid()),
-                now,
-            )
-            .await?;
-        }
         complete(&mut tx, &actor, operation, request, review_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(review_id)
@@ -311,15 +291,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .execute(&mut *tx)
         .await
         .map_err(map_review_write_error)?;
-        event(
-            &mut tx,
-            store_id,
-            reply_id,
-            "reply_added",
-            Some(actor.audit_user_id().as_uuid()),
-            now,
-        )
-        .await?;
         complete(&mut tx, &actor, ADD_REPLY, request, reply_id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(reply_id)
@@ -444,31 +415,6 @@ async fn review_exists(
         .fetch_one(&mut **tx)
         .await
         .map_err(database_error)
-}
-
-async fn event(
-    tx: &mut Transaction<'_, Postgres>,
-    store_id: StoreId,
-    review_id: ReviewId,
-    kind: &str,
-    actor_user_id: Option<Uuid>,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    sqlx::query(
-        "INSERT INTO commerce.review_events \
-         (id, store_id, review_id, event_kind, actor_user_id, occurred_at) \
-         VALUES ($1,$2,$3,$4::commerce.review_event_kind,$5,$6)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(review_id.as_uuid())
-    .bind(kind)
-    .bind(actor_user_id)
-    .bind(now)
-    .execute(&mut **tx)
-    .await
-    .map_err(database_error)?;
-    Ok(())
 }
 
 async fn reserve(

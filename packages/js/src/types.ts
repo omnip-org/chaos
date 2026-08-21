@@ -415,8 +415,6 @@ export type BrowserAnalyticsEventName =
   | "page_view"
   | "view_content"
   | "search"
-  | "add_to_cart"
-  | "initiate_checkout"
   | "view_duration";
 
 export interface BrowserAnalyticsEvent {
@@ -424,7 +422,6 @@ export interface BrowserAnalyticsEvent {
   event_name: BrowserAnalyticsEventName;
   schema_version: 1;
   occurred_at: string;
-  visitor_id: UUID;
   session_id: UUID;
   consent: AnalyticsConsent;
   collection_basis: "consent" | "store_policy";

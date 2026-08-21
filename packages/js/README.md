@@ -73,8 +73,9 @@ const { data: action } = await chaos.payments.getClientAction(attempt.id);
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
 // a Stripe-Account header or an account_reference field.
 
-// PageView, ViewContent, Search, AddToCart, InitiateCheckout, and active
-// ViewDuration are recorded by the SDK operations above. After the server
+// PageView, ViewContent, Search, and active ViewDuration are recorded by the
+// browser SDK. AddToCart, InitiateCheckout, AddPaymentInfo, Purchase, and
+// Refund are recorded by the authoritative server workflows. After the server
 // confirms payment, project Purchase with authoritative Order data:
 chaos.analytics?.purchase({
   orderId: order.id,
@@ -93,7 +94,9 @@ Pass `analytics: false` to `createStorefrontClient` to skip constructing the
 collector entirely. The default `opt_out` mode starts collection immediately;
 `opt_in` keeps it disabled until `setConsent()` grants analytics storage.
 
-The collector automatically captures bounded UTM fields and the Referrer host.
+The client automatically acquires and persists the signed shopper token used to
+associate commerce operations and Analytics events. The collector automatically
+captures bounded UTM fields and the Referrer host.
 It keeps first-touch, browser-session, and last-non-direct source facts;
 advertising click IDs are included only with advertising-storage consent.
 Unsent events survive reloads in session storage, retain stable IDs during

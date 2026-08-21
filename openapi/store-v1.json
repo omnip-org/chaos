@@ -106,8 +106,9 @@
         "operationId": "collectStorefrontAnalyticsEvents",
         "tags": ["Analytics"],
         "summary": "Collect a bounded batch of consent-aware first-party behavior events",
-        "description": "Browser events are untrusted observations and cannot declare commercial amounts, Order state, Payment state, or other authoritative outcomes.",
+        "description": "Browser events carry no consumer identity; the API derives shopper_id from the signed shopper token. Cart, checkout, payment, purchase, and refund outcomes are recorded by authoritative server workflows.",
         "security": [{ "publishableKey": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ShopperToken" }],
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CollectAnalyticsEvents" } } }
@@ -678,25 +679,6 @@
           "result_count": { "type": "integer", "minimum": 0, "maximum": 1000000 }
         }
       },
-      "AddToCartProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["cart_id", "product_variant_id", "quantity"],
-        "properties": {
-          "cart_id": { "type": "string", "format": "uuid" },
-          "product_variant_id": { "type": "string", "format": "uuid" },
-          "quantity": { "type": "integer", "minimum": 1, "maximum": 10000 }
-        }
-      },
-      "InitiateCheckoutProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["cart_id"],
-        "properties": {
-          "cart_id": { "type": "string", "format": "uuid" },
-          "checkout_id": { "type": "string", "format": "uuid" }
-        }
-      },
       "ViewDurationProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -709,13 +691,12 @@
       "BrowserAnalyticsEvent": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["event_id", "event_name", "schema_version", "occurred_at", "visitor_id", "session_id", "consent", "collection_basis", "properties"],
+        "required": ["event_id", "event_name", "schema_version", "occurred_at", "session_id", "consent", "collection_basis", "properties"],
         "properties": {
           "event_id": { "type": "string", "format": "uuid" },
-          "event_name": { "type": "string", "enum": ["page_view", "view_content", "search", "add_to_cart", "initiate_checkout", "view_duration"] },
+          "event_name": { "type": "string", "enum": ["page_view", "view_content", "search", "view_duration"] },
           "schema_version": { "type": "integer", "const": 1 },
           "occurred_at": { "type": "string", "format": "date-time" },
-          "visitor_id": { "type": "string", "format": "uuid" },
           "session_id": { "type": "string", "format": "uuid" },
           "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
           "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] },
@@ -725,8 +706,6 @@
               { "$ref": "#/components/schemas/PageViewProperties" },
               { "$ref": "#/components/schemas/ViewContentProperties" },
               { "$ref": "#/components/schemas/SearchProperties" },
-              { "$ref": "#/components/schemas/AddToCartProperties" },
-              { "$ref": "#/components/schemas/InitiateCheckoutProperties" },
               { "$ref": "#/components/schemas/ViewDurationProperties" }
             ]
           }
@@ -735,8 +714,6 @@
           { "if": { "properties": { "event_name": { "const": "page_view" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/PageViewProperties" } } } },
           { "if": { "properties": { "event_name": { "const": "view_content" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewContentProperties" } } } },
           { "if": { "properties": { "event_name": { "const": "search" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/SearchProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "add_to_cart" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/AddToCartProperties" } } } },
-          { "if": { "properties": { "event_name": { "const": "initiate_checkout" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/InitiateCheckoutProperties" } } } },
           { "if": { "properties": { "event_name": { "const": "view_duration" } } }, "then": { "properties": { "properties": { "$ref": "#/components/schemas/ViewDurationProperties" } } } }
         ]
       },
@@ -1428,7 +1405,7 @@
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "RateLimited": {
-        "description": "Store, Sales Channel, or Visitor collection budget exceeded",
+        "description": "Store, Sales Channel, or Shopper collection budget exceeded",
         "headers": {
           "Retry-After": {
             "description": "Seconds until the current fixed collection window expires",

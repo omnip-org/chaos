@@ -11,10 +11,10 @@ use crate::{
     ApplicationError,
     ports::{
         AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
-        AnalyticsConnectionRepository, AnalyticsDeliveryError, AnalyticsEventDestination,
-        AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventQueryRepository,
-        AnalyticsEventRepository, AnalyticsSettingsRepository, AnalyticsWorkerRepository,
-        IdempotencyRequest, MachineActor, StoreAnalyticsSettings,
+        AnalyticsConnectionRepository, AnalyticsDeliveryError, AnalyticsDeliveryRepository,
+        AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
+        AnalyticsEventQueryRepository, AnalyticsEventRecorderRepository, AnalyticsEventRepository,
+        AnalyticsSettingsRepository, IdempotencyRequest, MachineActor, StoreAnalyticsSettings,
     },
     store::StoreActor,
 };
@@ -78,7 +78,7 @@ impl AnalyticsCollection {
         }
         let mut counts = BTreeMap::new();
         for event in &input.events {
-            *counts.entry(event.visitor_id()).or_insert(0_u16) += 1;
+            *counts.entry(event.shopper_id()).or_insert(0_u16) += 1;
         }
         let decision = self
             .rate_limiter
@@ -245,26 +245,16 @@ impl AnalyticsAdministration {
     }
 }
 
-pub struct AnalyticsWorkers {
-    repository: Arc<dyn AnalyticsWorkerRepository>,
-    destinations: std::collections::HashMap<String, Arc<dyn AnalyticsEventDestination>>,
+pub struct AnalyticsEventRecorder {
+    repository: Arc<dyn AnalyticsEventRecorderRepository>,
 }
 
-impl AnalyticsWorkers {
-    pub fn new(
-        repository: Arc<dyn AnalyticsWorkerRepository>,
-        destinations: impl IntoIterator<Item = Arc<dyn AnalyticsEventDestination>>,
-    ) -> Self {
-        Self {
-            repository,
-            destinations: destinations
-                .into_iter()
-                .map(|destination| (destination.provider().to_owned(), destination))
-                .collect(),
-        }
+impl AnalyticsEventRecorder {
+    pub fn new(repository: Arc<dyn AnalyticsEventRecorderRepository>) -> Self {
+        Self { repository }
     }
 
-    pub async fn run_server_event_batch(
+    pub async fn run_batch(
         &self,
         now: OffsetDateTime,
         limit: u16,
@@ -282,12 +272,33 @@ impl AnalyticsWorkers {
         }
         Ok(jobs.len())
     }
+}
+
+pub struct AnalyticsDeliveryWorker {
+    repository: Arc<dyn AnalyticsDeliveryRepository>,
+    destinations: std::collections::HashMap<String, Arc<dyn AnalyticsEventDestination>>,
+}
+
+impl AnalyticsDeliveryWorker {
+    pub fn new(
+        repository: Arc<dyn AnalyticsDeliveryRepository>,
+        destinations: impl IntoIterator<Item = Arc<dyn AnalyticsEventDestination>>,
+    ) -> Self {
+        Self {
+            repository,
+            destinations: destinations
+                .into_iter()
+                .map(|destination| (destination.provider().to_owned(), destination))
+                .collect(),
+        }
+    }
 
     pub async fn run_delivery_batch(
         &self,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
+        let scheduled = self.repository.schedule_deliveries(limit).await?;
         let jobs = self.repository.claim_deliveries(limit).await?;
         for job in &jobs {
             let result = match self.repository.load_delivery(job).await {
@@ -308,7 +319,7 @@ impl AnalyticsWorkers {
             };
             self.repository.finish_delivery(job, result, now).await?;
         }
-        Ok(jobs.len())
+        Ok(scheduled + jobs.len())
     }
 }
 fn require_owner(actor: StoreActor) -> Result<(), ApplicationError> {

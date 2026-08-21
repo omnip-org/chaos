@@ -17,7 +17,8 @@ pub async fn run(
         lifecycle.clone(),
     ));
     let analytics_worker = tokio::spawn(analytics_worker_loop(
-        runtime.analytics_workers.clone(),
+        runtime.analytics_event_recorder.clone(),
+        runtime.analytics_delivery_worker.clone(),
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
@@ -77,7 +78,8 @@ impl PollBackoff {
 }
 
 async fn analytics_worker_loop(
-    workers: std::sync::Arc<chaos_application::analytics::AnalyticsWorkers>,
+    recorder: std::sync::Arc<chaos_application::analytics::AnalyticsEventRecorder>,
+    delivery: std::sync::Arc<chaos_application::analytics::AnalyticsDeliveryWorker>,
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
@@ -86,7 +88,7 @@ async fn analytics_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0usize;
-        match workers.run_server_event_batch(now, 100).await {
+        match recorder.run_batch(now, 100).await {
             Ok(count) => {
                 processed += count;
             }
@@ -94,7 +96,7 @@ async fn analytics_worker_loop(
                 tracing::warn!(%worker_id, %error, "analytics server event batch failed");
             }
         }
-        match workers.run_delivery_batch(now, 10).await {
+        match delivery.run_delivery_batch(now, 10).await {
             Ok(count) => {
                 processed += count;
             }

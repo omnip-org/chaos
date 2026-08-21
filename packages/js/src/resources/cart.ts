@@ -33,7 +33,7 @@ export class CartResource {
     );
   }
 
-  /** Adds a quantity to a Cart line and records one accurate AddToCart event after success. */
+  /** Adds a quantity to a Cart line. The API records the authoritative AddToCart event. */
   async addLine(
     cartId: string,
     productVariantId: string,
@@ -52,7 +52,6 @@ export class CartResource {
         { quantity: (existing?.quantity ?? 0) + quantity },
         idempotencyKey,
       );
-      this.client.analytics?.addToCart({ cartId, productVariantId, quantity });
       return response;
     });
   }

@@ -17,14 +17,6 @@ export class PaymentsResource {
       body,
       requiresShopperToken: true,
       idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
-    }).then((response) => {
-      this.client.analytics?.addPaymentInfo({
-        paymentAttemptId: response.data.id,
-        orderId: response.data.order_id,
-        valueMinor: response.data.amount_minor,
-        currency: response.data.currency,
-      });
-      return response;
     });
   }
 
