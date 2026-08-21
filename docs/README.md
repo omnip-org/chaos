@@ -80,7 +80,6 @@ not in application use cases.
 
 - `openapi/` contains the generated or reviewed HTTP contracts.
 - `packages/js/` is the Storefront JavaScript client.
-- `packages/storefront-template/` is the end-to-end example Storefront.
 - `migrations/0002_identity.sql`, `0003_commerce.sql`, and
   `0004_integration.sql` are the complete business-schema bootstrap files.
   `0001_platform.sql` and `0005_runtime_hardening.sql` own platform setup and
