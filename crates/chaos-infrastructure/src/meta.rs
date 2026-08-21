@@ -4,7 +4,8 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chaos_application::ports::{
-    MetaDeliveryCommand, MetaDeliveryError, MetaDeliveryReceipt, MetaEventDestination,
+    AnalyticsDeliveryCommand, AnalyticsDeliveryError, AnalyticsDeliveryReceipt,
+    AnalyticsEventDestination,
 };
 use reqwest::{Client, StatusCode, Url};
 use secrecy::ExposeSecret;
@@ -38,18 +39,22 @@ impl MetaConversionsDestination {
 }
 
 #[async_trait]
-impl MetaEventDestination for MetaConversionsDestination {
+impl AnalyticsEventDestination for MetaConversionsDestination {
+    fn provider(&self) -> &'static str {
+        "meta"
+    }
+
     async fn send(
         &self,
-        command: &MetaDeliveryCommand,
-    ) -> Result<MetaDeliveryReceipt, MetaDeliveryError> {
+        command: &AnalyticsDeliveryCommand,
+    ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError> {
         let token = self
             .secrets
             .resolve_analytics(&command.credential_secret_reference)
             .await?;
         let endpoint = self
             .api_base_url
-            .join(&format!("{}/events", command.dataset_id))
+            .join(&format!("{}/events", command.external_account_reference))
             .map_err(|_| invalid_command())?;
         let payload = MetaRequest {
             data: [MetaEvent {
@@ -67,7 +72,10 @@ impl MetaEventDestination for MetaConversionsDestination {
                 },
                 custom_data: custom_data(command),
             }],
-            test_event_code: command.test_event_code.as_deref(),
+            test_event_code: command
+                .configuration
+                .get("test_event_code")
+                .and_then(Value::as_str),
         };
         let response = self
             .client
@@ -76,28 +84,28 @@ impl MetaEventDestination for MetaConversionsDestination {
             .json(&payload)
             .send()
             .await
-            .map_err(|error| MetaDeliveryError {
+            .map_err(|error| AnalyticsDeliveryError {
                 retryable: true,
                 message: format!("Meta request failed: {error}"),
             })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(MetaDeliveryError {
+            return Err(AnalyticsDeliveryError {
                 retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
                 message: format!("Meta returned HTTP {status}"),
             });
         }
-        let receipt: MetaResponse = response.json().await.map_err(|_| MetaDeliveryError {
+        let receipt: MetaResponse = response.json().await.map_err(|_| AnalyticsDeliveryError {
             retryable: true,
             message: "Meta returned an invalid response".into(),
         })?;
         if receipt.events_received != 1 {
-            return Err(MetaDeliveryError {
+            return Err(AnalyticsDeliveryError {
                 retryable: true,
                 message: "Meta did not acknowledge the event".into(),
             });
         }
-        Ok(MetaDeliveryReceipt {
+        Ok(AnalyticsDeliveryReceipt {
             provider_reference: receipt.fbtrace_id,
         })
     }
@@ -149,7 +157,7 @@ fn meta_event_name(name: &str) -> &str {
     }
 }
 
-fn custom_data(command: &MetaDeliveryCommand) -> Value {
+fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
     let mut data = command.properties.clone();
     if let Some(object) = data.as_object_mut() {
         // Traffic provenance remains a Chaos Analytics fact. Click identifiers
@@ -187,8 +195,8 @@ fn sha256_hex(value: &[u8]) -> String {
         .collect()
 }
 
-fn invalid_command() -> MetaDeliveryError {
-    MetaDeliveryError {
+fn invalid_command() -> AnalyticsDeliveryError {
+    AnalyticsDeliveryError {
         retryable: false,
         message: "Meta delivery command is invalid".into(),
     }
@@ -200,13 +208,14 @@ mod tests {
     use time::OffsetDateTime;
     use uuid::Uuid;
 
-    fn command(value_minor: i64, currency: &str) -> MetaDeliveryCommand {
-        MetaDeliveryCommand {
+    fn command(value_minor: i64, currency: &str) -> AnalyticsDeliveryCommand {
+        AnalyticsDeliveryCommand {
             delivery_id: Uuid::now_v7(),
+            provider: "meta".into(),
             event_id: Uuid::now_v7(),
-            dataset_id: "12345".into(),
+            external_account_reference: "12345".into(),
             credential_secret_reference: "env://CHAOS_ANALYTICS_SECRET_TEST".into(),
-            test_event_code: None,
+            configuration: json!({}),
             event_name: "purchase".into(),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             visitor_id: None,

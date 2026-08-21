@@ -11,7 +11,6 @@ mod identity;
 mod inventory;
 mod localization;
 mod media;
-mod notification;
 mod payments;
 mod pricing;
 mod pricing_management;
@@ -30,14 +29,14 @@ mod tax;
 
 pub use actor::AdminActor;
 pub use analytics::{
-    AnalyticsCollectionRateLimiter, AnalyticsErasureBatchResult, AnalyticsErasureRequest,
-    AnalyticsErasureSelector, AnalyticsErasureStatus, AnalyticsEventPage, AnalyticsEventQuery,
+    AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
+    AnalyticsConnectionRepository, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
+    AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsEventDelivery,
+    AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
     AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRepository,
     AnalyticsPrivacyRepository, AnalyticsRateLimitDecision, AnalyticsRetentionResult,
-    AnalyticsSettingsRepository, AnalyticsWorkerRepository, MetaConnection,
-    MetaConnectionConfiguration, MetaConnectionRepository, MetaDeliveryCommand, MetaDeliveryError,
-    MetaDeliveryJob, MetaDeliveryReceipt, MetaEventDestination, ProviderMetricSnapshot,
-    ResolvedAnalyticsSettings, ServerCommerceEventJob, StoreAnalyticsSettings, VisitorCustomerLink,
+    AnalyticsSettingsRepository, AnalyticsWorkerRepository, ResolvedAnalyticsSettings,
+    ServerCommerceEventJob, StoreAnalyticsSettings, VisitorCustomerLink,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use catalog_management::{
@@ -83,12 +82,6 @@ pub use localization::{
 pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
-};
-pub use notification::{
-    EmailDelivery, EmailDeliveryFailure, EmailDeliveryJob, EmailDeliveryRepository, EmailMessage,
-    EmailProvider, EmailWebhookVerifier, NotificationProviderAccountConfiguration,
-    NotificationProviderAccountDetail, NotificationProviderAccountRepository,
-    NotificationSecretResolver, ResolvedNotificationWebhook, VerifiedEmailWebhook,
 };
 pub use payments::{
     IntegrationQueue, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,

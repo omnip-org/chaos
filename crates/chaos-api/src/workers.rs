@@ -16,11 +16,6 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
-    let notification_worker = tokio::spawn(notification_worker_loop(
-        runtime.notification_workers.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
     let analytics_worker = tokio::spawn(analytics_worker_loop(
         runtime.analytics_workers.clone(),
         runtime.clock.clone(),
@@ -41,7 +36,6 @@ pub async fn run(
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
         drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
-        drain_worker("notification", notification_worker, worker_shutdown_timeout),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
         drain_worker(
@@ -89,7 +83,6 @@ async fn analytics_worker_loop(
 ) {
     let worker_id = Uuid::now_v7();
     let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
-    let mut next_erasure_at = time::OffsetDateTime::UNIX_EPOCH;
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
@@ -102,12 +95,12 @@ async fn analytics_worker_loop(
                 tracing::warn!(%worker_id, %error, "analytics server event batch failed");
             }
         }
-        match workers.run_meta_delivery_batch(now, 10).await {
+        match workers.run_delivery_batch(now, 10).await {
             Ok(count) => {
                 processed += count;
             }
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics Meta delivery batch failed");
+                tracing::warn!(%worker_id, %error, "analytics provider delivery batch failed");
             }
         }
         if now >= next_retention_at {
@@ -121,35 +114,6 @@ async fn analytics_worker_loop(
                 }
             }
         }
-        if now >= next_erasure_at {
-            match workers.run_erasure_batch(now, 100).await {
-                Ok(_result) => {
-                    next_erasure_at = now + time::Duration::seconds(1);
-                }
-                Err(error) => {
-                    tracing::warn!(%worker_id, %error, "analytics erasure batch failed");
-                    next_erasure_at = now + time::Duration::seconds(5);
-                }
-            }
-        }
-        tokio::time::sleep(backoff.observe(processed)).await;
-    }
-}
-
-async fn notification_worker_loop(
-    workers: std::sync::Arc<chaos_application::notifications::NotificationWorkers>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let mut backoff = PollBackoff::new();
-    while lifecycle.is_accepting_traffic() {
-        let processed = match workers.run_batch(clock.now(), 10).await {
-            Ok(count) => count,
-            Err(error) => {
-                tracing::warn!(%error, "notification delivery batch failed");
-                0
-            }
-        };
         tokio::time::sleep(backoff.observe(processed)).await;
     }
 }

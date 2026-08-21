@@ -76,16 +76,6 @@ Identity does not send authentication email. A verified Provider email is profil
 account-conflict data only; Google or Apple remains responsible for authenticating the
 address.
 
-## Commerce notifications
-
-Order email is an optional, Store-owned Commerce capability implemented through Resend.
-Each Store configures its sender plus encrypted API-key and webhook-secret references
-through MCP. The Worker resolves the enabled configuration by the delivery's `store_id`;
-without one, that Store's queued deliveries remain unclaimed. Webhook URLs include the
-Notification Provider Account ID, and delivery lookup is bound to that account before a
-signed delivery, delay, bounce, complaint, or suppression event is accepted. Identity has
-no Resend configuration.
-
 ## Request authorization
 
 Every Store-owned table includes `store_id`. Every Store transaction sets transaction-local `app.store_id`; User directory reads additionally set `app.user_id`. PostgreSQL RLS is defense in depth, and the runtime role neither owns tables nor bypasses RLS.
@@ -113,11 +103,12 @@ one-time-looking long-lived capability for a short-lived, store-bound session; o
 digests are stored after a successful confirmation email delivery.
 
 Analytics uses one append-only, Store-scoped Commerce Event ledger for the
-Storefront conversion path and authoritative server events. Meta delivery is a
-dedicated retryable projection of eligible events. External advertising and
-payment metrics are stored separately as Provider observations for future BI;
-Chaos does not precompute Sessions, attribution, or daily reports without a
-concrete product query. Browser events retain bounded first-touch,
+Storefront conversion path and authoritative server events. External provider
+delivery is a retryable projection of eligible events, with provider-neutral
+connection and delivery records and provider-specific adapters. Provider metrics
+are not persisted until a concrete reporting requirement exists; Chaos does not
+precompute Sessions, attribution, or daily reports without a concrete product
+query. Browser events retain bounded first-touch,
 browser-session, and last-non-direct traffic facts so UTM conversion paths can
 be queried without introducing an attribution engine. A Store may authorize
 browser collection through an `opt_in` or `opt_out` Store policy; every event

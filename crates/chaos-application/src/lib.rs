@@ -6,7 +6,6 @@ mod error;
 pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
-pub mod notifications;
 pub mod payments;
 pub mod ports;
 pub mod pricing;

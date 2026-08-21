@@ -5,23 +5,22 @@ use std::sync::Arc;
 use chaos_application::{
     analytics::AnalyticsWorkers,
     fulfillment::FulfillmentWorkers,
-    notifications::NotificationWorkers,
     payments::PaymentWorkers,
-    ports::{Clock, EmailProvider, PaymentProvider, PaymentProviderOnboarding, ShippingProvider},
+    ports::{
+        AnalyticsEventDestination, Clock, PaymentProvider, PaymentProviderOnboarding,
+        ShippingProvider,
+    },
     sales::CheckoutExpiryWorkers,
 };
 use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
     meta::MetaConversionsDestination,
-    providers::{
-        easypost::EasyPostShippingProvider, email::ResendEmailProvider,
-        stripe::StripeCheckoutPaymentProvider,
-    },
+    providers::{easypost::EasyPostShippingProvider, stripe::StripeCheckoutPaymentProvider},
     repositories::{
-        PostgresAnalyticsEventRepository, PostgresEmailDeliveryRepository,
-        PostgresFulfillmentRepository, PostgresPaymentRepository, PostgresSearchIndexer,
-        PostgresShippingServiceRepository, PostgresStorefrontSalesRepository,
+        PostgresAnalyticsEventRepository, PostgresFulfillmentRepository, PostgresPaymentRepository,
+        PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresStorefrontSalesRepository,
     },
     secret::DynamicSecretResolver,
     state::AppState,
@@ -33,7 +32,6 @@ pub struct WorkerRuntime {
     pub infrastructure: AppState,
     pub payment_workers: Arc<PaymentWorkers>,
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
-    pub notification_workers: Arc<NotificationWorkers>,
     pub analytics_workers: Arc<AnalyticsWorkers>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
@@ -52,7 +50,10 @@ impl WorkerRuntime {
             settings.dependency_timeout,
             dynamic_secrets.clone(),
         )?);
-        let analytics_workers = AnalyticsWorkers::new(analytics_repository, meta_destination);
+        let analytics_workers = AnalyticsWorkers::new(
+            analytics_repository,
+            [meta_destination as Arc<dyn AnalyticsEventDestination>],
+        );
 
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
@@ -72,20 +73,6 @@ impl WorkerRuntime {
             payment_repository,
             payment_providers,
             payment_onboarding,
-        );
-
-        let resend_provider = Arc::new(ResendEmailProvider::new(
-            settings.resend_api_base_url.clone(),
-            dynamic_secrets.clone(),
-            settings.dependency_timeout,
-        )?) as Arc<dyn EmailProvider>;
-        let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let notification_workers = NotificationWorkers::new(
-            notification_repository,
-            [resend_provider],
-            settings.storefront_public_base_url.to_string(),
         );
 
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
@@ -113,7 +100,6 @@ impl WorkerRuntime {
             infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
             fulfillment_workers: Arc::new(fulfillment_workers),
-            notification_workers: Arc::new(notification_workers),
             analytics_workers: Arc::new(analytics_workers),
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
             checkout_expiry_workers: Arc::new(CheckoutExpiryWorkers::new(

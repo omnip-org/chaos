@@ -6,7 +6,7 @@ use chaos_domain::{
     store::{SalesChannelId, StoreId},
 };
 use serde_json::Value;
-use time::{Date, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{ApplicationError, store::StoreActor};
@@ -60,7 +60,7 @@ pub trait AnalyticsEventRepository: Send + Sync {
         events: &[BrowserEvent],
         settings_revision: i32,
         browser_collection_mode: chaos_domain::analytics::BrowserCollectionMode,
-        meta_reporting_enabled: bool,
+        provider_reporting_enabled: bool,
         received_at: OffsetDateTime,
         retention_expires_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError>;
@@ -92,11 +92,17 @@ pub struct AnalyticsEventRecord {
     pub source: String,
     pub occurred_at: OffsetDateTime,
     pub received_at: OffsetDateTime,
-    pub meta_eligible: bool,
-    pub meta_delivery_status: Option<String>,
-    pub meta_delivered_at: Option<OffsetDateTime>,
-    pub meta_provider_reference: Option<String>,
-    pub meta_last_error: Option<String>,
+    pub provider_eligible: bool,
+    pub deliveries: Vec<AnalyticsEventDelivery>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnalyticsEventDelivery {
+    pub provider: String,
+    pub status: String,
+    pub delivered_at: Option<OffsetDateTime>,
+    pub provider_reference: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,31 +144,6 @@ pub struct VisitorCustomerLink {
     pub retention_expires_at: OffsetDateTime,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AnalyticsErasureSelector {
-    Visitor(Uuid),
-    Customer(CustomerId),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AnalyticsErasureStatus {
-    Pending,
-    Completed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AnalyticsErasureRequest {
-    pub id: Uuid,
-    pub store_id: StoreId,
-    pub selector: AnalyticsErasureSelector,
-    pub status: AnalyticsErasureStatus,
-    pub requested_by: UserId,
-    pub commerce_events_deleted: u64,
-    pub visitor_links_deleted: u64,
-    pub requested_at: OffsetDateTime,
-    pub completed_at: Option<OffsetDateTime>,
-}
-
 #[async_trait]
 pub trait AnalyticsPrivacyRepository: Send + Sync {
     #[allow(clippy::too_many_arguments)]
@@ -176,76 +157,66 @@ pub trait AnalyticsPrivacyRepository: Send + Sync {
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<VisitorCustomerLink, ApplicationError>;
-
-    async fn request_erasure(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        selector: AnalyticsErasureSelector,
-        idempotency: &IdempotencyRequest,
-        now: OffsetDateTime,
-    ) -> Result<AnalyticsErasureRequest, ApplicationError>;
-
-    async fn get_erasure_request(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        request_id: Uuid,
-    ) -> Result<Option<AnalyticsErasureRequest>, ApplicationError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetaConnection {
+pub struct AnalyticsConnection {
+    pub id: Uuid,
     pub store_id: StoreId,
-    pub dataset_id: String,
-    pub capi_enabled: bool,
+    pub provider: String,
+    pub external_account_reference: String,
+    pub enabled: bool,
     pub credentials_configured: bool,
-    pub test_event_code_configured: bool,
+    pub configuration: Value,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetaConnectionConfiguration {
-    pub dataset_id: String,
+pub struct AnalyticsConnectionConfiguration {
+    pub provider: String,
+    pub external_account_reference: String,
     pub credential_secret_reference: String,
-    pub test_event_code: Option<String>,
-    pub capi_enabled: bool,
+    pub configuration: Value,
+    pub enabled: bool,
 }
 
 #[async_trait]
-pub trait MetaConnectionRepository: Send + Sync {
-    async fn get_meta_connection(
+pub trait AnalyticsConnectionRepository: Send + Sync {
+    async fn get_connection(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-    ) -> Result<Option<MetaConnection>, ApplicationError>;
+        provider: &str,
+    ) -> Result<Option<AnalyticsConnection>, ApplicationError>;
 
-    async fn configure_meta_connection(
+    async fn configure_connection(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        configuration: MetaConnectionConfiguration,
+        configuration: AnalyticsConnectionConfiguration,
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
-    ) -> Result<MetaConnection, ApplicationError>;
+    ) -> Result<AnalyticsConnection, ApplicationError>;
 }
 
 #[derive(Clone, Debug)]
-pub struct MetaDeliveryJob {
+pub struct AnalyticsDeliveryJob {
     pub id: Uuid,
     pub store_id: StoreId,
+    pub connection_id: Uuid,
     pub commerce_event_id: Uuid,
     pub attempts: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct MetaDeliveryCommand {
+pub struct AnalyticsDeliveryCommand {
     pub delivery_id: Uuid,
+    pub provider: String,
     pub event_id: Uuid,
-    pub dataset_id: String,
+    pub external_account_reference: String,
     pub credential_secret_reference: String,
-    pub test_event_code: Option<String>,
+    pub configuration: Value,
     pub event_name: String,
     pub occurred_at: OffsetDateTime,
     pub visitor_id: Option<Uuid>,
@@ -257,22 +228,24 @@ pub struct MetaDeliveryCommand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetaDeliveryReceipt {
+pub struct AnalyticsDeliveryReceipt {
     pub provider_reference: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetaDeliveryError {
+pub struct AnalyticsDeliveryError {
     pub retryable: bool,
     pub message: String,
 }
 
 #[async_trait]
-pub trait MetaEventDestination: Send + Sync {
+pub trait AnalyticsEventDestination: Send + Sync {
+    fn provider(&self) -> &'static str;
+
     async fn send(
         &self,
-        command: &MetaDeliveryCommand,
-    ) -> Result<MetaDeliveryReceipt, MetaDeliveryError>;
+        command: &AnalyticsDeliveryCommand,
+    ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError>;
 }
 
 #[derive(Clone, Debug)]
@@ -288,13 +261,6 @@ pub struct ServerCommerceEventJob {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AnalyticsRetentionResult {
-    pub commerce_events_deleted: u64,
-    pub visitor_links_deleted: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct AnalyticsErasureBatchResult {
-    pub requests_completed: u64,
     pub commerce_events_deleted: u64,
     pub visitor_links_deleted: u64,
 }
@@ -316,18 +282,18 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
         result: Result<(), String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
-    async fn claim_meta_deliveries(
+    async fn claim_deliveries(
         &self,
         limit: u16,
-    ) -> Result<Vec<MetaDeliveryJob>, ApplicationError>;
-    async fn load_meta_delivery(
+    ) -> Result<Vec<AnalyticsDeliveryJob>, ApplicationError>;
+    async fn load_delivery(
         &self,
-        job: &MetaDeliveryJob,
-    ) -> Result<MetaDeliveryCommand, ApplicationError>;
-    async fn finish_meta_delivery(
+        job: &AnalyticsDeliveryJob,
+    ) -> Result<AnalyticsDeliveryCommand, ApplicationError>;
+    async fn finish_delivery(
         &self,
-        job: &MetaDeliveryJob,
-        result: Result<MetaDeliveryReceipt, MetaDeliveryError>,
+        job: &AnalyticsDeliveryJob,
+        result: Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
     async fn purge_expired(
@@ -335,25 +301,4 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<AnalyticsRetentionResult, ApplicationError>;
-    async fn process_erasure_requests(
-        &self,
-        limit: u16,
-        now: OffsetDateTime,
-    ) -> Result<AnalyticsErasureBatchResult, ApplicationError>;
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProviderMetricSnapshot {
-    pub id: Uuid,
-    pub store_id: StoreId,
-    pub provider: String,
-    pub external_account_reference: String,
-    pub metric_date: Date,
-    pub metric_name: String,
-    pub dimensions: Value,
-    pub value: String,
-    pub currency: Option<String>,
-    pub source_reference: Option<String>,
-    pub observed_at: OffsetDateTime,
-    pub raw_snapshot: Value,
 }

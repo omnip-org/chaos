@@ -21,8 +21,8 @@ then removes the Fragment from browser history. Session access is read-only,
 bound to one Store, Sales Channel, tracking key, and Order. Tracking keys
 expire after 180 days and can be revoked.
 
-The reliable order-confirmation email job temporarily carries the plaintext
-tracking capability because the Provider must receive it. Its payload is
+An external notification channel may carry the plaintext tracking capability
+because the recipient must receive it. Its payload is
 cleared after successful delivery. Failed jobs retain it only while retries
 remain possible.
 

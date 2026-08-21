@@ -13,11 +13,11 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        AnalyticsCollectionRateLimiter, AnalyticsErasureRequest, AnalyticsErasureSelector,
+        AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
+        AnalyticsConnectionRepository, AnalyticsDeliveryError, AnalyticsEventDestination,
         AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventQueryRepository,
         AnalyticsEventRepository, AnalyticsPrivacyRepository, AnalyticsSettingsRepository,
-        AnalyticsWorkerRepository, CustomerActor, IdempotencyRequest, MachineActor, MetaConnection,
-        MetaConnectionConfiguration, MetaConnectionRepository, MetaEventDestination,
+        AnalyticsWorkerRepository, CustomerActor, IdempotencyRequest, MachineActor,
         StoreAnalyticsSettings, VisitorCustomerLink,
     },
     store::StoreActor,
@@ -129,7 +129,7 @@ impl AnalyticsCollection {
                     &eligible,
                     settings.revision,
                     settings.settings.browser_collection_mode(),
-                    settings.settings.meta_reporting_enabled(),
+                    settings.settings.provider_reporting_enabled(),
                     input.received_at,
                     input.received_at
                         + Duration::days(i64::from(settings.settings.raw_event_retention_days())),
@@ -158,14 +158,6 @@ pub struct LinkAnalyticsIdentityInput {
     pub visitor_id: uuid::Uuid,
     pub consent: ConsentSnapshot,
     pub collection_basis: BrowserCollectionBasis,
-    pub idempotency: IdempotencyRequest,
-    pub now: OffsetDateTime,
-}
-
-pub struct RequestAnalyticsErasureInput {
-    pub actor: StoreActor,
-    pub store_id: StoreId,
-    pub selector: AnalyticsErasureSelector,
     pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
@@ -207,37 +199,6 @@ impl AnalyticsPrivacy {
             )
             .await
     }
-
-    pub async fn request_erasure(
-        &self,
-        input: RequestAnalyticsErasureInput,
-    ) -> Result<AnalyticsErasureRequest, ApplicationError> {
-        require_owner(input.actor)?;
-        self.repository
-            .request_erasure(
-                input.actor,
-                input.store_id,
-                input.selector,
-                &input.idempotency,
-                input.now,
-            )
-            .await
-    }
-
-    pub async fn get_erasure_request(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        request_id: uuid::Uuid,
-    ) -> Result<AnalyticsErasureRequest, ApplicationError> {
-        self.repository
-            .get_erasure_request(actor, store_id, request_id)
-            .await?
-            .ok_or(ApplicationError::NotFound {
-                resource: "analytics_erasure_request",
-                id: request_id.to_string(),
-            })
-    }
 }
 
 pub struct UpdateAnalyticsSettingsInput {
@@ -245,7 +206,7 @@ pub struct UpdateAnalyticsSettingsInput {
     pub store_id: StoreId,
     pub collection_enabled: bool,
     pub browser_collection_mode: BrowserCollectionMode,
-    pub meta_reporting_enabled: bool,
+    pub provider_reporting_enabled: bool,
     pub identity_linking_enabled: bool,
     pub raw_event_retention_days: u16,
     pub idempotency: IdempotencyRequest,
@@ -254,19 +215,19 @@ pub struct UpdateAnalyticsSettingsInput {
 
 pub struct AnalyticsAdministration {
     settings: Arc<dyn AnalyticsSettingsRepository>,
-    meta: Arc<dyn MetaConnectionRepository>,
+    connections: Arc<dyn AnalyticsConnectionRepository>,
     events: Arc<dyn AnalyticsEventQueryRepository>,
 }
 
 impl AnalyticsAdministration {
     pub fn new(
         settings: Arc<dyn AnalyticsSettingsRepository>,
-        meta: Arc<dyn MetaConnectionRepository>,
+        connections: Arc<dyn AnalyticsConnectionRepository>,
         events: Arc<dyn AnalyticsEventQueryRepository>,
     ) -> Self {
         Self {
             settings,
-            meta,
+            connections,
             events,
         }
     }
@@ -291,7 +252,7 @@ impl AnalyticsAdministration {
         let settings = AnalyticsSettings::new(
             input.collection_enabled,
             input.browser_collection_mode,
-            input.meta_reporting_enabled,
+            input.provider_reporting_enabled,
             input.identity_linking_enabled,
             input.raw_event_retention_days,
         )?;
@@ -306,25 +267,28 @@ impl AnalyticsAdministration {
             .await
     }
 
-    pub async fn get_meta_connection(
+    pub async fn get_connection(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-    ) -> Result<Option<MetaConnection>, ApplicationError> {
-        self.meta.get_meta_connection(actor, store_id).await
+        provider: &str,
+    ) -> Result<Option<AnalyticsConnection>, ApplicationError> {
+        self.connections
+            .get_connection(actor, store_id, provider)
+            .await
     }
 
-    pub async fn configure_meta_connection(
+    pub async fn configure_connection(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        configuration: MetaConnectionConfiguration,
+        configuration: AnalyticsConnectionConfiguration,
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
-    ) -> Result<MetaConnection, ApplicationError> {
+    ) -> Result<AnalyticsConnection, ApplicationError> {
         require_owner(actor)?;
-        self.meta
-            .configure_meta_connection(actor, store_id, configuration, idempotency, now)
+        self.connections
+            .configure_connection(actor, store_id, configuration, idempotency, now)
             .await
     }
 
@@ -341,15 +305,21 @@ impl AnalyticsAdministration {
 
 pub struct AnalyticsWorkers {
     repository: Arc<dyn AnalyticsWorkerRepository>,
-    meta: Arc<dyn MetaEventDestination>,
+    destinations: std::collections::HashMap<String, Arc<dyn AnalyticsEventDestination>>,
 }
 
 impl AnalyticsWorkers {
     pub fn new(
         repository: Arc<dyn AnalyticsWorkerRepository>,
-        meta: Arc<dyn MetaEventDestination>,
+        destinations: impl IntoIterator<Item = Arc<dyn AnalyticsEventDestination>>,
     ) -> Self {
-        Self { repository, meta }
+        Self {
+            repository,
+            destinations: destinations
+                .into_iter()
+                .map(|destination| (destination.provider().to_owned(), destination))
+                .collect(),
+        }
     }
 
     pub async fn run_server_event_batch(
@@ -371,23 +341,30 @@ impl AnalyticsWorkers {
         Ok(jobs.len())
     }
 
-    pub async fn run_meta_delivery_batch(
+    pub async fn run_delivery_batch(
         &self,
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.repository.claim_meta_deliveries(limit).await?;
+        let jobs = self.repository.claim_deliveries(limit).await?;
         for job in &jobs {
-            let result = match self.repository.load_meta_delivery(job).await {
-                Ok(command) => self.meta.send(&command).await,
-                Err(error) => Err(crate::ports::MetaDeliveryError {
+            let result = match self.repository.load_delivery(job).await {
+                Ok(command) => match self.destinations.get(&command.provider) {
+                    Some(destination) => destination.send(&command).await,
+                    None => Err(AnalyticsDeliveryError {
+                        retryable: false,
+                        message: format!(
+                            "analytics provider {} is not configured",
+                            command.provider
+                        ),
+                    }),
+                },
+                Err(error) => Err(AnalyticsDeliveryError {
                     retryable: false,
                     message: error.to_string(),
                 }),
             };
-            self.repository
-                .finish_meta_delivery(job, result, now)
-                .await?;
+            self.repository.finish_delivery(job, result, now).await?;
         }
         Ok(jobs.len())
     }
@@ -399,16 +376,7 @@ impl AnalyticsWorkers {
     ) -> Result<crate::ports::AnalyticsRetentionResult, ApplicationError> {
         self.repository.purge_expired(limit, now).await
     }
-
-    pub async fn run_erasure_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<crate::ports::AnalyticsErasureBatchResult, ApplicationError> {
-        self.repository.process_erasure_requests(limit, now).await
-    }
 }
-
 fn require_owner(actor: StoreActor) -> Result<(), ApplicationError> {
     if actor.role() == StoreRole::Owner {
         Ok(())

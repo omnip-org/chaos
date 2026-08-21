@@ -5,9 +5,9 @@
 
 ## Context
 
-Chaos needs to preserve a Storefront conversion path, send the relevant events
-to Meta reliably, and later compare commerce truth with Provider observations
-such as Meta advertising spend and Stripe fees. The existing Analytics model
+Chaos needs to preserve a Storefront conversion path and send relevant events
+to external providers reliably. Provider observations such as advertising spend
+and Stripe fees may be added later. The existing Analytics model
 also sessionizes events, computes attribution, materializes daily reports, and
 supports generic export destinations. Those responsibilities form a small CDP
 and BI engine before the product needs either one.
@@ -21,10 +21,12 @@ Analytics owns three small models:
 
 1. `commerce_events` is an append-only, Store-scoped ledger for browser and
    authoritative server events.
-2. `meta_connections` and `meta_event_deliveries` configure Meta and deliver
-   eligible events asynchronously through the independent Worker.
-3. `provider_metric_snapshots` stores dated observations imported from external
-   Providers without treating them as commerce truth.
+2. `analytics_connections` and `analytics_event_deliveries` configure external
+   analytics destinations and deliver eligible events asynchronously through the
+   independent Worker. Provider-specific configuration stays in bounded JSON and
+   provider-specific behavior stays in an adapter.
+3. Provider metric snapshots are deferred until a concrete reporting requirement
+   exists; they are not part of the current storage model.
 
 The initial event vocabulary is:
 

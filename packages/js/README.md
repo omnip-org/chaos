@@ -125,8 +125,9 @@ const chaos = createStorefrontClient({
 });
 ```
 
-Guest confirmation emails link to the Chaos storefront tracking page. A storefront can
-exchange the URL-fragment capability and refresh the order without exposing it in a URL:
+If a storefront receives an order tracking capability through its own notification
+channel, it can exchange the capability and refresh the order without exposing it in a
+URL:
 
 ```ts
 const session = await chaos.orders.exchangeTrackingKey(trackingKey);

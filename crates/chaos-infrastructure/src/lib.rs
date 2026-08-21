@@ -12,6 +12,6 @@ pub mod state;
 pub mod store;
 
 // Preserve the existing adapter paths for downstream callers.
-pub use providers::{easypost, email, stripe};
+pub use providers::{easypost, stripe};
 
 pub use analytics_rate_limit::RedisAnalyticsCollectionRateLimiter;

@@ -15,7 +15,6 @@ use chaos_application::{
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::AccessKeyAuthentication,
     inventory::InventoryManagement,
-    notifications::NotificationProviderAdministration,
     payments::{PaymentProviderAdministration, PaymentService},
     ports::{AdminActor, Clock},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
@@ -52,7 +51,6 @@ pub struct McpState {
     pub store_administration: Arc<StoreAdministration>,
     pub payment_service: Arc<PaymentService>,
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
-    pub notification_provider_administration: Arc<NotificationProviderAdministration>,
     pub media_administration: Arc<MediaAdministration>,
     pub catalog_localization: Arc<CatalogLocalization>,
     pub review_administration: Arc<ReviewAdministration>,
@@ -85,7 +83,6 @@ impl ChaosMcp {
                 + Self::store_admin_tool_router()
                 + Self::payments_tool_router()
                 + Self::payment_providers_tool_router()
-                + Self::notification_providers_tool_router()
                 + Self::media_tool_router()
                 + Self::localization_tool_router()
                 + Self::reviews_tool_router()

@@ -278,7 +278,7 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            let (tracking_key, tracking_digest) = generate_order_tracking_key();
+            let (_, tracking_digest) = generate_order_tracking_key();
             sqlx::query(
                 "INSERT INTO commerce.order_tracking_keys \
                  (id,store_id,order_id,secret_digest,expires_at,created_at) \
@@ -290,34 +290,6 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             .bind(tracking_digest.as_slice())
             .bind(now + ORDER_TRACKING_KEY_LIFETIME)
             .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-            sqlx::query(
-                "INSERT INTO integration.email_deliveries \
-                 (id, store_id, semantic_event_id, semantic_event_type, \
-                  recipient_email, template_key, template_version, template_payload, provider) \
-                 SELECT $1, order_row.store_id, $2, \
-                        'order.confirmed', contact.email, 'order_confirmation', 1, \
-                        jsonb_build_object( \
-                            'order_id', order_row.id, \
-                            'order_number', order_row.order_number, \
-                            'tracking_key', $5, \
-                            'total_amount_minor', order_row.total_amount_minor, \
-                            'currency', order_row.currency::text \
-                        ), 'resend' \
-                   FROM commerce.orders AS order_row \
-                   INNER JOIN commerce.order_contacts AS contact \
-                     ON contact.store_id = order_row.store_id \
-                    AND contact.order_id = order_row.id \
-                  WHERE order_row.store_id = $3 AND order_row.id = $4 \
-                 ON CONFLICT (store_id, semantic_event_id) DO NOTHING",
-            )
-            .bind(Uuid::now_v7())
-            .bind(transition_id)
-            .bind(store_id.as_uuid())
-            .bind(order_id.as_uuid())
-            .bind(tracking_key)
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;

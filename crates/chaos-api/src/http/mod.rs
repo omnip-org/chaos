@@ -12,8 +12,6 @@ mod error;
 mod extract;
 #[path = "operations/health.rs"]
 mod health;
-#[path = "webhooks/notification.rs"]
-mod notification;
 #[path = "shared/openapi.rs"]
 mod openapi;
 #[path = "shared/pagination.rs"]
@@ -43,7 +41,6 @@ use chaos_application::{
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
-    notifications::{NotificationProviderAdministration, NotificationWebhooks},
     payments::{PaymentProviderAdministration, PaymentService},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
@@ -61,7 +58,6 @@ use chaos_infrastructure::{
     clock::SystemClock,
     config::Settings,
     easypost::EasyPostShippingProvider,
-    email::ResendWebhookVerifier,
     identity::{
         JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
         PostgresAccessKeyRepository, PostgresIdentityRepository, SecureAccessKeyMaterialGenerator,
@@ -71,8 +67,7 @@ use chaos_infrastructure::{
         PostgresAnalyticsEventRepository, PostgresCatalogLocalizationRepository,
         PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
         PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
-        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
@@ -142,8 +137,6 @@ pub struct ApiState {
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub payment_provider_administration: Arc<PaymentProviderAdministration>,
-    pub notification_webhooks: Arc<NotificationWebhooks>,
-    pub notification_provider_administration: Arc<NotificationProviderAdministration>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub shipping_management: Arc<ShippingManagement>,
     pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
@@ -352,18 +345,6 @@ impl ApiState {
             payment_repository.clone(),
             payment_onboarding.clone(),
         );
-        let notification_repository = Arc::new(PostgresEmailDeliveryRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let notification_verifier = Arc::new(ResendWebhookVerifier::new(dynamic_secrets.clone()))
-            as Arc<dyn chaos_application::ports::EmailWebhookVerifier>;
-        let notification_webhooks = NotificationWebhooks::new(
-            notification_repository.clone(),
-            notification_repository.clone(),
-            [notification_verifier],
-        );
-        let notification_provider_administration =
-            NotificationProviderAdministration::new(notification_repository);
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
             infrastructure.runtime_pool(),
         ));
@@ -429,8 +410,6 @@ impl ApiState {
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             payment_provider_administration: Arc::new(payment_provider_administration),
-            notification_webhooks: Arc::new(notification_webhooks),
-            notification_provider_administration: Arc::new(notification_provider_administration),
             fulfillment_management: Arc::new(fulfillment_management),
             shipping_management: Arc::new(shipping_management),
             shipping_provider_administration: Arc::new(shipping_provider_administration),
@@ -464,9 +443,6 @@ pub fn router(state: ApiState) -> Router {
             store_administration: state.store_administration.clone(),
             payment_service: state.payment_service.clone(),
             payment_provider_administration: state.payment_provider_administration.clone(),
-            notification_provider_administration: state
-                .notification_provider_administration
-                .clone(),
             media_administration: state.media_administration.clone(),
             catalog_localization: state.catalog_localization.clone(),
             review_administration: state.review_administration.clone(),
@@ -482,7 +458,6 @@ pub fn router(state: ApiState) -> Router {
         .nest("/health", health::routes())
         .nest("/identity/v1", auth::routes())
         .merge(payment::routes())
-        .merge(notification::routes())
         .nest("/store/v1", storefront::routes())
         .nest("/store/v1", collection::storefront_routes())
         .nest("/store/v1", review::storefront_routes())
@@ -535,7 +510,6 @@ mod tests {
             google_client_id: Some("test-google-client".into()),
             apple_client_id: None,
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
-            resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),

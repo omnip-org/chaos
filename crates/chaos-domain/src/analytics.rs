@@ -151,7 +151,7 @@ impl TrafficAttribution {
 pub struct AnalyticsSettings {
     collection_enabled: bool,
     browser_collection_mode: BrowserCollectionMode,
-    meta_reporting_enabled: bool,
+    provider_reporting_enabled: bool,
     identity_linking_enabled: bool,
     raw_event_retention_days: u16,
 }
@@ -160,7 +160,7 @@ impl AnalyticsSettings {
     pub fn new(
         collection_enabled: bool,
         browser_collection_mode: BrowserCollectionMode,
-        meta_reporting_enabled: bool,
+        provider_reporting_enabled: bool,
         identity_linking_enabled: bool,
         raw_event_retention_days: u16,
     ) -> Result<Self, DomainError> {
@@ -173,7 +173,7 @@ impl AnalyticsSettings {
         Ok(Self {
             collection_enabled,
             browser_collection_mode,
-            meta_reporting_enabled,
+            provider_reporting_enabled,
             identity_linking_enabled,
             raw_event_retention_days,
         })
@@ -183,7 +183,7 @@ impl AnalyticsSettings {
         Self {
             collection_enabled: true,
             browser_collection_mode: BrowserCollectionMode::OptOut,
-            meta_reporting_enabled: false,
+            provider_reporting_enabled: false,
             identity_linking_enabled: false,
             raw_event_retention_days: DEFAULT_RAW_EVENT_RETENTION_DAYS,
         }
@@ -197,8 +197,8 @@ impl AnalyticsSettings {
         self.browser_collection_mode
     }
 
-    pub const fn meta_reporting_enabled(self) -> bool {
-        self.meta_reporting_enabled
+    pub const fn provider_reporting_enabled(self) -> bool {
+        self.provider_reporting_enabled
     }
 
     pub const fn identity_linking_enabled(self) -> bool {
@@ -632,7 +632,7 @@ mod tests {
             default.browser_collection_mode(),
             BrowserCollectionMode::OptOut
         );
-        assert!(!default.meta_reporting_enabled());
+        assert!(!default.provider_reporting_enabled());
         assert!(!default.identity_linking_enabled());
         assert_eq!(default.raw_event_retention_days(), 30);
         assert!(
