@@ -947,7 +947,7 @@
       "CartLine": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["product_id", "product_variant_id", "product_title", "variant_title", "requires_shipping", "track_inventory", "quantity", "unit_price_amount_minor", "subtotal_amount_minor", "tax_inclusive"],
+        "required": ["product_id", "product_variant_id", "product_title", "variant_title", "requires_shipping", "track_inventory", "quantity", "unit_price_amount_minor", "subtotal_amount_minor", "tax_inclusive", "media"],
         "properties": {
           "product_id": { "type": "string", "format": "uuid" },
           "product_variant_id": { "type": "string", "format": "uuid" },
@@ -959,7 +959,8 @@
           "quantity": { "type": "integer", "format": "int32", "minimum": 1, "maximum": 999 },
           "unit_price_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
           "subtotal_amount_minor": { "type": "integer", "format": "int64", "minimum": 0 },
-          "tax_inclusive": { "type": "boolean" }
+          "tax_inclusive": { "type": "boolean" },
+          "media": { "type": "array", "items": { "$ref": "#/components/schemas/ProductMedia" } }
         }
       },
       "Cart": {
@@ -1313,7 +1314,11 @@
         "additionalProperties": false,
         "required": ["provider"],
         "properties": {
-          "provider": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "provider": {
+            "type": "string",
+            "enum": ["stripe_checkout"],
+            "description": "The only payment provider supported by this deployment."
+          },
           "return_url": {
             "type": "string",
             "format": "uri",
@@ -1328,7 +1333,10 @@
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "order_id": { "type": "string", "format": "uuid" },
-          "provider": { "type": "string" },
+          "provider": {
+            "type": "string",
+            "enum": ["stripe_checkout"]
+          },
           "amount_minor": { "type": "integer", "format": "int64", "minimum": 1 },
           "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
           "status": { "type": "string", "enum": ["pending", "authorized", "captured", "failed", "cancelled"] },
@@ -1347,17 +1355,19 @@
       "PaymentClientAction": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["provider", "type", "public_key", "client_token", "account_reference"],
+        "required": ["provider", "type", "public_key", "client_token"],
         "properties": {
-          "provider": { "type": "string" },
+          "provider": {
+            "type": "string",
+            "enum": ["stripe_checkout"]
+          },
           "type": {
             "type": "string",
             "enum": ["confirm_payment", "mount_embedded_checkout"],
             "description": "confirm_payment: client_token is a PaymentIntent client secret for Stripe.js/Elements confirmation. mount_embedded_checkout: client_token is an Embedded Checkout Session client secret."
           },
           "public_key": { "type": "string", "minLength": 1 },
-          "client_token": { "type": "string", "minLength": 1 },
-          "account_reference": { "type": "string", "minLength": 1 }
+          "client_token": { "type": "string", "minLength": 1 }
         }
       },
       "PaymentClientActionEnvelope": {

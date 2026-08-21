@@ -38,11 +38,9 @@ export class PaymentsResource {
   /**
    * Returns short-lived provider client handoff material.
    *
-   * type: "confirm_payment" — client_token is a PaymentIntent client secret.
-   * Never log, cache, or place it in a URL.
-   *
-   * type: "mount_embedded_checkout" — client_token is an Embedded Checkout
-   * Session client secret. Never log, cache, or place it in a URL.
+   * For the current `stripe_checkout` provider, type is
+   * `mount_embedded_checkout` and client_token is an Embedded Checkout Session
+   * client secret. Never log, cache, or place it in a URL.
    */
   getClientAction(paymentAttemptId: string): Promise<DataEnvelope<PaymentClientAction>> {
     return this.client.request(`/payment-attempts/${encodeURIComponent(paymentAttemptId)}/client-action`, {

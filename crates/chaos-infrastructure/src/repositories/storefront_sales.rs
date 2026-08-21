@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
@@ -5,7 +7,8 @@ use chaos_application::{
     ports::{
         CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
         CheckoutLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
-        OrderTrackingSession, OrderTransitionItem, ShopperActor, StorefrontSalesRepository,
+        OrderTrackingSession, OrderTransitionItem, ShopperActor, StorefrontMediaAsset,
+        StorefrontSalesRepository,
     },
 };
 use chaos_domain::{
@@ -118,6 +121,16 @@ type CartLineRow = (
     i32,
     i64,
     bool,
+);
+type CartMediaRow = (
+    Uuid,
+    Uuid,
+    Option<Uuid>,
+    String,
+    String,
+    String,
+    i16,
+    String,
 );
 type CheckoutHeaderRow = (
     Uuid,
@@ -1304,9 +1317,10 @@ async fn load_cart(
     let locale = parse_locale(&row.4)?;
     let status = CartStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?;
     let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
+    let media = load_cart_media(transaction, actor, &locale, &lines).await?;
     let items = lines
         .into_iter()
-        .map(|line| cart_line_item(line, currency))
+        .map(|line| cart_line_item(line, currency, &media))
         .collect::<Result<Vec<_>, _>>()?;
     let subtotal = items
         .iter()
@@ -1326,6 +1340,65 @@ async fn load_cart(
         created_at: row.7,
         updated_at: row.8,
     }))
+}
+
+async fn load_cart_media(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    locale: &Locale,
+    lines: &[CartLineRow],
+) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
+    let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();
+    if product_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let (exact_locale, language_locale) = translation_locales(transaction, actor, locale).await?;
+    let rows = sqlx::query_as::<_, CartMediaRow>(
+        "SELECT media.product_id, media.id, media.product_variant_id, media.media_type, \
+                media.media_kind::text, \
+                COALESCE(\
+                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
+                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
+                       AND translation.media_asset_id = media.id AND translation.locale = $3 LIMIT 1), \
+                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
+                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
+                       AND translation.media_asset_id = media.id AND translation.locale = $4 LIMIT 1), \
+                    media.alt_text), \
+                media.position, media.public_url \
+         FROM commerce.media_assets AS media \
+         WHERE media.store_id = $1 AND media.product_id = ANY($2) AND media.status = 'ready' \
+         ORDER BY media.product_id, media.position, media.id",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(&product_ids)
+    .bind(exact_locale.as_deref())
+    .bind(language_locale.as_deref())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let mut media = HashMap::new();
+    for row in rows {
+        let kind = match row.4.as_str() {
+            "image" => chaos_domain::catalog::MediaKind::Image,
+            "video" => chaos_domain::catalog::MediaKind::Video,
+            _ => return Err(corrupt_sales_state()),
+        };
+        media
+            .entry(row.0)
+            .or_insert_with(Vec::new)
+            .push(StorefrontMediaAsset {
+                id: chaos_domain::catalog::MediaAssetId::from_uuid(row.1),
+                product_variant_id: row
+                    .2
+                    .map(chaos_domain::catalog::ProductVariantId::from_uuid),
+                media_type: row.3,
+                kind,
+                alt_text: row.5,
+                position: u16::try_from(row.6).map_err(unexpected_conversion)?,
+                url: row.7,
+            });
+    }
+    Ok(media)
 }
 
 async fn load_cart_line_rows(
@@ -1350,6 +1423,7 @@ async fn load_cart_line_rows(
 fn cart_line_item(
     row: CartLineRow,
     currency: CurrencyCode,
+    media: &HashMap<Uuid, Vec<StorefrontMediaAsset>>,
 ) -> Result<CartLineItem, ApplicationError> {
     let quantity = u32::try_from(row.7).map_err(unexpected_conversion)?;
     let subtotal = Money::new(row.8, currency).checked_mul(u64::from(quantity))?;
@@ -1365,6 +1439,7 @@ fn cart_line_item(
         unit_price_amount_minor: row.8,
         subtotal_amount_minor: subtotal.amount_minor(),
         tax_inclusive: row.9,
+        media: media.get(&row.0).cloned().unwrap_or_default(),
     })
 }
 
@@ -2585,6 +2660,19 @@ struct CartLineSnapshot {
     unit_price_amount_minor: i64,
     subtotal_amount_minor: i64,
     tax_inclusive: bool,
+    #[serde(default)]
+    media: Vec<CartLineMediaSnapshot>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CartLineMediaSnapshot {
+    id: Uuid,
+    product_variant_id: Option<Uuid>,
+    media_type: String,
+    kind: String,
+    alt_text: String,
+    position: u16,
+    url: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2782,7 +2870,11 @@ fn replay_cart(value: Value) -> Result<CartDetail, ApplicationError> {
         locale: parse_locale(&snapshot.locale)?,
         status: CartStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
         version: snapshot.version,
-        lines: snapshot.lines.into_iter().map(CartLineItem::from).collect(),
+        lines: snapshot
+            .lines
+            .into_iter()
+            .map(CartLineItem::try_from)
+            .collect::<Result<Vec<_>, _>>()?,
         subtotal_amount_minor: snapshot.subtotal_amount_minor,
         created_at: parse_time(&snapshot.created_at)?,
         updated_at: parse_time(&snapshot.updated_at)?,
@@ -3208,13 +3300,28 @@ impl From<&CartLineItem> for CartLineSnapshot {
             unit_price_amount_minor: value.unit_price_amount_minor,
             subtotal_amount_minor: value.subtotal_amount_minor,
             tax_inclusive: value.tax_inclusive,
+            media: value
+                .media
+                .iter()
+                .map(|media| CartLineMediaSnapshot {
+                    id: media.id.as_uuid(),
+                    product_variant_id: media.product_variant_id.map(|id| id.as_uuid()),
+                    media_type: media.media_type.clone(),
+                    kind: media.kind.as_str().into(),
+                    alt_text: media.alt_text.clone(),
+                    position: media.position,
+                    url: media.url.clone(),
+                })
+                .collect(),
         }
     }
 }
 
-impl From<CartLineSnapshot> for CartLineItem {
-    fn from(value: CartLineSnapshot) -> Self {
-        Self {
+impl TryFrom<CartLineSnapshot> for CartLineItem {
+    type Error = ApplicationError;
+
+    fn try_from(value: CartLineSnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
             product_id: ProductId::from_uuid(value.product_id),
             product_variant_id: ProductVariantId::from_uuid(value.product_variant_id),
             product_title: value.product_title,
@@ -3226,7 +3333,29 @@ impl From<CartLineSnapshot> for CartLineItem {
             unit_price_amount_minor: value.unit_price_amount_minor,
             subtotal_amount_minor: value.subtotal_amount_minor,
             tax_inclusive: value.tax_inclusive,
-        }
+            media: value
+                .media
+                .into_iter()
+                .map(|media| {
+                    let kind = match media.kind.as_str() {
+                        "image" => chaos_domain::catalog::MediaKind::Image,
+                        "video" => chaos_domain::catalog::MediaKind::Video,
+                        _ => return Err(corrupt_sales_state()),
+                    };
+                    Ok(StorefrontMediaAsset {
+                        id: chaos_domain::catalog::MediaAssetId::from_uuid(media.id),
+                        product_variant_id: media
+                            .product_variant_id
+                            .map(chaos_domain::catalog::ProductVariantId::from_uuid),
+                        media_type: media.media_type,
+                        kind,
+                        alt_text: media.alt_text,
+                        position: media.position,
+                        url: media.url,
+                    })
+                })
+                .collect::<Result<Vec<_>, ApplicationError>>()?,
+        })
     }
 }
 

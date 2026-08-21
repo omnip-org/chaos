@@ -109,6 +109,8 @@ export interface CartLine {
   unit_price_amount_minor: number;
   subtotal_amount_minor: number;
   tax_inclusive: boolean;
+  /** Current ready catalog media for storefront presentation. */
+  media: ProductMedia[];
 }
 
 export interface Cart {
@@ -326,7 +328,8 @@ export interface Customer {
 }
 
 export interface CreatePaymentAttemptRequest {
-  provider: string;
+  /** The only payment provider supported by the current deployment. */
+  provider: "stripe_checkout";
   /** Required for stripe_checkout. HTTPS is required except on loopback hosts. */
   return_url?: string;
 }
@@ -334,7 +337,7 @@ export interface CreatePaymentAttemptRequest {
 export interface PaymentAttempt {
   id: UUID;
   order_id: UUID;
-  provider: string;
+  provider: "stripe_checkout";
   amount_minor: number;
   currency: CurrencyCode;
   status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
@@ -345,7 +348,7 @@ export interface PaymentAttempt {
 }
 
 export interface PaymentClientAction {
-  provider: string;
+  provider: "stripe_checkout";
   /**
    * "confirm_payment": client_token is a PaymentIntent client secret for
    * Stripe.js/Elements confirmation.
@@ -355,7 +358,6 @@ export interface PaymentClientAction {
   type: "confirm_payment" | "mount_embedded_checkout";
   public_key: string;
   client_token: string;
-  account_reference: string;
 }
 
 // Envelopes — every Store API response wraps its payload in { data } (and

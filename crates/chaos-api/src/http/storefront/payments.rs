@@ -251,7 +251,11 @@ fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CreateAttemptBody, validate_return_url};
+    use chaos_application::ports::PaymentClientAction;
+    use secrecy::SecretString;
+    use serde_json::json;
+
+    use super::{CreateAttemptBody, client_action_data, validate_return_url};
 
     #[test]
     fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
@@ -282,6 +286,26 @@ mod tests {
                 return_url: None,
             })
             .is_err()
+        );
+    }
+
+    #[test]
+    fn embedded_checkout_client_action_has_no_connect_account_reference() {
+        let action = client_action_data(PaymentClientAction {
+            provider: "stripe_checkout".into(),
+            kind: "mount_embedded_checkout",
+            public_key: SecretString::from("pk_test_stripe"),
+            client_token: SecretString::from("cs_test_secret"),
+        });
+
+        assert_eq!(
+            serde_json::to_value(action).unwrap(),
+            json!({
+                "provider": "stripe_checkout",
+                "type": "mount_embedded_checkout",
+                "public_key": "pk_test_stripe",
+                "client_token": "cs_test_secret",
+            })
         );
     }
 }

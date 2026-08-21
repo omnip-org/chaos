@@ -8,7 +8,7 @@ use chaos_application::{
     ApplicationError,
     ports::{
         CartDetail, CartLineItem, CheckoutDetail, CheckoutLineItem, IdempotencyRequest,
-        OrderDetail, OrderLineItem,
+        OrderDetail, OrderLineItem, StorefrontMediaAsset,
     },
     sales::{
         CheckoutContactInput, CreateCartInput, CreateCheckoutInput, CreateOrderInput,
@@ -153,6 +153,19 @@ struct CartLineData {
     unit_price_amount_minor: i64,
     subtotal_amount_minor: i64,
     tax_inclusive: bool,
+    media: Vec<CartMediaData>,
+}
+
+#[derive(Serialize)]
+struct CartMediaData {
+    id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product_variant_id: Option<Uuid>,
+    media_type: String,
+    kind: &'static str,
+    alt_text: String,
+    position: u16,
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -701,6 +714,19 @@ fn cart_line_data(line: CartLineItem) -> CartLineData {
         unit_price_amount_minor: line.unit_price_amount_minor,
         subtotal_amount_minor: line.subtotal_amount_minor,
         tax_inclusive: line.tax_inclusive,
+        media: line.media.into_iter().map(cart_media_data).collect(),
+    }
+}
+
+fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
+    CartMediaData {
+        id: media.id.as_uuid(),
+        product_variant_id: media.product_variant_id.map(|id| id.as_uuid()),
+        media_type: media.media_type,
+        kind: media.kind.as_str(),
+        alt_text: media.alt_text,
+        position: media.position,
+        url: media.url,
     }
 }
 

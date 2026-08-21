@@ -218,6 +218,70 @@ test("catalog.listProducts forwards query parameters", async () => {
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
 });
 
+test("payments use the shopper session and expose the direct Stripe Checkout action", async () => {
+  const requests: Array<{ url: string; method: string; headers: Headers; body: string | undefined }> = [];
+  let sequence = 0;
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => `id-${++sequence}`,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({
+        url,
+        method: init.method ?? "GET",
+        headers: new Headers(init.headers),
+        body: typeof init.body === "string" ? init.body : undefined,
+      });
+      if (url.endsWith("/shopper-sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/payment-attempts")) {
+        return jsonResponse(201, {
+          data: {
+            id: "attempt-1",
+            order_id: "order-1",
+            provider: "stripe_checkout",
+            amount_minor: 1299,
+            currency: "USD",
+            status: "pending",
+            created_at: "2026-08-21T00:00:00Z",
+            updated_at: "2026-08-21T00:00:00Z",
+          },
+        });
+      }
+      return jsonResponse(200, {
+        data: {
+          provider: "stripe_checkout",
+          type: "mount_embedded_checkout",
+          public_key: "pk_test_stripe",
+          client_token: "cs_test_secret",
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const attempt = await client.payments.createAttempt("order-1", {
+    provider: "stripe_checkout",
+    return_url: "https://shop.example.com/checkout/success",
+  });
+  const action = await client.payments.getClientAction(attempt.data.id);
+
+  assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
+  assert.equal(requests[1]?.headers.get("idempotency-key"), "id-1");
+  assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
+    provider: "stripe_checkout",
+    return_url: "https://shop.example.com/checkout/success",
+  });
+  assert.deepEqual(action.data, {
+    provider: "stripe_checkout",
+    type: "mount_embedded_checkout",
+    public_key: "pk_test_stripe",
+    client_token: "cs_test_secret",
+  });
+  assert.equal(requests[2]?.headers.get("x-chaos-shopper-token"), "shopper-token");
+});
+
 test("semantic SDK operations record conversion events only after successful responses", async () => {
   const recorded: Array<[string, unknown]> = [];
   const client = createStorefrontClient({

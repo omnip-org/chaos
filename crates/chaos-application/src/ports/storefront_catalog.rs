@@ -65,6 +65,7 @@ pub struct StorefrontCatalogProduct {
     pub metadata: Option<serde_json::Value>,
 }
 
+#[derive(Clone)]
 pub struct StorefrontMediaAsset {
     pub id: chaos_domain::catalog::MediaAssetId,
     pub product_variant_id: Option<ProductVariantId>,

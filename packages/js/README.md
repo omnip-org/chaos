@@ -62,6 +62,17 @@ const { data: checkout } = await chaos.checkout.create(cart.id, {
 });
 const { data: order } = await chaos.checkout.createOrder(checkout.id);
 
+// Stripe Embedded Checkout — amount and currency are taken from the immutable
+// Chaos Order. The return URL must be HTTPS outside local loopback development.
+const { data: attempt } = await chaos.payments.createAttempt(order.id, {
+  provider: "stripe_checkout",
+  return_url: "https://shop.example.com/checkout/success?order_id=" + order.id,
+});
+const { data: action } = await chaos.payments.getClientAction(attempt.id);
+// Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
+// Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
+// a Stripe-Account header or an account_reference field.
+
 // PageView, ViewContent, Search, AddToCart, InitiateCheckout, and active
 // ViewDuration are recorded by the SDK operations above. After the server
 // confirms payment, project Purchase with authoritative Order data:

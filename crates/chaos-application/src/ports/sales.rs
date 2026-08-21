@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest, MachineActor, ShopperActor};
+use super::{AdminActor, IdempotencyRequest, MachineActor, ShopperActor, StorefrontMediaAsset};
 
 pub struct CartLineItem {
     pub product_id: ProductId,
@@ -30,6 +30,8 @@ pub struct CartLineItem {
     pub unit_price_amount_minor: i64,
     pub subtotal_amount_minor: i64,
     pub tax_inclusive: bool,
+    /// Current ready catalog media for storefront presentation only.
+    pub media: Vec<StorefrontMediaAsset>,
 }
 
 pub struct CartDetail {
