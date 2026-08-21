@@ -2,6 +2,8 @@ import type { ChaosStorefrontClient } from "../client.js";
 import type { Cart, CreateCartRequest, DataEnvelope, SetCartLineRequest, ShippingOption } from "../types.js";
 
 export class CartResource {
+  private readonly mutationQueues = new Map<string, Promise<unknown>>();
+
   constructor(private readonly client: ChaosStorefrontClient) {}
 
   create(body: CreateCartRequest = {}, idempotencyKey?: string): Promise<DataEnvelope<Cart>> {
@@ -26,16 +28,9 @@ export class CartResource {
     body: SetCartLineRequest,
     idempotencyKey?: string,
   ): Promise<DataEnvelope<Cart>> {
-    const response = await this.client.request<DataEnvelope<Cart>>(
-      `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
-      {
-        method: "PUT",
-        body,
-        requiresShopperToken: true,
-        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
-      },
+    return this.enqueueMutation(cartId, () =>
+      this.setLineRequest(cartId, productVariantId, body, idempotencyKey),
     );
-    return response;
   }
 
   /** Adds a quantity to a Cart line and records one accurate AddToCart event after success. */
@@ -48,26 +43,30 @@ export class CartResource {
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive integer");
     }
-    const current = await this.get(cartId);
-    const existing = current.data.lines.find((line) => line.product_variant_id === productVariantId);
-    const response = await this.setLine(
-      cartId,
-      productVariantId,
-      { quantity: (existing?.quantity ?? 0) + quantity },
-      idempotencyKey,
-    );
-    this.client.analytics?.addToCart({ cartId, productVariantId, quantity });
-    return response;
+    return this.enqueueMutation(cartId, async () => {
+      const current = await this.get(cartId);
+      const existing = current.data.lines.find((line) => line.product_variant_id === productVariantId);
+      const response = await this.setLineRequest(
+        cartId,
+        productVariantId,
+        { quantity: (existing?.quantity ?? 0) + quantity },
+        idempotencyKey,
+      );
+      this.client.analytics?.addToCart({ cartId, productVariantId, quantity });
+      return response;
+    });
   }
 
   removeLine(cartId: string, productVariantId: string, idempotencyKey?: string): Promise<DataEnvelope<Cart>> {
-    return this.client.request(
-      `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
-      {
-        method: "DELETE",
-        requiresShopperToken: true,
-        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
-      },
+    return this.enqueueMutation(cartId, () =>
+      this.client.request(
+        `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
+        {
+          method: "DELETE",
+          requiresShopperToken: true,
+          idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
+        },
+      ),
     );
   }
 
@@ -77,5 +76,32 @@ export class CartResource {
       body: { destination_country: destinationCountry },
       requiresShopperToken: true,
     });
+  }
+
+  private setLineRequest(
+    cartId: string,
+    productVariantId: string,
+    body: SetCartLineRequest,
+    idempotencyKey?: string,
+  ): Promise<DataEnvelope<Cart>> {
+    return this.client.request<DataEnvelope<Cart>>(
+      `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
+      {
+        method: "PUT",
+        body,
+        requiresShopperToken: true,
+        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
+      },
+    );
+  }
+
+  private enqueueMutation<T>(cartId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationQueues.get(cartId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    const settled = current.finally(() => {
+      if (this.mutationQueues.get(cartId) === settled) this.mutationQueues.delete(cartId);
+    });
+    this.mutationQueues.set(cartId, settled);
+    return settled;
   }
 }

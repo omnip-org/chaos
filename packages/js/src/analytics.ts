@@ -149,8 +149,10 @@ export class ChaosStorefrontAnalytics {
     this.now = options.now ?? Date.now;
     this.monotonicNow =
       options.monotonicNow ?? globalThis.performance?.now.bind(globalThis.performance) ?? this.now;
-    this.setIntervalImpl = options.setInterval ?? globalThis.setInterval;
-    this.clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
+    const setIntervalImpl = options.setInterval ?? globalThis.setInterval;
+    const clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
+    this.setIntervalImpl = setIntervalImpl.bind(globalThis);
+    this.clearIntervalImpl = clearIntervalImpl.bind(globalThis);
     this.flushIntervalMs = options.flushIntervalMs ?? 15_000;
     this.privacyMode = options.privacyMode ?? "opt_out";
     if (!this.fetchImpl || !this.randomUUID || !this.documentRef || !this.windowRef) {
@@ -231,7 +233,12 @@ export class ChaosStorefrontAnalytics {
     if (effectiveAnalyticsStorage) {
       this.enableCollectionStorage();
     }
-    this.providers.setConsent(this.explicitConsent);
+    try {
+      this.providers.setConsent(this.explicitConsent);
+    } catch {
+      // Provider scripts are optional integrations and must never block the
+      // first-party collector or the commerce request that triggered it.
+    }
     this.activeStartedAt = this.isActive() && effectiveAnalyticsStorage ? this.monotonicNow() : null;
   }
 
@@ -387,7 +394,12 @@ export class ChaosStorefrontAnalytics {
     if (!this.collectionEnabled()) return null;
     const storageKey = `${this.providerEventStoragePrefix}${eventName}.${eventId}`;
     if (this.storage?.getItem(storageKey)) return null;
-    this.providers.track(eventName, eventId, properties);
+    try {
+      this.providers.track(eventName, eventId, properties);
+    } catch {
+      // Browser provider failures are best-effort; keep the first-party
+      // conversion available to the collector.
+    }
     this.storage?.setItem(storageKey, new Date(this.now()).toISOString());
     return eventId;
   }
@@ -445,7 +457,7 @@ export class ChaosStorefrontAnalytics {
       this.persistQueue();
       return await response.json();
     } catch (error) {
-      if (this.consent.analyticsStorage) {
+      if (this.collectionEnabled()) {
         this.queue.unshift(...batch);
         this.trimQueue();
       }
@@ -475,7 +487,12 @@ export class ChaosStorefrontAnalytics {
         : {}),
       properties,
     });
-    this.providers.track(eventName, eventId, properties);
+    try {
+      this.providers.track(eventName, eventId, properties);
+    } catch {
+      // Browser provider failures must not turn a successful API operation
+      // into a failed commerce operation.
+    }
     this.trimQueue();
     this.persistQueue();
     if (this.queue.length >= MAX_BATCH_SIZE) {

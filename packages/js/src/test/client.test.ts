@@ -26,6 +26,18 @@ function jsonResponse(status: number, body: unknown): Response {
   } as unknown as Response;
 }
 
+test("does not construct browser analytics during SSR", () => {
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    baseUrl: "https://shop.example.com/store/v1",
+    storage: null,
+    randomUUID: () => "idempotency-key",
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+
+  assert.equal(client.analytics, undefined);
+});
+
 test("acquires a shopper session lazily on first cart mutation and reuses it", async () => {
   const requests: Array<{ url: string; headers: Record<string, string> }> = [];
   let sequence = 0;
@@ -55,12 +67,18 @@ test("acquires a shopper session lazily on first cart mutation and reuses it", a
   assert.match(requests[0]!.url, /\/shopper-sessions$/);
   assert.equal(requests[1]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
   assert.equal(requests[2]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
-  assert.equal(storage.getItem("chaos.storefront.shopper_token"), "shopper-token-abc");
+  assert.equal(client.getShopperToken(), "shopper-token-abc");
 });
 
 test("reuses a shopper token persisted from a previous session", async () => {
   const storage = new MemoryStorage();
-  storage.setItem("chaos.storefront.shopper_token", "existing-token");
+  const firstClient = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage,
+    analytics: false,
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  firstClient.setShopperToken("existing-token");
   const requests: string[] = [];
   const client = createStorefrontClient({
     publishableKey: "pk_test",
@@ -76,6 +94,80 @@ test("reuses a shopper token persisted from a previous session", async () => {
 
   assert.equal(requests.length, 1);
   assert.doesNotMatch(requests[0]!, /shopper-sessions/);
+});
+
+test("explicit shopper sessions update the client token", async () => {
+  const storage = new MemoryStorage();
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage,
+    analytics: false,
+    fetch: (async () => jsonResponse(201, { data: { shopper_token: "manual-token" } })) as unknown as typeof fetch,
+  });
+
+  await client.shopperSession.create();
+
+  assert.equal(client.getShopperToken(), "manual-token");
+});
+
+test("refreshes a stale shopper token once and retries the request", async () => {
+  const storage = new MemoryStorage();
+  const requests: Array<{ url: string; token: string | undefined }> = [];
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage,
+    analytics: false,
+    fetch: (async (url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      requests.push({ url, token: headers.get("x-chaos-shopper-token") ?? undefined });
+      if (url.endsWith("/carts/cart-1")) {
+        if (requests.at(-1)?.token === "stale-token") return jsonResponse(401, { error: { code: "unauthorized" } });
+        return jsonResponse(200, { data: { id: "cart-1", lines: [] } });
+      }
+      return jsonResponse(201, { data: { shopper_token: "fresh-token" } });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("stale-token");
+
+  await client.cart.get("cart-1");
+
+  assert.deepEqual(
+    requests.map((request) => request.token),
+    ["stale-token", undefined, "fresh-token"],
+  );
+  assert.equal(client.getShopperToken(), "fresh-token");
+});
+
+test("serializes concurrent addLine calls for one cart", async () => {
+  let quantity = 1;
+  const client = createStorefrontClient({
+    publishableKey: "pk_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => "idempotency-key",
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper-sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (init.method === "GET") {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return jsonResponse(200, {
+          data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity }] },
+        });
+      }
+      quantity = JSON.parse(String(init.body)).quantity;
+      return jsonResponse(200, {
+        data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity }] },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  await Promise.all([
+    client.cart.addLine("cart-1", "variant-1"),
+    client.cart.addLine("cart-1", "variant-1"),
+  ]);
+
+  assert.equal(quantity, 3);
 });
 
 test("maps non-2xx responses to a typed ChaosApiError with server details", async () => {

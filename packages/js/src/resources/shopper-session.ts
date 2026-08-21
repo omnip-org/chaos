@@ -10,7 +10,11 @@ export class ShopperSessionResource {
    * this directly — cart.create()/setLine() etc. acquire one automatically
    * the first time it's needed.
    */
-  create(): Promise<DataEnvelope<ShopperSession>> {
-    return this.client.request("/shopper-sessions", { method: "POST" });
+  async create(): Promise<DataEnvelope<ShopperSession>> {
+    const response = await this.client.request<DataEnvelope<ShopperSession>>("/shopper-sessions", {
+      method: "POST",
+    });
+    this.client.setShopperToken(response.data.shopper_token);
+    return response;
   }
 }
