@@ -22,7 +22,6 @@ CREATE TYPE commerce.sales_channel_kind AS ENUM (
 
 CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
 
-CREATE TYPE commerce.store_locale_event_kind AS ENUM ('enabled', 'disabled', 'default_changed');
 
 CREATE TABLE commerce.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -81,28 +80,6 @@ CREATE TABLE commerce.store_locales (
     )
 );
 
-CREATE TABLE commerce.store_locale_events (
-    id                  UUID                             NOT NULL PRIMARY KEY,
-    store_id            UUID                             NOT NULL,
-    locale              VARCHAR(63)                      NOT NULL,
-    previous_locale     VARCHAR(63),
-    event_kind          commerce.store_locale_event_kind NOT NULL,
-    actor_user_id       UUID                             NOT NULL,
-    occurred_at         TIMESTAMPTZ                      NOT NULL,
-
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT store_locale_events_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-        AND (previous_locale IS NULL
-            OR previous_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
-    ),
-    CONSTRAINT store_locale_events_shape_check CHECK (
-        (event_kind = 'default_changed' AND previous_locale IS NOT NULL)
-        OR (event_kind <> 'default_changed' AND previous_locale IS NULL)
-    )
-);
 
 CREATE TABLE commerce.sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
@@ -190,9 +167,6 @@ CREATE INDEX store_memberships_user_idx
 CREATE INDEX stores_status_idx
     ON commerce.stores (status);
 
-CREATE INDEX store_locale_events_store_occurred_idx
-    ON commerce.store_locale_events (store_id, occurred_at, id);
-
 CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
     ON commerce.sales_channels (store_id)
     WHERE is_default;
@@ -273,7 +247,6 @@ ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.store_locales ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.store_locale_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
 
@@ -323,15 +296,6 @@ CREATE POLICY store_isolation ON commerce.store_locales
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.store_locale_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.store_currencies
     USING (
@@ -374,7 +338,6 @@ GRANT EXECUTE
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.store_locale_events FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
@@ -394,27 +357,15 @@ CREATE TYPE commerce.variant_status AS ENUM ('active', 'archived');
 
 CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
 
-CREATE TYPE commerce.collection_event_kind AS ENUM (
-    'created',
-    'updated',
-    'activated',
-    'archived',
-    'products_replaced',
-    'published',
-    'unpublished'
-);
 
 CREATE TYPE commerce.media_kind AS ENUM ('image', 'video');
 
 CREATE TYPE commerce.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
 
-CREATE TYPE commerce.media_event_kind AS ENUM ('created', 'ready', 'archived');
 
-CREATE TYPE commerce.translation_event_kind AS ENUM ('upserted', 'removed');
 
 CREATE TYPE commerce.review_status AS ENUM ('pending', 'approved', 'rejected');
 
-CREATE TYPE commerce.review_event_kind AS ENUM ('submitted', 'approved', 'rejected', 'reply_added');
 
 CREATE TABLE commerce.products (
     id                   UUID                       NOT NULL PRIMARY KEY,
@@ -573,22 +524,6 @@ CREATE TABLE commerce.product_variant_translations (
     )
 );
 
-CREATE TABLE commerce.product_translation_events (
-    id                  UUID                           NOT NULL PRIMARY KEY,
-    store_id            UUID                           NOT NULL,
-    product_id          UUID                           NOT NULL,
-    locale              VARCHAR(63)                    NOT NULL,
-    event_kind          commerce.translation_event_kind NOT NULL,
-    actor_user_id       UUID                           NOT NULL,
-    occurred_at         TIMESTAMPTZ                    NOT NULL,
-
-    FOREIGN KEY (store_id, product_id)
-        REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT product_translation_events_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    )
-);
 
 CREATE TABLE commerce.variant_selected_options (
     store_id             UUID    NOT NULL,
@@ -678,22 +613,6 @@ CREATE TABLE commerce.collection_translations (
     )
 );
 
-CREATE TABLE commerce.collection_translation_events (
-    id                  UUID                           NOT NULL PRIMARY KEY,
-    store_id            UUID                           NOT NULL,
-    collection_id       UUID                           NOT NULL,
-    locale              VARCHAR(63)                    NOT NULL,
-    event_kind          commerce.translation_event_kind NOT NULL,
-    actor_user_id       UUID                           NOT NULL,
-    occurred_at         TIMESTAMPTZ                    NOT NULL,
-
-    FOREIGN KEY (store_id, collection_id)
-        REFERENCES commerce.collections(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT collection_translation_events_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    )
-);
 
 CREATE TABLE commerce.collection_products (
     store_id             UUID        NOT NULL,
@@ -724,33 +643,6 @@ CREATE TABLE commerce.collection_publications (
         REFERENCES commerce.sales_channels(id) ON DELETE CASCADE
 );
 
-CREATE TABLE commerce.collection_events (
-    id                   UUID                           NOT NULL PRIMARY KEY,
-    store_id             UUID                           NOT NULL,
-    collection_id        UUID                           NOT NULL,
-    event_kind           commerce.collection_event_kind  NOT NULL,
-    actor_user_id        UUID                           NOT NULL,
-    sales_channel_id     UUID,
-    product_count        INTEGER,
-    occurred_at          TIMESTAMPTZ                    NOT NULL,
-
-    FOREIGN KEY (store_id, collection_id)
-        REFERENCES commerce.collections(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
-    CONSTRAINT collection_events_product_count_check CHECK (
-        product_count IS NULL OR product_count BETWEEN 0 AND 1000
-    ),
-    CONSTRAINT collection_events_shape_check CHECK (
-        (event_kind = 'products_replaced' AND product_count IS NOT NULL
-            AND sales_channel_id IS NULL)
-        OR (event_kind IN ('published', 'unpublished') AND sales_channel_id IS NOT NULL
-            AND product_count IS NULL)
-        OR (event_kind IN ('created', 'updated', 'activated', 'archived')
-            AND sales_channel_id IS NULL AND product_count IS NULL)
-    )
-);
 
 CREATE TABLE commerce.media_assets (
     id                   UUID                        NOT NULL PRIMARY KEY,
@@ -844,41 +736,7 @@ CREATE TABLE commerce.media_asset_translations (
     )
 );
 
-CREATE TABLE commerce.media_translation_events (
-    id                  UUID                           NOT NULL PRIMARY KEY,
-    store_id            UUID                           NOT NULL,
-    product_id          UUID                           NOT NULL,
-    media_asset_id      UUID                           NOT NULL,
-    locale              VARCHAR(63)                    NOT NULL,
-    event_kind          commerce.translation_event_kind NOT NULL,
-    actor_user_id       UUID                           NOT NULL,
-    occurred_at         TIMESTAMPTZ                    NOT NULL,
 
-    FOREIGN KEY (store_id, media_asset_id)
-        REFERENCES commerce.media_assets(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, product_id)
-        REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT media_translation_events_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    )
-);
-
-CREATE TABLE commerce.media_events (
-    id                   UUID                      NOT NULL PRIMARY KEY,
-    store_id             UUID                      NOT NULL,
-    product_id           UUID                      NOT NULL,
-    media_asset_id       UUID                      NOT NULL,
-    event_kind           commerce.media_event_kind  NOT NULL,
-    actor_user_id        UUID                      NOT NULL,
-    occurred_at          TIMESTAMPTZ               NOT NULL,
-
-    FOREIGN KEY (store_id, media_asset_id)
-        REFERENCES commerce.media_assets(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, product_id)
-        REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id)
-);
 
 CREATE TABLE commerce.reviews (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -926,22 +784,6 @@ CREATE TABLE commerce.reviews (
     )
 );
 
-CREATE TABLE commerce.review_events (
-    id                   UUID                        NOT NULL PRIMARY KEY,
-    store_id             UUID                        NOT NULL,
-    review_id            UUID                        NOT NULL,
-    event_kind           commerce.review_event_kind   NOT NULL,
-    actor_user_id        UUID,
-    occurred_at          TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (store_id, review_id)
-        REFERENCES commerce.reviews(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
-    CONSTRAINT review_events_actor_shape_check CHECK (
-        (event_kind = 'submitted' AND actor_user_id IS NULL)
-        OR (event_kind IN ('approved', 'rejected', 'reply_added') AND actor_user_id IS NOT NULL)
-    )
-);
 
 CREATE INDEX products_store_status_created_idx
     ON commerce.products (store_id, status, created_at DESC, id DESC);
@@ -953,10 +795,6 @@ CREATE UNIQUE INDEX product_variants_store_sku_key
 CREATE INDEX product_variants_product_status_idx
     ON commerce.product_variants (store_id, product_id, status);
 
-CREATE INDEX product_translation_events_product_occurred_idx
-    ON commerce.product_translation_events (store_id, product_id, occurred_at, id
-    );
-
 CREATE INDEX product_publications_channel_product_idx
     ON commerce.product_publications (store_id,
         sales_channel_id,
@@ -967,19 +805,11 @@ CREATE INDEX collections_store_status_created_idx
     ON commerce.collections (store_id, status, created_at DESC, id DESC
     );
 
-CREATE INDEX collection_translation_events_collection_occurred_idx
-    ON commerce.collection_translation_events (store_id, collection_id, occurred_at, id
-    );
-
 CREATE INDEX collection_products_product_idx
     ON commerce.collection_products (store_id, product_id, collection_id);
 
 CREATE INDEX collection_publications_channel_collection_idx
     ON commerce.collection_publications (store_id, sales_channel_id, collection_id
-    );
-
-CREATE INDEX collection_events_collection_occurred_idx
-    ON commerce.collection_events (store_id, collection_id, occurred_at, id
     );
 
 CREATE UNIQUE INDEX media_assets_product_position_active_idx
@@ -990,23 +820,12 @@ CREATE INDEX media_assets_product_status_position_idx
     ON commerce.media_assets (store_id, product_id, status, position, id
     );
 
-CREATE INDEX media_translation_events_asset_occurred_idx
-    ON commerce.media_translation_events (store_id, media_asset_id, occurred_at, id
-    );
-
-CREATE INDEX media_events_asset_occurred_idx
-    ON commerce.media_events (store_id, product_id, media_asset_id, occurred_at, id
-    );
-
 CREATE INDEX reviews_product_status_idx
     ON commerce.reviews (store_id, product_id, status, created_at, id);
 
 CREATE INDEX reviews_parent_idx
     ON commerce.reviews (store_id, parent_review_id)
     WHERE parent_review_id IS NOT NULL;
-
-CREATE INDEX review_events_review_occurred_idx
-    ON commerce.review_events (store_id, review_id, occurred_at, id);
 
 ALTER TABLE commerce.products ENABLE ROW LEVEL SECURITY;
 
@@ -1020,7 +839,6 @@ ALTER TABLE commerce.product_variants ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.product_variant_translations ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.product_translation_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.variant_selected_options ENABLE ROW LEVEL SECURITY;
 
@@ -1030,25 +848,20 @@ ALTER TABLE commerce.collections ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_translations ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.collection_translation_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_products ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_publications ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.collection_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.media_assets ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.media_asset_translations ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.media_translation_events ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.media_events ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.review_events ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.products
     USING (
@@ -1110,15 +923,6 @@ CREATE POLICY store_isolation ON commerce.product_variant_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.product_translation_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.variant_selected_options
     USING (
@@ -1160,15 +964,6 @@ CREATE POLICY store_isolation ON commerce.collection_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.collection_translation_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.collection_products
     USING (
@@ -1190,15 +985,6 @@ CREATE POLICY store_isolation ON commerce.collection_publications
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.collection_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.media_assets
     USING (
@@ -1220,25 +1006,7 @@ CREATE POLICY store_isolation ON commerce.media_asset_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.media_translation_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
-CREATE POLICY store_isolation ON commerce.media_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.reviews
     USING (
@@ -1250,36 +1018,21 @@ CREATE POLICY store_isolation ON commerce.reviews
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.review_events
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.collection_events FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.collection_translation_events FROM chaos_runtime;
 
 REVOKE DELETE ON commerce.collections FROM chaos_runtime;
 
 REVOKE DELETE ON commerce.media_assets FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.media_events FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.media_translation_events FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.product_translation_events FROM chaos_runtime;
 
 REVOKE DELETE ON commerce.reviews FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE ON commerce.review_events FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
@@ -1291,7 +1044,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
-
 -- === Pricing ===
 
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
@@ -2867,7 +2619,6 @@ CREATE TABLE commerce.provider_accounts (
     store_id                   UUID        NOT NULL,
     provider                   TEXT        NOT NULL,
     display_name               TEXT        NOT NULL DEFAULT 'Payment provider',
-    external_account_reference TEXT        NOT NULL,
     credential_secret_reference TEXT,
     previous_credential_secret_reference TEXT,
     credential_rotation_expires_at TIMESTAMPTZ,
@@ -2891,7 +2642,6 @@ CREATE TABLE commerce.provider_accounts (
     UNIQUE (store_id, id),
     CONSTRAINT provider_accounts_store_provider_key
         UNIQUE (store_id, provider),
-    UNIQUE (provider, external_account_reference),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id),
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
@@ -2900,9 +2650,6 @@ CREATE TABLE commerce.provider_accounts (
     ),
     CONSTRAINT provider_accounts_display_name_length_check CHECK (
         length(trim(display_name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT provider_accounts_external_reference_length_check CHECK (
-        length(trim(external_account_reference)) BETWEEN 1 AND 255
     ),
     CONSTRAINT provider_accounts_credential_reference_check CHECK (
         credential_secret_reference IS NULL
@@ -3558,8 +3305,8 @@ AS $$
 $$;
 
 CREATE FUNCTION commerce.resolve_provider_account(
-    requested_provider                   TEXT,
-    requested_external_account_reference TEXT
+    requested_provider             TEXT,
+    requested_provider_account_id  UUID
 )
 RETURNS TABLE (
     provider_account_id UUID,
@@ -3571,58 +3318,55 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id
-    FROM commerce.provider_accounts AS account
-    WHERE account.provider = requested_provider
-      AND account.external_account_reference = requested_external_account_reference;
+      FROM commerce.provider_accounts AS account
+     WHERE account.provider = requested_provider
+       AND account.id = requested_provider_account_id
+       AND account.enabled;
 $$;
 
 CREATE FUNCTION commerce.resolve_provider_webhook_secret_references(
-    requested_provider                   TEXT,
-    requested_external_account_reference TEXT
+    requested_provider             TEXT,
+    requested_provider_account_id  UUID
 )
 RETURNS TABLE (
-    external_account_reference TEXT,
-    secret_reference           TEXT
+    provider_account_id UUID,
+    secret_reference    TEXT
 )
 LANGUAGE SQL
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT account.external_account_reference, candidate.secret_reference
-    FROM commerce.provider_accounts AS account
-    CROSS JOIN LATERAL (
-        VALUES
-            (account.webhook_secret_reference, 0),
-            (
-                CASE WHEN account.webhook_rotation_expires_at > CURRENT_TIMESTAMP
-                     THEN account.previous_webhook_secret_reference END,
-                1
-            )
-    ) AS candidate(secret_reference, priority)
-    WHERE account.provider = requested_provider
-      AND (
-          requested_external_account_reference IS NULL
-          OR account.external_account_reference = requested_external_account_reference
-    )
-      AND account.enabled
-      AND candidate.secret_reference IS NOT NULL
-    ORDER BY account.id, candidate.priority;
+    SELECT account.id, candidate.secret_reference
+      FROM commerce.provider_accounts AS account
+      CROSS JOIN LATERAL (
+          VALUES
+              (account.webhook_secret_reference, 0),
+              (
+                  CASE WHEN account.webhook_rotation_expires_at > CURRENT_TIMESTAMP
+                       THEN account.previous_webhook_secret_reference END,
+                  1
+              )
+      ) AS candidate(secret_reference, priority)
+     WHERE account.provider = requested_provider
+       AND account.id = requested_provider_account_id
+       AND account.enabled
+       AND candidate.secret_reference IS NOT NULL
+     ORDER BY candidate.priority;
 $$;
 
 CREATE FUNCTION commerce.claim_provider_readiness_checks(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
+    worker_id   UUID,
+    batch_size  INTEGER,
+    claimed_at  TIMESTAMPTZ,
     stale_before TIMESTAMPTZ
 )
 RETURNS TABLE (
-    provider_account_id UUID,
-    store_id UUID,
-    provider TEXT,
-    external_account_reference TEXT,
+    provider_account_id       UUID,
+    store_id                  UUID,
+    provider                  TEXT,
     credential_secret_reference TEXT,
-    attempts INTEGER
+    attempts                  INTEGER
 )
 LANGUAGE SQL
 VOLATILE
@@ -3648,18 +3392,18 @@ AS $$
         RETURNING account.id
     ), claimable AS (
         SELECT account.id
-        FROM commerce.provider_accounts AS account
-        WHERE account.enabled
-          AND account.credential_secret_reference IS NOT NULL
-          AND account.readiness_valid_until > claimed_at
-          AND account.readiness_reconcile_at <= claimed_at
-          AND (
-              account.readiness_locked_at IS NULL
-              OR account.readiness_locked_at <= stale_before
-          )
-        ORDER BY account.readiness_reconcile_at, account.id
-        FOR UPDATE SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
+          FROM commerce.provider_accounts AS account
+         WHERE account.enabled
+           AND account.credential_secret_reference IS NOT NULL
+           AND account.readiness_valid_until > claimed_at
+           AND account.readiness_reconcile_at <= claimed_at
+           AND (
+               account.readiness_locked_at IS NULL
+               OR account.readiness_locked_at <= stale_before
+           )
+         ORDER BY account.readiness_reconcile_at, account.id
+         FOR UPDATE SKIP LOCKED
+         LIMIT greatest(least(batch_size, 100), 1)
     )
     UPDATE commerce.provider_accounts AS account
        SET readiness_locked_by = worker_id,
@@ -3668,7 +3412,7 @@ AS $$
       FROM claimable
      WHERE account.id = claimable.id
     RETURNING account.id, account.store_id, account.provider,
-              account.external_account_reference, account.credential_secret_reference,
+              account.credential_secret_reference,
               account.readiness_reconcile_attempts;
 $$;
 
@@ -4248,66 +3992,6 @@ CREATE POLICY store_isolation ON commerce.return_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
--- === Notification Providers ===
-
-CREATE TABLE commerce.notification_provider_accounts (
-    id                          UUID        NOT NULL PRIMARY KEY,
-    store_id                    UUID        NOT NULL,
-    provider                    TEXT        NOT NULL,
-    display_name                TEXT        NOT NULL,
-    sender                      TEXT        NOT NULL,
-    credential_secret_reference TEXT        NOT NULL,
-    webhook_secret_reference    TEXT        NOT NULL,
-    enabled                     BOOLEAN     NOT NULL DEFAULT false,
-    created_by_user_id          UUID        NOT NULL,
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, provider),
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT notification_provider_accounts_provider_check CHECK (provider = 'resend'),
-    CONSTRAINT notification_provider_accounts_display_name_check CHECK (
-        length(trim(display_name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT notification_provider_accounts_sender_check CHECK (
-        length(sender) BETWEEN 3 AND 320 AND sender LIKE '%@%'
-    ),
-    CONSTRAINT notification_provider_accounts_credential_reference_check CHECK (
-        length(credential_secret_reference) BETWEEN 8 AND 32768
-    ),
-    CONSTRAINT notification_provider_accounts_webhook_reference_check CHECK (
-        length(webhook_secret_reference) BETWEEN 8 AND 32768
-    )
-);
-
-CREATE INDEX notification_provider_accounts_store_enabled_idx
-    ON commerce.notification_provider_accounts (store_id, provider)
-    WHERE enabled;
-
-ALTER TABLE commerce.notification_provider_accounts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.notification_provider_accounts FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY store_isolation ON commerce.notification_provider_accounts
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-CREATE FUNCTION commerce.resolve_notification_webhook(provider_account_id UUID)
-RETURNS TABLE (store_id UUID, provider TEXT, webhook_secret_reference TEXT)
-LANGUAGE SQL
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT account.store_id, account.provider, account.webhook_secret_reference
-     FROM commerce.notification_provider_accounts AS account
-     WHERE account.id = provider_account_id;
-$$;
-
-REVOKE ALL ON FUNCTION commerce.resolve_notification_webhook(UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION commerce.resolve_notification_webhook(UUID) TO chaos_runtime;
-
 COMMENT ON INDEX commerce.checkouts_expiry_claim_idx IS
     'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
 
@@ -4355,9 +4039,9 @@ REVOKE UPDATE, DELETE
 REVOKE UPDATE, DELETE
     ON commerce.order_shipping_selections FROM chaos_runtime;
 
-REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION commerce.claim_provider_readiness_checks(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
@@ -4367,10 +4051,10 @@ REVOKE ALL ON FUNCTION commerce.finish_provider_readiness_check(
     UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT
 ) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, TEXT) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) TO chaos_runtime;
 
 GRANT EXECUTE
-    ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, TEXT) TO chaos_runtime;
+    ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) TO chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION commerce.claim_provider_readiness_checks(
     UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
