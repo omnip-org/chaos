@@ -4,6 +4,7 @@ use chaos_infrastructure::{config::Settings, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let settings = Settings::from_env()?;
     let trace_provider = telemetry::init("chaos-worker", &settings.log_filter, settings.log_json)?;
     let lifecycle = Lifecycle::new();
