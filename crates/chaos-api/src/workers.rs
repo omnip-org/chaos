@@ -82,7 +82,6 @@ async fn analytics_worker_loop(
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
-    let mut next_retention_at = time::OffsetDateTime::UNIX_EPOCH;
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
@@ -101,17 +100,6 @@ async fn analytics_worker_loop(
             }
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "analytics provider delivery batch failed");
-            }
-        }
-        if now >= next_retention_at {
-            match workers.run_retention_batch(now, 1000).await {
-                Ok(_result) => {
-                    next_retention_at = now + time::Duration::minutes(1);
-                }
-                Err(error) => {
-                    tracing::warn!(%worker_id, %error, "analytics retention batch failed");
-                    next_retention_at = now + time::Duration::seconds(5);
-                }
             }
         }
         tokio::time::sleep(backoff.observe(processed)).await;

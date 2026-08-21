@@ -34,9 +34,8 @@ pub use analytics::{
     AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsEventDelivery,
     AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
     AnalyticsEventQueryRepository, AnalyticsEventRecord, AnalyticsEventRepository,
-    AnalyticsPrivacyRepository, AnalyticsRateLimitDecision, AnalyticsRetentionResult,
-    AnalyticsSettingsRepository, AnalyticsWorkerRepository, ResolvedAnalyticsSettings,
-    ServerCommerceEventJob, StoreAnalyticsSettings, VisitorCustomerLink,
+    AnalyticsRateLimitDecision, AnalyticsSettingsRepository, AnalyticsWorkerRepository,
+    ResolvedAnalyticsSettings, ServerCommerceEventJob, StoreAnalyticsSettings,
 };
 pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use catalog_management::{

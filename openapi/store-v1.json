@@ -121,29 +121,6 @@
         }
       }
     },
-    "/analytics/identity-links": {
-      "post": {
-        "operationId": "linkStorefrontAnalyticsIdentity",
-        "tags": ["Analytics"],
-        "summary": "Link a Storefront Visitor to the authenticated Customer",
-        "description": "Requires current analytics-storage consent and an effective Store Analytics Policy that enables identity linking. Customer identity is never returned.",
-        "security": [{ "publishableKey": [] }],
-        "parameters": [
-          { "$ref": "#/components/parameters/CustomerSession" },
-          { "$ref": "#/components/parameters/IdempotencyKey" }
-        ],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LinkAnalyticsIdentity" } } } },
-        "responses": {
-          "201": { "description": "Identity linked", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnalyticsIdentityLinkEnvelope" } } } },
-          "400": { "$ref": "#/components/responses/BadRequest" },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
-          "403": { "$ref": "#/components/responses/Forbidden" },
-          "404": { "$ref": "#/components/responses/NotFound" },
-          "409": { "$ref": "#/components/responses/Conflict" },
-          "422": { "$ref": "#/components/responses/ValidationFailed" }
-        }
-      }
-    },
     "/shopper-sessions": {
       "post": {
         "operationId": "createShopperSession",
@@ -789,37 +766,6 @@
         "additionalProperties": false,
         "required": ["data"],
         "properties": { "data": { "$ref": "#/components/schemas/AnalyticsCollectionResult" } }
-      },
-      "LinkAnalyticsIdentity": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["visitor_id", "consent", "collection_basis"],
-        "properties": {
-          "visitor_id": { "type": "string", "format": "uuid", "not": { "const": "00000000-0000-0000-0000-000000000000" } },
-          "consent": { "$ref": "#/components/schemas/AnalyticsConsent" },
-          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] }
-        }
-      },
-      "AnalyticsIdentityLink": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "store_id", "visitor_id", "consent_policy_version", "collection_basis", "settings_revision", "linked_at", "retention_expires_at"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "store_id": { "type": "string", "format": "uuid" },
-          "visitor_id": { "type": "string", "format": "uuid" },
-          "consent_policy_version": { "type": "string" },
-          "collection_basis": { "type": "string", "enum": ["consent", "store_policy"] },
-          "settings_revision": { "type": "integer", "minimum": 1 },
-          "linked_at": { "type": "string", "format": "date-time" },
-          "retention_expires_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "AnalyticsIdentityLinkEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["data"],
-        "properties": { "data": { "$ref": "#/components/schemas/AnalyticsIdentityLink" } }
       },
       "Price": {
         "type": "object",

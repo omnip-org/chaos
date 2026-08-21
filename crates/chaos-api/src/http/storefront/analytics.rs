@@ -1,15 +1,11 @@
 use axum::{
     Router,
     extract::{DefaultBodyLimit, State},
-    http::HeaderMap,
     routing::post,
 };
 use chaos_application::{
     ApplicationError,
-    analytics::{
-        BrowserEventCollectionResult, CollectBrowserEventsInput, LinkAnalyticsIdentityInput,
-    },
-    ports::{IdempotencyRequest, VisitorCustomerLink},
+    analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput},
 };
 use chaos_domain::{
     FieldViolation,
@@ -21,102 +17,14 @@ use chaos_domain::{
     sales::{CartId, CheckoutId},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{
-    AnalyticsCustomer, AnalyticsMachine, ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState,
-    pagination::idempotency_key, response::parse_api_time,
-};
+use super::{AnalyticsMachine, ApiError, ApiJson, ApiResponse, ApiState, response::parse_api_time};
 
 pub(super) fn storefront_routes() -> Router<ApiState> {
     Router::new()
         .route("/analytics/events", post(collect_events))
-        .route("/analytics/identity-links", post(link_identity))
         .layer(DefaultBodyLimit::max(32 * 1024))
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LinkIdentityBody {
-    visitor_id: Uuid,
-    consent: ConsentBody,
-    collection_basis: BrowserCollectionBasisBody,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum BrowserCollectionBasisBody {
-    Consent,
-    StorePolicy,
-}
-
-#[derive(Serialize)]
-struct IdentityLinkData {
-    id: Uuid,
-    store_id: Uuid,
-    visitor_id: Uuid,
-    consent_policy_version: String,
-    collection_basis: &'static str,
-    settings_revision: i32,
-    linked_at: ApiDateTime,
-    retention_expires_at: ApiDateTime,
-}
-
-async fn link_identity(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    AnalyticsCustomer(actor): AnalyticsCustomer,
-    ApiJson(body): ApiJson<LinkIdentityBody>,
-) -> Result<ApiResponse<IdentityLinkData>, ApiError> {
-    let request = fingerprinted_request(&headers, &(actor.machine.store_id.as_uuid(), &body))?;
-    let consent = ConsentSnapshot::new(
-        body.consent.analytics_storage,
-        body.consent.advertising_storage,
-        body.consent.policy_version,
-    )?;
-    let link = state
-        .analytics_privacy
-        .link_identity(LinkAnalyticsIdentityInput {
-            actor,
-            visitor_id: body.visitor_id,
-            consent,
-            collection_basis: match body.collection_basis {
-                BrowserCollectionBasisBody::Consent => BrowserCollectionBasis::Consent,
-                BrowserCollectionBasisBody::StorePolicy => BrowserCollectionBasis::StorePolicy,
-            },
-            idempotency: request,
-            now: state.clock.now(),
-        })
-        .await?;
-    Ok(ApiResponse::created(identity_link_data(link)))
-}
-
-fn identity_link_data(item: VisitorCustomerLink) -> IdentityLinkData {
-    IdentityLinkData {
-        id: item.id,
-        store_id: item.store_id.as_uuid(),
-        visitor_id: item.visitor_id,
-        consent_policy_version: item.consent_policy_version,
-        collection_basis: item.collection_basis.as_str(),
-        settings_revision: item.settings_revision,
-        linked_at: item.linked_at.into(),
-        retention_expires_at: item.retention_expires_at.into(),
-    }
-}
-
-fn fingerprinted_request<T: Serialize>(
-    headers: &HeaderMap,
-    value: &T,
-) -> Result<IdempotencyRequest, ApiError> {
-    Ok(IdempotencyRequest {
-        key: idempotency_key(headers)?,
-        request_fingerprint: Sha256::digest(
-            serde_json::to_vec(value)
-                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        )
-        .into(),
-    })
 }
 
 #[derive(Deserialize)]
@@ -168,6 +76,13 @@ struct ConsentBody {
     analytics_storage: bool,
     advertising_storage: bool,
     policy_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BrowserCollectionBasisBody {
+    Consent,
+    StorePolicy,
 }
 
 #[derive(Deserialize)]

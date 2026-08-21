@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, store::StoreActor};
 
-use super::{CustomerActor, IdempotencyRequest, MachineActor};
+use super::{IdempotencyRequest, MachineActor};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnalyticsRateLimitDecision {
@@ -62,7 +62,6 @@ pub trait AnalyticsEventRepository: Send + Sync {
         browser_collection_mode: chaos_domain::analytics::BrowserCollectionMode,
         provider_reporting_enabled: bool,
         received_at: OffsetDateTime,
-        retention_expires_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError>;
 }
 
@@ -128,35 +127,6 @@ pub trait AnalyticsEventQueryRepository: Send + Sync {
         query: AnalyticsEventQuery,
         limit: u16,
     ) -> Result<AnalyticsEventPage, ApplicationError>;
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VisitorCustomerLink {
-    pub id: Uuid,
-    pub store_id: StoreId,
-    pub visitor_id: Uuid,
-    pub customer_id: CustomerId,
-    pub consent_policy_version: String,
-    pub advertising_storage_consent: bool,
-    pub collection_basis: chaos_domain::analytics::BrowserCollectionBasis,
-    pub settings_revision: i32,
-    pub linked_at: OffsetDateTime,
-    pub retention_expires_at: OffsetDateTime,
-}
-
-#[async_trait]
-pub trait AnalyticsPrivacyRepository: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
-    async fn link_visitor_to_customer(
-        &self,
-        actor: &CustomerActor,
-        visitor_id: Uuid,
-        consent_policy_version: &str,
-        advertising_storage_consent: bool,
-        collection_basis: chaos_domain::analytics::BrowserCollectionBasis,
-        idempotency: &IdempotencyRequest,
-        now: OffsetDateTime,
-    ) -> Result<VisitorCustomerLink, ApplicationError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -259,12 +229,6 @@ pub struct ServerCommerceEventJob {
     pub attempts: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct AnalyticsRetentionResult {
-    pub commerce_events_deleted: u64,
-    pub visitor_links_deleted: u64,
-}
-
 #[async_trait]
 pub trait AnalyticsWorkerRepository: Send + Sync {
     async fn claim_server_events(
@@ -296,9 +260,4 @@ pub trait AnalyticsWorkerRepository: Send + Sync {
         result: Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
-    async fn purge_expired(
-        &self,
-        limit: u16,
-        now: OffsetDateTime,
-    ) -> Result<AnalyticsRetentionResult, ApplicationError>;
 }

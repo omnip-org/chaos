@@ -351,7 +351,6 @@ test("opt-out mode records and enables configured providers by default", async (
       ga4: { measurementId: "G-TEST1234" },
     },
   });
-  assert.equal(analytics.identityLinkInput()?.collection_basis, "store_policy");
   await analytics.flush();
   const event = JSON.parse(requests[0]!.options.body).events[0];
   assert.equal(event.event_name, "page_view");
@@ -461,7 +460,6 @@ test("an explicit opt-out stops first-party and provider collection", async () =
     policyVersion: "user-opt-out-v1",
   });
   assert.equal(analytics.pageView(), null);
-  assert.equal(analytics.identityLinkInput(), null);
   assert.equal(await analytics.flush(), null);
   assert.equal(requests.length, 1);
   const metaCalls = (window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue;

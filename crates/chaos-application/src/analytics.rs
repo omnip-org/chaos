@@ -2,10 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use chaos_domain::{
     FieldViolation,
-    analytics::{
-        AnalyticsSettings, BrowserCollectionBasis, BrowserCollectionMode, BrowserEvent,
-        ConsentSnapshot,
-    },
+    analytics::{AnalyticsSettings, BrowserCollectionBasis, BrowserCollectionMode, BrowserEvent},
     store::{StoreId, StoreRole},
 };
 use time::{Duration, OffsetDateTime};
@@ -16,9 +13,8 @@ use crate::{
         AnalyticsCollectionRateLimiter, AnalyticsConnection, AnalyticsConnectionConfiguration,
         AnalyticsConnectionRepository, AnalyticsDeliveryError, AnalyticsEventDestination,
         AnalyticsEventPage, AnalyticsEventQuery, AnalyticsEventQueryRepository,
-        AnalyticsEventRepository, AnalyticsPrivacyRepository, AnalyticsSettingsRepository,
-        AnalyticsWorkerRepository, CustomerActor, IdempotencyRequest, MachineActor,
-        StoreAnalyticsSettings, VisitorCustomerLink,
+        AnalyticsEventRepository, AnalyticsSettingsRepository, AnalyticsWorkerRepository,
+        IdempotencyRequest, MachineActor, StoreAnalyticsSettings,
     },
     store::StoreActor,
 };
@@ -131,8 +127,6 @@ impl AnalyticsCollection {
                     settings.settings.browser_collection_mode(),
                     settings.settings.provider_reporting_enabled(),
                     input.received_at,
-                    input.received_at
-                        + Duration::days(i64::from(settings.settings.raw_event_retention_days())),
                 )
                 .await?
         };
@@ -153,62 +147,12 @@ fn browser_event_is_collectable(event: &BrowserEvent, settings: AnalyticsSetting
             && settings.browser_collection_mode() == BrowserCollectionMode::OptOut)
 }
 
-pub struct LinkAnalyticsIdentityInput {
-    pub actor: CustomerActor,
-    pub visitor_id: uuid::Uuid,
-    pub consent: ConsentSnapshot,
-    pub collection_basis: BrowserCollectionBasis,
-    pub idempotency: IdempotencyRequest,
-    pub now: OffsetDateTime,
-}
-
-pub struct AnalyticsPrivacy {
-    repository: Arc<dyn AnalyticsPrivacyRepository>,
-}
-
-impl AnalyticsPrivacy {
-    pub fn new(repository: Arc<dyn AnalyticsPrivacyRepository>) -> Self {
-        Self { repository }
-    }
-
-    pub async fn link_identity(
-        &self,
-        input: LinkAnalyticsIdentityInput,
-    ) -> Result<VisitorCustomerLink, ApplicationError> {
-        if input.actor.machine.sales_channel_id.is_none() {
-            return Err(ApplicationError::Forbidden);
-        }
-        if input.visitor_id.is_nil()
-            || (!input.consent.analytics_storage()
-                && input.collection_basis != BrowserCollectionBasis::StorePolicy)
-        {
-            return Err(validation(
-                "visitor_id",
-                "requires a non-zero identifier and consent",
-            ));
-        }
-        self.repository
-            .link_visitor_to_customer(
-                &input.actor,
-                input.visitor_id,
-                input.consent.policy_version(),
-                input.consent.advertising_storage(),
-                input.collection_basis,
-                &input.idempotency,
-                input.now,
-            )
-            .await
-    }
-}
-
 pub struct UpdateAnalyticsSettingsInput {
     pub actor: StoreActor,
     pub store_id: StoreId,
     pub collection_enabled: bool,
     pub browser_collection_mode: BrowserCollectionMode,
     pub provider_reporting_enabled: bool,
-    pub identity_linking_enabled: bool,
-    pub raw_event_retention_days: u16,
     pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
@@ -253,8 +197,6 @@ impl AnalyticsAdministration {
             input.collection_enabled,
             input.browser_collection_mode,
             input.provider_reporting_enabled,
-            input.identity_linking_enabled,
-            input.raw_event_retention_days,
         )?;
         self.settings
             .update_settings(
@@ -368,14 +310,6 @@ impl AnalyticsWorkers {
         }
         Ok(jobs.len())
     }
-
-    pub async fn run_retention_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<crate::ports::AnalyticsRetentionResult, ApplicationError> {
-        self.repository.purge_expired(limit, now).await
-    }
 }
 fn require_owner(actor: StoreActor) -> Result<(), ApplicationError> {
     if actor.role() == StoreRole::Owner {
@@ -404,7 +338,7 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chaos_domain::analytics::{BrowserEventProperties, TrafficAttribution};
+    use chaos_domain::analytics::{BrowserEventProperties, ConsentSnapshot, TrafficAttribution};
     use uuid::Uuid;
 
     fn event(consented: bool, basis: BrowserCollectionBasis) -> BrowserEvent {
@@ -425,10 +359,8 @@ mod tests {
     #[test]
     fn store_policy_collection_requires_the_authoritative_store_setting() {
         let policy_event = event(false, BrowserCollectionBasis::StorePolicy);
-        let required =
-            AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false, false, 30).unwrap();
-        let opt_out =
-            AnalyticsSettings::new(true, BrowserCollectionMode::OptOut, false, false, 30).unwrap();
+        let required = AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false).unwrap();
+        let opt_out = AnalyticsSettings::new(true, BrowserCollectionMode::OptOut, false).unwrap();
         assert!(!browser_event_is_collectable(&policy_event, required));
         assert!(browser_event_is_collectable(&policy_event, opt_out));
         assert!(browser_event_is_collectable(

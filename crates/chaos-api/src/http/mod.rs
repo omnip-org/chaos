@@ -32,7 +32,7 @@ mod test_support;
 
 use axum::Router;
 use chaos_application::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection, AnalyticsPrivacy},
+    analytics::{AnalyticsAdministration, AnalyticsCollection},
     catalog::{
         CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
         CreateProduct, MediaAdministration, ReviewAdministration, StorefrontCollections,
@@ -92,9 +92,9 @@ use crate::lifecycle::Lifecycle;
 
 pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use extract::{
-    AnalyticsCustomer, AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedUser,
-    CartMachine, CartShopper, CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession,
-    OrderLookupMachine, StoreContext, StorefrontMachine,
+    AnalyticsMachine, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
+    CheckoutShopper, CustomerCheckout, CustomerMachine, CustomerSession, OrderLookupMachine,
+    StoreContext, StorefrontMachine,
 };
 pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -130,7 +130,6 @@ pub struct ApiState {
     pub provider_secret_management: Arc<ProviderSecretManagement>,
     pub analytics_collection: Arc<AnalyticsCollection>,
     pub analytics_administration: Arc<AnalyticsAdministration>,
-    pub analytics_privacy: Arc<AnalyticsPrivacy>,
     pub storefront_catalog: Arc<StorefrontCatalog>,
     pub storefront_sales: Arc<StorefrontSales>,
     pub customer_service: Arc<CustomerService>,
@@ -299,7 +298,6 @@ impl ApiState {
             analytics_repository.clone(),
             analytics_repository.clone(),
         );
-        let analytics_privacy = AnalyticsPrivacy::new(analytics_repository);
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =
             ProviderSecretManagement::new(store_administration_repository, dynamic_secrets.clone());
@@ -403,7 +401,6 @@ impl ApiState {
             provider_secret_management: Arc::new(provider_secret_management),
             analytics_collection: Arc::new(analytics_collection),
             analytics_administration: Arc::new(analytics_administration),
-            analytics_privacy: Arc::new(analytics_privacy),
             storefront_catalog: Arc::new(storefront_catalog),
             storefront_sales: Arc::new(storefront_sales),
             customer_service: Arc::new(customer_service),
@@ -449,7 +446,6 @@ pub fn router(state: ApiState) -> Router {
             publishable_key_management: state.publishable_key_management.clone(),
             provider_secret_management: state.provider_secret_management.clone(),
             analytics_administration: state.analytics_administration.clone(),
-            analytics_privacy: state.analytics_privacy.clone(),
             clock: state.clock.clone(),
         },
         state.mcp_allowed_hosts.clone(),

@@ -83,7 +83,6 @@ pub struct CheckoutShopper(pub ShopperActor);
 pub struct CustomerSession(pub UserId);
 pub struct CustomerMachine(pub CustomerActor);
 pub struct CustomerCheckout(pub CustomerActor);
-pub struct AnalyticsCustomer(pub CustomerActor);
 
 impl FromRequestParts<ApiState> for StorefrontMachine {
     type Rejection = ApiError;
@@ -176,7 +175,6 @@ macro_rules! customer_machine_extractor {
 
 customer_machine_extractor!(CustomerMachine);
 customer_machine_extractor!(CustomerCheckout);
-customer_machine_extractor!(AnalyticsCustomer);
 
 impl FromRequestParts<ApiState> for CustomerSession {
     type Rejection = ApiError;

@@ -9,8 +9,6 @@ use crate::{
 
 pub const BROWSER_EVENT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_ENGAGEMENT_INTERVAL_MILLISECONDS: u32 = 60_000;
-pub const DEFAULT_RAW_EVENT_RETENTION_DAYS: u16 = 30;
-pub const MAX_RAW_EVENT_RETENTION_DAYS: u16 = 400;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrowserCollectionMode {
@@ -152,8 +150,6 @@ pub struct AnalyticsSettings {
     collection_enabled: bool,
     browser_collection_mode: BrowserCollectionMode,
     provider_reporting_enabled: bool,
-    identity_linking_enabled: bool,
-    raw_event_retention_days: u16,
 }
 
 impl AnalyticsSettings {
@@ -161,21 +157,11 @@ impl AnalyticsSettings {
         collection_enabled: bool,
         browser_collection_mode: BrowserCollectionMode,
         provider_reporting_enabled: bool,
-        identity_linking_enabled: bool,
-        raw_event_retention_days: u16,
     ) -> Result<Self, DomainError> {
-        if !(1..=MAX_RAW_EVENT_RETENTION_DAYS).contains(&raw_event_retention_days) {
-            return Err(validation(
-                "raw_event_retention_days",
-                "must be between 1 and 400",
-            ));
-        }
         Ok(Self {
             collection_enabled,
             browser_collection_mode,
             provider_reporting_enabled,
-            identity_linking_enabled,
-            raw_event_retention_days,
         })
     }
 
@@ -184,8 +170,6 @@ impl AnalyticsSettings {
             collection_enabled: true,
             browser_collection_mode: BrowserCollectionMode::OptOut,
             provider_reporting_enabled: false,
-            identity_linking_enabled: false,
-            raw_event_retention_days: DEFAULT_RAW_EVENT_RETENTION_DAYS,
         }
     }
 
@@ -199,14 +183,6 @@ impl AnalyticsSettings {
 
     pub const fn provider_reporting_enabled(self) -> bool {
         self.provider_reporting_enabled
-    }
-
-    pub const fn identity_linking_enabled(self) -> bool {
-        self.identity_linking_enabled
-    }
-
-    pub const fn raw_event_retention_days(self) -> u16 {
-        self.raw_event_retention_days
     }
 }
 
@@ -625,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn analytics_settings_have_bounded_retention_and_conservative_defaults() {
+    fn analytics_settings_have_conservative_defaults() {
         let default = AnalyticsSettings::builtin();
         assert!(default.collection_enabled());
         assert_eq!(
@@ -633,13 +609,6 @@ mod tests {
             BrowserCollectionMode::OptOut
         );
         assert!(!default.provider_reporting_enabled());
-        assert!(!default.identity_linking_enabled());
-        assert_eq!(default.raw_event_retention_days(), 30);
-        assert!(
-            AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false, false, 0).is_err()
-        );
-        assert!(
-            AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false, false, 401,).is_err()
-        );
+        assert!(AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false).is_ok());
     }
 }

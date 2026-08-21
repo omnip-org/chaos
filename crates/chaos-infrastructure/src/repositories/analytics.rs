@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chaos_application::{ApplicationError, ports::*, store::StoreActor};
 use chaos_domain::{
     analytics::{
-        AnalyticsSettings, BrowserCollectionBasis, BrowserCollectionMode, BrowserEvent,
-        BrowserEventProperties, TrafficAttribution, TrafficTouchpoint,
+        AnalyticsSettings, BrowserCollectionMode, BrowserEvent, BrowserEventProperties,
+        TrafficAttribution, TrafficTouchpoint,
     },
     identity::UserId,
     sales::CustomerId,
@@ -12,13 +12,12 @@ use chaos_domain::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::idempotency::{self, IdempotencyScope};
 
 const UPDATE_SETTINGS_OPERATION: &str = "analytics.update_settings";
-const LINK_VISITOR_OPERATION: &str = "analytics.link_visitor";
 const CONFIGURE_CONNECTION_OPERATION: &str = "analytics.configure_connection";
 
 pub struct PostgresAnalyticsEventRepository {
@@ -37,8 +36,6 @@ struct SettingsRow {
     collection_enabled: bool,
     browser_collection_mode: String,
     provider_reporting_enabled: bool,
-    identity_linking_enabled: bool,
-    raw_event_retention_days: i16,
     updated_by: Uuid,
     updated_at: OffsetDateTime,
 }
@@ -49,24 +46,8 @@ struct SettingsSnapshot {
     collection_enabled: bool,
     browser_collection_mode: String,
     provider_reporting_enabled: bool,
-    identity_linking_enabled: bool,
-    raw_event_retention_days: u16,
     updated_by: Option<Uuid>,
     updated_at: Option<OffsetDateTime>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct VisitorLinkSnapshot {
-    id: Uuid,
-    store_id: Uuid,
-    visitor_id: Uuid,
-    customer_id: Uuid,
-    consent_policy_version: String,
-    advertising_storage_consent: bool,
-    collection_basis: String,
-    settings_revision: i32,
-    linked_at: OffsetDateTime,
-    retention_expires_at: OffsetDateTime,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -117,8 +98,6 @@ fn row_settings_value(r: &SettingsRow) -> Result<AnalyticsSettings, ApplicationE
             }
         },
         r.provider_reporting_enabled,
-        r.identity_linking_enabled,
-        u16::try_from(r.raw_event_retention_days).map_err(convert)?,
     )
     .map_err(Into::into)
 }
@@ -135,7 +114,7 @@ async fn load_settings(
     tx: &mut Transaction<'_, Postgres>,
     store: StoreId,
 ) -> Result<Option<SettingsRow>, ApplicationError> {
-    sqlx::query_as("SELECT store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,identity_linking_enabled,raw_event_retention_days,updated_by,updated_at FROM integration.analytics_settings WHERE store_id=$1").bind(store.as_uuid()).fetch_optional(&mut **tx).await.map_err(db)
+    sqlx::query_as("SELECT store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at FROM integration.analytics_settings WHERE store_id=$1").bind(store.as_uuid()).fetch_optional(&mut **tx).await.map_err(db)
 }
 
 #[async_trait]
@@ -173,7 +152,6 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
         browser_collection_mode: BrowserCollectionMode,
         provider_reporting_enabled: bool,
         received: OffsetDateTime,
-        expires: OffsetDateTime,
     ) -> Result<usize, ApplicationError> {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.pool.begin().await.map_err(db)?;
@@ -191,8 +169,52 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
                     || (event.collection_basis()
                         == chaos_domain::analytics::BrowserCollectionBasis::StorePolicy
                         && browser_collection_mode == BrowserCollectionMode::OptOut));
-            let id:Option<Uuid>=sqlx::query_scalar("INSERT INTO integration.commerce_events (id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,session_id,product_id,product_variant_id,cart_id,checkout_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at,retention_expires_at) VALUES(uuidv7(),$1,$2,$3,$4::integration.commerce_event_name,'browser',$5::integration.browser_collection_basis,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT(store_id,event_id) DO NOTHING RETURNING id")
-    .bind(event.event_id()).bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(event.name().as_str()).bind(event.collection_basis().as_str()).bind(i16::try_from(event.schema_version()).map_err(convert)?).bind(event.visitor_id()).bind(event.session_id()).bind(columns.product_id).bind(columns.product_variant_id).bind(columns.cart_id).bind(columns.checkout_id).bind(columns.path).bind(event.consent().analytics_storage()).bind(event.consent().advertising_storage()).bind(eligible).bind(event.consent().policy_version()).bind(revision).bind(columns.properties).bind(event.occurred_at()).bind(received).bind(expires).fetch_optional(&mut *tx).await.map_err(db)?;
+            // Serialize the global event-id check across daily partitions.
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))",
+            )
+            .bind(actor.store_id.as_uuid())
+            .bind(event.event_id())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+            let duplicate: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM integration.commerce_events WHERE store_id=$1 AND event_id=$2)",
+            )
+            .bind(actor.store_id.as_uuid())
+            .bind(event.event_id())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+            let id: Option<Uuid> = if duplicate {
+                None
+            } else {
+                sqlx::query_scalar("INSERT INTO integration.commerce_events (id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,session_id,product_id,product_variant_id,cart_id,checkout_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),$1,$2,$3,$4::integration.commerce_event_name,'browser',$5::integration.browser_collection_basis,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id")
+                    .bind(event.event_id())
+                    .bind(actor.store_id.as_uuid())
+                    .bind(channel.as_uuid())
+                    .bind(event.name().as_str())
+                    .bind(event.collection_basis().as_str())
+                    .bind(i16::try_from(event.schema_version()).map_err(convert)?)
+                    .bind(event.visitor_id())
+                    .bind(event.session_id())
+                    .bind(columns.product_id)
+                    .bind(columns.product_variant_id)
+                    .bind(columns.cart_id)
+                    .bind(columns.checkout_id)
+                    .bind(columns.path)
+                    .bind(event.consent().analytics_storage())
+                    .bind(event.consent().advertising_storage())
+                    .bind(eligible)
+                    .bind(event.consent().policy_version())
+                    .bind(revision)
+                    .bind(columns.properties)
+                    .bind(event.occurred_at())
+                    .bind(received)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db)?
+            };
             if let Some(id) = id {
                 count += 1;
                 if eligible {
@@ -259,7 +281,7 @@ impl AnalyticsSettingsRepository for PostgresAnalyticsEventRepository {
             tx.commit().await.map_err(db)?;
             return Ok(result);
         }
-        let r:SettingsRow=sqlx::query_as("INSERT INTO integration.analytics_settings(store_id,revision,collection_enabled,browser_collection_mode,provider_reporting_enabled,identity_linking_enabled,raw_event_retention_days,updated_by,updated_at) VALUES($1,1,$2,$3::integration.browser_collection_mode,$4,$5,$6,$7,$8) ON CONFLICT(store_id) DO UPDATE SET revision=integration.analytics_settings.revision+1,collection_enabled=EXCLUDED.collection_enabled,browser_collection_mode=EXCLUDED.browser_collection_mode,provider_reporting_enabled=EXCLUDED.provider_reporting_enabled,identity_linking_enabled=EXCLUDED.identity_linking_enabled,raw_event_retention_days=EXCLUDED.raw_event_retention_days,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,identity_linking_enabled,raw_event_retention_days,updated_by,updated_at").bind(store.as_uuid()).bind(p.collection_enabled()).bind(p.browser_collection_mode().as_str()).bind(p.provider_reporting_enabled()).bind(p.identity_linking_enabled()).bind(i16::try_from(p.raw_event_retention_days()).map_err(convert)?).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
+        let r:SettingsRow=sqlx::query_as("INSERT INTO integration.analytics_settings(store_id,revision,collection_enabled,browser_collection_mode,provider_reporting_enabled,updated_by,updated_at) VALUES($1,1,$2,$3::integration.browser_collection_mode,$4,$5,$6) ON CONFLICT(store_id) DO UPDATE SET revision=integration.analytics_settings.revision+1,collection_enabled=EXCLUDED.collection_enabled,browser_collection_mode=EXCLUDED.browser_collection_mode,provider_reporting_enabled=EXCLUDED.provider_reporting_enabled,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at RETURNING store_id,revision,collection_enabled,browser_collection_mode::text,provider_reporting_enabled,updated_by,updated_at").bind(store.as_uuid()).bind(p.collection_enabled()).bind(p.browser_collection_mode().as_str()).bind(p.provider_reporting_enabled()).bind(actor.user_id().as_uuid()).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
         let result = row_settings(r)?;
         idempotency::complete(
             &mut tx,
@@ -377,66 +399,6 @@ impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
-impl AnalyticsPrivacyRepository for PostgresAnalyticsEventRepository {
-    async fn link_visitor_to_customer(
-        &self,
-        actor: &CustomerActor,
-        visitor: Uuid,
-        consent: &str,
-        advertising_consent: bool,
-        collection_basis: BrowserCollectionBasis,
-        request: &IdempotencyRequest,
-        now: OffsetDateTime,
-    ) -> Result<VisitorCustomerLink, ApplicationError> {
-        let channel = actor
-            .machine
-            .sales_channel_id
-            .ok_or(ApplicationError::Forbidden)?;
-        let store = actor.machine.store_id;
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        context(&mut tx, store.as_uuid(), None).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut tx,
-            &IdempotencyScope::Store(store.as_uuid()),
-            LINK_VISITOR_OPERATION,
-            request,
-        )
-        .await?
-        {
-            let result = visitor_link_from_snapshot(snapshot)?;
-            tx.commit().await.map_err(db)?;
-            return Ok(result);
-        }
-        let r:(Uuid,i32,i16)=sqlx::query_as("SELECT c.id,COALESCE(s.revision,1),COALESCE(s.raw_event_retention_days,30::smallint) FROM commerce.customers c LEFT JOIN integration.analytics_settings s ON s.store_id=c.store_id WHERE c.store_id=$1 AND c.sales_channel_id=$2 AND c.user_id=$3 AND COALESCE(s.identity_linking_enabled,false) AND ($4::integration.browser_collection_basis='consent' OR ($4='store_policy' AND COALESCE(s.browser_collection_mode='opt_out',true)))").bind(store.as_uuid()).bind(channel.as_uuid()).bind(actor.user_id.as_uuid()).bind(collection_basis.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(ApplicationError::Forbidden)?;
-        let expires = now + Duration::days(i64::from(r.2));
-        let saved:(Uuid,OffsetDateTime,OffsetDateTime)=sqlx::query_as("INSERT INTO integration.visitor_customer_links(id,store_id,visitor_id,customer_id,consent_policy_version,advertising_storage_consent,collection_basis,settings_revision,linked_at,retention_expires_at) VALUES(uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(store_id,visitor_id,customer_id) DO UPDATE SET consent_policy_version=EXCLUDED.consent_policy_version,advertising_storage_consent=EXCLUDED.advertising_storage_consent,collection_basis=EXCLUDED.collection_basis,settings_revision=EXCLUDED.settings_revision,linked_at=EXCLUDED.linked_at,retention_expires_at=EXCLUDED.retention_expires_at RETURNING id,linked_at,retention_expires_at").bind(store.as_uuid()).bind(visitor).bind(r.0).bind(consent).bind(advertising_consent).bind(collection_basis.as_str()).bind(r.1).bind(now).bind(expires).fetch_one(&mut *tx).await.map_err(db)?;
-        let result = VisitorCustomerLink {
-            id: saved.0,
-            store_id: store,
-            visitor_id: visitor,
-            customer_id: CustomerId::from_uuid(r.0),
-            consent_policy_version: consent.into(),
-            advertising_storage_consent: advertising_consent,
-            collection_basis,
-            settings_revision: r.1,
-            linked_at: saved.1,
-            retention_expires_at: saved.2,
-        };
-        idempotency::complete(
-            &mut tx,
-            &IdempotencyScope::Store(store.as_uuid()),
-            LINK_VISITOR_OPERATION,
-            request,
-            201,
-            visitor_link_snapshot(&result)?,
-        )
-        .await?;
-        tx.commit().await.map_err(db)?;
-        Ok(result)
-    }
-}
-
-#[async_trait]
 impl AnalyticsConnectionRepository for PostgresAnalyticsEventRepository {
     async fn get_connection(
         &self,
@@ -535,9 +497,8 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
     ) -> Result<(), ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let days:i16=sqlx::query_scalar("SELECT COALESCE((SELECT raw_event_retention_days FROM integration.analytics_settings WHERE store_id=$1),30::smallint)").bind(job.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
         let provider_reporting_enabled:bool=sqlx::query_scalar("SELECT COALESCE((SELECT provider_reporting_enabled FROM integration.analytics_settings WHERE store_id=$1),false) AND EXISTS (SELECT 1 FROM integration.analytics_connections WHERE store_id=$1 AND enabled)").bind(job.store_id.as_uuid()).fetch_one(&mut *tx).await.map_err(db)?;
-        let id = insert_server(&mut tx, job, now, days, provider_reporting_enabled).await?;
+        let id = insert_server(&mut tx, job, now, provider_reporting_enabled).await?;
         if let Some(id) = id.filter(|_| provider_reporting_enabled) {
             enqueue_deliveries(&mut tx, job.store_id, id, now).await?
         }
@@ -642,17 +603,6 @@ impl AnalyticsWorkerRepository for PostgresAnalyticsEventRepository {
             })
         }
     }
-    async fn purge_expired(
-        &self,
-        limit: u16,
-        now: OffsetDateTime,
-    ) -> Result<AnalyticsRetentionResult, ApplicationError> {
-        let r:(i64,i64)=sqlx::query_as("SELECT commerce_events_deleted,visitor_links_deleted FROM integration.purge_expired_analytics_data($1,$2)").bind(i32::from(limit)).bind(now).fetch_one(&self.pool).await.map_err(db)?;
-        Ok(AnalyticsRetentionResult {
-            commerce_events_deleted: u64::try_from(r.0).map_err(convert)?,
-            visitor_links_deleted: u64::try_from(r.1).map_err(convert)?,
-        })
-    }
 }
 
 async fn enqueue_deliveries(
@@ -668,7 +618,6 @@ async fn insert_server(
     tx: &mut Transaction<'_, Postgres>,
     job: &ServerCommerceEventJob,
     now: OffsetDateTime,
-    days: i16,
     provider_reporting_enabled: bool,
 ) -> Result<Option<Uuid>, ApplicationError> {
     let name = match job.event_type.as_str() {
@@ -682,19 +631,26 @@ async fn insert_server(
             });
         }
     };
+    // The partitioned ledger cannot enforce a global unique (store_id,
+    // event_id) key. Serialize the check across partitions so retries remain
+    // idempotent without another registry table.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))")
+        .bind(job.store_id.as_uuid())
+        .bind(job.aggregate_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(db)?;
     let query = if name == "purchase" || name == "add_payment_info" {
         let expected_status = if name == "purchase" {
             "captured"
         } else {
             "any"
         };
-        let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,customer_id,checkout_id,order_id,payment_attempt_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at,retention_expires_at) SELECT uuidv7(),CASE WHEN $8='purchase' THEN o.id ELSE a.id END,a.store_id,o.sales_channel_id,$8::integration.commerce_event_name,'server','server',1,consent.visitor_id,o.customer_id,o.checkout_id,o.id,a.id,a.amount_minor,a.currency,true,COALESCE(consent.advertising_storage_consent,false),$4 AND (COALESCE(consent.advertising_storage_consent,false) OR COALESCE(s.browser_collection_mode='opt_out',true)),consent.consent_policy_version,COALESCE(s.revision,1),CASE WHEN consent.traffic IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('traffic',consent.traffic) END,$2,$3,$3+make_interval(days=>$5) FROM commerce.payment_attempts a JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=a.store_id LEFT JOIN LATERAL (SELECT link.visitor_id,link.advertising_storage_consent,link.consent_policy_version,(SELECT event.properties->'traffic' FROM integration.commerce_events event WHERE event.store_id=link.store_id AND event.visitor_id=link.visitor_id AND event.properties ? 'traffic' ORDER BY event.occurred_at DESC,event.id DESC LIMIT 1) AS traffic FROM integration.visitor_customer_links link WHERE link.store_id=o.store_id AND link.customer_id=o.customer_id AND link.retention_expires_at>$3 ORDER BY link.linked_at DESC,link.id DESC LIMIT 1) consent ON true WHERE a.store_id=$6 AND a.id=$7 AND ($9 = 'any' OR a.status::text=$9) ON CONFLICT(store_id,event_id) DO NOTHING RETURNING id";
+        let query = "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,customer_id,checkout_id,order_id,payment_attempt_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),CASE WHEN $6='purchase' THEN o.id ELSE a.id END,a.store_id,o.sales_channel_id,$6::integration.commerce_event_name,'server','server',1,o.customer_id,o.checkout_id,o.id,a.id,a.amount_minor,a.currency,true,false,$3 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$1,$2 FROM commerce.payment_attempts a JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=a.store_id WHERE a.store_id=$4 AND a.id=$5 AND ($7 = 'any' OR a.status::text=$7) AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=a.store_id AND duplicate.event_id=CASE WHEN $6='purchase' THEN o.id ELSE a.id END) RETURNING id";
         return sqlx::query_scalar(query)
-            .bind(job.id)
             .bind(job.occurred_at)
             .bind(now)
             .bind(provider_reporting_enabled)
-            .bind(i32::from(days))
             .bind(job.store_id.as_uuid())
             .bind(job.aggregate_id)
             .bind(name)
@@ -703,14 +659,13 @@ async fn insert_server(
             .await
             .map_err(db);
     } else {
-        "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,customer_id,checkout_id,order_id,payment_attempt_id,refund_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at,retention_expires_at) SELECT uuidv7(),$1,r.store_id,o.sales_channel_id,'refund','server','server',1,consent.visitor_id,o.customer_id,o.checkout_id,o.id,a.id,r.id,r.amount_minor,r.currency,true,COALESCE(consent.advertising_storage_consent,false),$4 AND (COALESCE(consent.advertising_storage_consent,false) OR COALESCE(s.browser_collection_mode='opt_out',true)),consent.consent_policy_version,COALESCE(s.revision,1),CASE WHEN consent.traffic IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('traffic',consent.traffic) END,$2,$3,$3+make_interval(days=>$5) FROM commerce.refunds r JOIN commerce.payment_attempts a ON a.store_id=r.store_id AND a.id=r.payment_attempt_id JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=r.store_id LEFT JOIN LATERAL (SELECT link.visitor_id,link.advertising_storage_consent,link.consent_policy_version,(SELECT event.properties->'traffic' FROM integration.commerce_events event WHERE event.store_id=link.store_id AND event.visitor_id=link.visitor_id AND event.properties ? 'traffic' ORDER BY event.occurred_at DESC,event.id DESC LIMIT 1) AS traffic FROM integration.visitor_customer_links link WHERE link.store_id=o.store_id AND link.customer_id=o.customer_id AND link.retention_expires_at>$3 ORDER BY link.linked_at DESC,link.id DESC LIMIT 1) consent ON true WHERE r.store_id=$6 AND r.id=$7 AND r.status='succeeded' ON CONFLICT(store_id,event_id) DO NOTHING RETURNING id"
+        "INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,customer_id,checkout_id,order_id,payment_attempt_id,refund_id,value_minor,currency,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) SELECT uuidv7(),$1,r.store_id,o.sales_channel_id,'refund','server','server',1,o.customer_id,o.checkout_id,o.id,a.id,r.id,r.amount_minor,r.currency,true,false,$4 AND COALESCE(s.browser_collection_mode='opt_out',true),NULL,COALESCE(s.revision,1),'{}'::jsonb,$2,$3 FROM commerce.refunds r JOIN commerce.payment_attempts a ON a.store_id=r.store_id AND a.id=r.payment_attempt_id JOIN commerce.orders o ON o.store_id=a.store_id AND o.id=a.order_id LEFT JOIN integration.analytics_settings s ON s.store_id=r.store_id WHERE r.store_id=$5 AND r.id=$6 AND r.status='succeeded' AND NOT EXISTS (SELECT 1 FROM integration.commerce_events duplicate WHERE duplicate.store_id=r.store_id AND duplicate.event_id=$1) RETURNING id"
     };
     sqlx::query_scalar(query)
-        .bind(job.id)
+        .bind(job.aggregate_id)
         .bind(job.occurred_at)
         .bind(now)
         .bind(provider_reporting_enabled)
-        .bind(i32::from(days))
         .bind(job.store_id.as_uuid())
         .bind(job.aggregate_id)
         .fetch_optional(&mut **tx)
@@ -846,8 +801,6 @@ fn settings_snapshot(item: &StoreAnalyticsSettings) -> Result<Value, Application
         collection_enabled: item.settings.collection_enabled(),
         browser_collection_mode: item.settings.browser_collection_mode().as_str().into(),
         provider_reporting_enabled: item.settings.provider_reporting_enabled(),
-        identity_linking_enabled: item.settings.identity_linking_enabled(),
-        raw_event_retention_days: item.settings.raw_event_retention_days(),
         updated_by: item.updated_by.map(|id| id.as_uuid()),
         updated_at: item.updated_at,
     })
@@ -870,50 +823,9 @@ fn settings_from_snapshot(value: Value) -> Result<StoreAnalyticsSettings, Applic
                 }
             },
             item.provider_reporting_enabled,
-            item.identity_linking_enabled,
-            item.raw_event_retention_days,
         )?,
         updated_by: item.updated_by.map(UserId::from_uuid),
         updated_at: item.updated_at,
-    })
-}
-
-fn visitor_link_snapshot(item: &VisitorCustomerLink) -> Result<Value, ApplicationError> {
-    snapshot_value(VisitorLinkSnapshot {
-        id: item.id,
-        store_id: item.store_id.as_uuid(),
-        visitor_id: item.visitor_id,
-        customer_id: item.customer_id.as_uuid(),
-        consent_policy_version: item.consent_policy_version.clone(),
-        advertising_storage_consent: item.advertising_storage_consent,
-        collection_basis: item.collection_basis.as_str().into(),
-        settings_revision: item.settings_revision,
-        linked_at: item.linked_at,
-        retention_expires_at: item.retention_expires_at,
-    })
-}
-
-fn visitor_link_from_snapshot(value: Value) -> Result<VisitorCustomerLink, ApplicationError> {
-    let item: VisitorLinkSnapshot = parse_snapshot(value)?;
-    Ok(VisitorCustomerLink {
-        id: item.id,
-        store_id: StoreId::from_uuid(item.store_id),
-        visitor_id: item.visitor_id,
-        customer_id: CustomerId::from_uuid(item.customer_id),
-        consent_policy_version: item.consent_policy_version,
-        advertising_storage_consent: item.advertising_storage_consent,
-        collection_basis: match item.collection_basis.as_str() {
-            "consent" => BrowserCollectionBasis::Consent,
-            "store_policy" => BrowserCollectionBasis::StorePolicy,
-            value => {
-                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
-                    "invalid visitor link collection basis: {value}"
-                )));
-            }
-        },
-        settings_revision: item.settings_revision,
-        linked_at: item.linked_at,
-        retention_expires_at: item.retention_expires_at,
     })
 }
 
@@ -976,6 +888,7 @@ mod tests {
         store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use sqlx::postgres::PgPoolOptions;
+    use time::Duration;
 
     use crate::repositories::PostgresStoreReadRepository;
 
@@ -1053,7 +966,6 @@ mod tests {
                 BrowserCollectionMode::OptIn,
                 true,
                 now,
-                now + Duration::days(30),
             )
             .await
             .unwrap();
@@ -1067,7 +979,6 @@ mod tests {
                     BrowserCollectionMode::OptIn,
                     true,
                     now,
-                    now + Duration::days(30),
                 )
                 .await
                 .unwrap(),
@@ -1095,7 +1006,6 @@ mod tests {
                     BrowserCollectionMode::OptIn,
                     true,
                     now,
-                    now + Duration::days(30)
                 )
                 .await
                 .unwrap(),
@@ -1137,8 +1047,7 @@ mod tests {
             key: Uuid::now_v7().to_string(),
             request_fingerprint: [7; 32],
         };
-        let settings =
-            AnalyticsSettings::new(true, BrowserCollectionMode::OptOut, true, true, 45).unwrap();
+        let settings = AnalyticsSettings::new(true, BrowserCollectionMode::OptOut, true).unwrap();
         let first = repository
             .update_settings(actor, store_id, settings, &request, now)
             .await
@@ -1196,15 +1105,12 @@ mod tests {
             .bind(provider_account_id).bind(store_id.as_uuid()).bind(user_id.as_uuid()).execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO commerce.payment_attempts(id,store_id,order_id,shopper_id,provider_account_id,amount_minor,currency,status) VALUES($1,$2,$3,$4,$5,1000,'USD','captured')")
             .bind(payment_attempt_id).bind(store_id.as_uuid()).bind(order_id).bind(shopper_id).bind(provider_account_id).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO integration.visitor_customer_links(id,store_id,visitor_id,customer_id,consent_policy_version,advertising_storage_consent,collection_basis,settings_revision,linked_at,retention_expires_at) VALUES(uuidv7(),$1,$2,$3,'test-v1',false,'store_policy',1,$4,$5)")
-            .bind(store_id.as_uuid()).bind(visitor_id).bind(customer_id).bind(now).bind(now + Duration::days(30)).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,session_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at,retention_expires_at) VALUES(uuidv7(),uuidv7(),$1,$2,'page_view','browser','consent',1,$3,uuidv7(),'/landing',true,false,false,'test-v1',1,$4,$5,$5,$6)")
+        sqlx::query("INSERT INTO integration.commerce_events(id,event_id,store_id,sales_channel_id,event_name,source,collection_basis,schema_version,visitor_id,session_id,path,analytics_storage_consent,advertising_storage_consent,provider_eligible,consent_policy_version,settings_revision,properties,occurred_at,received_at) VALUES(uuidv7(),uuidv7(),$1,$2,'page_view','browser','consent',1,$3,uuidv7(),'/landing',true,false,false,'test-v1',1,$4,$5,$6)")
             .bind(store_id.as_uuid())
             .bind(channel_id.as_uuid())
             .bind(visitor_id)
             .bind(json!({"traffic":{"first":{"source":"meta"},"session":{"source":"meta"},"last_non_direct":{"source":"meta"}}}))
             .bind(now)
-            .bind(now + Duration::days(30))
             .execute(&pool)
             .await
             .unwrap();
@@ -1237,7 +1143,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(first, (true, Some(visitor_id), Some("meta".into())));
+        assert_eq!(first, (true, None, None));
 
         let replayed_capture = ServerCommerceEventJob {
             attempts: 1,

@@ -242,24 +242,6 @@ export class ChaosStorefrontAnalytics {
     this.activeStartedAt = this.isActive() && effectiveAnalyticsStorage ? this.monotonicNow() : null;
   }
 
-  /** Returns the policy-bound identity payload used after Customer association. */
-  identityLinkInput(): {
-    visitor_id: string;
-    consent: QueuedEvent["consent"];
-    collection_basis: QueuedEvent["collection_basis"];
-  } | null {
-    if (!this.collectionEnabled()) return null;
-    return {
-      visitor_id: this.visitorId,
-      consent: {
-        analytics_storage: this.consent.analyticsStorage,
-        advertising_storage: this.consent.advertisingStorage,
-        policy_version: this.consent.policyVersion,
-      },
-      collection_basis: this.explicitConsent.analyticsStorage ? "consent" : "store_policy",
-    };
-  }
-
   start(): void {
     if (this.running) return;
     this.running = true;

@@ -31,10 +31,6 @@ pub struct UpdateAnalyticsSettingsParams {
     pub browser_collection_mode: BrowserCollectionModeParam,
     /// Store-level switch for creating delivery work for enabled analytics destinations.
     pub provider_reporting_enabled: bool,
-    /// Whether visitor-to-customer identity linking is enabled.
-    pub identity_linking_enabled: bool,
-    /// Number of days to retain the internal event ledger.
-    pub raw_event_retention_days: u16,
     pub confirm: bool,
     pub idempotency_key: String,
 }
@@ -55,7 +51,7 @@ pub struct ConfigureMetaConnectionParams {
     /// Optional Meta Test Events Code. When present, events are routed to Meta's test view.
     pub test_event_code: Option<String>,
     /// Connection-level switch. This enables this analytics destination; Store `provider_reporting_enabled` must also be true before events are queued.
-    pub capi_enabled: bool,
+    pub enabled: bool,
     pub confirm: bool,
     pub idempotency_key: String,
 }
@@ -144,8 +140,6 @@ impl ChaosMcp {
                     BrowserCollectionModeParam::OptOut => BrowserCollectionMode::OptOut,
                 },
                 provider_reporting_enabled: params.provider_reporting_enabled,
-                identity_linking_enabled: params.identity_linking_enabled,
-                raw_event_retention_days: params.raw_event_retention_days,
                 idempotency,
                 now: self.state.clock.now(),
             })
@@ -157,7 +151,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Get the Meta Conversions API connection for the selected Store. The connection-level `capi_enabled` switch and Store-level `provider_reporting_enabled` switch must both be true before delivery. Credentials are never returned."
+        description = "Get the Meta Conversions API connection for the selected Store. The connection-level `enabled` switch and Store-level `provider_reporting_enabled` switch must both be true before delivery. Credentials are never returned."
     )]
     async fn get_meta_connection(
         &self,
@@ -193,7 +187,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Configure the Meta Dataset, access-token secret reference, optional Test Events Code, and connection-level `capi_enabled` switch for the selected Store. Store-level `provider_reporting_enabled` must also be true before events are queued. Owner role and confirmation are required."
+        description = "Configure the Meta Dataset, access-token secret reference, optional Test Events Code, and connection-level `enabled` switch for the selected Store. Store-level `provider_reporting_enabled` must also be true before events are queued. Owner role and confirmation are required."
     )]
     async fn configure_meta_connection(
         &self,
@@ -235,7 +229,7 @@ impl ChaosMcp {
             external_account_reference: params.dataset_id,
             credential_secret_reference: params.credential_secret_reference,
             configuration: json!({ "test_event_code": params.test_event_code }),
-            enabled: params.capi_enabled,
+            enabled: params.enabled,
         };
         let connection = match self
             .state
@@ -321,8 +315,6 @@ fn settings_json(item: StoreAnalyticsSettings) -> Value {
         "collection_enabled": item.settings.collection_enabled(),
         "browser_collection_mode": item.settings.browser_collection_mode().as_str(),
         "provider_reporting_enabled": item.settings.provider_reporting_enabled(),
-        "identity_linking_enabled": item.settings.identity_linking_enabled(),
-        "raw_event_retention_days": item.settings.raw_event_retention_days(),
         "updated_by": item.updated_by.map(|id| id.as_uuid()),
         "updated_at": item.updated_at.map(|value| value.to_string()),
     })
@@ -336,9 +328,9 @@ fn meta_json(item: AnalyticsConnection, provider_reporting_enabled: bool) -> Val
         .is_some_and(|value| !value.is_empty());
     json!({
         "store_id": item.store_id.as_uuid(), "dataset_id": item.external_account_reference,
-        "capi_enabled": item.enabled,
+        "enabled": item.enabled,
         "provider_reporting_enabled": provider_reporting_enabled,
-        "meta_delivery_enabled": item.enabled && provider_reporting_enabled,
+        "delivery_enabled": item.enabled && provider_reporting_enabled,
         "credentials_configured": item.credentials_configured,
         "test_event_code_configured": test_event_code_configured,
         "created_at": item.created_at.to_string(), "updated_at": item.updated_at.to_string(),

@@ -64,8 +64,9 @@ first touch, current browser-session touch, and latest non-direct touch. A
 touch stores UTM source, medium, campaign, campaign ID, term, and content,
 Referrer host, and consent-gated Meta or Google click IDs. It never stores the
 full Referrer URL. These are immutable source facts, not computed attribution.
-Authoritative payment and refund events inherit the latest snapshot associated
-with their linked Visitor so the conversion path remains queryable.
+Authoritative payment and refund events remain queryable through their order,
+payment-attempt, and refund IDs. The ledger does not rewrite historical browser
+events or maintain a separate visitor-to-customer identity table.
 
 Purchase is authoritative only after the payment Provider confirms capture.
 The server ledger and Meta CAPI use the Order ID as the stable Purchase event
@@ -83,27 +84,25 @@ pauses while the page is hidden or unfocused, and resumes after browser
 back-forward cache restoration. Browser termination can still prevent final
 delivery; authoritative commerce events never depend on that delivery.
 
-`visitor_customer_links` associates a Storefront visitor with a Customer after
-an authenticated or possession-bound customer interaction. It allows earlier
-anonymous events and later commerce events to be queried as one path without
-rewriting historical events or maintaining a derived Session aggregate.
-
 Each Store chooses `opt_in` or `opt_out` for browser collection. Events record
 `consent` or `store_policy` as their collection
 basis, and the server verifies Store policy rather than trusting a public
 client assertion. `opt_out` is the default and starts first-party collection and
 configured Meta Pixel and GA4 projections immediately. A shopper opt-out stops
 future browser collection and Provider projection. `opt_in` waits for explicit
-storage consent. Identity linking follows the same collection basis when the
-Store enables it, and stops after an explicit opt-out. Geographic policy
-selection is not hard-coded into the SDK.
+storage consent. Geographic policy selection is not hard-coded into the SDK.
 
 Store Analytics settings are one current Store-owned configuration record:
-collection enabled, Meta reporting enabled, identity linking enabled, and raw
-event retention days. Events retain the consent and setting revision that made
-them eligible. The system keeps rate limiting, bounded retention, and deletion
-by Visitor or Customer; it does not precompute sessions, attribution, or daily
-reports.
+collection enabled, browser collection mode, and provider reporting enabled.
+Events retain the consent and setting revision that made them eligible. The
+system keeps rate limiting and an append-only event ledger; it does not
+precompute sessions, attribution, or daily reports.
+
+The event ledger is partitioned by daily `received_at` ranges. `pg_partman`
+creates upcoming partitions and `pg_cron` runs its maintenance function once a
+day. Retention is an operational decision: no application worker drops data
+automatically, and an operator removes old partitions manually after removing
+their delivery rows.
 
 Meta is the only outbound Analytics integration in this phase. Its connection
 stores a Dataset ID, encrypted credential reference, optional test event code,
@@ -125,6 +124,8 @@ The following are not part of the target model:
 - commerce-fact duplication;
 - attribution jobs and results;
 - materialized daily Analytics reports;
+- visitor-to-customer identity links;
+- application-managed event retention and erasure workflows;
 - generic Analytics destinations and export deliveries;
 - GA4 delivery.
 
