@@ -119,6 +119,22 @@ pub struct PaymentProviderReadinessJob {
     pub attempts: u32,
 }
 
+pub struct PaymentCheckoutDetails {
+    pub customer_email: String,
+    pub customer_phone: Option<String>,
+    pub shipping_address: Option<PaymentShippingAddress>,
+}
+
+pub struct PaymentShippingAddress {
+    pub name: String,
+    pub line1: String,
+    pub line2: Option<String>,
+    pub city: String,
+    pub state: Option<String>,
+    pub postal_code: Option<String>,
+    pub country_code: String,
+}
+
 pub struct ProviderCommand {
     pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
     pub event_type: String,
@@ -128,8 +144,9 @@ pub struct ProviderCommand {
     pub idempotency_key: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub payment_provider_reference: Option<String>,
-    /// Required by embedded Checkout Session adapters; unused by
-    /// PaymentIntent-style adapters.
+    /// Required for `payment.create_requested` by the Stripe Checkout adapter;
+    /// absent for provider commands that do not create a Checkout Session.
+    pub checkout_details: Option<PaymentCheckoutDetails>,
     pub return_url: Option<String>,
 }
 

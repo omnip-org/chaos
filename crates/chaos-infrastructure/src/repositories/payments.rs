@@ -7,10 +7,11 @@ use chaos_application::{
     ApplicationError,
     ports::{
         AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
-        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
-        PaymentProviderReadinessQueue, PaymentProviderReadinessStatus, PaymentRepository,
+        PaymentCheckoutDetails, PaymentClientAction, PaymentProvider,
+        PaymentProviderAccountConfiguration, PaymentProviderAccountDetail,
+        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentProviderOnboarding,
+        PaymentProviderReadiness, PaymentProviderReadinessJob, PaymentProviderReadinessQueue,
+        PaymentProviderReadinessStatus, PaymentRepository, PaymentShippingAddress,
         PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
         ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
         RefundDetail, ShopperActor, VerifiedWebhookEvent,
@@ -1009,7 +1010,6 @@ impl PaymentRepository for PostgresPaymentRepository {
             return Err(invalid_outbox_payload());
         }
         .ok_or_else(provider_unavailable)?;
-        transaction.commit().await.map_err(database_error)?;
         if row.0 != outbox_amount(job)? || row.1 != outbox_currency(job)? {
             return Err(invalid_outbox_payload());
         }
@@ -1019,6 +1019,70 @@ impl PaymentRepository for PostgresPaymentRepository {
                 message: "the captured Payment Attempt has no provider reference",
             });
         }
+        let checkout_details = if job.event_type == "payment.create_requested" {
+            let contact = sqlx::query_as::<
+                _,
+                (
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ),
+            >(
+                "SELECT contact.email::text, contact.phone, shipping.full_name, \
+                        shipping.address_line1, shipping.address_line2, shipping.locality, \
+                        shipping.administrative_area, shipping.postal_code, \
+                        NULLIF(btrim(shipping.country_code::text), '') \
+                 FROM commerce.order_contacts AS contact \
+                 LEFT JOIN commerce.order_addresses AS shipping \
+                   ON shipping.store_id = contact.store_id \
+                  AND shipping.order_id = contact.order_id \
+                  AND shipping.kind = 'shipping' \
+                 WHERE contact.store_id = $1 AND contact.order_id = $2",
+            )
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(corrupt_state)?;
+            let shipping_address = contact
+                .2
+                .map(|name| {
+                    let Some(line1) = contact.3 else {
+                        return Err(corrupt_state());
+                    };
+                    let Some(city) = contact.5 else {
+                        return Err(corrupt_state());
+                    };
+                    let Some(country_code) = contact.8 else {
+                        return Err(corrupt_state());
+                    };
+                    Ok(PaymentShippingAddress {
+                        name,
+                        line1,
+                        line2: contact.4,
+                        city,
+                        state: contact.6,
+                        postal_code: contact.7,
+                        country_code,
+                    })
+                })
+                .transpose()?;
+            Some(PaymentCheckoutDetails {
+                customer_email: contact.0,
+                customer_phone: contact.1,
+                shipping_address,
+            })
+        } else {
+            None
+        };
+        transaction.commit().await.map_err(database_error)?;
         let return_url = outbox_return_url(job);
         Ok(ProviderCommand {
             provider_account_id: PaymentProviderAccountId::from_uuid(row.2),
@@ -1032,6 +1096,7 @@ impl PaymentRepository for PostgresPaymentRepository {
                 row.3,
             )?,
             payment_provider_reference: row.4,
+            checkout_details,
             return_url,
         })
     }

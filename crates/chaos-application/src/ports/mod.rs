@@ -91,13 +91,14 @@ pub use notification::{
     NotificationSecretResolver, ResolvedNotificationWebhook, VerifiedEmailWebhook,
 };
 pub use payments::{
-    IntegrationQueue, PaymentAttemptDetail, PaymentClientAction, PaymentProvider,
-    PaymentProviderAccountConfiguration, PaymentProviderAccountDetail, PaymentProviderAccountPage,
-    PaymentProviderAccountRepository, PaymentProviderOnboarding, PaymentProviderReadiness,
-    PaymentProviderReadinessJob, PaymentProviderReadinessQueue, PaymentProviderReadinessStatus,
-    PaymentRepository, PaymentSecretResolver, PaymentWebhookConfiguration,
-    PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-    ProviderCommand, ProviderCommandResult, QueueJob, RefundDetail, VerifiedWebhookEvent,
+    IntegrationQueue, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
+    PaymentProvider, PaymentProviderAccountConfiguration, PaymentProviderAccountDetail,
+    PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentProviderOnboarding,
+    PaymentProviderReadiness, PaymentProviderReadinessJob, PaymentProviderReadinessQueue,
+    PaymentProviderReadinessStatus, PaymentRepository, PaymentSecretResolver,
+    PaymentShippingAddress, PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository,
+    PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand, ProviderCommandResult,
+    QueueJob, RefundDetail, VerifiedWebhookEvent,
 };
 pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use pricing_management::{

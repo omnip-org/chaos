@@ -5,8 +5,9 @@ use chaos_application::{
     ApplicationError,
     ports::{
         PaymentClientAction, PaymentProvider, PaymentProviderOnboarding, PaymentProviderReadiness,
-        PaymentSecretResolver, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
-        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, VerifiedWebhookEvent,
+        PaymentSecretResolver, PaymentShippingAddress, PaymentWebhookConfigurationRepository,
+        PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand,
+        ProviderCommandResult, VerifiedWebhookEvent,
     },
 };
 use chaos_domain::payments::PaymentSecretReference;
@@ -23,7 +24,7 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
-const STRIPE_API_VERSION: &str = "2026-02-25.clover";
+const STRIPE_API_VERSION: &str = "2026-07-29.dahlia";
 const WEBHOOK_TOLERANCE_SECONDS: i64 = 300;
 
 /// HTTP plumbing shared by every Stripe-backed `PaymentProvider` adapter:
@@ -221,34 +222,56 @@ impl PaymentProvider for StripeCheckoutPaymentProvider {
             .return_url
             .as_deref()
             .ok_or_else(provider_invalid_response)?;
+        let checkout_details = command
+            .checkout_details
+            .as_ref()
+            .ok_or_else(provider_invalid_response)?;
+        let mut form = vec![
+            ("mode".into(), "payment".into()),
+            ("ui_mode".into(), "embedded_page".into()),
+            ("return_url".into(), return_url.into()),
+            (
+                "customer_email".into(),
+                checkout_details.customer_email.clone(),
+            ),
+            ("phone_number_collection[enabled]".into(), "true".into()),
+            ("billing_address_collection".into(), "required".into()),
+            ("line_items[0][quantity]".into(), "1".into()),
+            (
+                "line_items[0][price_data][currency]".into(),
+                command.currency.as_str().to_ascii_lowercase(),
+            ),
+            (
+                "line_items[0][price_data][unit_amount]".into(),
+                command.amount_minor.to_string(),
+            ),
+            (
+                "line_items[0][price_data][product_data][name]".into(),
+                "Order total".into(),
+            ),
+            (
+                "metadata[chaos_payment_attempt_id]".into(),
+                command.aggregate_id.to_string(),
+            ),
+        ];
+        form.push((
+            "payment_intent_data[receipt_email]".into(),
+            checkout_details.customer_email.clone(),
+        ));
+        if let Some(shipping) = checkout_details.shipping_address.as_ref() {
+            append_shipping_address(
+                &mut form,
+                shipping,
+                checkout_details.customer_phone.as_deref(),
+            );
+        }
         let object = self
             .http
             .send_form(
                 "v1/checkout/sessions",
                 &credentials,
                 &command.idempotency_key,
-                &[
-                    ("mode".into(), "payment".into()),
-                    ("ui_mode".into(), "embedded_page".into()),
-                    ("return_url".into(), return_url.into()),
-                    ("line_items[0][quantity]".into(), "1".into()),
-                    (
-                        "line_items[0][price_data][currency]".into(),
-                        command.currency.as_str().to_ascii_lowercase(),
-                    ),
-                    (
-                        "line_items[0][price_data][unit_amount]".into(),
-                        command.amount_minor.to_string(),
-                    ),
-                    (
-                        "line_items[0][price_data][product_data][name]".into(),
-                        "Order total".into(),
-                    ),
-                    (
-                        "metadata[chaos_payment_attempt_id]".into(),
-                        command.aggregate_id.to_string(),
-                    ),
-                ],
+                &form,
             )
             .await?;
         if !valid_stripe_identifier(&object.id, "cs_") {
@@ -283,6 +306,53 @@ impl PaymentProvider for StripeCheckoutPaymentProvider {
             public_key: credentials.publishable_key,
             client_token: SecretString::from(client_secret),
         })
+    }
+}
+
+fn append_shipping_address(
+    form: &mut Vec<(String, String)>,
+    shipping: &PaymentShippingAddress,
+    phone: Option<&str>,
+) {
+    form.push((
+        "payment_intent_data[shipping][name]".into(),
+        shipping.name.clone(),
+    ));
+    form.push((
+        "payment_intent_data[shipping][address][line1]".into(),
+        shipping.line1.clone(),
+    ));
+    form.push((
+        "payment_intent_data[shipping][address][city]".into(),
+        shipping.city.clone(),
+    ));
+    form.push((
+        "payment_intent_data[shipping][address][country]".into(),
+        shipping.country_code.clone(),
+    ));
+    if let Some(value) = shipping.line2.as_deref() {
+        form.push((
+            "payment_intent_data[shipping][address][line2]".into(),
+            value.to_owned(),
+        ));
+    }
+    if let Some(value) = shipping.state.as_deref() {
+        form.push((
+            "payment_intent_data[shipping][address][state]".into(),
+            value.to_owned(),
+        ));
+    }
+    if let Some(value) = shipping.postal_code.as_deref() {
+        form.push((
+            "payment_intent_data[shipping][address][postal_code]".into(),
+            value.to_owned(),
+        ));
+    }
+    if let Some(value) = phone {
+        form.push((
+            "payment_intent_data[shipping][phone]".into(),
+            value.to_owned(),
+        ));
     }
 }
 
@@ -741,12 +811,30 @@ mod tests {
         http::{Request, Response},
         routing::any,
     };
-    use chaos_application::ports::PaymentWebhookConfiguration;
+    use chaos_application::ports::{
+        PaymentCheckoutDetails, PaymentShippingAddress, PaymentWebhookConfiguration,
+    };
     use chaos_domain::{CurrencyCode, payments::PaymentProviderAccountId};
 
     use super::*;
 
     const TEST_PROVIDER_ACCOUNT_ID: Uuid = Uuid::from_u128(1);
+
+    fn checkout_details() -> PaymentCheckoutDetails {
+        PaymentCheckoutDetails {
+            customer_email: "buyer@example.com".into(),
+            customer_phone: Some("+14155552671".into()),
+            shipping_address: Some(PaymentShippingAddress {
+                name: "Buyer Example".into(),
+                line1: "1 Market Street".into(),
+                line2: Some("Suite 100".into()),
+                city: "San Francisco".into(),
+                state: Some("CA".into()),
+                postal_code: Some("94105".into()),
+                country_code: "US".into(),
+            }),
+        }
+    }
 
     struct StaticSecrets(HashMap<String, String>);
 
@@ -876,6 +964,7 @@ mod tests {
                 provider_account_id: PaymentProviderAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
+                checkout_details: Some(checkout_details()),
                 return_url: Some("https://shop.example.com/success".into()),
             })
             .await
@@ -917,6 +1006,21 @@ mod tests {
         assert_eq!(
             checkout_form["return_url"],
             "https://shop.example.com/success"
+        );
+        assert_eq!(checkout_form["customer_email"], "buyer@example.com");
+        assert_eq!(checkout_form["phone_number_collection[enabled]"], "true");
+        assert_eq!(checkout_form["billing_address_collection"], "required");
+        assert_eq!(
+            checkout_form["payment_intent_data[receipt_email]"],
+            "buyer@example.com"
+        );
+        assert_eq!(
+            checkout_form["payment_intent_data[shipping][phone]"],
+            "+14155552671"
+        );
+        assert_eq!(
+            checkout_form["payment_intent_data[shipping][address][country]"],
+            "US"
         );
         assert_eq!(
             checkout_form["metadata[chaos_payment_attempt_id]"],
@@ -965,6 +1069,7 @@ mod tests {
                 provider_account_id: PaymentProviderAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                 credential_secret_reference: reference.clone(),
                 payment_provider_reference: None,
+                checkout_details: Some(checkout_details()),
                 return_url: Some("https://shop.example.com/success".into()),
             })
             .await
@@ -1000,6 +1105,13 @@ mod tests {
         assert_eq!(form["mode"], "payment");
         assert_eq!(form["ui_mode"], "embedded_page");
         assert_eq!(form["return_url"], "https://shop.example.com/success");
+        assert_eq!(form["customer_email"], "buyer@example.com");
+        assert_eq!(form["phone_number_collection[enabled]"], "true");
+        assert_eq!(form["billing_address_collection"], "required");
+        assert_eq!(
+            form["payment_intent_data[shipping][address][country]"],
+            "US"
+        );
         assert_eq!(form["line_items[0][quantity]"], "1");
         assert_eq!(form["line_items[0][price_data][currency]"], "usd");
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "1234");
@@ -1034,6 +1146,7 @@ mod tests {
                 provider_account_id: PaymentProviderAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                 credential_secret_reference: reference,
                 payment_provider_reference: None,
+                checkout_details: Some(checkout_details()),
                 return_url: None,
             })
             .await;

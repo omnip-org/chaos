@@ -67,6 +67,24 @@ Stripe webhook requests are verified against the exact raw request bytes,
 with the standard `Stripe-Signature` header and a five-minute timestamp
 tolerance. A Connect-style event envelope containing `account` is rejected.
 
+Checkout Session customer and address fields are sourced from the immutable
+Order snapshot rather than from payment-attempt request parameters:
+
+- `customer_email` and `payment_intent_data[receipt_email]` use the order
+  contact email;
+- `phone_number_collection[enabled]=true` collects the phone number in
+  Checkout, and an existing order phone is copied to PaymentIntent shipping
+  data when the order has a shipping address;
+- `billing_address_collection=required` makes Stripe collect the billing
+  country and address;
+- an existing shipping snapshot is copied to
+  `payment_intent_data[shipping]`, including its ISO 3166-1 alpha-2 country
+  code and regional fields.
+
+Checkout has no standalone phone prefill parameter. Enabling phone collection
+is therefore required even when Chaos already has a phone number; the stored
+order snapshot remains authoritative for the order itself.
+
 ## Consequences
 
 - Provider Account UUIDs provide a clear, deterministic Store route without
