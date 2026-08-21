@@ -25,9 +25,9 @@ pub struct Settings {
     pub mcp_allowed_hosts: Vec<String>,
     pub google_client_id: Option<String>,
     pub apple_client_id: Option<String>,
+    /// Deprecated fallback; notification jobs should carry the Store URL.
     pub storefront_public_base_url: Url,
     pub resend_api_base_url: Url,
-    pub payment_webhook_secret: String,
     pub stripe_api_base_url: Url,
     pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
@@ -119,12 +119,8 @@ impl Settings {
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
-            storefront_public_base_url: parse_or(
-                "STOREFRONT_PUBLIC_BASE_URL",
-                "http://localhost:4321/",
-            )?,
+            storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
-            payment_webhook_secret: required("PAYMENT_WEBHOOK_SECRET")?,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
             easypost_api_base_url: parse_or("EASYPOST_API_BASE_URL", "https://api.easypost.com/")?,
             analytics_meta_api_base_url: parse_or(

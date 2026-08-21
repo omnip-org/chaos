@@ -70,18 +70,18 @@ use chaos_infrastructure::{
     },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     repositories::{
-        HmacPaymentWebhookVerifier, PostgresAnalyticsEventRepository,
-        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
-        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresCustomerRepository, PostgresEmailDeliveryRepository,
-        PostgresFulfillmentRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresAnalyticsEventRepository, PostgresCatalogLocalizationRepository,
+        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
+        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresCustomerRepository,
+        PostgresEmailDeliveryRepository, PostgresFulfillmentRepository,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
         PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
         PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
         PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository, SandboxPaymentProvider,
+        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository,
         SecurePublishableKeyMaterialGenerator,
     },
     secret::DynamicSecretResolver,
@@ -330,7 +330,6 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let payment_secrets = dynamic_secrets.clone();
-        let sandbox_payment_provider = Arc::new(SandboxPaymentProvider);
         let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
@@ -342,22 +341,16 @@ impl ApiState {
             payment_secrets.clone(),
         )?);
         let providers = vec![
-            sandbox_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
             stripe_payment_provider.clone() as Arc<dyn chaos_application::ports::PaymentProvider>,
             stripe_checkout_payment_provider.clone()
                 as Arc<dyn chaos_application::ports::PaymentProvider>,
         ];
         let payment_onboarding = vec![
-            sandbox_payment_provider
-                as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
             stripe_payment_provider as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
             stripe_checkout_payment_provider
                 as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
         ];
         let webhook_verifiers = vec![
-            Arc::new(HmacPaymentWebhookVerifier::new(
-                settings.payment_webhook_secret.as_bytes(),
-            )?) as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>,
             Arc::new(StripeWebhookVerifier::new(
                 payment_repository.clone(),
                 payment_secrets.clone(),
@@ -561,7 +554,6 @@ mod tests {
             apple_client_id: None,
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
-            payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),

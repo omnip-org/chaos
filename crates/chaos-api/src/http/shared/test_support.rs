@@ -58,7 +58,6 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         apple_client_id: None,
         storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
         resend_api_base_url: "http://localhost:12112/".parse().unwrap(),
-        payment_webhook_secret: "test-payment-webhook-secret-32-bytes".into(),
         stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
         easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
         analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),

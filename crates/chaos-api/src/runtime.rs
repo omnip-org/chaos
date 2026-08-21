@@ -23,7 +23,6 @@ use chaos_infrastructure::{
         PostgresAnalyticsEventRepository, PostgresEmailDeliveryRepository,
         PostgresFulfillmentRepository, PostgresPaymentRepository, PostgresSearchIndexer,
         PostgresShippingServiceRepository, PostgresStorefrontSalesRepository,
-        SandboxPaymentProvider,
     },
     secret::DynamicSecretResolver,
     state::AppState,
@@ -59,7 +58,6 @@ impl WorkerRuntime {
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let sandbox_payment_provider = Arc::new(SandboxPaymentProvider);
         let stripe_payment_provider = Arc::new(StripePaymentProvider::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
@@ -71,12 +69,10 @@ impl WorkerRuntime {
             dynamic_secrets.clone(),
         )?);
         let payment_providers = vec![
-            sandbox_payment_provider.clone() as Arc<dyn PaymentProvider>,
             stripe_payment_provider.clone() as Arc<dyn PaymentProvider>,
             stripe_checkout_payment_provider.clone() as Arc<dyn PaymentProvider>,
         ];
         let payment_onboarding = vec![
-            sandbox_payment_provider as Arc<dyn PaymentProviderOnboarding>,
             stripe_payment_provider as Arc<dyn PaymentProviderOnboarding>,
             stripe_checkout_payment_provider as Arc<dyn PaymentProviderOnboarding>,
         ];
