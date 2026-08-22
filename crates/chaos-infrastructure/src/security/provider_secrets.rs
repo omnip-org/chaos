@@ -20,7 +20,7 @@ use chaos_domain::{
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::config::SecretKey;
+use crate::runtime::config::SecretKey;
 
 const ENCRYPTED_PREFIX: &str = "enc://";
 const NONCE_LEN: usize = 12;

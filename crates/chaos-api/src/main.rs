@@ -4,7 +4,7 @@ use chaos_api::{
     lifecycle::Lifecycle,
     telemetry,
 };
-use chaos_infrastructure::{config::Settings, state::AppState};
+use chaos_infrastructure::runtime::{config::Settings, state::AppState};
 use tokio::net::TcpListener;
 
 #[tokio::main]

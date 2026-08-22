@@ -12,7 +12,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::secret::DynamicSecretResolver;
+use crate::security::provider_secrets::DynamicSecretResolver;
 
 pub struct MetaConversionsDestination {
     client: Client,

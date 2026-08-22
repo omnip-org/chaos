@@ -4,7 +4,7 @@ use anyhow::Context;
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-use crate::{config::Settings, store::StoreTransaction};
+use crate::{database::store_context::StoreTransaction, runtime::config::Settings};
 use chaos_domain::store::StoreId;
 
 #[derive(Clone)]

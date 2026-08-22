@@ -1,6 +1,6 @@
 use anyhow::Context;
 use chaos_api::{lifecycle::Lifecycle, runtime::WorkerRuntime, telemetry, workers};
-use chaos_infrastructure::{config::Settings, state::AppState};
+use chaos_infrastructure::runtime::{config::Settings, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

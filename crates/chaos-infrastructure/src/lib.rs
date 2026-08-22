@@ -1,17 +1,6 @@
-mod analytics_rate_limit;
-pub mod clock;
-pub mod config;
-pub mod identity;
-pub mod media_storage;
-pub mod meta;
-pub mod providers;
+pub mod database;
+pub mod integrations;
 pub mod repositories;
-pub mod secret;
-pub mod shopper;
-pub mod state;
-pub mod store;
-
-// Preserve the existing adapter paths for downstream callers.
-pub use providers::{easypost, stripe};
-
-pub use analytics_rate_limit::RedisAnalyticsCollectionRateLimiter;
+pub mod runtime;
+pub mod security;
+pub mod storage;

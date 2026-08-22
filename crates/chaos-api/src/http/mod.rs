@@ -52,15 +52,11 @@ use chaos_application::{
 use std::sync::Arc;
 
 use chaos_infrastructure::{
-    RedisAnalyticsCollectionRateLimiter,
-    clock::SystemClock,
-    config::Settings,
-    easypost::EasyPostShippingProvider,
-    identity::{
-        JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
-        PostgresAccessKeyRepository, PostgresIdentityRepository, SecureAccessKeyMaterialGenerator,
+    integrations::{
+        analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
+        payments::stripe::{StripeCheckoutPaymentProvider, StripeWebhookVerifier},
+        shipping::easypost::EasyPostShippingProvider,
     },
-    media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     repositories::{
         PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
         PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
@@ -75,10 +71,17 @@ use chaos_infrastructure::{
         PostgresStorefrontSalesRepository, PostgresTaxRuleRepository,
         SecurePublishableKeyMaterialGenerator,
     },
-    secret::DynamicSecretResolver,
-    shopper::HmacShopperCredentialCodec,
-    state::AppState,
-    stripe::{StripeCheckoutPaymentProvider, StripeWebhookVerifier},
+    runtime::{clock::SystemClock, config::Settings, state::AppState},
+    security::{
+        identity::{
+            JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
+            PostgresAccessKeyRepository, PostgresIdentityRepository,
+            SecureAccessKeyMaterialGenerator,
+        },
+        provider_secrets::DynamicSecretResolver,
+        shopper::HmacShopperCredentialCodec,
+    },
+    storage::media::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
 };
 use secrecy::ExposeSecret as _;
 use tower_http::{
@@ -467,7 +470,7 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode},
     };
-    use chaos_infrastructure::{config::Settings, state::AppState};
+    use chaos_infrastructure::runtime::{config::Settings, state::AppState};
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -500,7 +503,7 @@ mod tests {
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
-            provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
+            provider_secret_key: chaos_infrastructure::runtime::config::SecretKey::from_base64(
                 "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
             )
             .unwrap(),

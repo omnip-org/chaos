@@ -13,17 +13,18 @@ use chaos_application::{
     sales::CheckoutExpiryWorkers,
 };
 use chaos_infrastructure::{
-    clock::SystemClock,
-    config::Settings,
-    meta::MetaConversionsDestination,
-    providers::{easypost::EasyPostShippingProvider, stripe::StripeCheckoutPaymentProvider},
+    integrations::{
+        analytics::meta::MetaConversionsDestination,
+        payments::stripe::StripeCheckoutPaymentProvider,
+        shipping::easypost::EasyPostShippingProvider,
+    },
     repositories::{
         PostgresAnalyticsDeliveryStore, PostgresFulfillmentRepository, PostgresIntegrationQueue,
         PostgresPaymentRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
         PostgresStorefrontSalesRepository,
     },
-    secret::DynamicSecretResolver,
-    state::AppState,
+    runtime::{clock::SystemClock, config::Settings, state::AppState},
+    security::provider_secrets::DynamicSecretResolver,
 };
 
 /// Dependencies used by durable polling loops, without HTTP or MCP state.

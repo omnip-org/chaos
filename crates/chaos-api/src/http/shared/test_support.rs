@@ -9,7 +9,7 @@ use chaos_application::{
     ports::{AccessTokenGrant, IdentityAuthentication},
 };
 use chaos_domain::identity::{IdentityProvider, UserId};
-use chaos_infrastructure::{config::Settings, state::AppState};
+use chaos_infrastructure::runtime::{config::Settings, state::AppState};
 use secrecy::SecretString;
 use serde_json::Value;
 
@@ -61,7 +61,7 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
         easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
         analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
-        provider_secret_key: chaos_infrastructure::config::SecretKey::from_base64(
+        provider_secret_key: chaos_infrastructure::runtime::config::SecretKey::from_base64(
             "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
         )
         .unwrap(),
