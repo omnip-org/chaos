@@ -245,8 +245,8 @@
         "tags": [
           "Analytics"
         ],
-        "summary": "Collect a bounded batch of consent-aware first-party behavior events",
-        "description": "Browser events carry no consumer identity; the API derives shopper_id from the signed shopper token. Cart, checkout, payment, purchase, and refund outcomes are recorded by authoritative server workflows.",
+        "summary": "Collect a bounded batch of first-party behavior events",
+        "description": "Browser events carry no consumer identity; the API derives shopper_id from the signed shopper token. Event-specific values are stored as dynamic JSON properties. Cart, checkout, payment, purchase, and refund outcomes are recorded by authoritative server workflows.",
         "security": [
           {
             "publishableKey": []
@@ -269,7 +269,7 @@
         },
         "responses": {
           "200": {
-            "description": "Batch accepted, deduplicated, or discarded according to consent and the effective Store Analytics Policy",
+            "description": "Batch accepted with duplicate event IDs reported separately",
             "content": {
               "application/json": {
                 "schema": {
@@ -1181,188 +1181,13 @@
       }
     },
     "schemas": {
-      "AnalyticsConsent": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "analytics_storage",
-          "advertising_storage",
-          "policy_version"
-        ],
-        "properties": {
-          "analytics_storage": {
-            "type": "boolean"
-          },
-          "advertising_storage": {
-            "type": "boolean"
-          },
-          "policy_version": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
-          }
-        }
-      },
-      "TrafficTouchpoint": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "source": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "medium": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "campaign": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "campaign_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "term": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "content": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "referrer_domain": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 253
-          },
-          "fbclid": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          },
-          "gclid": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          }
-        }
-      },
-      "TrafficAttribution": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "first",
-          "session"
-        ],
-        "properties": {
-          "first": {
-            "$ref": "#/components/schemas/TrafficTouchpoint"
-          },
-          "session": {
-            "$ref": "#/components/schemas/TrafficTouchpoint"
-          },
-          "last_non_direct": {
-            "$ref": "#/components/schemas/TrafficTouchpoint"
-          }
-        }
-      },
-      "PageViewProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "path"
-        ],
-        "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "pattern": "^/[^?#]*$"
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "referrer_domain": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 253
-          }
-        }
-      },
-      "ViewContentProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "product_id"
-        ],
-        "properties": {
-          "product_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "product_variant_id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
-      },
-      "SearchProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "query"
-        ],
-        "properties": {
-          "query": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200
-          },
-          "result_count": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 1000000
-          }
-        }
-      },
-      "ViewDurationProperties": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "page_view_event_id",
-          "active_milliseconds"
-        ],
-        "properties": {
-          "page_view_event_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "active_milliseconds": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 60000
-          }
-        }
-      },
       "BrowserAnalyticsEvent": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "event_id",
           "event_name",
-          "schema_version",
           "occurred_at",
-          "session_id",
-          "consent",
-          "collection_basis",
           "properties"
         ],
         "properties": {
@@ -1372,121 +1197,18 @@
           },
           "event_name": {
             "type": "string",
-            "enum": [
-              "page_view",
-              "view_content",
-              "search",
-              "view_duration"
-            ]
-          },
-          "schema_version": {
-            "type": "integer",
-            "const": 1
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
           },
           "occurred_at": {
             "type": "string",
             "format": "date-time"
           },
-          "session_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "consent": {
-            "$ref": "#/components/schemas/AnalyticsConsent"
-          },
-          "collection_basis": {
-            "type": "string",
-            "enum": [
-              "consent",
-              "store_policy"
-            ]
-          },
-          "traffic": {
-            "$ref": "#/components/schemas/TrafficAttribution"
-          },
           "properties": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/PageViewProperties"
-              },
-              {
-                "$ref": "#/components/schemas/ViewContentProperties"
-              },
-              {
-                "$ref": "#/components/schemas/SearchProperties"
-              },
-              {
-                "$ref": "#/components/schemas/ViewDurationProperties"
-              }
-            ]
+            "type": "object",
+            "description": "Event-specific values. The server requires an object and permits store-defined fields.",
+            "additionalProperties": true
           }
-        },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "event_name": {
-                  "const": "page_view"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "properties": {
-                  "$ref": "#/components/schemas/PageViewProperties"
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "event_name": {
-                  "const": "view_content"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "properties": {
-                  "$ref": "#/components/schemas/ViewContentProperties"
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "event_name": {
-                  "const": "search"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "properties": {
-                  "$ref": "#/components/schemas/SearchProperties"
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "event_name": {
-                  "const": "view_duration"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "properties": {
-                  "$ref": "#/components/schemas/ViewDurationProperties"
-                }
-              }
-            }
-          }
-        ]
+        }
       },
       "CollectAnalyticsEvents": {
         "type": "object",
@@ -1511,10 +1233,7 @@
         "required": [
           "received",
           "stored",
-          "duplicates",
-          "discarded_for_consent",
-          "discarded_for_settings",
-          "settings_revision"
+          "duplicates"
         ],
         "properties": {
           "received": {
@@ -1531,20 +1250,6 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 20
-          },
-          "discarded_for_consent": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 20
-          },
-          "discarded_for_settings": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 20
-          },
-          "settings_revision": {
-            "type": "integer",
-            "minimum": 1
           }
         }
       },

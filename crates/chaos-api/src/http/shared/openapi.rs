@@ -54,6 +54,36 @@ mod tests {
     }
 
     #[test]
+    fn analytics_contract_matches_dynamic_event_ingestion() {
+        let specification: Value = serde_json::from_str(STORE_V1).unwrap();
+        let operation = &specification["paths"]["/analytics/events"]["post"];
+        assert_eq!(
+            operation["summary"],
+            "Collect a bounded batch of first-party behavior events"
+        );
+
+        let event = &specification["components"]["schemas"]["BrowserAnalyticsEvent"];
+        assert_eq!(
+            event["required"],
+            serde_json::json!(["event_id", "event_name", "occurred_at", "properties"])
+        );
+        assert_eq!(
+            event["properties"]["event_name"]["pattern"],
+            "^[a-z][a-z0-9_]{0,63}$"
+        );
+        assert_eq!(
+            event["properties"]["properties"]["additionalProperties"],
+            true
+        );
+        assert!(event["properties"].get("consent").is_none());
+
+        assert_eq!(
+            specification["components"]["schemas"]["AnalyticsCollectionResult"]["required"],
+            serde_json::json!(["received", "stored", "duplicates"])
+        );
+    }
+
+    #[test]
     fn webhook_contract_matches_the_provider_account_route() {
         let specification: Value = serde_json::from_str(WEBHOOKS_V1).unwrap();
         let paths = specification["paths"].as_object().unwrap();
