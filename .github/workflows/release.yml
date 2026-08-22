@@ -83,6 +83,7 @@ jobs:
 
       - name: Verify repository
         run: |
+          node --check scripts/release-version.mjs
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --all-features -- -D warnings
           cargo test --workspace --locked
@@ -160,8 +161,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefix packages/js
 
-      - name: Set package version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --allow-same-version --no-git-tag-version --prefix packages/js
+      - name: Synchronize release versions
+        run: node scripts/release-version.mjs "${GITHUB_REF_NAME}"
 
       - name: Build
         run: npm run build --prefix packages/js
