@@ -587,8 +587,9 @@ CREATE INDEX provider_webhooks_provider_account_idx
 
 -- === Analytics workflow ===
 
-ALTER TABLE commerce.sales_channels
-    ADD CONSTRAINT sales_channels_store_id_id_key UNIQUE (store_id, id);
+-- commerce.sales_channels already defines UNIQUE (store_id, id) in
+-- 0003_commerce.sql. Keep the composite key there for the cross-store
+-- foreign keys used by commerce tables; do not add it again here.
 
 -- Partitioned append-only behavior event ledger. Event-specific data lives in
 -- properties so adding a new behavior does not require a migration.
