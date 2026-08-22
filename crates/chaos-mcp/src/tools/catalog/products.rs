@@ -1,9 +1,12 @@
 use chaos_application::catalog::{
     ChangeProductStatusInput, CreateProductInput, CreateProductOptionInput,
     CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
-    UpdateProductInput,
+    UpdateProductInput, UpdateProductVariantInput,
 };
-use chaos_domain::{catalog::ProductId, store::SalesChannelId};
+use chaos_domain::{
+    catalog::{ProductId, ProductVariantId},
+    store::SalesChannelId,
+};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -54,6 +57,7 @@ pub struct ProductSelectedOptionParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ProductVariantParams {
+    /// Canonical variant title used by the default locale when no translation overrides it.
     pub title: String,
     #[serde(default)]
     pub sku: Option<String>,
@@ -116,6 +120,8 @@ pub struct UpdateProductParams {
     pub product_id: String,
     /// URL-safe handle, unique within the Store.
     pub handle: String,
+    /// Canonical product title. This does not update variant titles, option names or values,
+    /// or locale translations.
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -128,6 +134,32 @@ pub struct UpdateProductParams {
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt (see change-status tools).
+    pub idempotency_key: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct UpdateProductVariantParams {
+    /// The product's UUID.
+    pub product_id: String,
+    /// The product variant's UUID.
+    pub product_variant_id: String,
+    /// Canonical variant title. This is the default-locale title used when no locale
+    /// translation overrides it.
+    pub title: String,
+    /// Set to null to remove the SKU.
+    #[serde(default)]
+    pub sku: Option<String>,
+    #[serde(default = "default_true")]
+    pub requires_shipping: bool,
+    #[serde(default = "default_true")]
+    pub track_inventory: bool,
+    /// Arbitrary JSON (up to 32KB) for automation bookkeeping. Omitting this field clears
+    /// existing metadata because the mutable canonical fields are replaced wholesale.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    /// Must be explicitly set to true. This action affects live store data.
+    pub confirm: bool,
+    /// A client-chosen key identifying this exact attempt.
     pub idempotency_key: String,
 }
 
@@ -147,7 +179,9 @@ pub struct ProductPublicationParams {
 impl ChaosMcp {
     #[tool(
         description = "List products in the selected Store, including draft and \
-                        archived products. Paginated; use the returned next_cursor for more pages."
+                        archived products. The returned title is the canonical Store catalog \
+                        title from commerce.products, not locale-resolved storefront content. \
+                        Paginated; use the returned next_cursor for more pages."
     )]
     async fn list_products(
         &self,
@@ -187,6 +221,7 @@ impl ChaosMcp {
                             "id": item.id.as_uuid(),
                             "handle": item.handle,
                             "title": item.title,
+                            "title_source": "canonical",
                             "status": item.status.as_str(),
                             "variant_count": item.variant_count,
                             "created_at": format_time(item.created_at),
@@ -215,7 +250,11 @@ impl ChaosMcp {
     #[tool(
         description = "Get full details for a single product in the selected Store, including \
                         options, variants, their selected option values, and \
-                        metadata (both product-level and per-variant)."
+                        metadata (both product-level and per-variant). The product title and \
+                        description are canonical fields from commerce.products, and each \
+                        variant title is the canonical field from commerce.product_variants. \
+                        This tool does not resolve locale translations; use \
+                        get_product_translation for a non-default locale."
     )]
     async fn get_product(
         &self,
@@ -248,6 +287,7 @@ impl ChaosMcp {
                 "id": detail.id.as_uuid(),
                 "handle": detail.handle,
                 "title": detail.title,
+                "title_source": "canonical",
                 "description": detail.description,
                 "status": detail.status.as_str(),
                 "options": detail.options.into_iter().map(|option| json!({
@@ -263,6 +303,7 @@ impl ChaosMcp {
                 "variants": detail.variants.into_iter().map(|variant| json!({
                     "id": variant.id.as_uuid(),
                     "title": variant.title,
+                    "title_source": "canonical",
                     "sku": variant.sku,
                     "status": variant.status.as_str(),
                     "requires_shipping": variant.requires_shipping,
@@ -287,9 +328,11 @@ impl ChaosMcp {
         description = "Create a new draft product in the selected Store, with its \
                         options, variants, and optional metadata (product-level and \
                         per-variant, arbitrary JSON up to 32KB, useful for automation \
-                        bookkeeping). The product starts as draft and is not visible anywhere \
-                        until activate_product and publish_product are also called. Requires \
-                        confirm: true and an idempotency_key."
+                        bookkeeping). Product and variant titles are canonical catalog fields; \
+                        use upsert_product_translation for enabled non-default locales. The \
+                        product starts as draft and is not visible anywhere until \
+                        activate_product and publish_product are also called. Requires confirm: \
+                        true and an idempotency_key."
     )]
     async fn create_product(
         &self,
@@ -363,9 +406,10 @@ impl ChaosMcp {
 
     #[tool(
         description = "Update a product's handle, title, description, and metadata in the \
-                        selected Store. Every field is replaced wholesale, \
-                        including metadata (omit it to clear existing metadata). Requires \
-                        confirm: true and an idempotency_key."
+                        selected Store. These are canonical product fields only: this does not \
+                        update variant titles, option names or values, or locale translations. \
+                        Every field is replaced wholesale, including metadata (omit it to clear \
+                        existing metadata). Requires confirm: true and an idempotency_key."
     )]
     async fn update_product(
         &self,
@@ -408,6 +452,69 @@ impl ChaosMcp {
             .await
         {
             Ok(id) => Ok(text_result(json!({ "id": id.as_uuid() }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Update one variant's canonical title, SKU, shipping flag, inventory \
+                        tracking flag, and metadata in the selected Store. This updates the \
+                        default-locale catalog fields used when no locale translation exists; \
+                        it does not change selected option values or locale translations. \
+                        Mutable fields are replaced wholesale, and omitting metadata clears it. \
+                        Requires confirm: true and an idempotency_key."
+    )]
+    async fn update_product_variant(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<UpdateProductVariantParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            &parts,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let store_id = actor.store_id();
+        let product_id = match parse_uuid_field(&params.product_id, "product_id") {
+            Ok(id) => ProductId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
+        let product_variant_id =
+            match parse_uuid_field(&params.product_variant_id, "product_variant_id") {
+                Ok(id) => ProductVariantId::from_uuid(id),
+                Err(result) => return Ok(result),
+            };
+        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
+
+        match self
+            .state
+            .catalog_management
+            .update_variant(UpdateProductVariantInput {
+                actor,
+                store_id,
+                product_id,
+                product_variant_id,
+                title: params.title,
+                sku: params.sku,
+                requires_shipping: params.requires_shipping,
+                track_inventory: params.track_inventory,
+                metadata: params.metadata,
+                idempotency,
+            })
+            .await
+        {
+            Ok(id) => Ok(text_result(json!({
+                "product_id": product_id.as_uuid(),
+                "product_variant_id": id.as_uuid(),
+            }))),
             Err(error) => Ok(tool_error(error)),
         }
     }

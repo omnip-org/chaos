@@ -12,6 +12,6 @@ pub use metadata::CatalogMetadata;
 pub use product::{
     Product, ProductContent, ProductHandle, ProductId, ProductLifecycle, ProductOption,
     ProductOptionId, ProductOptionValue, ProductOptionValueId, ProductStatus, ProductVariant,
-    ProductVariantId, SelectedOptionValue, Sku, VariantStatus,
+    ProductVariantContent, ProductVariantId, SelectedOptionValue, Sku, VariantStatus,
 };
 pub use review::{ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent};

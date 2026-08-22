@@ -7,7 +7,10 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    catalog::{CatalogMetadata, ProductContent, ProductId, ProductStatus},
+    catalog::{
+        CatalogMetadata, ProductContent, ProductId, ProductStatus, ProductVariantContent,
+        ProductVariantId,
+    },
     store::{SalesChannelId, StoreId},
 };
 use serde_json::json;
@@ -90,6 +93,34 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
             })
     }
 
+    async fn reserve_variant_mutation(
+        &mut self,
+        operation: &'static str,
+        request: &IdempotencyRequest,
+    ) -> Result<Option<ProductVariantId>, ApplicationError> {
+        let Some(body) = idempotency::reserve(
+            &mut self.transaction,
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
+            operation,
+            request,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        body.get("data")
+            .and_then(|data| data.get("id"))
+            .and_then(|id| id.as_str())
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .map(ProductVariantId::from_uuid)
+            .map(Some)
+            .ok_or_else(|| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "completed idempotency record has no product variant mutation response"
+                ))
+            })
+    }
+
     async fn load_lifecycle(
         &mut self,
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {
@@ -137,6 +168,31 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         .bind(content.handle().as_str())
         .bind(content.title())
         .bind(content.description())
+        .bind(content.metadata().map(CatalogMetadata::as_str))
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(map_catalog_write_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn update_variant_content(
+        &mut self,
+        variant_id: ProductVariantId,
+        content: &ProductVariantContent,
+    ) -> Result<bool, ApplicationError> {
+        let result = sqlx::query(
+            "UPDATE commerce.product_variants \
+             SET title = $4, sku = $5, requires_shipping = $6, track_inventory = $7, \
+                 metadata = $8::jsonb, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND product_id = $2 AND id = $3",
+        )
+        .bind(self.store_id.as_uuid())
+        .bind(self.product_id.as_uuid())
+        .bind(variant_id.as_uuid())
+        .bind(content.title())
+        .bind(content.sku().map(|sku| sku.as_str()))
+        .bind(content.requires_shipping())
+        .bind(content.track_inventory())
         .bind(content.metadata().map(CatalogMetadata::as_str))
         .execute(&mut *self.transaction)
         .await
@@ -233,6 +289,23 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         .await
     }
 
+    async fn complete_variant_mutation(
+        &mut self,
+        operation: &'static str,
+        request: &IdempotencyRequest,
+        variant_id: ProductVariantId,
+    ) -> Result<(), ApplicationError> {
+        idempotency::complete(
+            &mut self.transaction,
+            &IdempotencyScope::Store(self.store_id.as_uuid()),
+            operation,
+            request,
+            200,
+            json!({ "data": { "id": variant_id.as_uuid() } }),
+        )
+        .await
+    }
+
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
         self.transaction
             .commit()
@@ -250,6 +323,14 @@ fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
             message: "the product handle is already in use for this Store",
         };
     }
+    if let sqlx::Error::Database(database_error) = &error
+        && database_error.constraint() == Some("product_variants_store_sku_key")
+    {
+        return ApplicationError::Conflict {
+            code: "product_variant_sku_taken",
+            message: "the product variant SKU is already in use for this Store",
+        };
+    }
     unexpected_database_error(error)
 }
 
@@ -264,7 +345,7 @@ mod tests {
     use chaos_application::{
         catalog::{
             CatalogManagement, ChangeProductStatusInput, ProductPublicationInput,
-            UpdateProductInput,
+            UpdateProductInput, UpdateProductVariantInput,
         },
         ports::{AdminActor, IdempotencyRequest},
         store::StoreQueries,
@@ -443,6 +524,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated, replay);
+
+        let variant_update_key = format!("update-variant-{suffix}");
+        let updated_variant = service
+            .update_variant(UpdateProductVariantInput {
+                actor: AdminActor::Store(owner),
+                store_id,
+                product_id,
+                product_variant_id: variant_id,
+                title: "Updated Variant".into(),
+                sku: Some("UPDATED-SKU".into()),
+                requires_shipping: false,
+                track_inventory: false,
+                metadata: Some(serde_json::json!({ "source": "test" })),
+                idempotency: request(variant_update_key.clone(), [69; 32]),
+            })
+            .await
+            .unwrap();
+        let replayed_variant = service
+            .update_variant(UpdateProductVariantInput {
+                actor: AdminActor::Store(owner),
+                store_id,
+                product_id,
+                product_variant_id: variant_id,
+                title: "Updated Variant".into(),
+                sku: Some("UPDATED-SKU".into()),
+                requires_shipping: false,
+                track_inventory: false,
+                metadata: Some(serde_json::json!({ "source": "test" })),
+                idempotency: request(variant_update_key, [69; 32]),
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated_variant, replayed_variant);
+        let stored_variant: (String, String, bool, bool, serde_json::Value) = sqlx::query_as(
+            "SELECT title, sku::text, requires_shipping, track_inventory, metadata \
+             FROM commerce.product_variants WHERE id = $1",
+        )
+        .bind(variant_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_variant,
+            (
+                "Updated Variant".into(),
+                "UPDATED-SKU".into(),
+                false,
+                false,
+                serde_json::json!({ "source": "test" }),
+            )
+        );
 
         service
             .activate(ChangeProductStatusInput {

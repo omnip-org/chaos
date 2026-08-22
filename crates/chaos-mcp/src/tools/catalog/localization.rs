@@ -38,7 +38,8 @@ pub struct ChangeLocaleParams {
 pub struct GetProductTranslationParams {
     /// The product's UUID.
     pub product_id: String,
-    /// BCP 47 locale tag.
+    /// Enabled non-default BCP 47 locale tag. The Store default locale uses canonical catalog
+    /// content and has no separate translation record.
     pub locale: String,
 }
 
@@ -53,7 +54,8 @@ pub struct ProductVariantTranslationParams {
 pub struct UpsertProductTranslationParams {
     /// The product's UUID.
     pub product_id: String,
-    /// BCP 47 locale tag.
+    /// Enabled non-default BCP 47 locale tag. The Store default locale uses canonical catalog
+    /// content and cannot be written as a translation.
     pub locale: String,
     pub title: String,
     pub description: String,
@@ -221,7 +223,8 @@ impl ChaosMcp {
 
     #[tool(
         description = "Get a product's translated title, description, and variant titles for \
-                        a locale, in the selected Store."
+                        an enabled non-default locale in the selected Store. The default locale \
+                        uses canonical catalog content and has no separate translation record."
     )]
     async fn get_product_translation(
         &self,
@@ -257,8 +260,9 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create or replace a product's translated title, description, and \
-                        variant titles for a locale, in the selected Store. \
-                        Requires confirm: true and an idempotency_key."
+                        variant titles for an enabled non-default locale in the selected Store. \
+                        The default locale uses canonical catalog content and cannot be written \
+                        as a translation. Requires confirm: true and an idempotency_key."
     )]
     async fn upsert_product_translation(
         &self,

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    catalog::{ProductContent, ProductHandle, ProductId, ProductLifecycle},
+    catalog::{
+        ProductContent, ProductHandle, ProductId, ProductLifecycle, ProductVariantContent,
+        ProductVariantId, Sku,
+    },
     store::{SalesChannelId, StoreId},
 };
 
@@ -12,6 +15,7 @@ use crate::{
 };
 
 const UPDATE_PRODUCT_OPERATION: &str = "products.update.v1";
+const UPDATE_PRODUCT_VARIANT_OPERATION: &str = "product_variants.update.v1";
 const ACTIVATE_PRODUCT_OPERATION: &str = "products.activate.v1";
 const ARCHIVE_PRODUCT_OPERATION: &str = "products.archive.v1";
 const PUBLISH_PRODUCT_OPERATION: &str = "products.publish.v1";
@@ -24,6 +28,19 @@ pub struct UpdateProductInput {
     pub handle: String,
     pub title: String,
     pub description: String,
+    pub metadata: Option<serde_json::Value>,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct UpdateProductVariantInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
+    pub title: String,
+    pub sku: Option<String>,
+    pub requires_shipping: bool,
+    pub track_inventory: bool,
     pub metadata: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
 }
@@ -78,6 +95,43 @@ impl CatalogManagement {
             UPDATE_PRODUCT_OPERATION,
             &input.idempotency,
             input.product_id,
+        )
+        .await
+    }
+
+    pub async fn update_variant(
+        &self,
+        input: UpdateProductVariantInput,
+    ) -> Result<ProductVariantId, ApplicationError> {
+        require_catalog_writer(&input.actor)?;
+        let content = ProductVariantContent::new(
+            input.title,
+            input.sku.map(Sku::parse).transpose()?,
+            input.requires_shipping,
+            input.track_inventory,
+            parse_metadata(input.metadata)?,
+        )?;
+        let mut transaction = self
+            .unit_of_work
+            .begin(input.actor, input.store_id, input.product_id)
+            .await?;
+        if let Some(id) = transaction
+            .reserve_variant_mutation(UPDATE_PRODUCT_VARIANT_OPERATION, &input.idempotency)
+            .await?
+        {
+            return Ok(id);
+        }
+        if !transaction
+            .update_variant_content(input.product_variant_id, &content)
+            .await?
+        {
+            return Err(product_variant_not_found(input.product_variant_id));
+        }
+        complete_variant(
+            transaction,
+            UPDATE_PRODUCT_VARIANT_OPERATION,
+            &input.idempotency,
+            input.product_variant_id,
         )
         .await
     }
@@ -212,6 +266,19 @@ async fn complete(
     Ok(product_id)
 }
 
+async fn complete_variant(
+    mut transaction: Box<dyn crate::ports::CatalogManagementTransaction>,
+    operation: &'static str,
+    request: &IdempotencyRequest,
+    variant_id: ProductVariantId,
+) -> Result<ProductVariantId, ApplicationError> {
+    transaction
+        .complete_variant_mutation(operation, request, variant_id)
+        .await?;
+    transaction.commit().await?;
+    Ok(variant_id)
+}
+
 fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
     match actor {
         AdminActor::Store(_) => Ok(()),
@@ -223,5 +290,12 @@ fn product_not_found(product_id: ProductId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "product",
         id: product_id.as_uuid().to_string(),
+    }
+}
+
+fn product_variant_not_found(variant_id: ProductVariantId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "product_variant",
+        id: variant_id.as_uuid().to_string(),
     }
 }

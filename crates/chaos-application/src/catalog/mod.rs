@@ -23,6 +23,7 @@ pub use localization::{
 };
 pub use management::{
     CatalogManagement, ChangeProductStatusInput, ProductPublicationInput, UpdateProductInput,
+    UpdateProductVariantInput,
 };
 pub use media::{
     CreateMediaAssetInput, CreatedMediaAsset, MediaAdministration, MediaAssetActionInput,

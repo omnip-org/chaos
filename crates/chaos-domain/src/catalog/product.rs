@@ -135,6 +135,55 @@ impl ProductContent {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProductVariantContent {
+    title: String,
+    sku: Option<Sku>,
+    requires_shipping: bool,
+    track_inventory: bool,
+    metadata: Option<CatalogMetadata>,
+}
+
+impl ProductVariantContent {
+    pub fn new(
+        title: impl Into<String>,
+        sku: Option<Sku>,
+        requires_shipping: bool,
+        track_inventory: bool,
+        metadata: Option<CatalogMetadata>,
+    ) -> Result<Self, DomainError> {
+        let title = title.into();
+        validate_text("variant_title", &title, 255)?;
+        Ok(Self {
+            title,
+            sku,
+            requires_shipping,
+            track_inventory,
+            metadata,
+        })
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn sku(&self) -> Option<&Sku> {
+        self.sku.as_ref()
+    }
+
+    pub const fn requires_shipping(&self) -> bool {
+        self.requires_shipping
+    }
+
+    pub const fn track_inventory(&self) -> bool {
+        self.track_inventory
+    }
+
+    pub fn metadata(&self) -> Option<&CatalogMetadata> {
+        self.metadata.as_ref()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProductStatus {
     Draft,
@@ -673,6 +722,24 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn product_variant_content_reuses_creation_validation_for_updates() {
+        assert!(ProductVariantContent::new("", None, true, true, None).is_err());
+        let content = ProductVariantContent::new(
+            "Updated Variant",
+            Some(Sku::parse("UPDATED-SKU").unwrap()),
+            false,
+            false,
+            Some(CatalogMetadata::parse(r#"{"source":"test"}"#).unwrap()),
+        )
+        .unwrap();
+
+        assert_eq!(content.title(), "Updated Variant");
+        assert_eq!(content.sku().map(Sku::as_str), Some("UPDATED-SKU"));
+        assert!(!content.requires_shipping());
+        assert!(!content.track_inventory());
     }
 
     #[test]
