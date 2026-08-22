@@ -11,11 +11,31 @@ use super::idempotency::{self, IdempotencyScope};
 
 const CONFIGURE_DESTINATION_OPERATION: &str = "analytics.configure_destination";
 
-pub struct PostgresAnalyticsEventRepository {
+pub struct PostgresAnalyticsEventStore {
     pool: PgPool,
 }
 
-impl PostgresAnalyticsEventRepository {
+pub struct PostgresAnalyticsDestinationStore {
+    pool: PgPool,
+}
+
+pub struct PostgresAnalyticsDeliveryStore {
+    pool: PgPool,
+}
+
+impl PostgresAnalyticsEventStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl PostgresAnalyticsDestinationStore {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl PostgresAnalyticsDeliveryStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -110,7 +130,7 @@ pub(crate) async fn append_event(
 }
 
 #[async_trait]
-impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
+impl AnalyticsEventRepository for PostgresAnalyticsEventStore {
     async fn append_events(
         &self,
         actor: &MachineActor,
@@ -165,7 +185,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
-impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
+impl AnalyticsEventQueryRepository for PostgresAnalyticsEventStore {
     async fn list_events(
         &self,
         actor: StoreActor,
@@ -269,7 +289,7 @@ impl AnalyticsEventQueryRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
-impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
+impl AnalyticsDestinationRepository for PostgresAnalyticsDestinationStore {
     async fn get_destination(
         &self,
         actor: StoreActor,
@@ -385,7 +405,7 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsEventRepository {
 }
 
 #[async_trait]
-impl AnalyticsDeliveryRepository for PostgresAnalyticsEventRepository {
+impl AnalyticsDeliveryRepository for PostgresAnalyticsDeliveryStore {
     async fn schedule_deliveries(&self, limit: u16) -> Result<usize, ApplicationError> {
         let scheduled: Option<i64> =
             sqlx::query_scalar("SELECT integration.schedule_analytics_deliveries($1)")

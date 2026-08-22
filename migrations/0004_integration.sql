@@ -78,17 +78,18 @@ CREATE TABLE integration.provider_webhooks (
     )
 );
 
+-- Event routing is data, not a CASE statement in application code. Adding a
+-- consumer requires a queue plus one registry row.
 CREATE TABLE integration.event_consumers (
-    event_type      TEXT PRIMARY KEY,
-    consumer_owner  TEXT,
-    description     TEXT NOT NULL,
+    event_type  TEXT PRIMARY KEY,
+    queue_name  TEXT NOT NULL,
+    description TEXT NOT NULL,
 
     CONSTRAINT event_consumers_event_type_check CHECK (
         event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
     ),
-    CONSTRAINT event_consumers_owner_check CHECK (
-        consumer_owner IS NULL
-        OR consumer_owner ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'
+    CONSTRAINT event_consumers_queue_name_check CHECK (
+        queue_name ~ '^chaos_[a-z][a-z0-9_]*$'
     ),
     CONSTRAINT event_consumers_description_check CHECK (
         length(trim(description)) BETWEEN 1 AND 255
@@ -126,31 +127,6 @@ CREATE INDEX event_outbox_pending_idx
     ON integration.event_outbox (created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
 
-CREATE FUNCTION integration.event_consumer_backlog()
-RETURNS TABLE (
-    event_type TEXT,
-    consumer_owner TEXT,
-    pending BIGINT,
-    processing BIGINT,
-    dead_letter BIGINT,
-    processed BIGINT
-)
-LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-    SELECT registry.event_type,
-           registry.consumer_owner,
-           count(event.id) FILTER (
-               WHERE event.processed_at IS NULL AND event.failed_at IS NULL
-           ),
-           0,
-           count(event.id) FILTER (WHERE event.failed_at IS NOT NULL),
-           count(event.id) FILTER (WHERE event.processed_at IS NOT NULL)
-      FROM integration.event_consumers AS registry
-      LEFT JOIN integration.event_outbox AS event
-        ON event.event_type = registry.event_type
-     GROUP BY registry.event_type, registry.consumer_owner
-     ORDER BY registry.event_type;
-$$;
-
 CREATE FUNCTION integration.event_queue_name(event_type TEXT)
 RETURNS TEXT
 LANGUAGE SQL
@@ -158,11 +134,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    SELECT CASE registry.consumer_owner
-        WHEN 'payments.provider_dispatch' THEN 'chaos_payment_commands'
-        WHEN 'fulfillment.operations' THEN 'chaos_fulfillment_events'
-        WHEN 'search.product_indexer' THEN 'chaos_search_events'
-    END
+    SELECT registry.queue_name
       FROM integration.event_consumers AS registry
      WHERE registry.event_type = event_queue_name.event_type;
 $$;
@@ -520,21 +492,21 @@ CREATE POLICY store_isolation ON integration.event_outbox
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-INSERT INTO integration.event_consumers (event_type, consumer_owner, description)
+INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES
-    ('payment.create_requested', 'payments.provider_dispatch',
+    ('payment.create_requested', 'chaos_payment_commands',
      'Dispatches a Payment Attempt command to its configured provider'),
-    ('refund.create_requested', 'payments.provider_dispatch',
+    ('refund.create_requested', 'chaos_payment_commands',
      'Dispatches a Refund command to its configured provider'),
-    ('search.product.changed', 'search.product_indexer',
+    ('search.product.changed', 'chaos_search_events',
      'Refreshes the Store-isolated Product search document'),
-    ('fulfillment.shipped', 'fulfillment.operations',
+    ('fulfillment.shipped', 'chaos_fulfillment_events',
      'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.delivered', 'fulfillment.operations',
+    ('fulfillment.delivered', 'chaos_fulfillment_events',
      'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.cancelled', 'fulfillment.operations',
+    ('fulfillment.cancelled', 'chaos_fulfillment_events',
      'Reconciles Order fulfillment and delivery state'),
-    ('return.completed', 'fulfillment.operations',
+    ('return.completed', 'chaos_fulfillment_events',
      'Coordinates the immutable Return refund');
 
 CREATE TRIGGER event_outbox_enqueue
@@ -575,8 +547,6 @@ REVOKE ALL ON FUNCTION integration.finish_webhook_event(
     UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.event_consumer_backlog() FROM PUBLIC;
-
 GRANT EXECUTE ON FUNCTION integration.claim_event_outbox(
     INTEGER
 )
@@ -599,8 +569,6 @@ GRANT EXECUTE ON FUNCTION integration.finish_event_outbox(
 GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(
     UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ
 ) TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION integration.event_consumer_backlog() TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA integration TO chaos_runtime;

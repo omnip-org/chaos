@@ -6,15 +6,14 @@ use base64::{
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentCheckoutDetails, PaymentClientAction, PaymentProvider,
-        PaymentProviderAccountConfiguration, PaymentProviderAccountDetail,
-        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentProviderOnboarding,
-        PaymentProviderReadiness, PaymentProviderReadinessJob, PaymentProviderReadinessQueue,
-        PaymentProviderReadinessStatus, PaymentRepository, PaymentShippingAddress,
-        PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository, PaymentWebhookVerifier,
-        ProviderClientActionCommand, ProviderCommand, ProviderCommandResult, QueueJob,
-        RefundDetail, ShopperActor, VerifiedWebhookEvent,
+        AdminActor, IdempotencyRequest, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
+        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
+        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
+        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
+        PaymentProviderReadinessQueue, PaymentProviderReadinessStatus, PaymentRepository,
+        PaymentShippingAddress, PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository,
+        PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand,
+        ProviderCommandResult, QueueJob, RefundDetail, ShopperActor, VerifiedWebhookEvent,
     },
     store::StoreActor,
 };
@@ -58,8 +57,6 @@ fn generate_order_tracking_key() -> (String, [u8; 32]) {
 const CREATE_REFUND_OPERATION: &str = "refunds.create.v1";
 const CREATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.create.v1";
 const UPDATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.update.v1";
-const MAX_QUEUE_ATTEMPTS: i32 = 8;
-
 type ProviderAccountRow = (
     Uuid,
     String,
@@ -1208,57 +1205,6 @@ impl PaymentRepository for PostgresPaymentRepository {
     }
 }
 
-#[async_trait]
-impl IntegrationQueue for PostgresPaymentRepository {
-    async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
-            "SELECT id, store_id, event_type, payload, attempts \
-             FROM integration.claim_event_outbox($1)",
-        )
-        .bind(i32::from(limit.clamp(1, 100)))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(database_error)?
-        .into_iter()
-        .map(queue_job)
-        .collect()
-    }
-
-    async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, String, String, Value, i32)>(
-            "SELECT id, store_id, provider, event_type, payload, attempts \
-             FROM integration.claim_webhook_events($1)",
-        )
-        .bind(i32::from(limit.clamp(1, 100)))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(database_error)?
-        .into_iter()
-        .map(|row| queue_job((row.0, row.1, row.3, row.4, row.5)))
-        .collect()
-    }
-
-    async fn finish_outbox(
-        &self,
-        job_id: Uuid,
-        attempts: u32,
-        result: Result<(), String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        finish_outbox_job(&self.pool, job_id, attempts, result, now).await
-    }
-
-    async fn finish_webhook(
-        &self,
-        job_id: Uuid,
-        attempts: u32,
-        result: Result<(), String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        finish_webhook_job(&self.pool, job_id, attempts, result, now).await
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn insert_outbox(
     transaction: &mut Transaction<'static, Postgres>,
@@ -1668,75 +1614,6 @@ async fn apply_refund_event(
         .await?;
     }
     Ok(())
-}
-
-async fn finish_webhook_job(
-    pool: &PgPool,
-    job_id: Uuid,
-    attempts: u32,
-    result: Result<(), String>,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    let (succeeded, failure) = match result {
-        Ok(()) => (true, String::new()),
-        Err(failure) => (false, failure),
-    };
-    let finished: Option<bool> =
-        sqlx::query_scalar("SELECT integration.finish_webhook_event($1, $2, $3, $4, $5, $6)")
-            .bind(job_id)
-            .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
-            .bind(succeeded)
-            .bind(&failure)
-            .bind(MAX_QUEUE_ATTEMPTS)
-            .bind(now)
-            .fetch_one(pool)
-            .await
-            .map_err(database_error)?;
-    if finished == Some(true) {
-        Ok(())
-    } else {
-        Err(queue_job_not_found())
-    }
-}
-
-async fn finish_outbox_job(
-    pool: &PgPool,
-    job_id: Uuid,
-    attempts: u32,
-    result: Result<(), String>,
-    now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
-    let (succeeded, failure) = match result {
-        Ok(()) => (true, String::new()),
-        Err(failure) => (false, failure),
-    };
-    let finished: Option<bool> =
-        sqlx::query_scalar("SELECT integration.finish_event_outbox($1, $2, $3, $4, $5, $6)")
-            .bind(job_id)
-            .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
-            .bind(succeeded)
-            .bind(&failure)
-            .bind(MAX_QUEUE_ATTEMPTS)
-            .bind(now)
-            .fetch_one(pool)
-            .await
-            .map_err(database_error)?;
-    if finished == Some(true) {
-        Ok(())
-    } else {
-        Err(queue_job_not_found())
-    }
-}
-
-fn queue_job(row: (Uuid, Uuid, String, Value, i32)) -> Result<QueueJob, ApplicationError> {
-    Ok(QueueJob {
-        id: row.0,
-        store_id: row.1,
-        event_type: row.2,
-        payload: row.3,
-        attempts: u32::try_from(row.4)
-            .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-    })
 }
 
 #[derive(Serialize, Deserialize)]

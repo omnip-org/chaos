@@ -7,8 +7,8 @@ use chaos_application::{
     fulfillment::FulfillmentWorkers,
     payments::PaymentWorkers,
     ports::{
-        AnalyticsEventDestination, Clock, PaymentProvider, PaymentProviderOnboarding,
-        ShippingProvider,
+        AnalyticsEventDestination, Clock, IntegrationQueue, PaymentProvider,
+        PaymentProviderOnboarding, ShippingProvider,
     },
     sales::CheckoutExpiryWorkers,
 };
@@ -18,8 +18,8 @@ use chaos_infrastructure::{
     meta::MetaConversionsDestination,
     providers::{easypost::EasyPostShippingProvider, stripe::StripeCheckoutPaymentProvider},
     repositories::{
-        PostgresAnalyticsEventRepository, PostgresFulfillmentRepository, PostgresPaymentRepository,
-        PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresAnalyticsDeliveryStore, PostgresFulfillmentRepository, PostgresIntegrationQueue,
+        PostgresPaymentRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
         PostgresStorefrontSalesRepository,
     },
     secret::DynamicSecretResolver,
@@ -42,7 +42,7 @@ impl WorkerRuntime {
     pub fn new(infrastructure: &AppState, settings: &Settings) -> anyhow::Result<Self> {
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
 
-        let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
+        let analytics_delivery_store = Arc::new(PostgresAnalyticsDeliveryStore::new(
             infrastructure.runtime_pool(),
         ));
         let meta_destination = Arc::new(MetaConversionsDestination::new(
@@ -51,13 +51,15 @@ impl WorkerRuntime {
             dynamic_secrets.clone(),
         )?);
         let analytics_delivery_worker = Arc::new(AnalyticsDeliveryWorker::new(
-            analytics_repository,
+            analytics_delivery_store,
             [meta_destination as Arc<dyn AnalyticsEventDestination>],
         ));
 
         let payment_repository = Arc::new(PostgresPaymentRepository::new(
             infrastructure.runtime_pool(),
         ));
+        let integration_queue: Arc<dyn IntegrationQueue> =
+            Arc::new(PostgresIntegrationQueue::new(infrastructure.runtime_pool()));
         let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
@@ -68,7 +70,7 @@ impl WorkerRuntime {
         let payment_onboarding =
             vec![stripe_checkout_payment_provider as Arc<dyn PaymentProviderOnboarding>];
         let payment_workers = PaymentWorkers::new(
-            payment_repository.clone(),
+            integration_queue,
             payment_repository.clone(),
             payment_repository,
             payment_providers,

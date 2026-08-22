@@ -62,11 +62,11 @@ use chaos_infrastructure::{
     },
     media_storage::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
     repositories::{
-        PostgresAnalyticsEventRepository, PostgresCatalogLocalizationRepository,
-        PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
-        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresFulfillmentRepository,
-        PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresOrderManagementRepository, PostgresPaymentRepository,
+        PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
+        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
+        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+        PostgresCollectionRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
+        PostgresMediaAssetRepository, PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
         PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
@@ -280,18 +280,20 @@ impl ApiState {
         );
         let publishable_key_authentication =
             PublishableKeyAuthentication::new(publishable_key_repository);
-        let analytics_repository = Arc::new(PostgresAnalyticsEventRepository::new(
+        let analytics_event_store = Arc::new(PostgresAnalyticsEventStore::new(
             infrastructure.runtime_pool(),
         ));
         let analytics_collection = AnalyticsCollection::new(
-            analytics_repository.clone(),
+            analytics_event_store.clone(),
             Arc::new(RedisAnalyticsCollectionRateLimiter::new(
                 infrastructure.redis_client(),
             )),
         );
         let analytics_administration = AnalyticsAdministration::new(
-            analytics_repository.clone(),
-            analytics_repository.clone(),
+            Arc::new(PostgresAnalyticsDestinationStore::new(
+                infrastructure.runtime_pool(),
+            )),
+            analytics_event_store,
         );
         let dynamic_secrets = Arc::new(DynamicSecretResolver::new(&settings.provider_secret_key));
         let provider_secret_management =

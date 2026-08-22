@@ -43,6 +43,11 @@ Application ports describe domain-specific jobs; PGMQ remains an infrastructure
 detail. The runtime role has no direct PGMQ privileges and calls only reviewed
 `integration` routines. API replicas do not consume queues.
 
+Business outbox routing is stored in `integration.event_consumers`: each event
+type points directly to its PGMQ queue. The database routine only resolves that
+registered value, so adding a consumer does not require changing a routing
+`CASE` expression.
+
 Delivery is at least once across an external Provider call: a process can stop
 after the Provider succeeds but before the database deletes the message.
 Consumers therefore use stable Provider idempotency keys, stable Meta event IDs,

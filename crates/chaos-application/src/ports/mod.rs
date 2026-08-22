@@ -7,6 +7,7 @@ mod clock;
 mod collection;
 mod fulfillment;
 mod identity;
+mod integration;
 mod inventory;
 mod localization;
 mod media;
@@ -67,6 +68,7 @@ pub use identity::{
     AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityAuthentication,
     IdentityRepository, McpPrincipal, VerifiedExternalIdentity,
 };
+pub use integration::{IntegrationQueue, QueueJob};
 pub use inventory::{
     InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
     InventoryReservationTransition, StockAdjustment, StockItemItem,
@@ -80,14 +82,13 @@ pub use media::{
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
 };
 pub use payments::{
-    IntegrationQueue, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
-    PaymentProvider, PaymentProviderAccountConfiguration, PaymentProviderAccountDetail,
-    PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentProviderOnboarding,
-    PaymentProviderReadiness, PaymentProviderReadinessJob, PaymentProviderReadinessQueue,
-    PaymentProviderReadinessStatus, PaymentRepository, PaymentSecretResolver,
-    PaymentShippingAddress, PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository,
-    PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand, ProviderCommandResult,
-    QueueJob, RefundDetail, VerifiedWebhookEvent,
+    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentProvider,
+    PaymentProviderAccountConfiguration, PaymentProviderAccountDetail, PaymentProviderAccountPage,
+    PaymentProviderAccountRepository, PaymentProviderOnboarding, PaymentProviderReadiness,
+    PaymentProviderReadinessJob, PaymentProviderReadinessQueue, PaymentProviderReadinessStatus,
+    PaymentRepository, PaymentSecretResolver, PaymentShippingAddress, PaymentWebhookConfiguration,
+    PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
+    ProviderCommand, ProviderCommandResult, RefundDetail, VerifiedWebhookEvent,
 };
 pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use pricing_management::{

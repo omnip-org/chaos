@@ -5,6 +5,7 @@ mod catalog_read;
 mod collection;
 mod fulfillment;
 mod idempotency;
+mod integration;
 mod inventory;
 mod localization;
 mod media;
@@ -25,12 +26,15 @@ mod storefront_catalog;
 mod storefront_sales;
 mod tax;
 
-pub use analytics::PostgresAnalyticsEventRepository;
+pub use analytics::{
+    PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
+};
 pub use catalog_management::PostgresCatalogManagementUnitOfWork;
 pub use catalog_provisioning::PostgresCatalogProvisioningUnitOfWork;
 pub use catalog_read::PostgresCatalogReadRepository;
 pub use collection::PostgresCollectionRepository;
 pub use fulfillment::PostgresFulfillmentRepository;
+pub use integration::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
 pub use localization::PostgresCatalogLocalizationRepository;
 pub use media::PostgresMediaAssetRepository;

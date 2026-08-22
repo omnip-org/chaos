@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, store::StoreActor};
 
-use super::{AdminActor, IdempotencyRequest, ShopperActor};
+use super::{AdminActor, IdempotencyRequest, ShopperActor, integration::QueueJob};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentProviderReadinessStatus {
@@ -101,14 +101,6 @@ pub struct VerifiedWebhookEvent {
 pub struct PaymentWebhookConfiguration {
     pub provider_account_id: Uuid,
     pub secret_reference: chaos_domain::payments::PaymentSecretReference,
-}
-
-pub struct QueueJob {
-    pub id: Uuid,
-    pub store_id: Uuid,
-    pub event_type: String,
-    pub payload: Value,
-    pub attempts: u32,
 }
 
 pub struct PaymentProviderReadinessJob {
@@ -334,27 +326,4 @@ pub trait PaymentProviderAccountRepository: Send + Sync {
         configuration: &PaymentProviderAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
-}
-
-#[async_trait]
-pub trait IntegrationQueue: Send + Sync {
-    async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError>;
-
-    async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError>;
-
-    async fn finish_outbox(
-        &self,
-        job_id: Uuid,
-        attempts: u32,
-        result: Result<(), String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
-
-    async fn finish_webhook(
-        &self,
-        job_id: Uuid,
-        attempts: u32,
-        result: Result<(), String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
 }

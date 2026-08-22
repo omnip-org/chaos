@@ -139,7 +139,9 @@ The Integration schema keeps one concise name for each responsibility:
 `analytics_events`, `analytics_destinations`, and
 `analytics_deliveries`. The last three form one chain: an internal Analytics
 event is scheduled for a configured destination, then its delivery observation
-is recorded by `destination_id` and `analytics_event_id`.
+is recorded by `destination_id` and `analytics_event_id`. Business outbox
+routing is data-driven: `event_consumers.queue_name` points directly to the
+PGMQ queue, while worker code owns only the payload semantics.
 
 API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
 
