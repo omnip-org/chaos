@@ -19,7 +19,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const ENABLE_LOCALE: &str = "localization.enable_locale.v1";
 const SET_DEFAULT_LOCALE: &str = "localization.set_default_locale.v1";

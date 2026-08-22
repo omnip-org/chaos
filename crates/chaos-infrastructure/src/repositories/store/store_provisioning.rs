@@ -11,7 +11,7 @@ use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CREATE_STORE_OPERATION: &str = "stores.create.v1";
 

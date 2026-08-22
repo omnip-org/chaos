@@ -39,9 +39,9 @@ fn generate_order_tracking_key() -> (String, [u8; 32]) {
     (plaintext, digest)
 }
 
-use super::{
-    idempotency::{self, IdempotencyScope},
+use crate::repositories::{
     inventory::{ReservationClosure, close_reservation},
+    shared::idempotency::{self, IdempotencyScope},
 };
 
 const CONFIRM_OPERATION: &str = "orders.confirm.v1";

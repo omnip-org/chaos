@@ -40,10 +40,10 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{
+use crate::repositories::{
     analytics::{AnalyticsEventToAppend, append_event},
-    idempotency::{self, IdempotencyScope},
     inventory::{ReservationClosure, close_reservation},
+    shared::idempotency::{self, IdempotencyScope},
 };
 
 const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";

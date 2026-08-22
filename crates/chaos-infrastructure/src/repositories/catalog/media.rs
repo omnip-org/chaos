@@ -16,7 +16,7 @@ use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CREATE: &str = "media_assets.create.v1";
 const COMPLETE: &str = "media_assets.complete.v1";

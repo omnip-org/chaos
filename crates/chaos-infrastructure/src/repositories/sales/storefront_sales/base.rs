@@ -38,9 +38,11 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::analytics::{AnalyticsEventToAppend, append_event};
-use super::idempotency::{self, IdempotencyScope};
-use super::inventory::{ReservationClosure, close_reservation};
+use crate::repositories::{
+    analytics::{AnalyticsEventToAppend, append_event},
+    inventory::{ReservationClosure, close_reservation},
+    shared::idempotency::{self, IdempotencyScope},
+};
 
 const CREATE_CART_OPERATION: &str = "carts.create.v1";
 const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";

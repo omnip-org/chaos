@@ -3,7 +3,7 @@ use serde_json::Value;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-pub(super) enum IdempotencyScope {
+pub(crate) enum IdempotencyScope {
     User(Uuid),
     Store(Uuid),
     Shopper(Uuid),
@@ -25,7 +25,7 @@ impl IdempotencyScope {
     }
 }
 
-pub(super) async fn reserve(
+pub(crate) async fn reserve(
     transaction: &mut Transaction<'static, Postgres>,
     scope: &IdempotencyScope,
     operation: &'static str,
@@ -82,7 +82,7 @@ pub(super) async fn reserve(
     })
 }
 
-pub(super) async fn complete(
+pub(crate) async fn complete(
     transaction: &mut Transaction<'static, Postgres>,
     scope: &IdempotencyScope,
     operation: &'static str,

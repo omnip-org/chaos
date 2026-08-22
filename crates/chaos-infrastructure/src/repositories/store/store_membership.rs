@@ -13,7 +13,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const ADD_OPERATION: &str = "store_memberships.add.v1";
 const SET_ROLE_OPERATION: &str = "store_memberships.set_role.v1";

@@ -7,7 +7,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CONFIGURE_DESTINATION_OPERATION: &str = "analytics.configure_destination";
 

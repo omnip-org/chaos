@@ -18,7 +18,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const UPDATE_STORE_OPERATION: &str = "stores.update.v1";
 const ACTIVATE_STORE_OPERATION: &str = "stores.activate.v1";

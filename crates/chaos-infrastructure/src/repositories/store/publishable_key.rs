@@ -20,7 +20,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CREATE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.create.v1";
 const REVOKE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.revoke.v1";

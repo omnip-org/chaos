@@ -1,58 +1,42 @@
+//! PostgreSQL repositories grouped by business capability.
+
 mod analytics;
-mod catalog_management;
-mod catalog_provisioning;
-mod catalog_read;
-mod collection;
+mod catalog;
 mod fulfillment;
-mod idempotency;
 mod integration;
 mod inventory;
-mod localization;
-mod media;
-mod order_management;
 mod payments;
-mod pricing_management;
-mod pricing_provisioning;
-mod promotion;
-mod publishable_key;
-mod review;
+mod pricing;
+mod sales;
 mod search;
+mod shared;
 mod shipping;
-mod store_administration;
-mod store_membership;
-mod store_provisioning;
-mod store_read;
-mod storefront_catalog;
-mod storefront_sales;
-mod tax;
+mod store;
 
 pub use analytics::{
     PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
 };
-pub use catalog_management::PostgresCatalogManagementUnitOfWork;
-pub use catalog_provisioning::PostgresCatalogProvisioningUnitOfWork;
-pub use catalog_read::PostgresCatalogReadRepository;
-pub use collection::PostgresCollectionRepository;
+pub use catalog::{
+    PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
+    PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+    PostgresCollectionRepository, PostgresMediaAssetRepository, PostgresReviewRepository,
+};
 pub use fulfillment::PostgresFulfillmentRepository;
 pub use integration::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
-pub use localization::PostgresCatalogLocalizationRepository;
-pub use media::PostgresMediaAssetRepository;
-pub use order_management::PostgresOrderManagementRepository;
 pub use payments::{HmacPaymentWebhookVerifier, PostgresPaymentRepository, SandboxPaymentProvider};
-pub use pricing_management::PostgresPricingManagementRepository;
-pub use pricing_provisioning::PostgresPricingProvisioningUnitOfWork;
-pub use promotion::PostgresPromotionRepository;
-pub use publishable_key::{
-    PostgresPublishableKeyRepository, SecurePublishableKeyMaterialGenerator,
+pub use pricing::{
+    PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
+    PostgresPromotionRepository, PostgresTaxRuleRepository,
 };
-pub use review::PostgresReviewRepository;
+pub use sales::{
+    PostgresOrderManagementRepository, PostgresStorefrontCatalogRepository,
+    PostgresStorefrontSalesRepository,
+};
 pub use search::PostgresSearchIndexer;
 pub use shipping::PostgresShippingServiceRepository;
-pub use store_administration::PostgresStoreAdministrationRepository;
-pub use store_membership::PostgresStoreMembershipRepository;
-pub use store_provisioning::PostgresStoreProvisioningUnitOfWork;
-pub use store_read::PostgresStoreReadRepository;
-pub use storefront_catalog::PostgresStorefrontCatalogRepository;
-pub use storefront_sales::PostgresStorefrontSalesRepository;
-pub use tax::PostgresTaxRuleRepository;
+pub use store::{
+    PostgresPublishableKeyRepository, PostgresStoreAdministrationRepository,
+    PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
+    PostgresStoreReadRepository, SecurePublishableKeyMaterialGenerator,
+};

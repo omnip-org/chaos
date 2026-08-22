@@ -12,7 +12,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::idempotency::{self, IdempotencyScope};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const SUBMIT: &str = "reviews.submit.v1";
 const APPROVE: &str = "reviews.approve.v1";
