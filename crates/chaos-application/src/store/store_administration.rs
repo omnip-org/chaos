@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, FieldViolation, RegionCode,
+    CurrencyCode, RegionCode,
     store::{
-        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
-        Store, StoreCode, StoreId, StoreRole, StoreStatus,
+        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
+        StoreId, StoreRole, StoreStatus,
     },
 };
 
@@ -39,7 +39,6 @@ pub struct CreateSalesChannelInput {
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
-    pub kind: String,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -49,7 +48,6 @@ pub struct UpdateSalesChannelInput {
     pub sales_channel_id: SalesChannelId,
     pub code: String,
     pub name: String,
-    pub kind: String,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -165,7 +163,7 @@ impl StoreAdministration {
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         require_store_administrator(&input.actor)?;
-        let channel = channel(input.store_id, input.code, input.name, input.kind)?;
+        let channel = channel(input.store_id, input.code, input.name)?;
         self.repository
             .create_sales_channel(input.actor, &channel, &input.idempotency)
             .await
@@ -176,7 +174,7 @@ impl StoreAdministration {
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         require_store_administrator(&input.actor)?;
-        let replacement = channel(input.store_id, input.code, input.name, input.kind)?;
+        let replacement = channel(input.store_id, input.code, input.name)?;
         self.repository
             .update_sales_channel(
                 input.actor,
@@ -225,19 +223,11 @@ fn channel(
     store_id: StoreId,
     code: String,
     name: String,
-    kind: String,
 ) -> Result<SalesChannel, ApplicationError> {
-    let kind = SalesChannelKind::parse(&kind).ok_or_else(|| ApplicationError::Validation {
-        violations: vec![FieldViolation {
-            field: "kind",
-            reason: "must be web, mobile, point_of_sale, marketplace, or custom".into(),
-        }],
-    })?;
     Ok(SalesChannel::create(
         store_id,
         SalesChannelCode::parse(code)?,
         name,
-        kind,
     )?)
 }
 

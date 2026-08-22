@@ -5,7 +5,5 @@ mod store_membership;
 
 pub use model::{Store, StoreCode, StoreId, StoreStatus};
 pub use publishable_key::{PublishableKey, PublishableKeyId};
-pub use sales_channel::{
-    SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
-};
+pub use sales_channel::{SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus};
 pub use store_membership::{StoreMembership, StoreRole};

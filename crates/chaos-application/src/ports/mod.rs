@@ -70,8 +70,8 @@ pub use identity::{
 };
 pub use integration::{IntegrationQueue, QueueJob};
 pub use inventory::{
-    InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
-    InventoryReservationTransition, StockAdjustment, StockItemItem,
+    InventoryAdjustment, InventoryItemView, InventoryLocationItem, InventoryRepository,
+    InventoryReservationDetail, InventoryReservationTransition,
 };
 pub use localization::{
     CatalogLocalizationRepository, CollectionTranslation, MediaTranslation, ProductTranslation,

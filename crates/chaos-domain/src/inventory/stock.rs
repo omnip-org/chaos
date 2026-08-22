@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, catalog::ProductVariantId, store::StoreId};
+use crate::{DomainError, FieldViolation, store::StoreId};
 
 macro_rules! inventory_id {
     ($name:ident) => {
@@ -33,7 +33,7 @@ macro_rules! inventory_id {
 }
 
 inventory_id!(InventoryLocationId);
-inventory_id!(StockItemId);
+inventory_id!(InventoryItemId);
 inventory_id!(InventoryReservationId);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -63,36 +63,12 @@ impl InventoryLocationCode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InventoryLocationStatus {
-    Active,
-    Archived,
-}
-
-impl InventoryLocationStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Archived => "archived",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "active" => Some(Self::Active),
-            "archived" => Some(Self::Archived),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryLocation {
     id: InventoryLocationId,
     store_id: StoreId,
     code: InventoryLocationCode,
     name: String,
-    status: InventoryLocationStatus,
 }
 
 impl InventoryLocation {
@@ -110,7 +86,6 @@ impl InventoryLocation {
             store_id,
             code,
             name,
-            status: InventoryLocationStatus::Active,
         })
     }
 
@@ -128,14 +103,6 @@ impl InventoryLocation {
 
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    pub const fn status(&self) -> InventoryLocationStatus {
-        self.status
-    }
-
-    pub fn archive(&mut self) {
-        self.status = InventoryLocationStatus::Archived;
     }
 }
 
@@ -258,31 +225,21 @@ impl InventoryReservationStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventoryReservationLine {
-    stock_item_id: StockItemId,
-    product_variant_id: ProductVariantId,
+    inventory_item_id: InventoryItemId,
     quantity: i64,
 }
 
 impl InventoryReservationLine {
-    pub fn new(
-        stock_item_id: StockItemId,
-        product_variant_id: ProductVariantId,
-        quantity: i64,
-    ) -> Result<Self, DomainError> {
+    pub fn new(inventory_item_id: InventoryItemId, quantity: i64) -> Result<Self, DomainError> {
         require_positive_quantity(quantity)?;
         Ok(Self {
-            stock_item_id,
-            product_variant_id,
+            inventory_item_id,
             quantity,
         })
     }
 
-    pub const fn stock_item_id(&self) -> StockItemId {
-        self.stock_item_id
-    }
-
-    pub const fn product_variant_id(&self) -> ProductVariantId {
-        self.product_variant_id
+    pub const fn inventory_item_id(&self) -> InventoryItemId {
+        self.inventory_item_id
     }
 
     pub const fn quantity(&self) -> i64 {
@@ -312,14 +269,14 @@ impl InventoryReservation {
         if lines.is_empty() {
             return Err(validation("lines", "must contain at least one line"));
         }
-        let unique_stock_items = lines
+        let unique_inventory_items = lines
             .iter()
-            .map(InventoryReservationLine::stock_item_id)
+            .map(InventoryReservationLine::inventory_item_id)
             .collect::<HashSet<_>>();
-        if unique_stock_items.len() != lines.len() {
+        if unique_inventory_items.len() != lines.len() {
             return Err(validation(
                 "lines",
-                "must contain each stock item at most once",
+                "must contain each inventory item at most once",
             ));
         }
         Ok(Self {
@@ -434,8 +391,7 @@ mod tests {
     #[test]
     fn reservation_state_transitions_are_time_aware_and_terminal() {
         let now = OffsetDateTime::UNIX_EPOCH;
-        let line =
-            InventoryReservationLine::new(StockItemId::new(), ProductVariantId::new(), 1).unwrap();
+        let line = InventoryReservationLine::new(InventoryItemId::new(), 1).unwrap();
         let mut reservation = InventoryReservation::create(
             StoreId::new(),
             now,
@@ -452,10 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn reservation_rejects_duplicate_stock_items() {
-        let stock_item_id = StockItemId::new();
-        let variant_id = ProductVariantId::new();
-        let line = InventoryReservationLine::new(stock_item_id, variant_id, 1).unwrap();
+    fn reservation_rejects_duplicate_inventory_items() {
+        let inventory_item_id = InventoryItemId::new();
+        let line = InventoryReservationLine::new(inventory_item_id, 1).unwrap();
         assert!(
             InventoryReservation::create(
                 StoreId::new(),

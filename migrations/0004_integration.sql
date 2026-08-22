@@ -957,7 +957,7 @@ ALTER TABLE commerce.order_fulfillment_transitions
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 REVOKE UPDATE, DELETE
-    ON commerce.stock_ledger_entries,
+    ON commerce.inventory_transactions,
        commerce.checkout_contacts,
        commerce.checkout_addresses,
        commerce.checkout_lines,

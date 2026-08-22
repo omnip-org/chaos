@@ -9,8 +9,8 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
-        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
-        Store, StoreCode, StoreId, StoreStatus,
+        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
+        StoreId, StoreStatus,
     },
 };
 use serde_json::json;
@@ -70,7 +70,6 @@ type StoreRow = (
 
 type ChannelRow = (
     Uuid,
-    String,
     String,
     String,
     String,
@@ -231,7 +230,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, kind::text, status::text, is_default, \
+            "SELECT id, code::text, name, status::text, is_default, \
                     created_at, updated_at FROM commerce.sales_channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
@@ -257,7 +256,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
     ) -> Result<Option<SalesChannelAdminItem>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, kind::text, status::text, is_default, \
+            "SELECT id, code::text, name, status::text, is_default, \
                     created_at, updated_at FROM commerce.sales_channels \
              WHERE store_id = $1 AND id = $2",
         )
@@ -285,14 +284,13 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-             (id, store_id, code, name, kind, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_kind, 'active', false)",
+             (id, store_id, code, name, status, is_default) \
+             VALUES ($1, $2, $3, $4, 'active', false)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
-        .bind(channel.kind().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
@@ -323,14 +321,13 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         let result = sqlx::query(
             "UPDATE commerce.sales_channels SET code = $3, name = $4, \
-                    kind = $5::commerce.sales_channel_kind, updated_at = CURRENT_TIMESTAMP \
+                    updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(replacement.store_id().as_uuid())
         .bind(sales_channel_id.as_uuid())
         .bind(replacement.code().as_str())
         .bind(replacement.name())
-        .bind(replacement.kind().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
@@ -490,12 +487,11 @@ fn store_item(row: StoreRow) -> Result<StoreAdminItem, ApplicationError> {
 }
 
 fn channel_item(row: ChannelRow) -> Result<SalesChannelAdminItem, ApplicationError> {
-    let (id, code, name, kind, status, is_default, created_at, updated_at) = row;
+    let (id, code, name, status, is_default, created_at, updated_at) = row;
     Ok(SalesChannelAdminItem {
         id: SalesChannelId::from_uuid(id),
         code: SalesChannelCode::parse(code)?,
         name,
-        kind: SalesChannelKind::parse(&kind).ok_or_else(corrupt_status)?,
         status: SalesChannelStatus::parse(&status).ok_or_else(corrupt_status)?,
         is_default,
         created_at,
@@ -641,8 +637,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-             (id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, 'web', 'Online Store', 'web', true)",
+             (id, store_id, code, name, is_default) \
+             VALUES ($1, $2, 'web', 'Online Store', true)",
         )
         .bind(default_channel_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -664,7 +660,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status,
-            StoreStatus::Inactive
+            StoreStatus::Active
         );
         service
             .update_store(UpdateStoreInput {
@@ -706,7 +702,6 @@ mod tests {
                 store_id,
                 code: "mobile".into(),
                 name: "Mobile App".into(),
-                kind: "mobile".into(),
                 idempotency: request(format!("create-channel-{suffix}"), 73),
             })
             .await
@@ -723,7 +718,6 @@ mod tests {
                 sales_channel_id: channel_id,
                 code: "mobile-app".into(),
                 name: "Updated Mobile App".into(),
-                kind: "mobile".into(),
                 idempotency: request(format!("update-channel-{suffix}"), 74),
             })
             .await

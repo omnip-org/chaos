@@ -77,7 +77,7 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
     let variant_id = ProductVariantId::new();
     let price_list_id = PriceListId::new();
     let location_id = InventoryLocationId::new();
-    let stock_item_id = Uuid::now_v7();
+    let inventory_item_id = Uuid::now_v7();
 
     sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
         .bind(user_id.as_uuid())
@@ -158,8 +158,8 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
     ] {
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-                 (id, store_id, code, name, kind, is_default) \
-                 VALUES ($1, $2, $3, 'Web', 'web', true)",
+                 (id, store_id, code, name, is_default) \
+                 VALUES ($1, $2, $3, 'Web', true)",
         )
         .bind(id.as_uuid())
         .bind(store.as_uuid())
@@ -271,11 +271,11 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO commerce.stock_items \
+        "INSERT INTO commerce.inventory_items \
              (id, store_id, inventory_location_id, product_variant_id, \
               on_hand_quantity) VALUES ($1, $2, $3, $4, 5)",
     )
-    .bind(stock_item_id)
+    .bind(inventory_item_id)
     .bind(store_id.as_uuid())
     .bind(location_id.as_uuid())
     .bind(variant_id.as_uuid())
@@ -409,16 +409,16 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
 
     let stock: (i64, i64) = sqlx::query_as(
         "SELECT on_hand_quantity, reserved_quantity \
-             FROM commerce.stock_items WHERE id = $1",
+             FROM commerce.inventory_items WHERE id = $1",
     )
-    .bind(stock_item_id)
+    .bind(inventory_item_id)
     .fetch_one(&owner_pool)
     .await
     .unwrap();
     assert_eq!(stock, (5, 3));
     let ledger_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM commerce.stock_ledger_entries \
-             WHERE reservation_id = $1",
+        "SELECT count(*) FROM commerce.inventory_transactions \
+             WHERE reference_type = 'reservation' AND reference_id = $1",
     )
     .bind(first.inventory_reservation_id.unwrap().as_uuid())
     .fetch_one(&owner_pool)
@@ -631,16 +631,17 @@ async fn cart_checkout_is_idempotent_atomic_isolated_and_inventory_safe() {
     .unwrap();
     assert_eq!(reservation_state, ("expired".into(), Some(recovery_time)));
     let released_stock: (i64, i64) = sqlx::query_as(
-        "SELECT on_hand_quantity, reserved_quantity FROM commerce.stock_items WHERE id = $1",
+        "SELECT on_hand_quantity, reserved_quantity FROM commerce.inventory_items WHERE id = $1",
     )
-    .bind(stock_item_id)
+    .bind(inventory_item_id)
     .fetch_one(&owner_pool)
     .await
     .unwrap();
     assert_eq!(released_stock, (5, 0));
     let expiry_ledger_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM commerce.stock_ledger_entries \
-             WHERE reservation_id = $1 AND kind = 'reservation_expired'",
+        "SELECT count(*) FROM commerce.inventory_transactions \
+             WHERE reference_type = 'reservation' AND reference_id = $1 \
+               AND reserved_delta_quantity < 0",
     )
     .bind(reservation_id.as_uuid())
     .fetch_one(&owner_pool)

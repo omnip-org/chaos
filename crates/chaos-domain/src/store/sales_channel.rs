@@ -55,38 +55,6 @@ impl SalesChannelCode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SalesChannelKind {
-    Web,
-    Mobile,
-    PointOfSale,
-    Marketplace,
-    Custom,
-}
-
-impl SalesChannelKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Web => "web",
-            Self::Mobile => "mobile",
-            Self::PointOfSale => "point_of_sale",
-            Self::Marketplace => "marketplace",
-            Self::Custom => "custom",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "web" => Some(Self::Web),
-            "mobile" => Some(Self::Mobile),
-            "point_of_sale" => Some(Self::PointOfSale),
-            "marketplace" => Some(Self::Marketplace),
-            "custom" => Some(Self::Custom),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SalesChannelStatus {
     Active,
     Archived,
@@ -115,7 +83,6 @@ pub struct SalesChannel {
     store_id: StoreId,
     code: SalesChannelCode,
     name: String,
-    kind: SalesChannelKind,
     status: SalesChannelStatus,
     is_default: bool,
 }
@@ -125,7 +92,6 @@ impl SalesChannel {
         store_id: StoreId,
         code: SalesChannelCode,
         name: impl Into<String>,
-        kind: SalesChannelKind,
     ) -> Result<Self, DomainError> {
         let name = name.into();
         if name.trim().is_empty() || name.chars().count() > 120 {
@@ -139,7 +105,6 @@ impl SalesChannel {
             store_id,
             code,
             name,
-            kind,
             status: SalesChannelStatus::Active,
             is_default: false,
         })
@@ -151,7 +116,6 @@ impl SalesChannel {
             store_id,
             code: SalesChannelCode("web".into()),
             name: "Online Store".into(),
-            kind: SalesChannelKind::Web,
             status: SalesChannelStatus::Active,
             is_default: true,
         }
@@ -171,10 +135,6 @@ impl SalesChannel {
 
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    pub const fn kind(&self) -> SalesChannelKind {
-        self.kind
     }
 
     pub const fn status(&self) -> SalesChannelStatus {
@@ -206,7 +166,6 @@ mod tests {
         let channel = SalesChannel::default_web(StoreId::new());
 
         assert_eq!(channel.code().as_str(), "web");
-        assert_eq!(channel.kind(), SalesChannelKind::Web);
         assert_eq!(channel.status(), SalesChannelStatus::Active);
         assert!(channel.is_default());
     }
@@ -217,7 +176,6 @@ mod tests {
             StoreId::new(),
             SalesChannelCode::parse("mobile-app").unwrap(),
             "Mobile App",
-            SalesChannelKind::Mobile,
         )
         .unwrap();
         assert!(!channel.is_default());

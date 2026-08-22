@@ -339,8 +339,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-             (id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, is_default) \
+             VALUES ($1, $2, 'web', 'Web', true)",
         )
         .bind(channel_id.as_uuid())
         .bind(store_id.as_uuid())

@@ -1,7 +1,7 @@
 mod stock;
 
 pub use stock::{
-    InventoryLocation, InventoryLocationCode, InventoryLocationId, InventoryLocationStatus,
+    InventoryItemId, InventoryLocation, InventoryLocationCode, InventoryLocationId,
     InventoryReservation, InventoryReservationId, InventoryReservationLine,
-    InventoryReservationStatus, StockBalance, StockItemId,
+    InventoryReservationStatus, StockBalance,
 };

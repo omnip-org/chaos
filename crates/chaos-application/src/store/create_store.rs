@@ -76,6 +76,9 @@ impl CreateStore {
             .insert_default_sales_channel(&default_sales_channel)
             .await?;
         transaction
+            .insert_default_inventory_location(&store)
+            .await?;
+        transaction
             .complete_store_creation(&input.idempotency, store.id())
             .await?;
         transaction.commit().await?;

@@ -1048,7 +1048,7 @@ async fn restock_return_line(
     .await
     .map_err(database_error)?;
     let stock = sqlx::query_as::<_, (Uuid, i64, i64)>(
-        "SELECT id, on_hand_quantity, reserved_quantity FROM commerce.stock_items \
+        "SELECT id, on_hand_quantity, reserved_quantity FROM commerce.inventory_items \
          WHERE store_id = $1 AND inventory_location_id = $2 \
            AND product_variant_id = $3 FOR UPDATE",
     )
@@ -1063,7 +1063,7 @@ async fn restock_return_line(
         None => {
             let active: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM commerce.inventory_locations WHERE \
-                 store_id = $1 AND id = $2 AND status = 'active')",
+                 store_id = $1 AND id = $2 AND archived_at IS NULL)",
             )
             .bind(store_id.as_uuid())
             .bind(location_id.as_uuid())
@@ -1078,7 +1078,7 @@ async fn restock_return_line(
             }
             let id = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO commerce.stock_items \
+                "INSERT INTO commerce.inventory_items \
                  (id, store_id, inventory_location_id, product_variant_id) \
                  VALUES ($1, $2, $3, $4)",
             )
@@ -1094,7 +1094,7 @@ async fn restock_return_line(
     };
     let updated = current.adjust(quantity)?;
     sqlx::query(
-        "UPDATE commerce.stock_items SET on_hand_quantity = $2, updated_at = $3 WHERE id = $1",
+        "UPDATE commerce.inventory_items SET on_hand_quantity = $2, updated_at = $3 WHERE id = $1",
     )
     .bind(stock_id)
     .bind(updated.on_hand())
@@ -1103,15 +1103,17 @@ async fn restock_return_line(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "INSERT INTO commerce.stock_ledger_entries \
-         (id, store_id, stock_item_id, kind, on_hand_delta_quantity, \
+        "INSERT INTO commerce.inventory_transactions \
+         (id, store_id, inventory_item_id, reference_type, reference_id, \
+          on_hand_delta_quantity, \
           reserved_delta_quantity, resulting_on_hand_quantity, resulting_reserved_quantity, \
           note, actor_user_id, created_at) \
-         VALUES ($1, $2, $3, 'return_restock', $4, 0, $5, $6, $7, $8, $9)",
+         VALUES ($1, $2, $3, 'return', $4, $5, 0, $6, $7, $8, $9, $10)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
     .bind(stock_id)
+    .bind(return_id.as_uuid())
     .bind(quantity)
     .bind(updated.on_hand())
     .bind(updated.reserved())

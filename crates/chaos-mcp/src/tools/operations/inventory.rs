@@ -1,7 +1,7 @@
 use chaos_application::inventory::{AdjustStockInput, CreateInventoryLocationInput};
 use chaos_domain::{
     catalog::ProductVariantId,
-    inventory::{InventoryLocationId, StockItemId},
+    inventory::{InventoryItemId, InventoryLocationId},
 };
 use rmcp::{
     ErrorData,
@@ -25,7 +25,7 @@ pub struct ListStockParams {
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// Maximum number of stock items to return (1-100). Defaults to 20.
+    /// Maximum number of inventory items to return (1-100). Defaults to 20.
     #[serde(default)]
     pub limit: Option<u16>,
 }
@@ -179,7 +179,7 @@ impl ChaosMcp {
                             "id": item.id.as_uuid(),
                             "code": item.code,
                             "name": item.name,
-                            "status": item.status.as_str(),
+                            "archived_at": item.archived_at.map(format_time),
                             "created_at": format_time(item.created_at),
                             "updated_at": format_time(item.updated_at),
                         })
@@ -309,8 +309,8 @@ impl ChaosMcp {
     }
 }
 
-fn parse_stock_cursor(value: &str) -> Result<StockItemId, CallToolResult> {
-    parse_uuid_field(value, "cursor").map(StockItemId::from_uuid)
+fn parse_stock_cursor(value: &str) -> Result<InventoryItemId, CallToolResult> {
+    parse_uuid_field(value, "cursor").map(InventoryItemId::from_uuid)
 }
 
 fn parse_location_cursor(value: &str) -> Result<InventoryLocationId, CallToolResult> {

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chaos_domain::{
     catalog::ProductVariantId,
     inventory::{
-        InventoryLocation, InventoryLocationId, InventoryLocationStatus, InventoryReservation,
-        InventoryReservationId, InventoryReservationStatus, StockItemId,
+        InventoryItemId, InventoryLocation, InventoryLocationId, InventoryReservation,
+        InventoryReservationId, InventoryReservationStatus,
     },
     store::StoreId,
 };
@@ -17,13 +17,13 @@ pub struct InventoryLocationItem {
     pub id: InventoryLocationId,
     pub code: String,
     pub name: String,
-    pub status: InventoryLocationStatus,
+    pub archived_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
-pub struct StockItemItem {
-    pub id: StockItemId,
+pub struct InventoryItemView {
+    pub id: InventoryItemId,
     pub inventory_location_id: InventoryLocationId,
     pub product_variant_id: ProductVariantId,
     pub on_hand_quantity: i64,
@@ -32,7 +32,7 @@ pub struct StockItemItem {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct StockAdjustment {
+pub struct InventoryAdjustment {
     pub store_id: StoreId,
     pub inventory_location_id: InventoryLocationId,
     pub product_variant_id: ProductVariantId,
@@ -73,17 +73,17 @@ pub trait InventoryRepository: Send + Sync {
     async fn adjust_stock(
         &self,
         actor: AdminActor,
-        adjustment: &StockAdjustment,
+        adjustment: &InventoryAdjustment,
         idempotency: &IdempotencyRequest,
-    ) -> Result<StockItemItem, ApplicationError>;
+    ) -> Result<InventoryItemView, ApplicationError>;
 
     async fn list_stock(
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        after: Option<StockItemId>,
+        after: Option<InventoryItemId>,
         limit: u16,
-    ) -> Result<Option<Vec<StockItemItem>>, ApplicationError>;
+    ) -> Result<Option<Vec<InventoryItemView>>, ApplicationError>;
 
     async fn create_reservation(
         &self,

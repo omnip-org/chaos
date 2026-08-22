@@ -105,7 +105,7 @@ impl Store {
             name,
             default_region,
             default_currency,
-            status: StoreStatus::Inactive,
+            status: StoreStatus::Active,
         })
     }
 
@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_store_starts_as_draft() {
+    fn new_store_starts_active() {
         let store = Store::create(
             StoreCode::parse("main-store").unwrap(),
             "Main Store",
@@ -171,7 +171,7 @@ mod tests {
             CurrencyCode::USD,
         )
         .unwrap();
-        assert_eq!(store.status(), StoreStatus::Inactive);
+        assert_eq!(store.status(), StoreStatus::Active);
         assert_eq!(store.default_region(), RegionCode::US);
         assert_eq!(store.default_currency(), CurrencyCode::USD);
     }

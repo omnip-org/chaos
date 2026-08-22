@@ -341,8 +341,8 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO commerce.sales_channels \
-                 (id, store_id, code, name, kind) \
-                 VALUES ($1, $2, $3, 'Web', 'web')",
+                 (id, store_id, code, name) \
+                 VALUES ($1, $2, $3, 'Web')",
             )
             .bind(id.as_uuid())
             .bind(owning_store.as_uuid())

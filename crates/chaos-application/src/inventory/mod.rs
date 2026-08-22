@@ -4,8 +4,8 @@ use chaos_domain::{
     FieldViolation,
     catalog::ProductVariantId,
     inventory::{
-        InventoryLocation, InventoryLocationCode, InventoryLocationId, InventoryReservation,
-        InventoryReservationId, InventoryReservationLine, StockItemId,
+        InventoryItemId, InventoryLocation, InventoryLocationCode, InventoryLocationId,
+        InventoryReservation, InventoryReservationId, InventoryReservationLine,
     },
     store::StoreId,
 };
@@ -14,9 +14,9 @@ use time::OffsetDateTime;
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
-        InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
-        StockItemItem,
+        AdminActor, IdempotencyRequest, InventoryAdjustment, InventoryItemView,
+        InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
+        InventoryReservationTransition, MachineActor,
     },
     store::StoreActor,
 };
@@ -40,8 +40,7 @@ pub struct AdjustStockInput {
 }
 
 pub struct ReserveInventoryLineInput {
-    pub stock_item_id: StockItemId,
-    pub product_variant_id: ProductVariantId,
+    pub inventory_item_id: InventoryItemId,
     pub quantity: i64,
 }
 
@@ -112,7 +111,7 @@ impl InventoryManagement {
     pub async fn adjust_stock(
         &self,
         input: AdjustStockInput,
-    ) -> Result<StockItemItem, ApplicationError> {
+    ) -> Result<InventoryItemView, ApplicationError> {
         require_inventory_writer(&input.actor)?;
         if input.delta_quantity == 0 {
             return Err(validation("delta_quantity", "must not be zero"));
@@ -123,7 +122,7 @@ impl InventoryManagement {
         self.repository
             .adjust_stock(
                 input.actor,
-                &StockAdjustment {
+                &InventoryAdjustment {
                     store_id: input.store_id,
                     inventory_location_id: input.inventory_location_id,
                     product_variant_id: input.product_variant_id,
@@ -139,9 +138,9 @@ impl InventoryManagement {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        after: Option<StockItemId>,
+        after: Option<InventoryItemId>,
         limit: u16,
-    ) -> Result<InventoryPage<StockItemItem>, ApplicationError> {
+    ) -> Result<InventoryPage<InventoryItemView>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
@@ -163,13 +162,7 @@ impl InventoryManagement {
         let lines = input
             .lines
             .into_iter()
-            .map(|line| {
-                InventoryReservationLine::new(
-                    line.stock_item_id,
-                    line.product_variant_id,
-                    line.quantity,
-                )
-            })
+            .map(|line| InventoryReservationLine::new(line.inventory_item_id, line.quantity))
             .collect::<Result<Vec<_>, _>>()?;
         let reservation =
             InventoryReservation::create(input.actor.store_id, input.now, input.expires_at, lines)?;

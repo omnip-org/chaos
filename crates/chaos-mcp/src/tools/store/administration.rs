@@ -57,8 +57,6 @@ pub struct CreateSalesChannelParams {
     /// URL-safe code, unique within the Store.
     pub code: String,
     pub name: String,
-    /// "web", "mobile", "point_of_sale", "marketplace", or "custom".
-    pub kind: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -71,8 +69,6 @@ pub struct UpdateSalesChannelParams {
     pub sales_channel_id: String,
     pub code: String,
     pub name: String,
-    /// "web", "mobile", "point_of_sale", "marketplace", or "custom".
-    pub kind: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -163,8 +159,10 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Activate the selected Store, making it live. Requires \
-                        confirm: true and an idempotency_key.")]
+    #[tool(
+        description = "Reactivate the selected Store, making it live. Requires \
+                        confirm: true and an idempotency_key."
+    )]
     async fn activate_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -284,7 +282,6 @@ impl ChaosMcp {
                 store_id,
                 code: params.code,
                 name: params.name,
-                kind: params.kind,
                 idempotency,
             })
             .await
@@ -295,7 +292,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a sales channel's code, name, and kind in the selected Store. \
+        description = "Update a sales channel's code and name in the selected Store. \
                         Requires confirm: true and an idempotency_key."
     )]
     async fn update_sales_channel(
@@ -333,7 +330,6 @@ impl ChaosMcp {
                 sales_channel_id,
                 code: params.code,
                 name: params.name,
-                kind: params.kind,
                 idempotency,
             })
             .await
@@ -477,7 +473,6 @@ fn sales_channel_json(item: SalesChannelAdminItem) -> serde_json::Value {
         "id": item.id.as_uuid(),
         "code": item.code.as_str(),
         "name": item.name,
-        "kind": item.kind.as_str(),
         "status": item.status.as_str(),
         "is_default": item.is_default,
         "created_at": format_time(item.created_at),

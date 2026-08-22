@@ -89,7 +89,7 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         sqlx::query(
             "INSERT INTO commerce.stores \
              (id, code, name, default_region, default_currency, status) \
-             VALUES ($1, $2, $3, $4, $5, 'inactive')",
+             VALUES ($1, $2, $3, $4, $5, 'active')",
         )
         .bind(store.id().as_uuid())
         .bind(store.code().as_str())
@@ -139,18 +139,32 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-             (id, store_id, code, name, kind, status, is_default) \
-             VALUES ($1, $2, $3, $4, \
-                     $5::commerce.sales_channel_kind, \
-                     $6::commerce.sales_channel_status, $7)",
+             (id, store_id, code, name, status, is_default) \
+             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_status, $6)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
-        .bind(channel.kind().as_str())
         .bind(channel.status().as_str())
         .bind(channel.is_default())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(unexpected_database_error)?;
+        Ok(())
+    }
+
+    async fn insert_default_inventory_location(
+        &mut self,
+        store: &Store,
+    ) -> Result<(), ApplicationError> {
+        sqlx::query(
+            "INSERT INTO commerce.inventory_locations \
+             (id, store_id, code, name) \
+             VALUES ($1, $2, 'default', 'Default Warehouse')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(store.id().as_uuid())
         .execute(&mut *self.transaction)
         .await
         .map_err(unexpected_database_error)?;
@@ -268,10 +282,10 @@ mod tests {
             })
         ));
 
-        let stored: (String, String, String, bool, String, String, bool) = sqlx::query_as(
+        let stored: (String, String, String, bool, String, bool) = sqlx::query_as(
             "SELECT store.status::text, store.default_region::text, \
                     currency.currency::text, currency.enabled, \
-                    channel.code::text, channel.kind::text, channel.is_default \
+                    channel.code::text, channel.is_default \
              FROM commerce.stores AS store \
              INNER JOIN commerce.store_currencies AS currency \
                  ON currency.store_id = store.id \
@@ -286,14 +300,25 @@ mod tests {
         assert_eq!(
             stored,
             (
-                "inactive".into(),
+                "active".into(),
                 "US".into(),
                 "USD".into(),
                 true,
                 "web".into(),
-                "web".into(),
                 true,
             )
+        );
+
+        let default_location: (String, String) = sqlx::query_as(
+            "SELECT code::text, name FROM commerce.inventory_locations WHERE store_id = $1",
+        )
+        .bind(output.store_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            default_location,
+            ("default".into(), "Default Warehouse".into())
         );
 
         let membership_role: String = sqlx::query_scalar(

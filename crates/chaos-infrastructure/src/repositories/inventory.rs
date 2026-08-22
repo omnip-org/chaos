@@ -2,17 +2,17 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, InventoryLocationItem, InventoryRepository,
-        InventoryReservationDetail, InventoryReservationTransition, MachineActor, StockAdjustment,
-        StockItemItem,
+        AdminActor, IdempotencyRequest, InventoryAdjustment, InventoryItemView,
+        InventoryLocationItem, InventoryRepository, InventoryReservationDetail,
+        InventoryReservationTransition, MachineActor,
     },
     store::StoreActor,
 };
 use chaos_domain::{
     catalog::ProductVariantId,
     inventory::{
-        InventoryLocation, InventoryLocationId, InventoryLocationStatus, InventoryReservation,
-        InventoryReservationId, InventoryReservationStatus, StockBalance, StockItemId,
+        InventoryItemId, InventoryLocation, InventoryLocationId, InventoryReservation,
+        InventoryReservationId, InventoryReservationStatus, StockBalance,
     },
     store::StoreId,
 };
@@ -24,15 +24,22 @@ use uuid::Uuid;
 use super::idempotency::{self, IdempotencyScope};
 
 const CREATE_LOCATION_OPERATION: &str = "inventory_locations.create.v1";
-const ADJUST_STOCK_OPERATION: &str = "stock_items.adjust.v1";
+const ADJUST_STOCK_OPERATION: &str = "inventory_items.adjust.v1";
 const CREATE_RESERVATION_OPERATION: &str = "inventory_reservations.create.v1";
 const RELEASE_RESERVATION_OPERATION: &str = "inventory_reservations.release.v1";
 const CONSUME_RESERVATION_OPERATION: &str = "inventory_reservations.consume.v1";
 
-type LocationRow = (Uuid, String, String, String, OffsetDateTime, OffsetDateTime);
-type StockRow = (Uuid, Uuid, Uuid, i64, i64, OffsetDateTime);
+type LocationRow = (
+    Uuid,
+    String,
+    String,
+    Option<OffsetDateTime>,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+type InventoryItemRow = (Uuid, Uuid, Uuid, i64, i64, OffsetDateTime);
 type ReservationRow = (String, OffsetDateTime, Option<OffsetDateTime>, Uuid);
-type LockedStockRow = (Uuid, i64, i64);
+type LockedInventoryItemRow = (Uuid, i64, i64);
 
 #[derive(Clone)]
 pub struct PostgresInventoryRepository {
@@ -105,8 +112,8 @@ impl InventoryRepository for PostgresInventoryRepository {
         require_store(&mut transaction, location.store_id()).await?;
         sqlx::query(
             "INSERT INTO commerce.inventory_locations \
-             (id, store_id, code, name, status) \
-             VALUES ($1, $2, $3, $4, 'active')",
+             (id, store_id, code, name) \
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(location.id().as_uuid())
         .bind(location.store_id().as_uuid())
@@ -139,7 +146,7 @@ impl InventoryRepository for PostgresInventoryRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, LocationRow>(
-            "SELECT id, code::text, name, status::text, created_at, updated_at \
+            "SELECT id, code::text, name, archived_at, created_at, updated_at \
              FROM commerce.inventory_locations \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
@@ -160,9 +167,9 @@ impl InventoryRepository for PostgresInventoryRepository {
     async fn adjust_stock(
         &self,
         actor: AdminActor,
-        adjustment: &StockAdjustment,
+        adjustment: &InventoryAdjustment,
         request: &IdempotencyRequest,
-    ) -> Result<StockItemItem, ApplicationError> {
+    ) -> Result<InventoryItemView, ApplicationError> {
         let audit_user_id = actor.audit_user_id();
         let mut transaction = self.begin_for_admin(&actor).await?;
         if let Some(snapshot) = reserve_idempotency(
@@ -173,11 +180,11 @@ impl InventoryRepository for PostgresInventoryRepository {
         )
         .await?
         {
-            return replay_stock(&snapshot);
+            return replay_inventory_item(&snapshot);
         }
         require_store(&mut transaction, adjustment.store_id).await?;
         sqlx::query(
-            "INSERT INTO commerce.stock_items \
+            "INSERT INTO commerce.inventory_items \
              (id, store_id, inventory_location_id, product_variant_id) \
              SELECT $1, $2, location.id, variant.id \
              FROM commerce.inventory_locations AS location \
@@ -185,7 +192,7 @@ impl InventoryRepository for PostgresInventoryRepository {
                ON variant.store_id = location.store_id \
               AND variant.id = $4 AND variant.track_inventory \
              WHERE location.store_id = $2 \
-               AND location.id = $3 AND location.status = 'active' \
+               AND location.id = $3 AND location.archived_at IS NULL \
              ON CONFLICT (store_id, inventory_location_id, product_variant_id) \
              DO NOTHING",
         )
@@ -196,7 +203,7 @@ impl InventoryRepository for PostgresInventoryRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let locked = lock_stock_by_location_variant(
+        let locked = lock_inventory_item_by_location_variant(
             &mut transaction,
             adjustment.store_id,
             adjustment.inventory_location_id,
@@ -205,13 +212,13 @@ impl InventoryRepository for PostgresInventoryRepository {
         .await?
         .ok_or_else(invalid_inventory_selection)?;
         let balance = StockBalance::new(locked.1, locked.2)?.adjust(adjustment.delta_quantity)?;
-        let updated_at = update_stock_balance(&mut transaction, locked.0, balance).await?;
-        insert_ledger(
+        let updated_at = update_inventory_balance(&mut transaction, locked.0, balance).await?;
+        insert_inventory_transaction(
             &mut transaction,
             adjustment.store_id,
             locked.0,
             None,
-            "manual_adjustment",
+            None,
             adjustment.delta_quantity,
             0,
             balance,
@@ -219,8 +226,8 @@ impl InventoryRepository for PostgresInventoryRepository {
             Some(audit_user_id.as_uuid()),
         )
         .await?;
-        let item = StockItemItem {
-            id: StockItemId::from_uuid(locked.0),
+        let item = InventoryItemView {
+            id: InventoryItemId::from_uuid(locked.0),
             inventory_location_id: adjustment.inventory_location_id,
             product_variant_id: adjustment.product_variant_id,
             on_hand_quantity: balance.on_hand(),
@@ -233,7 +240,7 @@ impl InventoryRepository for PostgresInventoryRepository {
             adjustment.store_id.as_uuid(),
             ADJUST_STOCK_OPERATION,
             request,
-            stock_snapshot(&item),
+            inventory_snapshot(&item),
         )
         .await?;
         transaction.commit().await.map_err(database_error)?;
@@ -244,27 +251,27 @@ impl InventoryRepository for PostgresInventoryRepository {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        after: Option<StockItemId>,
+        after: Option<InventoryItemId>,
         limit: u16,
-    ) -> Result<Option<Vec<StockItemItem>>, ApplicationError> {
+    ) -> Result<Option<Vec<InventoryItemView>>, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         if !store_exists(&mut transaction, store_id).await? {
             return Ok(None);
         }
-        let rows = sqlx::query_as::<_, StockRow>(
+        let rows = sqlx::query_as::<_, InventoryItemRow>(
             "SELECT id, inventory_location_id, product_variant_id, on_hand_quantity, \
-                    reserved_quantity, updated_at FROM commerce.stock_items \
+                    reserved_quantity, updated_at FROM commerce.inventory_items \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
         .bind(store_id.as_uuid())
-        .bind(after.map(StockItemId::as_uuid))
+        .bind(after.map(InventoryItemId::as_uuid))
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
         .await
         .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(Some(rows.into_iter().map(stock_item).collect()))
+        Ok(Some(rows.into_iter().map(inventory_item).collect()))
     }
 
     async fn create_reservation(
@@ -302,33 +309,35 @@ impl InventoryRepository for PostgresInventoryRepository {
         .map_err(database_error)?;
 
         let mut lines = reservation.lines().iter().collect::<Vec<_>>();
-        lines.sort_by_key(|line| line.stock_item_id());
+        lines.sort_by_key(|line| line.inventory_item_id());
         for line in lines {
-            let locked = lock_stock_by_id(&mut transaction, actor.store_id, line.stock_item_id())
-                .await?
-                .filter(|row| row.1 == line.product_variant_id().as_uuid())
-                .ok_or_else(invalid_inventory_selection)?;
+            let locked = lock_inventory_item_by_id(
+                &mut transaction,
+                actor.store_id,
+                line.inventory_item_id(),
+            )
+            .await?
+            .ok_or_else(invalid_inventory_selection)?;
             let balance = StockBalance::new(locked.2, locked.3)?.reserve(line.quantity())?;
-            update_stock_balance(&mut transaction, locked.0, balance).await?;
+            update_inventory_balance(&mut transaction, locked.0, balance).await?;
             sqlx::query(
                 "INSERT INTO commerce.inventory_reservation_lines \
-                 (store_id, reservation_id, stock_item_id, \
-                  product_variant_id, quantity) VALUES ($1, $2, $3, $4, $5)",
+                 (store_id, reservation_id, inventory_item_id, quantity) \
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(actor.store_id.as_uuid())
             .bind(reservation.id().as_uuid())
             .bind(locked.0)
-            .bind(line.product_variant_id().as_uuid())
             .bind(line.quantity())
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-            insert_ledger(
+            insert_inventory_transaction(
                 &mut transaction,
                 actor.store_id,
                 locked.0,
+                Some("reservation"),
                 Some(reservation.id().as_uuid()),
-                "reservation_created",
                 0,
                 line.quantity(),
                 balance,
@@ -461,14 +470,6 @@ impl ReservationClosure {
             Self::Expired => InventoryReservationStatus::Expired,
         }
     }
-
-    const fn ledger_kind(self) -> &'static str {
-        match self {
-            Self::Released => "reservation_released",
-            Self::Consumed => "reservation_consumed",
-            Self::Expired => "reservation_expired",
-        }
-    }
 }
 
 async fn set_context(
@@ -540,15 +541,15 @@ async fn require_active_machine_context(
     }
 }
 
-async fn lock_stock_by_location_variant(
+async fn lock_inventory_item_by_location_variant(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     location_id: InventoryLocationId,
     variant_id: ProductVariantId,
-) -> Result<Option<LockedStockRow>, ApplicationError> {
+) -> Result<Option<LockedInventoryItemRow>, ApplicationError> {
     sqlx::query_as(
         "SELECT id, on_hand_quantity, reserved_quantity \
-         FROM commerce.stock_items WHERE store_id = $1 \
+         FROM commerce.inventory_items WHERE store_id = $1 \
            AND inventory_location_id = $2 AND product_variant_id = $3 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
@@ -559,37 +560,37 @@ async fn lock_stock_by_location_variant(
     .map_err(database_error)
 }
 
-async fn lock_stock_by_id(
+async fn lock_inventory_item_by_id(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    stock_item_id: StockItemId,
+    inventory_item_id: InventoryItemId,
 ) -> Result<Option<(Uuid, Uuid, i64, i64)>, ApplicationError> {
     sqlx::query_as(
-        "SELECT stock.id, stock.product_variant_id, stock.on_hand_quantity, \
-                stock.reserved_quantity FROM commerce.stock_items AS stock \
+        "SELECT item.id, item.product_variant_id, item.on_hand_quantity, \
+                item.reserved_quantity FROM commerce.inventory_items AS item \
          INNER JOIN commerce.inventory_locations AS location \
-           ON location.store_id = stock.store_id \
-          AND location.id = stock.inventory_location_id \
-         WHERE stock.store_id = $1 AND stock.id = $2 \
-           AND location.status = 'active' FOR UPDATE OF stock",
+           ON location.store_id = item.store_id \
+          AND location.id = item.inventory_location_id \
+         WHERE item.store_id = $1 AND item.id = $2 \
+           AND location.archived_at IS NULL FOR UPDATE OF item",
     )
     .bind(store_id.as_uuid())
-    .bind(stock_item_id.as_uuid())
+    .bind(inventory_item_id.as_uuid())
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)
 }
 
-async fn update_stock_balance(
+async fn update_inventory_balance(
     transaction: &mut Transaction<'static, Postgres>,
-    stock_item_id: Uuid,
+    inventory_item_id: Uuid,
     balance: StockBalance,
 ) -> Result<OffsetDateTime, ApplicationError> {
     sqlx::query_scalar(
-        "UPDATE commerce.stock_items SET on_hand_quantity = $2, reserved_quantity = $3, \
+        "UPDATE commerce.inventory_items SET on_hand_quantity = $2, reserved_quantity = $3, \
                 updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING updated_at",
     )
-    .bind(stock_item_id)
+    .bind(inventory_item_id)
     .bind(balance.on_hand())
     .bind(balance.reserved())
     .fetch_one(&mut **transaction)
@@ -598,12 +599,12 @@ async fn update_stock_balance(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn insert_ledger(
+async fn insert_inventory_transaction(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    stock_item_id: Uuid,
-    reservation_id: Option<Uuid>,
-    kind: &'static str,
+    inventory_item_id: Uuid,
+    reference_type: Option<&str>,
+    reference_id: Option<Uuid>,
     on_hand_delta: i64,
     reserved_delta: i64,
     balance: StockBalance,
@@ -611,17 +612,17 @@ async fn insert_ledger(
     actor_user_id: Option<Uuid>,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
-        "INSERT INTO commerce.stock_ledger_entries \
-         (id, store_id, stock_item_id, reservation_id, kind, \
+        "INSERT INTO commerce.inventory_transactions \
+         (id, store_id, inventory_item_id, reference_type, reference_id, \
           on_hand_delta_quantity, reserved_delta_quantity, resulting_on_hand_quantity, \
           resulting_reserved_quantity, note, actor_user_id) \
-         VALUES ($1, $2, $3, $4, $5::commerce.stock_ledger_kind, $6, $7, $8, $9, $10, $11)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(Uuid::now_v7())
     .bind(store_id.as_uuid())
-    .bind(stock_item_id)
-    .bind(reservation_id)
-    .bind(kind)
+    .bind(inventory_item_id)
+    .bind(reference_type)
+    .bind(reference_id)
     .bind(on_hand_delta)
     .bind(reserved_delta)
     .bind(balance.on_hand())
@@ -665,19 +666,19 @@ pub(super) async fn close_reservation(
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let lines = sqlx::query_as::<_, (Uuid, i64, i64, i64)>(
-        "SELECT stock.id, line.quantity, stock.on_hand_quantity, stock.reserved_quantity \
+        "SELECT item.id, line.quantity, item.on_hand_quantity, item.reserved_quantity \
          FROM commerce.inventory_reservation_lines AS line \
-         INNER JOIN commerce.stock_items AS stock \
-           ON stock.store_id = line.store_id AND stock.id = line.stock_item_id \
+         INNER JOIN commerce.inventory_items AS item \
+           ON item.store_id = line.store_id AND item.id = line.inventory_item_id \
          WHERE line.store_id = $1 \
-           AND line.reservation_id = $2 ORDER BY stock.id ASC FOR UPDATE OF stock",
+           AND line.reservation_id = $2 ORDER BY item.id ASC FOR UPDATE OF item",
     )
     .bind(store_id.as_uuid())
     .bind(reservation_id.as_uuid())
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    for (stock_item_id, quantity, on_hand, reserved) in lines {
+    for (inventory_item_id, quantity, on_hand, reserved) in lines {
         let current = StockBalance::new(on_hand, reserved)?;
         let balance = match closure {
             ReservationClosure::Consumed => current.consume(quantity)?,
@@ -685,18 +686,18 @@ pub(super) async fn close_reservation(
                 current.release(quantity)?
             }
         };
-        update_stock_balance(transaction, stock_item_id, balance).await?;
+        update_inventory_balance(transaction, inventory_item_id, balance).await?;
         let on_hand_delta = if matches!(closure, ReservationClosure::Consumed) {
             -quantity
         } else {
             0
         };
-        insert_ledger(
+        insert_inventory_transaction(
             transaction,
             store_id,
-            stock_item_id,
+            inventory_item_id,
+            Some("reservation"),
             Some(reservation_id.as_uuid()),
-            closure.ledger_kind(),
             on_hand_delta,
             -quantity,
             balance,
@@ -780,15 +781,15 @@ fn location_item(row: LocationRow) -> Result<InventoryLocationItem, ApplicationE
         id: InventoryLocationId::from_uuid(row.0),
         code: row.1,
         name: row.2,
-        status: InventoryLocationStatus::parse(&row.3).ok_or_else(|| invalid_enum(&row.3))?,
+        archived_at: row.3,
         created_at: row.4,
         updated_at: row.5,
     })
 }
 
-fn stock_item(row: StockRow) -> StockItemItem {
-    StockItemItem {
-        id: StockItemId::from_uuid(row.0),
+fn inventory_item(row: InventoryItemRow) -> InventoryItemView {
+    InventoryItemView {
+        id: InventoryItemId::from_uuid(row.0),
         inventory_location_id: InventoryLocationId::from_uuid(row.1),
         product_variant_id: ProductVariantId::from_uuid(row.2),
         on_hand_quantity: row.3,
@@ -798,7 +799,7 @@ fn stock_item(row: StockRow) -> StockItemItem {
     }
 }
 
-fn stock_snapshot(item: &StockItemItem) -> Value {
+fn inventory_snapshot(item: &InventoryItemView) -> Value {
     json!({
         "id": item.id.as_uuid(),
         "inventory_location_id": item.inventory_location_id.as_uuid(),
@@ -810,9 +811,9 @@ fn stock_snapshot(item: &StockItemItem) -> Value {
     })
 }
 
-fn replay_stock(snapshot: &Value) -> Result<StockItemItem, ApplicationError> {
-    Ok(StockItemItem {
-        id: StockItemId::from_uuid(snapshot_uuid(snapshot, "id")?),
+fn replay_inventory_item(snapshot: &Value) -> Result<InventoryItemView, ApplicationError> {
+    Ok(InventoryItemView {
+        id: InventoryItemId::from_uuid(snapshot_uuid(snapshot, "id")?),
         inventory_location_id: InventoryLocationId::from_uuid(snapshot_uuid(
             snapshot,
             "inventory_location_id",
@@ -894,16 +895,11 @@ fn invalid_snapshot() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("invalid inventory idempotency snapshot"))
 }
 
-fn invalid_enum(value: &str) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("unknown inventory enum value {value}"))
-}
-
 fn invalid_inventory_selection() -> ApplicationError {
     ApplicationError::Validation {
         violations: vec![chaos_domain::FieldViolation {
             field: "inventory",
-            reason: "location, Variant, and stock item must be active and belong to the Store"
-                .into(),
+            reason: "location, variant, and inventory item must belong to the Store".into(),
         }],
     }
 }
@@ -1042,8 +1038,8 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO commerce.sales_channels \
-             (id, store_id, code, name, kind, is_default) \
-             VALUES ($1, $2, 'web', 'Web', 'web', true)",
+             (id, store_id, code, name, is_default) \
+             VALUES ($1, $2, 'web', 'Web', true)",
         )
         .bind(channel_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -1147,8 +1143,7 @@ mod tests {
             now,
             expires_at: now + Duration::minutes(15),
             lines: vec![ReserveInventoryLineInput {
-                stock_item_id: stock.id,
-                product_variant_id: variant_id,
+                inventory_item_id: stock.id,
                 quantity: 7,
             }],
             idempotency: request(format!("reserve-a-{suffix}"), 4),
@@ -1158,8 +1153,7 @@ mod tests {
             now,
             expires_at: now + Duration::minutes(15),
             lines: vec![ReserveInventoryLineInput {
-                stock_item_id: stock.id,
-                product_variant_id: variant_id,
+                inventory_item_id: stock.id,
                 quantity: 7,
             }],
             idempotency: request(format!("reserve-b-{suffix}"), 5),
@@ -1200,8 +1194,7 @@ mod tests {
                 now,
                 expires_at: now + Duration::minutes(5),
                 lines: vec![ReserveInventoryLineInput {
-                    stock_item_id: stock.id,
-                    product_variant_id: variant_id,
+                    inventory_item_id: stock.id,
                     quantity: 1,
                 }],
                 idempotency: request(format!("reserve-expiring-{suffix}"), 7),
@@ -1237,7 +1230,7 @@ mod tests {
                 .is_err()
         );
         let ledger_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM commerce.stock_ledger_entries \
+            "SELECT count(*) FROM commerce.inventory_transactions \
              WHERE store_id = $1",
         )
         .bind(store_id.as_uuid())
@@ -1254,7 +1247,7 @@ mod tests {
             .unwrap();
         assert!(
             sqlx::query(
-                "UPDATE commerce.stock_ledger_entries SET note = 'tampered' \
+                "UPDATE commerce.inventory_transactions SET note = 'tampered' \
                  WHERE store_id = $1",
             )
             .bind(store_id.as_uuid())

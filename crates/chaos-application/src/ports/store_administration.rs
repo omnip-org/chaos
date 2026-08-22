@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
-        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelKind, SalesChannelStatus,
-        Store, StoreCode, StoreId, StoreStatus,
+        SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
+        StoreId, StoreStatus,
     },
 };
 use time::OffsetDateTime;
@@ -27,7 +27,6 @@ pub struct SalesChannelAdminItem {
     pub id: SalesChannelId,
     pub code: SalesChannelCode,
     pub name: String,
-    pub kind: SalesChannelKind,
     pub status: SalesChannelStatus,
     pub is_default: bool,
     pub created_at: OffsetDateTime,

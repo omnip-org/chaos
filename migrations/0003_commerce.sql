@@ -12,14 +12,6 @@ CREATE TYPE commerce.store_role AS ENUM ('owner', 'member');
 
 CREATE TYPE commerce.store_status AS ENUM ('active', 'inactive');
 
-CREATE TYPE commerce.sales_channel_kind AS ENUM (
-    'web',
-    'mobile',
-    'point_of_sale',
-    'marketplace',
-    'custom'
-);
-
 CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
 
 
@@ -30,7 +22,7 @@ CREATE TABLE commerce.stores (
     default_region       CHAR(2)                  NOT NULL DEFAULT 'US',
     default_currency     CHAR(3)                  NOT NULL DEFAULT 'USD',
     default_locale       VARCHAR(63)              NOT NULL DEFAULT 'en-US',
-    status               commerce.store_status    NOT NULL DEFAULT 'inactive',
+    status               commerce.store_status    NOT NULL DEFAULT 'active',
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -86,13 +78,13 @@ CREATE TABLE commerce.sales_channels (
     store_id             UUID                              NOT NULL,
     code                 extensions.citext                 NOT NULL,
     name                 TEXT                              NOT NULL,
-    kind                 commerce.sales_channel_kind       NOT NULL,
     status               commerce.sales_channel_status     NOT NULL DEFAULT 'active',
     is_default           BOOLEAN                           NOT NULL DEFAULT false,
     created_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, code),
+    UNIQUE (store_id, id),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
     CONSTRAINT sales_channels_code_format_check CHECK (
@@ -1271,8 +1263,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
 -- === Inventory ===
 
-CREATE TYPE commerce.inventory_location_status AS ENUM ('active', 'archived');
-
 CREATE TYPE commerce.inventory_reservation_status AS ENUM (
     'active',
     'released',
@@ -1280,21 +1270,12 @@ CREATE TYPE commerce.inventory_reservation_status AS ENUM (
     'expired'
 );
 
-CREATE TYPE commerce.stock_ledger_kind AS ENUM (
-    'manual_adjustment',
-    'reservation_created',
-    'reservation_released',
-    'reservation_consumed',
-    'reservation_expired',
-    'return_restock'
-);
-
 CREATE TABLE commerce.inventory_locations (
     id                   UUID                                    NOT NULL PRIMARY KEY,
     store_id             UUID                                    NOT NULL,
-    code                 extensions.citext                       NOT NULL,
-    name                 TEXT                                    NOT NULL,
-    status               commerce.inventory_location_status      NOT NULL DEFAULT 'active',
+    code                 extensions.citext                       NOT NULL DEFAULT 'default',
+    name                 TEXT                                    NOT NULL DEFAULT 'Default Warehouse',
+    archived_at          TIMESTAMPTZ,
     created_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -1310,7 +1291,7 @@ CREATE TABLE commerce.inventory_locations (
     )
 );
 
-CREATE TABLE commerce.stock_items (
+CREATE TABLE commerce.inventory_items (
     id                    UUID        NOT NULL PRIMARY KEY,
     store_id              UUID        NOT NULL,
     inventory_location_id UUID        NOT NULL,
@@ -1326,8 +1307,8 @@ CREATE TABLE commerce.stock_items (
         REFERENCES commerce.inventory_locations(store_id, id),
     FOREIGN KEY (store_id, product_variant_id)
         REFERENCES commerce.product_variants(store_id, id),
-    CONSTRAINT stock_items_on_hand_nonnegative_check CHECK (on_hand_quantity >= 0),
-    CONSTRAINT stock_items_reserved_range_check CHECK (
+    CONSTRAINT inventory_items_on_hand_nonnegative_check CHECK (on_hand_quantity >= 0),
+    CONSTRAINT inventory_items_reserved_range_check CHECK (
         reserved_quantity >= 0 AND reserved_quantity <= on_hand_quantity
     )
 );
@@ -1345,8 +1326,8 @@ CREATE TABLE commerce.inventory_reservations (
     UNIQUE (store_id, id),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
+    FOREIGN KEY (store_id, sales_channel_id)
+        REFERENCES commerce.sales_channels(store_id, id),
     CONSTRAINT inventory_reservations_expiration_check CHECK (expires_at > created_at),
     CONSTRAINT inventory_reservations_closure_check CHECK (
         (status = 'active' AND closed_at IS NULL)
@@ -1357,27 +1338,24 @@ CREATE TABLE commerce.inventory_reservations (
 CREATE TABLE commerce.inventory_reservation_lines (
     store_id             UUID    NOT NULL,
     reservation_id       UUID    NOT NULL,
-    stock_item_id        UUID    NOT NULL,
-    product_variant_id   UUID    NOT NULL,
+    inventory_item_id    UUID    NOT NULL,
     quantity             BIGINT  NOT NULL,
 
-    PRIMARY KEY (store_id, reservation_id, stock_item_id),
+    PRIMARY KEY (store_id, reservation_id, inventory_item_id),
     FOREIGN KEY (store_id, reservation_id)
         REFERENCES commerce.inventory_reservations(store_id, id)
         ON DELETE CASCADE,
-    FOREIGN KEY (store_id, stock_item_id)
-        REFERENCES commerce.stock_items(store_id, id),
-    FOREIGN KEY (store_id, product_variant_id)
-        REFERENCES commerce.product_variants(store_id, id),
+    FOREIGN KEY (store_id, inventory_item_id)
+        REFERENCES commerce.inventory_items(store_id, id),
     CONSTRAINT inventory_reservation_lines_quantity_positive_check CHECK (quantity > 0)
 );
 
-CREATE TABLE commerce.stock_ledger_entries (
+CREATE TABLE commerce.inventory_transactions (
     id                           UUID                        NOT NULL PRIMARY KEY,
     store_id                     UUID                        NOT NULL,
-    stock_item_id                UUID                        NOT NULL,
-    reservation_id               UUID,
-    kind                         commerce.stock_ledger_kind NOT NULL,
+    inventory_item_id            UUID                        NOT NULL,
+    reference_type               TEXT,
+    reference_id                 UUID,
     on_hand_delta_quantity       BIGINT                      NOT NULL,
     reserved_delta_quantity      BIGINT                      NOT NULL,
     resulting_on_hand_quantity   BIGINT                      NOT NULL,
@@ -1387,56 +1365,35 @@ CREATE TABLE commerce.stock_ledger_entries (
     created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
-    FOREIGN KEY (store_id, stock_item_id)
-        REFERENCES commerce.stock_items(store_id, id),
-    FOREIGN KEY (store_id, reservation_id)
-        REFERENCES commerce.inventory_reservations(store_id, id),
+    FOREIGN KEY (store_id, inventory_item_id)
+        REFERENCES commerce.inventory_items(store_id, id),
     FOREIGN KEY (actor_user_id)
         REFERENCES identity.users(id),
-    CONSTRAINT stock_ledger_entries_resulting_balance_check CHECK (
+    CONSTRAINT inventory_transactions_resulting_balance_check CHECK (
         resulting_on_hand_quantity >= 0
         AND resulting_reserved_quantity >= 0
         AND resulting_reserved_quantity <= resulting_on_hand_quantity
     ),
-    CONSTRAINT stock_ledger_entries_note_length_check CHECK (
+    CONSTRAINT inventory_transactions_note_length_check CHECK (
         note IS NULL OR length(trim(note)) BETWEEN 1 AND 500
     ),
-    CONSTRAINT stock_ledger_entries_kind_deltas_check CHECK (
-        (
-            kind IN ('manual_adjustment', 'return_restock')
-            AND reservation_id IS NULL
-            AND (
-                (kind = 'manual_adjustment' AND on_hand_delta_quantity <> 0)
-                OR (kind = 'return_restock' AND on_hand_delta_quantity > 0)
-            )
-            AND reserved_delta_quantity = 0
-        )
-        OR (
-            kind = 'reservation_created'
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity = 0
-            AND reserved_delta_quantity > 0
-        )
-        OR (
-            kind IN ('reservation_released', 'reservation_expired')
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity = 0
-            AND reserved_delta_quantity < 0
-        )
-        OR (
-            kind = 'reservation_consumed'
-            AND reservation_id IS NOT NULL
-            AND on_hand_delta_quantity < 0
-            AND reserved_delta_quantity = on_hand_delta_quantity
-        )
+    CONSTRAINT inventory_transactions_delta_check CHECK (
+        on_hand_delta_quantity <> 0 OR reserved_delta_quantity <> 0
+    ),
+    CONSTRAINT inventory_transactions_reference_type_check CHECK (
+        reference_type IS NULL OR length(trim(reference_type)) BETWEEN 1 AND 80
+    ),
+    CONSTRAINT inventory_transactions_reference_pair_check CHECK (
+        (reference_type IS NULL AND reference_id IS NULL)
+        OR (reference_type IS NOT NULL AND reference_id IS NOT NULL)
     )
 );
 
-CREATE INDEX inventory_locations_store_status_idx
-    ON commerce.inventory_locations (store_id, status, created_at, id);
+CREATE INDEX inventory_locations_store_idx
+    ON commerce.inventory_locations (store_id, archived_at, created_at, id);
 
-CREATE INDEX stock_items_variant_availability_idx
-    ON commerce.stock_items (store_id,
+CREATE INDEX inventory_items_variant_availability_idx
+    ON commerce.inventory_items (store_id,
         product_variant_id,
         inventory_location_id
     );
@@ -1448,28 +1405,36 @@ CREATE INDEX inventory_reservations_expiration_idx
         id
     );
 
-CREATE INDEX inventory_reservation_lines_stock_item_idx
+CREATE INDEX inventory_reservation_lines_item_idx
     ON commerce.inventory_reservation_lines (store_id,
-        stock_item_id,
+        inventory_item_id,
         reservation_id
     );
 
-CREATE INDEX stock_ledger_entries_stock_item_created_idx
-    ON commerce.stock_ledger_entries (store_id,
-        stock_item_id,
+CREATE INDEX inventory_transactions_item_created_idx
+    ON commerce.inventory_transactions (store_id,
+        inventory_item_id,
+        created_at DESC,
+        id DESC
+    );
+
+CREATE INDEX inventory_transactions_reference_idx
+    ON commerce.inventory_transactions (store_id,
+        reference_type,
+        reference_id,
         created_at DESC,
         id DESC
     );
 
 ALTER TABLE commerce.inventory_locations ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.stock_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.inventory_items ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.inventory_reservations ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.inventory_reservation_lines ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.stock_ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.inventory_transactions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.inventory_locations
     USING (
@@ -1481,7 +1446,7 @@ CREATE POLICY store_isolation ON commerce.inventory_locations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.stock_items
+CREATE POLICY store_isolation ON commerce.inventory_items
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -1511,7 +1476,7 @@ CREATE POLICY store_isolation ON commerce.inventory_reservation_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.stock_ledger_entries
+CREATE POLICY store_isolation ON commerce.inventory_transactions
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -1525,7 +1490,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
 REVOKE UPDATE, DELETE
-    ON commerce.stock_ledger_entries FROM chaos_runtime;
+    ON commerce.inventory_transactions FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
