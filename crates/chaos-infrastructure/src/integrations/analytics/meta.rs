@@ -30,6 +30,10 @@ impl MetaConversionsDestination {
             api_base_url.scheme() == "https" || api_base_url.host_str() == Some("127.0.0.1"),
             "Meta API URL must use HTTPS or loopback HTTP"
         );
+        let mut api_base_url = api_base_url;
+        if !api_base_url.path().ends_with('/') {
+            api_base_url.set_path(&format!("{}/", api_base_url.path()));
+        }
         Ok(Self {
             client: Client::builder().timeout(timeout).build()?,
             api_base_url,
@@ -85,16 +89,24 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
                 message: format!("Meta request failed: {error}"),
             })?;
         let status = response.status();
+        let response_body = response.text().await.unwrap_or_default();
         if !status.is_success() {
             return Err(AnalyticsDeliveryError {
                 retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
-                message: format!("Meta returned HTTP {status}"),
+                message: format!(
+                    "Meta returned HTTP {status}: {}",
+                    truncate_error_body(&response_body)
+                ),
             });
         }
-        let receipt: MetaResponse = response.json().await.map_err(|_| AnalyticsDeliveryError {
-            retryable: true,
-            message: "Meta returned an invalid response".into(),
-        })?;
+        let receipt: MetaResponse =
+            serde_json::from_str(&response_body).map_err(|_| AnalyticsDeliveryError {
+                retryable: true,
+                message: format!(
+                    "Meta returned an invalid response: {}",
+                    truncate_error_body(&response_body)
+                ),
+            })?;
         if receipt.events_received != 1 {
             return Err(AnalyticsDeliveryError {
                 retryable: true,
@@ -210,6 +222,19 @@ fn invalid_command() -> AnalyticsDeliveryError {
         retryable: false,
         message: "Meta delivery command is invalid".into(),
     }
+}
+
+fn truncate_error_body(body: &str) -> String {
+    const MAX_ERROR_BYTES: usize = 1024;
+    let body = body.trim();
+    if body.len() <= MAX_ERROR_BYTES {
+        return body.to_owned();
+    }
+    let mut end = MAX_ERROR_BYTES;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &body[..end])
 }
 
 #[cfg(test)]

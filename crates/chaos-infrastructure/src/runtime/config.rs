@@ -116,7 +116,7 @@ impl Settings {
             auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
             auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
-            public_base_url: parse_or("PUBLIC_BASE_URL", "http://localhost:8080/")?,
+            public_base_url: required_url("PUBLIC_BASE_URL")?,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
@@ -232,6 +232,16 @@ fn required(name: &str) -> anyhow::Result<String> {
         Ok(value) if !value.trim().is_empty() => Ok(value),
         _ => bail!("required environment variable {name} is not set"),
     }
+}
+
+fn required_url(name: &str) -> anyhow::Result<Url> {
+    let url: Url = required(name)?
+        .parse()
+        .with_context(|| format!("environment variable {name} must be an absolute public URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        bail!("environment variable {name} must be an HTTP(S) URL with a host");
+    }
+    Ok(url)
 }
 
 fn comma_separated_or(name: &str, default: &str) -> anyhow::Result<Vec<String>> {

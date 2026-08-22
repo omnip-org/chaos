@@ -91,7 +91,7 @@ async fn analytics_worker_loop(
                 processed += count;
             }
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "analytics provider delivery batch failed");
+                tracing::warn!(%worker_id, error = ?error, "analytics provider delivery batch failed");
             }
         }
         tokio::time::sleep(backoff.observe(processed)).await;

@@ -23,7 +23,9 @@ pub struct EmptyParams {}
 pub struct ConfigureMetaDestinationParams {
     /// Meta Dataset ID that receives Conversions API events.
     pub dataset_id: String,
-    /// Secret reference for the Meta access token. The secret value itself must never be sent here.
+    /// Opaque `enc://...` reference returned by create_provider_secret with kind
+    /// `analytics_credential`, or an `env://CHAOS_ANALYTICS_SECRET_*` reference.
+    /// The Meta access token itself must never be sent here.
     pub credential_secret_reference: String,
     /// Optional Meta Test Events Code. When present, events are routed to Meta's test view.
     pub test_event_code: Option<String>,
@@ -85,7 +87,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and the delivery `enabled` switch for the selected Store. Owner role and confirmation are required."
+        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and the delivery `enabled` switch for the selected Store. First call create_provider_secret with kind `analytics_credential` and pass its returned `enc://...` reference here; never pass the raw Meta access token. Owner role and confirmation are required."
     )]
     async fn configure_meta_destination(
         &self,
@@ -118,6 +120,12 @@ impl ChaosMcp {
             return Ok(invalid(
                 "test_event_code",
                 "must contain between 1 and 64 bytes when provided",
+            ));
+        }
+        if !is_analytics_secret_reference(&params.credential_secret_reference) {
+            return Ok(invalid(
+                "credential_secret_reference",
+                "must be an enc:// reference returned by create_provider_secret or an env://CHAOS_ANALYTICS_SECRET_* reference; do not pass the raw Meta access token",
             ));
         }
         let store_id = actor.store_id();
@@ -251,4 +259,42 @@ fn invalid(field: &'static str, message: &'static str) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "code": "invalid_params", "message": format!("{field} {message}"),
     }))
+}
+
+fn is_analytics_secret_reference(value: &str) -> bool {
+    if let Some(encoded) = value.strip_prefix("enc://") {
+        return value.len() <= 518
+            && !encoded.is_empty()
+            && encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    }
+    let Some(variable) = value.strip_prefix("env://") else {
+        return false;
+    };
+    let prefix = "CHAOS_ANALYTICS_SECRET_";
+    let suffix = variable.strip_prefix(prefix).unwrap_or_default();
+    !suffix.is_empty()
+        && suffix.len() <= 96
+        && variable
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_analytics_secret_reference;
+
+    #[test]
+    fn accepts_only_supported_analytics_secret_references() {
+        assert!(is_analytics_secret_reference("enc://encrypted-reference_1"));
+        assert!(is_analytics_secret_reference(
+            "env://CHAOS_ANALYTICS_SECRET_META"
+        ));
+        assert!(!is_analytics_secret_reference("EAABraw-meta-token"));
+        assert!(!is_analytics_secret_reference(
+            "env://CHAOS_PAYMENT_SECRET_META"
+        ));
+        assert!(!is_analytics_secret_reference("enc://"));
+    }
 }
