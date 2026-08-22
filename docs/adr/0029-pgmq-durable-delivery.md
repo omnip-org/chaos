@@ -6,8 +6,8 @@
 ## Context
 
 Chaos runs HTTP API replicas separately from an independently scalable Worker.
-Payment commands, fulfillment projections, search refreshes, Analytics events,
-Provider webhooks, and external provider delivery all need crash recovery and safe
+Payment commands, fulfillment projections, search refreshes, Provider webhooks,
+and external provider delivery all need crash recovery and safe
 concurrent consumption. Maintaining a separate status, attempt counter,
 availability timestamp, and lease implementation for each flow duplicated the
 same queue mechanism and made reliability harder to audit.
@@ -23,9 +23,8 @@ Use logged PGMQ queues for event delivery:
 - `chaos_payment_commands`;
 - `chaos_fulfillment_events`;
 - `chaos_search_events`;
-- `chaos_analytics_events`;
 - `chaos_webhooks`;
-- `chaos_analytics_destinations`.
+- `chaos_analytics_deliveries`.
 
 The authoritative `integration` row keeps the business payload, stable event or
 delivery identifier, processing outcome, and bounded error. A `BEFORE INSERT`

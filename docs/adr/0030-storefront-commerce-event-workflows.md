@@ -1,61 +1,51 @@
-# ADR 0030: Storefront Commerce Event Workflows
+# ADR 0030: Storefront Behavior Event Flow
 
 - Status: Accepted
 - Date: 2026-08-22
 
 ## Decision
 
-The Storefront conversion path has one consumer identity and one event ledger:
+The Storefront path uses one Shopper identity and one behavior event ledger:
 
 ```text
 signed shopper token
         ↓
-Storefront API mutation / browser observation
+browser observation or commerce state change
         ↓
 integration.analytics_events
         ↓
-Analytics delivery task
+optional analytics_deliveries
         ↓
-Meta CAPI (or a future destination)
+Meta CAPI or another destination
 ```
 
-`shopper_id` is issued and verified by Chaos. The SDK must send the signed
-`x-chaos-shopper-token` when it flushes browser events. The request body never
-contains a client-generated identity. `session_id` is retained only to group
-events from one browser session.
+The ledger envelope is intentionally small: who (`shopper_id`), what
+(`event_name`), when (`occurred_at`), a stable retry key (`event_id`), and
+event-specific `properties`. The browser cannot declare `shopper_id` or
+change the Store context. Session IDs, traffic, product IDs, order IDs, and
+money remain dynamic properties rather than fixed columns.
 
-The event ledger is deliberately small and append-only. It records who,
-where, when, what happened, the bounded event properties, and the consent
-snapshot. Product browsing is a browser observation. Cart, checkout, payment,
-purchase, and refund outcomes are authoritative server events whenever the
-backend has the state transition.
+Browser events are appended by the Storefront analytics API. Cart, Checkout,
+payment, purchase, and refund events are appended directly by the repository
+transaction that changes the corresponding commerce state. The generic
+`integration.event_outbox` is reserved for asynchronous business workflows;
+analytics does not add a second ingestion worker or translate outbox events
+into another ledger.
 
-The event recorder and destination delivery are separate application services:
+`AnalyticsDeliveryWorker` is responsible only for scheduling, claiming,
+retrying, and finishing external destination deliveries. Unknown event names
+remain valid stored behavior and are handled by each provider adapter.
 
-- `AnalyticsEventRecorder` consumes durable server outbox events and accepts
-  browser observations into the ledger.
-- `AnalyticsDeliveryWorker` schedules eligible ledger rows into
-  `analytics_deliveries`, then calls the Provider adapter with bounded
-  retries and stable event IDs.
-
-`integration.event_outbox` remains because it is a durable workflow input for
-cross-context commerce work. It is not an audit log. `provider_webhooks` and
-`idempotency_keys` remain for Provider and command correctness.
-
-The current audit surface is intentionally limited. Order and fulfillment
-transition tables remain because they are queried by business flows or used as
-idempotency evidence. Unread localization, media, collection, and review event
-ledgers are removed. A future generic audit requirement should use one
-Store-scoped `integration.audit_events` table with actor/subject identifiers and
-bounded JSON metadata, without foreign-key joins to business aggregates. That
-table is not created until a real reader exists.
+The MCP surface exposes destination configuration and event querying. Event
+queries return the dynamic properties because this is an internal behavior
+analysis ledger, not an audit abstraction. There is no Analytics policy tool;
+the destination `enabled` field is the only provider delivery switch.
 
 ## Consequences
 
-- A website visit creates one persisted Shopper. All funnel events can then be
-  queried by `shopper_id` without a visitor-to-Customer link table.
-- Meta delivery failure does not block recording or commerce mutations.
-- Adding a destination creates Provider task behavior rather than another event
-  ledger or another audit table.
-- Old browser payloads containing `visitor_id` are intentionally unsupported;
-  the contract is clean and the SDK queue key is versioned.
+- A website visit creates one persisted Shopper and all subsequent events can
+  be queried by `shopper_id`.
+- New behavior names do not require a database migration or Rust enum update.
+- Provider failures do not block event collection or commerce transactions.
+- The system does not persist consent, policy revisions, audit observations,
+  metric snapshots, erasure requests, or automatic retention state.

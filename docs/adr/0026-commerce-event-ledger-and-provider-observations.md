@@ -1,145 +1,72 @@
-# ADR 0026: Use a Commerce Event Ledger and Provider Observations
+# ADR 0026: Use a Simple Behavior Event Ledger
 
 - Status: Accepted
-- Date: 2026-08-20
+- Date: 2026-08-22
 
 ## Context
 
-Chaos needs to preserve a Storefront conversion path and send relevant events
-to external providers reliably. Provider observations such as advertising spend
-and Stripe fees may be added later. The existing Analytics model
-also sessionizes events, computes attribution, materializes daily reports, and
-supports generic export destinations. Those responsibilities form a small CDP
-and BI engine before the product needs either one.
-
-The source of truth must remain understandable from one event stream. Derived
-reports can be introduced when a concrete query requires them.
+Chaos needs to collect Storefront behavior for analysis and optionally send
+the same events to external destinations such as Meta CAPI. Analytics is not a
+business audit log, privacy-policy engine, customer identity system, or BI
+warehouse. Those responsibilities made the previous model harder to change
+than the product requires.
 
 ## Decision
 
-Analytics owns two small models:
+`integration.analytics_events` is the source of truth for behavior data. It is
+an append-only, Store-scoped event ledger with this small common envelope:
 
-1. `analytics_events` is an append-only, Store-scoped ledger for browser and
-   authoritative server events.
-2. `analytics_destinations` configures external destinations and
-   `analytics_deliveries` records one retryable Provider task per eligible
-   event and destination. Provider-specific configuration stays in bounded JSON
-   and provider-specific behavior stays in an adapter.
+- `store_id`;
+- `shopper_id`;
+- stable `event_id`;
+- `event_name`;
+- `occurred_at`, `received_at`, and `created_at`;
+- bounded object `properties` JSON.
 
-The initial event vocabulary is:
+`event_name` is plain text with a lowercase snake-case format. The database
+does not maintain an enum or event-specific constraints. A new behavior such
+as `wishlist_added` can be stored without a migration. Product, cart,
+Checkout, Order, Payment, session, traffic, money, and provider-specific
+values belong in `properties`.
 
-- `page_view`;
-- `view_content`;
-- `search`;
-- `add_to_cart`;
-- `initiate_checkout`;
-- `add_payment_info`;
-- `purchase`;
-- `refund`;
-- `view_duration`.
+The signed Storefront Shopper token supplies `shopper_id`; the browser cannot
+choose another shopper. Browser and server events use the same table and the
+same stable event ID deduplication rule. Browser events are accepted directly
+by the API. Commerce workflows append authoritative `add_to_cart`,
+`initiate_checkout`, `add_payment_info`, `purchase`, and `refund` events in the
+same transaction as their business state change. Analytics does not consume
+the generic business `event_outbox`.
 
-The Meta adapter maps compatible events to Meta standard event names and sends
-`view_duration` as a custom event. Browser and authoritative server events are
-delivered through the Conversions API with their stable ledger `event_id`.
-`purchase` is emitted only from authoritative payment capture, never from a
-browser success page.
+External delivery is a separate projection:
 
-The Storefront SDK may additionally project consented events to Meta Pixel and
-GA4. Meta Pixel uses the same event name and stable ledger `event_id` as CAPI;
-the Pixel ID must match the configured Meta Dataset. GA4 disables automatic
-PageView collection and receives Chaos-owned semantic events. These browser
-Providers are optional projections and never determine ledger acceptance.
+```text
+analytics_events -> analytics_deliveries -> provider adapter
+```
 
-Every event carries `store_id`, `sales_channel_id`, source, occurrence and
-receipt times, and bounded properties. Browser events additionally carry the
-verified Storefront `shopper_id`, a browser `session_id`, and the applicable
-consent. The API derives `shopper_id` from the signed
-`x-chaos-shopper-token`; the browser cannot declare or overwrite it.
-Commerce references such as Product, Variant, Cart, Checkout, Order,
-and Payment Attempt IDs use typed nullable columns when applicable. Money uses
-integer minor units and an ISO currency.
+`analytics_destinations` contains provider configuration and enabled state.
+`analytics_deliveries` contains retry status and provider references. A
+destination failure never prevents event storage or a commerce transaction.
+The Meta adapter maps known names to Meta standard events and passes unknown
+names as custom events. It derives optional URL and money values from
+`properties` instead of requiring fixed ledger columns.
 
-Browser events may also carry one bounded traffic snapshot containing the
-first touch, current browser-session touch, and latest non-direct touch. A
-touch stores UTM source, medium, campaign, campaign ID, term, and content,
-Referrer host, and consent-gated Meta or Google click IDs. It never stores the
-full Referrer URL. These are immutable source facts, not computed attribution.
-Authoritative payment and refund events remain queryable through their order,
-payment-attempt, and refund IDs. The ledger does not rewrite historical browser
-events or maintain a separate visitor-to-shopper identity link table. `shopper_id`
-is the cross-step consumer identity; `session_id` is only a session grouping
-value.
+The ledger remains partitioned daily by `received_at` using `pg_partman`.
+`pg_cron` maintains future partitions; retention is manual. No analytics
+policy table, consent snapshot, erasure workflow, metric snapshot, session
+aggregate, attribution job, or automatic deletion exists in this model.
 
-Purchase is authoritative only after the payment Provider confirms capture.
-The server ledger and Meta CAPI use the Order ID as the stable Purchase event
-ID. After observing the confirmed Order, the Storefront SDK projects the same
-ID and server-returned amount, currency, and lines to Meta Pixel and GA4. It
-does not append a second browser Purchase to the ledger, and local browser
-deduplication prevents success-page refreshes from projecting it twice.
-AddPaymentInfo follows the same projection pattern using the Payment Attempt
-ID after the server creates the attempt.
-
-The Storefront SDK creates or restores the persisted Shopper when a browser
-client initializes, obtains the signed shopper token before flushing its bounded
-unsent queue in session storage,
-retries with stable event IDs, drains all batches, and discards events before
-the server's acceptance window expires. Engagement uses a monotonic clock,
-pauses while the page is hidden or unfocused, and resumes after browser
-back-forward cache restoration. Browser termination can still prevent final
-delivery; authoritative commerce events never depend on that delivery.
-
-Each Store chooses `opt_in` or `opt_out` for browser collection. Events record
-`consent` or `store_policy` as their collection
-basis, and the server verifies Store policy rather than trusting a public
-client assertion. `opt_out` is the default and starts first-party collection and
-configured Meta Pixel and GA4 projections immediately. A shopper opt-out stops
-future browser collection and Provider projection. `opt_in` waits for explicit
-storage consent. Geographic policy selection is not hard-coded into the SDK.
-
-Store Analytics settings are one current Store-owned configuration record:
-collection enabled, browser collection mode, and provider reporting enabled.
-Events retain the consent and setting revision that made them eligible. The
-system keeps rate limiting and an append-only event ledger; it does not
-precompute sessions, attribution, or daily reports.
-
-The event ledger is partitioned by daily `received_at` ranges. `pg_partman`
-creates upcoming partitions and `pg_cron` runs its maintenance function once a
-day. Retention is an operational decision: no application worker drops data
-automatically, and an operator removes old partitions manually after removing
-their delivery rows.
-
-The event recorder only appends to the ledger. A separate Analytics delivery
-worker schedules eligible ledger rows into Provider task rows, claims those
-tasks, and calls the destination adapter. This keeps recording independent from
-Provider availability and allows another destination to be added without
-changing the commerce event recorder.
-
-Meta is the only outbound Analytics integration in this phase. Its connection
-stores a Dataset ID, encrypted credential reference, optional test event code,
-and enabled state. Delivery rows use PGMQ visibility, bounded retries, idempotency, and
-record only bounded Provider responses. A failed Meta call never affects a
-commerce transaction.
-
-## Removed model
-
-The following are not part of the target model:
-
-- behavior-event processing and Session aggregates;
-- commerce-fact duplication;
-- attribution jobs and results;
-- materialized daily Analytics reports;
-- visitor-to-shopper identity links;
-- application-managed event retention and erasure workflows;
-- provider metric snapshots and automatic erasure workflows;
-- GA4 delivery.
+The SDK always uses the common envelope, stores session and traffic context in
+`properties`, queues bounded batches, and retries with stable event IDs. It
+also exposes `track(eventName, properties)` for Store-defined behavior names.
+Browser provider scripts are optional projections and do not determine whether
+an event is accepted by the Chaos ledger.
 
 ## Consequences
 
-- A Shopper path is a time-ordered query over one ledger rather than a join
-  across raw events, Sessions, facts, and attribution results.
-- Storefront and server events share one schema and idempotency rule.
-- Meta delivery remains reliable but does not define Chaos event ownership.
-- BI can compare authoritative commerce events with external observations
-  without importing Provider semantics into Order or Payment aggregates.
-- Aggregation remains a query concern until measured load or a concrete report
-  justifies a projection.
+- Event collection is easy to extend and query.
+- Analytics storage is independent from provider availability.
+- The commerce model remains strictly typed; dynamic JSON is limited to
+  behavior-specific analysis fields.
+- Provider delivery and internal event storage can be inspected separately.
+- Aggregation, attribution, retention, and privacy workflows can be added only
+  when a concrete product requirement justifies them.

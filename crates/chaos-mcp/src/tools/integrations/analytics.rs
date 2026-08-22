@@ -1,10 +1,4 @@
-use chaos_application::{
-    analytics::UpdateAnalyticsSettingsInput,
-    ports::{
-        AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery, StoreAnalyticsSettings,
-    },
-};
-use chaos_domain::analytics::BrowserCollectionMode;
+use chaos_application::ports::{AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -26,25 +20,6 @@ use crate::{
 pub struct EmptyParams {}
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-pub struct UpdateAnalyticsPolicyParams {
-    /// Master switch for storing Analytics events in this Store.
-    pub collection_enabled: bool,
-    /// Consent policy used by browser collection. `opt_out` permits collection under the Store policy; `opt_in` requires consent.
-    pub browser_collection_mode: BrowserCollectionModeParam,
-    /// Store-level switch for creating delivery work for enabled analytics destinations.
-    pub provider_reporting_enabled: bool,
-    pub confirm: bool,
-    pub idempotency_key: String,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserCollectionModeParam {
-    OptIn,
-    OptOut,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ConfigureMetaDestinationParams {
     /// Meta Dataset ID that receives Conversions API events.
     pub dataset_id: String,
@@ -52,7 +27,7 @@ pub struct ConfigureMetaDestinationParams {
     pub credential_secret_reference: String,
     /// Optional Meta Test Events Code. When present, events are routed to Meta's test view.
     pub test_event_code: Option<String>,
-    /// Destination-level switch. This enables this analytics destination; Store `provider_reporting_enabled` must also be true before events are queued.
+    /// Destination-level switch. Enabled destinations receive all subsequently scheduled behavior events.
     pub enabled: bool,
     pub confirm: bool,
     pub idempotency_key: String,
@@ -66,19 +41,12 @@ pub struct ListAnalyticsEventsParams {
     pub before_id: Option<String>,
     /// Optional event name filter, such as `page_view`, `purchase`, or `refund`.
     pub event_name: Option<String>,
-    /// Optional event source filter.
-    pub source: Option<AnalyticsEventSourceParam>,
+    /// Optional source filter stored in `properties._source`.
+    pub source: Option<String>,
     /// Optional external provider delivery status filter.
     pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
     /// Optional signed shopper identifier for tracing one consumer journey.
     pub shopper_id: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AnalyticsEventSourceParam {
-    Browser,
-    Server,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -92,70 +60,7 @@ pub enum AnalyticsDeliveryStatusParam {
 #[tool_router(router = analytics_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Get the Analytics collection policy for the selected Store. `provider_reporting_enabled` allows eligible events to be queued for enabled analytics destinations."
-    )]
-    async fn get_analytics_policy(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(_params): Parameters<EmptyParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
-            Ok(actor) => actor,
-            Err(result) => return Ok(result),
-        };
-        let store_id = actor.store_id();
-        match self
-            .state
-            .analytics_administration
-            .get_settings(actor, store_id, self.state.clock.now())
-            .await
-        {
-            Ok(settings) => Ok(text_result(settings_json(settings))),
-            Err(error) => Ok(tool_error(error)),
-        }
-    }
-
-    #[tool(
-        description = "Update the Analytics collection policy. `provider_reporting_enabled` controls whether eligible events are queued for configured analytics destinations. Owner role and confirmation are required."
-    )]
-    async fn update_analytics_policy(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<UpdateAnalyticsPolicyParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
-            Ok(actor) => actor,
-            Err(result) => return Ok(result),
-        };
-        if let Err(result) = require_confirmation(params.confirm) {
-            return Ok(result);
-        }
-        let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-        match self
-            .state
-            .analytics_administration
-            .update_settings(UpdateAnalyticsSettingsInput {
-                actor,
-                store_id,
-                collection_enabled: params.collection_enabled,
-                browser_collection_mode: match params.browser_collection_mode {
-                    BrowserCollectionModeParam::OptIn => BrowserCollectionMode::OptIn,
-                    BrowserCollectionModeParam::OptOut => BrowserCollectionMode::OptOut,
-                },
-                provider_reporting_enabled: params.provider_reporting_enabled,
-                idempotency,
-                now: self.state.clock.now(),
-            })
-            .await
-        {
-            Ok(settings) => Ok(text_result(settings_json(settings))),
-            Err(error) => Ok(tool_error(error)),
-        }
-    }
-
-    #[tool(
-        description = "Get the Meta Conversions API destination for the selected Store. The destination-level `enabled` switch and Store-level `provider_reporting_enabled` switch must both be true before delivery. Credentials are never returned."
+        description = "Get the Meta Conversions API destination for the selected Store. The destination `enabled` switch controls whether stored behavior events are sent. Credentials are never returned."
     )]
     async fn get_meta_destination(
         &self,
@@ -176,22 +81,11 @@ impl ChaosMcp {
             Ok(destination) => destination,
             Err(error) => return Ok(tool_error(error)),
         };
-        let settings = match self
-            .state
-            .analytics_administration
-            .get_settings(actor, store_id, self.state.clock.now())
-            .await
-        {
-            Ok(settings) => settings,
-            Err(error) => return Ok(tool_error(error)),
-        };
-        Ok(text_result(destination.map_or(Value::Null, |item| {
-            meta_json(item, settings.settings.provider_reporting_enabled())
-        })))
+        Ok(text_result(destination.map_or(Value::Null, meta_json)))
     }
 
     #[tool(
-        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and destination-level `enabled` switch for the selected Store. Store-level `provider_reporting_enabled` must also be true before events are queued. Owner role and confirmation are required."
+        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and the delivery `enabled` switch for the selected Store. Owner role and confirmation are required."
     )]
     async fn configure_meta_destination(
         &self,
@@ -250,23 +144,11 @@ impl ChaosMcp {
             Ok(destination) => destination,
             Err(error) => return Ok(tool_error(error)),
         };
-        let settings = match self
-            .state
-            .analytics_administration
-            .get_settings(actor, store_id, self.state.clock.now())
-            .await
-        {
-            Ok(settings) => settings,
-            Err(error) => return Ok(tool_error(error)),
-        };
-        Ok(text_result(meta_json(
-            destination,
-            settings.settings.provider_reporting_enabled(),
-        )))
+        Ok(text_result(meta_json(destination)))
     }
 
     #[tool(
-        description = "List events stored in the selected Store's internal Analytics ledger and the corresponding external provider delivery observations. Optional filters include event name, source, delivery status, and shopper_id for tracing one consumer journey. Use this to distinguish events that were not eligible, were queued as pending, were processed, or reached dead-letter status. Store members can read event metadata and provider errors; raw event properties are not returned."
+        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, properties._source, delivery status, and shopper_id. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
     )]
     async fn list_analytics_events(
         &self,
@@ -285,10 +167,7 @@ impl ChaosMcp {
             Ok(id) => id,
             Err(_) => return Ok(invalid("before_id", "must be a UUID")),
         };
-        let source = params.source.map(|source| match source {
-            AnalyticsEventSourceParam::Browser => "browser".to_owned(),
-            AnalyticsEventSourceParam::Server => "server".to_owned(),
-        });
+        let source = params.source;
         let delivery_status = params.delivery_status.map(|status| match status {
             AnalyticsDeliveryStatusParam::Pending => "pending".to_owned(),
             AnalyticsDeliveryStatusParam::Processed => "processed".to_owned(),
@@ -323,18 +202,7 @@ impl ChaosMcp {
     }
 }
 
-fn settings_json(item: StoreAnalyticsSettings) -> Value {
-    json!({
-        "store_id": item.store_id.as_uuid(), "revision": item.revision,
-        "collection_enabled": item.settings.collection_enabled(),
-        "browser_collection_mode": item.settings.browser_collection_mode().as_str(),
-        "provider_reporting_enabled": item.settings.provider_reporting_enabled(),
-        "updated_by": item.updated_by.map(|id| id.as_uuid()),
-        "updated_at": item.updated_at.map(|value| value.to_string()),
-    })
-}
-
-fn meta_json(item: AnalyticsDestination, provider_reporting_enabled: bool) -> Value {
+fn meta_json(item: AnalyticsDestination) -> Value {
     let test_event_code_configured = item
         .configuration
         .get("test_event_code")
@@ -343,8 +211,7 @@ fn meta_json(item: AnalyticsDestination, provider_reporting_enabled: bool) -> Va
     json!({
         "store_id": item.store_id.as_uuid(), "dataset_id": item.external_account_reference,
         "enabled": item.enabled,
-        "provider_reporting_enabled": provider_reporting_enabled,
-        "delivery_enabled": item.enabled && provider_reporting_enabled,
+        "delivery_enabled": item.enabled,
         "credentials_configured": item.credentials_configured,
         "test_event_code_configured": test_event_code_configured,
         "created_at": item.created_at.to_string(), "updated_at": item.updated_at.to_string(),
@@ -362,11 +229,10 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "id": event.id,
             "event_id": event.event_id,
             "event_name": event.event_name,
-            "source": event.source,
             "shopper_id": event.shopper_id,
             "occurred_at": event.occurred_at.to_string(),
             "received_at": event.received_at.to_string(),
-            "provider_eligible": event.provider_eligible,
+            "properties": event.properties,
             "deliveries": event.deliveries.into_iter().map(|delivery| json!({
                 "provider": delivery.provider,
                 "status": delivery.status,

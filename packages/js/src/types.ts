@@ -339,12 +339,6 @@ export interface ApiErrorBody {
 }
 
 // Analytics
-export interface AnalyticsConsent {
-  analytics_storage: boolean;
-  advertising_storage: boolean;
-  policy_version: string;
-}
-
 export interface TrafficTouchpoint {
   source?: string;
   medium?: string;
@@ -363,21 +357,12 @@ export interface TrafficAttribution {
   last_non_direct?: TrafficTouchpoint;
 }
 
-export type BrowserAnalyticsEventName =
-  | "page_view"
-  | "view_content"
-  | "search"
-  | "view_duration";
+export type BrowserAnalyticsEventName = string;
 
 export interface BrowserAnalyticsEvent {
   event_id: UUID;
   event_name: BrowserAnalyticsEventName;
-  schema_version: 1;
   occurred_at: string;
-  session_id: UUID;
-  consent: AnalyticsConsent;
-  collection_basis: "consent" | "store_policy";
-  traffic?: TrafficAttribution;
   properties: Record<string, unknown>;
 }
 
@@ -385,9 +370,6 @@ export interface AnalyticsCollectionResult {
   received: number;
   stored: number;
   duplicates: number;
-  discarded_for_consent: number;
-  discarded_for_settings: number;
-  settings_revision: number;
 }
 
 // Pagination query shared by list endpoints.

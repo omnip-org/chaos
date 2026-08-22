@@ -126,24 +126,17 @@ history and the Cart can start a new Checkout. Only successful Order creation
 completes both the Checkout and the Cart. This allows payment or expiry retries
 without rewriting an existing Checkout snapshot.
 
-Analytics uses one append-only, Store-scoped Analytics Event ledger for the
-Storefront conversion path and authoritative server events. External provider
-delivery is a retryable projection of eligible events, with provider-neutral
-destination and delivery records and provider-specific adapters. Provider metrics
-are not persisted; Chaos does not
-precompute Sessions, attribution, or daily reports without a concrete product
-query. Browser events retain bounded first-touch,
-browser-session, and last-non-direct traffic facts so UTM conversion paths can
-be queried without introducing an attribution engine. A Store may authorize
-browser collection through an `opt_in` or `opt_out` Store policy; every event
-records whether explicit consent or Store policy was its basis. The default
-`opt_out` policy starts configured Meta Pixel and GA4 projections immediately
-and stops them after a shopper opt-out. Meta Pixel shares stable event IDs with
-CAPI for deduplication. See ADR 0026.
+Analytics uses one append-only, Store-scoped behavior event ledger. The common
+envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, and time;
+event-specific values such as product, cart, order, session, traffic, and money
+are stored in bounded `properties` JSON. `event_name` is validated only as a
+lowercase snake-case identifier, not as a database enum, so new behaviors do
+not require a migration. Provider delivery is an optional retryable projection
+of stored events through destination and delivery records. See ADR 0026.
 
 The Integration schema keeps one concise name for each responsibility:
 `idempotency_keys`, `provider_webhooks`, `event_consumers`, `event_outbox`,
-`analytics_policy`, `analytics_events`, `analytics_destinations`, and
+`analytics_events`, `analytics_destinations`, and
 `analytics_deliveries`. The last three form one chain: an internal Analytics
 event is scheduled for a configured destination, then its delivery observation
 is recorded by `destination_id` and `analytics_event_id`.

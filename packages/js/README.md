@@ -3,9 +3,7 @@
 A typed client and first-party analytics collector for the Chaos Commerce
 [Store API](../../openapi/store-v1.json) — the publishable-key-authenticated
 surface meant to be called directly from storefront browsers. One SDK covers
-catalog browsing, cart, checkout, order, customer, and payment flows, plus
-the same consent-aware analytics collector previously shipped as the
-standalone `storefront-analytics` package.
+catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
 
 ## Install
 
@@ -32,12 +30,6 @@ import { createStorefrontClient } from "@omnip-org/chaos-js";
 const chaos = createStorefrontClient({
   publishableKey: "pk_live_...",
   analytics: {
-    privacyMode: "opt_out",
-    consent: {
-      analyticsStorage: true,
-      advertisingStorage: false,
-      policyVersion: "cmp-2026-08",
-    },
     providers: {
       // Must match the Store's Meta CAPI Dataset ID.
       metaPixel: { pixelId: "1234567890" },
@@ -91,29 +83,24 @@ chaos.analytics?.purchase({
 ```
 
 Pass `analytics: false` to `createStorefrontClient` to skip constructing the
-collector entirely. The default `opt_out` mode starts collection immediately;
-`opt_in` keeps it disabled until `setConsent()` grants analytics storage.
+collector entirely. Collection starts immediately when the analytics client is
+constructed.
 
 The client automatically acquires and persists the signed shopper token used to
 associate commerce operations and Analytics events. The collector automatically
 captures bounded UTM fields and the Referrer host.
-It keeps first-touch, browser-session, and last-non-direct source facts;
-advertising click IDs are included only with advertising-storage consent.
+It keeps first-touch, browser-session, and last-non-direct source facts.
 Unsent events survive reloads in session storage, retain stable IDs during
 retry, and drain in bounded batches. View duration uses a monotonic clock and
-resumes correctly after browser back-forward cache restoration.
+resumes correctly after browser back-forward cache restoration. Store-defined
+behaviors can be recorded with `chaos.analytics?.track("wishlist_added", {
+product_id: "..." })`.
 
-Provider scripts are optional and load immediately in the default `opt_out`
-mode. Meta Pixel
+Provider scripts are optional and load immediately when configured. Meta Pixel
 receives the same event IDs used by CAPI. A confirmed Purchase uses the Order
 ID in both paths and is projected only once per browser, allowing Meta to
 deduplicate Pixel and CAPI copies. GA4 automatic PageView collection is
 disabled; Chaos maps semantic events to GA4 ecommerce names.
-Default events declare `collection_basis: "store_policy"`, and the server
-accepts them only when the Store has the matching `opt_out` Analytics setting.
-Calling `setConsent()` with both storage choices disabled stops first-party,
-Meta Pixel, and GA4 collection. Stores that require prior consent can select
-`privacyMode: "opt_in"` instead.
 
 ### Server-side / SSR usage
 

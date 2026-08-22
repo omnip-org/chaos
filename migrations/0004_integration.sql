@@ -19,7 +19,6 @@ CREATE TYPE integration.delivery_status AS ENUM ('pending', 'processed', 'dead_l
 SELECT pgmq.create('chaos_payment_commands');
 SELECT pgmq.create('chaos_fulfillment_events');
 SELECT pgmq.create('chaos_search_events');
-SELECT pgmq.create('chaos_analytics_events');
 SELECT pgmq.create('chaos_webhooks');
 SELECT pgmq.create('chaos_analytics_deliveries');
 
@@ -163,7 +162,6 @@ AS $$
         WHEN 'payments.provider_dispatch' THEN 'chaos_payment_commands'
         WHEN 'fulfillment.operations' THEN 'chaos_fulfillment_events'
         WHEN 'search.product_indexer' THEN 'chaos_search_events'
-        WHEN 'analytics.event_ingestor' THEN 'chaos_analytics_events'
     END
       FROM integration.event_consumers AS registry
      WHERE registry.event_type = event_queue_name.event_type;
@@ -235,8 +233,7 @@ BEGIN
     IF queue_name NOT IN (
         'chaos_payment_commands',
         'chaos_fulfillment_events',
-        'chaos_search_events',
-        'chaos_analytics_events'
+        'chaos_search_events'
     ) THEN
         RAISE EXCEPTION 'unsupported outbox queue %', queue_name
             USING ERRCODE = '22023';
@@ -538,17 +535,7 @@ VALUES
     ('fulfillment.cancelled', 'fulfillment.operations',
      'Reconciles Order fulfillment and delivery state'),
     ('return.completed', 'fulfillment.operations',
-     'Coordinates the immutable Return refund'),
-    ('analytics.payment.initiated', 'analytics.event_ingestor',
-     'Records an authoritative AddPaymentInfo event in the Commerce Event ledger'),
-    ('analytics.payment.captured', 'analytics.event_ingestor',
-     'Records an authoritative Purchase event in the Commerce Event ledger'),
-    ('analytics.cart.line_added', 'analytics.event_ingestor',
-     'Records an authoritative AddToCart event in the Commerce Event ledger'),
-    ('analytics.checkout.initiated', 'analytics.event_ingestor',
-     'Records an authoritative InitiateCheckout event in the Commerce Event ledger'),
-    ('analytics.refund.succeeded', 'analytics.event_ingestor',
-     'Records an authoritative Refund event in the Commerce Event ledger');
+     'Coordinates the immutable Return refund');
 
 CREATE TRIGGER event_outbox_enqueue
 BEFORE INSERT ON integration.event_outbox
@@ -645,106 +632,18 @@ CREATE INDEX provider_webhooks_provider_account_idx
 ALTER TABLE commerce.sales_channels
     ADD CONSTRAINT sales_channels_store_id_id_key UNIQUE (store_id, id);
 
-CREATE TYPE integration.event_source AS ENUM ('browser', 'server');
-
-CREATE TYPE integration.browser_collection_mode AS ENUM ('opt_in', 'opt_out');
-
-CREATE TYPE integration.browser_collection_basis AS ENUM ('consent', 'store_policy', 'server');
-
-CREATE TYPE integration.analytics_event_name AS ENUM (
-    'page_view',
-    'view_content',
-    'search',
-    'add_to_cart',
-    'initiate_checkout',
-    'add_payment_info',
-    'purchase',
-    'refund',
-    'view_duration'
-);
-
-CREATE TABLE integration.analytics_policy (
-    store_id                    UUID        NOT NULL PRIMARY KEY,
-    revision                    INTEGER     NOT NULL,
-    collection_enabled          BOOLEAN     NOT NULL,
-    browser_collection_mode     integration.browser_collection_mode NOT NULL,
-    provider_reporting_enabled  BOOLEAN     NOT NULL,
-    updated_by                  UUID        NOT NULL,
-    updated_at                  TIMESTAMPTZ NOT NULL,
-
-    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT analytics_policy_revision_check CHECK (revision > 0)
-);
-
-ALTER TABLE integration.analytics_policy ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.analytics_policy FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY store_isolation ON integration.analytics_policy
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
--- Claim the analytics outbox through the shared integration queue.
-CREATE FUNCTION integration.claim_analytics_events(
-    batch_size INTEGER
-)
-RETURNS TABLE (
-    id UUID,
-    store_id UUID,
-    event_type TEXT,
-    aggregate_id UUID,
-    payload JSONB,
-    occurred_at TIMESTAMPTZ,
-    attempts INTEGER
-)
-LANGUAGE sql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT event.id,
-           event.store_id,
-           event.event_type,
-           event.aggregate_id,
-           event.payload,
-           event.occurred_at,
-           event.attempts
-      FROM integration.claim_routed_event_outbox(
-               'chaos_analytics_events', batch_size
-           ) AS event;
-$$;
-
--- Partitioned append-only event ledger. It has no retention policy and no
--- foreign key into delivery rows, so operators can remove old partitions
--- deliberately after clearing delivery observations.
+-- Partitioned append-only behavior event ledger. Event-specific data lives in
+-- properties so adding a new behavior does not require a migration.
 CREATE TABLE integration.analytics_events (
-    id                          UUID                            NOT NULL,
-    event_id                    UUID                            NOT NULL,
-    store_id                    UUID                            NOT NULL,
-    sales_channel_id            UUID                            NOT NULL,
-    event_name                  integration.analytics_event_name NOT NULL,
-    source                      integration.event_source         NOT NULL,
-    collection_basis            integration.browser_collection_basis NOT NULL,
-    schema_version              SMALLINT                        NOT NULL,
-    shopper_id                  UUID                            NOT NULL,
-    session_id                  UUID,
-    product_id                  UUID,
-    product_variant_id          UUID,
-    cart_id                     UUID,
-    checkout_id                 UUID,
-    order_id                    UUID,
-    payment_attempt_id          UUID,
-    refund_id                   UUID,
-    path                        TEXT,
-    value_minor                 BIGINT,
-    currency                    CHAR(3),
-    analytics_storage_consent   BOOLEAN                         NOT NULL,
-    advertising_storage_consent BOOLEAN                         NOT NULL,
-    provider_eligible           BOOLEAN                         NOT NULL,
-    consent_policy_version      TEXT,
-    settings_revision            INTEGER                         NOT NULL,
-    properties                  JSONB                            NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at                 TIMESTAMPTZ                      NOT NULL,
-    received_at                 TIMESTAMPTZ                      NOT NULL,
-    created_at                  TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                  UUID        NOT NULL,
+    event_id            UUID        NOT NULL,
+    store_id            UUID        NOT NULL,
+    shopper_id          UUID        NOT NULL,
+    event_name          TEXT        NOT NULL,
+    properties          JSONB      NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at         TIMESTAMPTZ NOT NULL,
+    received_at         TIMESTAMPTZ NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- PostgreSQL requires the partition key in parent primary/unique keys.
     -- Global event-id deduplication is therefore guarded in the repository by
@@ -752,49 +651,9 @@ CREATE TABLE integration.analytics_events (
     CONSTRAINT analytics_events_received_id_pkey PRIMARY KEY (received_at, id),
     CONSTRAINT analytics_events_store_received_event_key
         UNIQUE (store_id, received_at, event_id),
-    CONSTRAINT analytics_events_schema_version_check CHECK (schema_version = 1),
-    CONSTRAINT analytics_events_identity_check CHECK (
-        (shopper_id IS NULL OR shopper_id <> '00000000-0000-0000-0000-000000000000'::uuid)
-        AND (session_id IS NULL OR session_id <> '00000000-0000-0000-0000-000000000000'::uuid)
+    CONSTRAINT analytics_events_event_name_check CHECK (
+        event_name ~ '^[a-z][a-z0-9_]{0,63}$'
     ),
-    CONSTRAINT analytics_events_browser_shape_check CHECK (
-        (source = 'browser' AND shopper_id IS NOT NULL AND session_id IS NOT NULL
-            AND collection_basis IN ('consent', 'store_policy')
-            AND (collection_basis = 'store_policy' OR analytics_storage_consent)
-            AND consent_policy_version IS NOT NULL)
-        OR (source = 'server' AND collection_basis = 'server')
-    ),
-    CONSTRAINT analytics_events_server_event_check CHECK (
-        source = 'browser'
-        OR (
-            shopper_id IS NOT NULL
-            AND event_name IN ('add_to_cart', 'initiate_checkout', 'add_payment_info', 'purchase', 'refund')
-        )
-    ),
-    CONSTRAINT analytics_events_path_check CHECK (
-        path IS NULL OR (
-            path LIKE '/%' AND octet_length(path) <= 1024
-            AND position('?' IN path) = 0 AND position('#' IN path) = 0
-        )
-    ),
-    CONSTRAINT analytics_events_money_shape_check CHECK (
-        (value_minor IS NULL AND currency IS NULL)
-        OR (value_minor IS NOT NULL AND value_minor >= 0
-            AND currency ~ '^[A-Z]{3}$')
-    ),
-    CONSTRAINT analytics_events_consent_check CHECK (
-        NOT advertising_storage_consent OR analytics_storage_consent
-    ),
-    CONSTRAINT analytics_events_provider_eligibility_check CHECK (
-        NOT provider_eligible
-        OR (analytics_storage_consent AND advertising_storage_consent)
-        OR collection_basis IN ('store_policy', 'server')
-    ),
-    CONSTRAINT analytics_events_policy_check CHECK (
-        consent_policy_version IS NULL
-        OR consent_policy_version ~ '^[A-Za-z0-9_.:-]{1,64}$'
-    ),
-    CONSTRAINT analytics_events_revision_check CHECK (settings_revision > 0),
     CONSTRAINT analytics_events_properties_check CHECK (
         jsonb_typeof(properties) = 'object'
         AND octet_length(properties::text) <= 32768
@@ -818,12 +677,10 @@ SELECT partman.create_partition(
 );
 
 CREATE INDEX analytics_events_shopper_path_idx
-    ON integration.analytics_events (store_id, shopper_id, occurred_at, id)
-    WHERE shopper_id IS NOT NULL;
+    ON integration.analytics_events (store_id, shopper_id, occurred_at, id);
 
-
-CREATE INDEX analytics_events_channel_time_idx
-    ON integration.analytics_events (store_id, sales_channel_id, occurred_at DESC, id DESC);
+CREATE INDEX analytics_events_name_time_idx
+    ON integration.analytics_events (store_id, event_name, occurred_at DESC, id DESC);
 
 CREATE INDEX analytics_events_event_key_idx
     ON integration.analytics_events (store_id, event_id);
@@ -846,9 +703,9 @@ CREATE TABLE integration.analytics_destinations (
     id                          UUID        NOT NULL PRIMARY KEY,
     store_id                    UUID        NOT NULL,
     provider                    TEXT        NOT NULL,
-    external_account_reference TEXT        NOT NULL,
+    external_account_reference  TEXT        NOT NULL,
     credential_secret_reference TEXT        NOT NULL,
-    configuration               JSONB      NOT NULL DEFAULT '{}'::jsonb,
+    configuration               JSONB       NOT NULL DEFAULT '{}'::jsonb,
     enabled                     BOOLEAN     NOT NULL,
     created_by                  UUID        NOT NULL,
     created_at                  TIMESTAMPTZ NOT NULL,
@@ -877,8 +734,8 @@ CREATE TABLE integration.analytics_destinations (
 CREATE TABLE integration.analytics_deliveries (
     id                  UUID        NOT NULL PRIMARY KEY,
     store_id            UUID        NOT NULL,
-    destination_id       UUID        NOT NULL,
-    analytics_event_id   UUID        NOT NULL,
+    destination_id      UUID        NOT NULL,
+    analytics_event_id  UUID        NOT NULL,
     delivery_status     integration.delivery_status NOT NULL DEFAULT 'pending',
     pgmq_message_id     BIGINT      NOT NULL UNIQUE,
     delivered_at        TIMESTAMPTZ,
@@ -1077,11 +934,10 @@ BEGIN
                event.id AS analytics_event_id,
                destination.id AS destination_id
           FROM integration.analytics_events AS event
-          JOIN integration.analytics_destinations AS destination
+         JOIN integration.analytics_destinations AS destination
             ON destination.store_id = event.store_id
            AND destination.enabled
-         WHERE event.provider_eligible
-           AND NOT EXISTS (
+         WHERE NOT EXISTS (
                SELECT 1
                  FROM integration.analytics_deliveries AS delivery
                 WHERE delivery.store_id = event.store_id
@@ -1173,10 +1029,3 @@ COMMENT ON ROLE chaos_runtime IS
 
 COMMENT ON ROLE chaos_identity IS
     'Non-owner identity role. It cannot access Store-owned commerce tables.';
-
-
-REVOKE ALL ON FUNCTION integration.claim_analytics_events(INTEGER) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION integration.claim_analytics_events(INTEGER) TO chaos_runtime;
-
-COMMENT ON TABLE integration.analytics_policy IS
-    'Store-level collection and provider reporting policy.';

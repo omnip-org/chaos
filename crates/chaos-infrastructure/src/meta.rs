@@ -62,7 +62,7 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
                 event_time: command.occurred_at.unix_timestamp(),
                 event_id: command.event_id.to_string(),
                 action_source: "website",
-                event_source_url: command.source_url.as_deref(),
+                event_source_url: source_url(&command.properties),
                 user_data: MetaUserData {
                     external_id: vec![sha256_hex(command.shopper_id.as_bytes())],
                 },
@@ -156,22 +156,36 @@ fn meta_event_name(name: &str) -> &str {
 fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
     let mut data = command.properties.clone();
     if let Some(object) = data.as_object_mut() {
+        // These fields are Chaos transport context, not business event data.
+        object.remove("_source");
+        object.remove("session_id");
         // Traffic provenance remains a Chaos Analytics fact. Click identifiers
         // must not be forwarded as arbitrary Meta custom_data fields.
         object.remove("traffic");
-        if let Some(value) = command.value_minor {
+        if let Some(value) = object
+            .remove("value_minor")
+            .and_then(|value| value.as_i64())
+        {
             let exponent = command
-                .currency
-                .as_deref()
+                .properties
+                .get("currency")
+                .and_then(Value::as_str)
                 .map(currency_exponent)
                 .unwrap_or(2);
             object.insert("value".into(), json!(value as f64 / 10_f64.powi(exponent)));
         }
-        if let Some(currency) = &command.currency {
+        if let Some(currency) = object.get("currency").and_then(Value::as_str) {
             object.insert("currency".into(), json!(currency));
         }
     }
     data
+}
+
+fn source_url(properties: &Value) -> Option<&str> {
+    properties
+        .get("source_url")
+        .and_then(Value::as_str)
+        .or_else(|| properties.get("path").and_then(Value::as_str))
 }
 
 fn currency_exponent(currency: &str) -> i32 {
@@ -215,10 +229,7 @@ mod tests {
             event_name: "purchase".into(),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             shopper_id: Uuid::now_v7(),
-            source_url: None,
-            value_minor: Some(value_minor),
-            currency: Some(currency.into()),
-            properties: json!({}),
+            properties: json!({"value_minor": value_minor, "currency": currency}),
         }
     }
 
@@ -236,8 +247,15 @@ mod tests {
     #[test]
     fn does_not_forward_traffic_provenance_as_meta_custom_data() {
         let mut input = command(1_299, "USD");
-        input.properties = json!({"traffic":{"session":{"fbclid":"private"}},"path":"/"});
+        input.properties = json!({
+            "_source":"browser",
+            "session_id":"session-1",
+            "traffic":{"session":{"fbclid":"private"}},
+            "path":"/"
+        });
         let data = custom_data(&input);
+        assert!(data.get("_source").is_none());
+        assert!(data.get("session_id").is_none());
         assert!(data.get("traffic").is_none());
         assert_eq!(data["path"], json!("/"));
     }

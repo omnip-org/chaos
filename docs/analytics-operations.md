@@ -9,7 +9,7 @@ SELECT partman.run_maintenance();
 ```
 
 The partition set has no retention value. The application Worker does not
-delete Analytics events, and `analytics_policy` has no retention setting.
+delete Analytics events; retention is an explicit operator decision.
 Check the partition set and its default partition with:
 
 ```sql

@@ -3,12 +3,12 @@ use chaos_application::{
     ApplicationError,
     ports::{AnalyticsCollectionRateLimiter, AnalyticsRateLimitDecision},
 };
-use chaos_domain::store::{SalesChannelId, StoreId};
+use chaos_domain::store::StoreId;
 use redis::{Client as RedisClient, Script};
 use uuid::Uuid;
 
 const WINDOW_SECONDS: u32 = 60;
-const STORE_CHANNEL_EVENT_LIMIT: u16 = 1_200;
+const STORE_EVENT_LIMIT: u16 = 1_200;
 const VISITOR_EVENT_LIMIT: u16 = 120;
 
 pub struct RedisAnalyticsCollectionRateLimiter {
@@ -26,11 +26,10 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
     async fn consume(
         &self,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
-        shopper_event_counts: &[(Uuid, u16)],
+        shopper_id: Uuid,
         event_count: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError> {
-        let slot = format!("{}:{}", store_id.as_uuid(), sales_channel_id.as_uuid());
+        let slot = store_id.as_uuid().to_string();
         let script = Script::new(
             "local retry_after = 0\n\
              for index, key in ipairs(KEYS) do\n\
@@ -57,15 +56,12 @@ impl AnalyticsCollectionRateLimiter for RedisAnalyticsCollectionRateLimiter {
             .key(format!("chaos:analytics:rate:{{{slot}}}:all"))
             .arg(WINDOW_SECONDS)
             .arg(event_count)
-            .arg(STORE_CHANNEL_EVENT_LIMIT);
-        for (shopper_id, count) in shopper_event_counts {
-            invocation
-                .key(format!(
-                    "chaos:analytics:rate:{{{slot}}}:shopper:{shopper_id}"
-                ))
-                .arg(*count)
-                .arg(VISITOR_EVENT_LIMIT);
-        }
+            .arg(STORE_EVENT_LIMIT)
+            .key(format!(
+                "chaos:analytics:rate:{{{slot}}}:shopper:{shopper_id}"
+            ))
+            .arg(event_count)
+            .arg(VISITOR_EVENT_LIMIT);
         let mut connection = self
             .redis
             .get_multiplexed_async_connection()
@@ -92,7 +88,7 @@ fn redis_error(error: redis::RedisError) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use chaos_domain::store::{SalesChannelId, StoreId};
+    use chaos_domain::store::StoreId;
 
     use super::*;
 
@@ -104,24 +100,15 @@ mod tests {
         let client = RedisClient::open(redis_url).unwrap();
         let limiter = RedisAnalyticsCollectionRateLimiter::new(client);
         let store_id = StoreId::new();
-        let channel_id = SalesChannelId::new();
         let shopper_id = Uuid::now_v7();
 
         let allowed = limiter
-            .consume(
-                store_id,
-                channel_id,
-                &[(shopper_id, VISITOR_EVENT_LIMIT)],
-                VISITOR_EVENT_LIMIT,
-            )
+            .consume(store_id, shopper_id, VISITOR_EVENT_LIMIT)
             .await
             .unwrap();
         assert!(allowed.allowed);
 
-        let denied = limiter
-            .consume(store_id, channel_id, &[(shopper_id, 1)], 1)
-            .await
-            .unwrap();
+        let denied = limiter.consume(store_id, shopper_id, 1).await.unwrap();
         assert!(!denied.allowed);
         assert!((1..=WINDOW_SECONDS).contains(&denied.retry_after_seconds));
     }

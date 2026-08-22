@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use chaos_domain::{
-    analytics::{AnalyticsSettings, BrowserEvent},
-    identity::UserId,
-    store::{SalesChannelId, StoreId},
-};
+use chaos_domain::store::StoreId;
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -23,63 +19,28 @@ pub trait AnalyticsCollectionRateLimiter: Send + Sync {
     async fn consume(
         &self,
         store_id: StoreId,
-        sales_channel_id: SalesChannelId,
-        shopper_event_counts: &[(Uuid, u16)],
+        shopper_id: Uuid,
         batch_size: u16,
     ) -> Result<AnalyticsRateLimitDecision, ApplicationError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedAnalyticsSettings {
-    pub settings: AnalyticsSettings,
-    pub revision: i32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StoreAnalyticsSettings {
-    pub store_id: StoreId,
-    pub revision: i32,
-    pub settings: AnalyticsSettings,
-    pub updated_by: Option<UserId>,
-    pub updated_at: Option<OffsetDateTime>,
+pub struct AnalyticsEventInput {
+    pub event_id: Uuid,
+    pub event_name: String,
+    pub occurred_at: OffsetDateTime,
+    pub properties: Value,
 }
 
 #[async_trait]
 pub trait AnalyticsEventRepository: Send + Sync {
-    async fn resolve_collection_settings(
+    async fn append_events(
         &self,
         actor: &MachineActor,
-        now: OffsetDateTime,
-    ) -> Result<ResolvedAnalyticsSettings, ApplicationError>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn append_browser_events(
-        &self,
-        actor: &MachineActor,
-        events: &[BrowserEvent],
-        settings_revision: i32,
-        browser_collection_mode: chaos_domain::analytics::BrowserCollectionMode,
-        provider_reporting_enabled: bool,
+        shopper_id: Uuid,
+        events: &[AnalyticsEventInput],
         received_at: OffsetDateTime,
     ) -> Result<usize, ApplicationError>;
-}
-
-#[async_trait]
-pub trait AnalyticsSettingsRepository: Send + Sync {
-    async fn get_settings(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-    ) -> Result<Option<StoreAnalyticsSettings>, ApplicationError>;
-
-    async fn update_settings(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        settings: AnalyticsSettings,
-        idempotency: &IdempotencyRequest,
-        now: OffsetDateTime,
-    ) -> Result<StoreAnalyticsSettings, ApplicationError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,11 +48,10 @@ pub struct AnalyticsEventRecord {
     pub id: Uuid,
     pub event_id: Uuid,
     pub event_name: String,
-    pub source: String,
     pub shopper_id: Uuid,
     pub occurred_at: OffsetDateTime,
     pub received_at: OffsetDateTime,
-    pub provider_eligible: bool,
+    pub properties: Value,
     pub deliveries: Vec<AnalyticsEventDelivery>,
 }
 
@@ -191,9 +151,6 @@ pub struct AnalyticsDeliveryCommand {
     pub event_name: String,
     pub occurred_at: OffsetDateTime,
     pub shopper_id: Uuid,
-    pub source_url: Option<String>,
-    pub value_minor: Option<i64>,
-    pub currency: Option<String>,
     pub properties: Value,
 }
 
@@ -216,36 +173,6 @@ pub trait AnalyticsEventDestination: Send + Sync {
         &self,
         command: &AnalyticsDeliveryCommand,
     ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError>;
-}
-
-#[derive(Clone, Debug)]
-pub struct ServerCommerceEventJob {
-    pub id: Uuid,
-    pub store_id: StoreId,
-    pub event_type: String,
-    pub aggregate_id: Uuid,
-    pub payload: Value,
-    pub occurred_at: OffsetDateTime,
-    pub attempts: u32,
-}
-
-#[async_trait]
-pub trait AnalyticsEventRecorderRepository: Send + Sync {
-    async fn claim_server_events(
-        &self,
-        limit: u16,
-    ) -> Result<Vec<ServerCommerceEventJob>, ApplicationError>;
-    async fn ingest_server_event(
-        &self,
-        job: &ServerCommerceEventJob,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
-    async fn finish_server_event(
-        &self,
-        job: &ServerCommerceEventJob,
-        result: Result<(), String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]

@@ -1,31 +1,28 @@
-use std::{collections::BTreeMap, sync::Arc};
-
-use chaos_domain::{
-    FieldViolation,
-    analytics::{AnalyticsSettings, BrowserCollectionBasis, BrowserCollectionMode, BrowserEvent},
-    store::{StoreId, StoreRole},
-};
-use time::{Duration, OffsetDateTime};
+use std::sync::Arc;
 
 use crate::{
     ApplicationError,
     ports::{
         AnalyticsCollectionRateLimiter, AnalyticsDeliveryError, AnalyticsDeliveryRepository,
         AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsDestinationRepository,
-        AnalyticsEventDestination, AnalyticsEventPage, AnalyticsEventQuery,
-        AnalyticsEventQueryRepository, AnalyticsEventRecorderRepository, AnalyticsEventRepository,
-        AnalyticsSettingsRepository, IdempotencyRequest, MachineActor, StoreAnalyticsSettings,
+        AnalyticsEventDestination, AnalyticsEventInput, AnalyticsEventPage, AnalyticsEventQuery,
+        AnalyticsEventQueryRepository, AnalyticsEventRepository, IdempotencyRequest, MachineActor,
     },
     store::StoreActor,
 };
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
 const MAX_BATCH_SIZE: usize = 20;
 const MAX_PAST_SKEW: Duration = Duration::hours(24);
 const MAX_FUTURE_SKEW: Duration = Duration::minutes(5);
+const MAX_EVENT_NAME_BYTES: usize = 64;
+const MAX_PROPERTIES_BYTES: usize = 32 * 1024;
 
 pub struct CollectBrowserEventsInput {
     pub actor: MachineActor,
-    pub events: Vec<BrowserEvent>,
+    pub shopper_id: Uuid,
+    pub events: Vec<AnalyticsEventInput>,
     pub received_at: OffsetDateTime,
 }
 
@@ -34,9 +31,6 @@ pub struct BrowserEventCollectionResult {
     pub received: usize,
     pub stored: usize,
     pub duplicates: usize,
-    pub discarded_for_consent: usize,
-    pub discarded_for_settings: usize,
-    pub settings_revision: i32,
 }
 
 pub struct AnalyticsCollection {
@@ -59,33 +53,17 @@ impl AnalyticsCollection {
         &self,
         input: CollectBrowserEventsInput,
     ) -> Result<BrowserEventCollectionResult, ApplicationError> {
-        let sales_channel_id = input
-            .actor
-            .sales_channel_id
-            .ok_or(ApplicationError::Forbidden)?;
         if input.events.is_empty() || input.events.len() > MAX_BATCH_SIZE {
             return Err(validation("events", "must contain between 1 and 20 events"));
         }
         for event in &input.events {
-            if event.occurred_at() < input.received_at - MAX_PAST_SKEW
-                || event.occurred_at() > input.received_at + MAX_FUTURE_SKEW
-            {
-                return Err(validation(
-                    "events.occurred_at",
-                    "must be within 24 hours before or 5 minutes after receipt",
-                ));
-            }
-        }
-        let mut counts = BTreeMap::new();
-        for event in &input.events {
-            *counts.entry(event.shopper_id()).or_insert(0_u16) += 1;
+            validate_event(event, input.received_at)?;
         }
         let decision = self
             .rate_limiter
             .consume(
                 input.actor.store_id,
-                sales_channel_id,
-                &counts.into_iter().collect::<Vec<_>>(),
+                input.shopper_id,
                 u16::try_from(input.events.len()).expect("bounded Analytics batch"),
             )
             .await?;
@@ -96,123 +74,83 @@ impl AnalyticsCollection {
         }
 
         let received = input.events.len();
-        let settings = self
+        let stored = self
             .repository
-            .resolve_collection_settings(&input.actor, input.received_at)
+            .append_events(
+                &input.actor,
+                input.shopper_id,
+                &input.events,
+                input.received_at,
+            )
             .await?;
-        let consented = input
-            .events
-            .into_iter()
-            .filter(|event| browser_event_is_collectable(event, settings.settings))
-            .collect::<Vec<_>>();
-        let discarded_for_consent = received - consented.len();
-        let discarded_for_settings = if settings.settings.collection_enabled() {
-            0
-        } else {
-            consented.len()
-        };
-        let eligible = if settings.settings.collection_enabled() {
-            consented
-        } else {
-            Vec::new()
-        };
-        let stored = if eligible.is_empty() {
-            0
-        } else {
-            self.repository
-                .append_browser_events(
-                    &input.actor,
-                    &eligible,
-                    settings.revision,
-                    settings.settings.browser_collection_mode(),
-                    settings.settings.provider_reporting_enabled(),
-                    input.received_at,
-                )
-                .await?
-        };
         Ok(BrowserEventCollectionResult {
             received,
             stored,
-            duplicates: eligible.len() - stored,
-            discarded_for_consent,
-            discarded_for_settings,
-            settings_revision: settings.revision,
+            duplicates: received - stored,
         })
     }
 }
 
-fn browser_event_is_collectable(event: &BrowserEvent, settings: AnalyticsSettings) -> bool {
-    event.consent().analytics_storage()
-        || (event.collection_basis() == BrowserCollectionBasis::StorePolicy
-            && settings.browser_collection_mode() == BrowserCollectionMode::OptOut)
-}
-
-pub struct UpdateAnalyticsSettingsInput {
-    pub actor: StoreActor,
-    pub store_id: StoreId,
-    pub collection_enabled: bool,
-    pub browser_collection_mode: BrowserCollectionMode,
-    pub provider_reporting_enabled: bool,
-    pub idempotency: IdempotencyRequest,
-    pub now: OffsetDateTime,
+fn validate_event(
+    event: &AnalyticsEventInput,
+    received_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    if event.event_id.is_nil() {
+        return Err(validation("events.event_id", "must be a non-nil UUID"));
+    }
+    if event.event_name.is_empty()
+        || event.event_name.len() > MAX_EVENT_NAME_BYTES
+        || !event.event_name.bytes().enumerate().all(|(index, byte)| {
+            (index == 0 && byte.is_ascii_lowercase())
+                || (index > 0
+                    && (byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+        })
+    {
+        return Err(validation(
+            "events.event_name",
+            "must be 1-64 lowercase snake_case bytes",
+        ));
+    }
+    if !event.properties.is_object() {
+        return Err(validation("events.properties", "must be a JSON object"));
+    }
+    if event.properties.to_string().len() > MAX_PROPERTIES_BYTES {
+        return Err(validation(
+            "events.properties",
+            "must not exceed 32768 bytes",
+        ));
+    }
+    if event.occurred_at < received_at - MAX_PAST_SKEW
+        || event.occurred_at > received_at + MAX_FUTURE_SKEW
+    {
+        return Err(validation(
+            "events.occurred_at",
+            "must be within 24 hours before or 5 minutes after receipt",
+        ));
+    }
+    Ok(())
 }
 
 pub struct AnalyticsAdministration {
-    settings: Arc<dyn AnalyticsSettingsRepository>,
     destinations: Arc<dyn AnalyticsDestinationRepository>,
     events: Arc<dyn AnalyticsEventQueryRepository>,
 }
 
 impl AnalyticsAdministration {
     pub fn new(
-        settings: Arc<dyn AnalyticsSettingsRepository>,
         destinations: Arc<dyn AnalyticsDestinationRepository>,
         events: Arc<dyn AnalyticsEventQueryRepository>,
     ) -> Self {
         Self {
-            settings,
             destinations,
             events,
         }
     }
 
-    pub async fn get_settings(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        _now: OffsetDateTime,
-    ) -> Result<StoreAnalyticsSettings, ApplicationError> {
-        self.settings
-            .get_settings(actor, store_id)
-            .await?
-            .ok_or_else(|| store_not_found(store_id))
-    }
-
-    pub async fn update_settings(
-        &self,
-        input: UpdateAnalyticsSettingsInput,
-    ) -> Result<StoreAnalyticsSettings, ApplicationError> {
-        require_owner(input.actor)?;
-        let settings = AnalyticsSettings::new(
-            input.collection_enabled,
-            input.browser_collection_mode,
-            input.provider_reporting_enabled,
-        )?;
-        self.settings
-            .update_settings(
-                input.actor,
-                input.store_id,
-                settings,
-                &input.idempotency,
-                input.now,
-            )
-            .await
-    }
-
     pub async fn get_destination(
         &self,
         actor: StoreActor,
-        store_id: StoreId,
+        store_id: chaos_domain::store::StoreId,
         provider: &str,
     ) -> Result<Option<AnalyticsDestination>, ApplicationError> {
         self.destinations
@@ -223,12 +161,14 @@ impl AnalyticsAdministration {
     pub async fn configure_destination(
         &self,
         actor: StoreActor,
-        store_id: StoreId,
+        store_id: chaos_domain::store::StoreId,
         configuration: AnalyticsDestinationConfiguration,
         idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsDestination, ApplicationError> {
-        require_owner(actor)?;
+        if actor.role() != chaos_domain::store::StoreRole::Owner {
+            return Err(ApplicationError::Forbidden);
+        }
         self.destinations
             .configure_destination(actor, store_id, configuration, idempotency, now)
             .await
@@ -237,40 +177,11 @@ impl AnalyticsAdministration {
     pub async fn list_events(
         &self,
         actor: StoreActor,
-        store_id: StoreId,
+        store_id: chaos_domain::store::StoreId,
         query: AnalyticsEventQuery,
         limit: u16,
     ) -> Result<AnalyticsEventPage, ApplicationError> {
         self.events.list_events(actor, store_id, query, limit).await
-    }
-}
-
-pub struct AnalyticsEventRecorder {
-    repository: Arc<dyn AnalyticsEventRecorderRepository>,
-}
-
-impl AnalyticsEventRecorder {
-    pub fn new(repository: Arc<dyn AnalyticsEventRecorderRepository>) -> Self {
-        Self { repository }
-    }
-
-    pub async fn run_batch(
-        &self,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let jobs = self.repository.claim_server_events(limit).await?;
-        for job in &jobs {
-            let result = self
-                .repository
-                .ingest_server_event(job, now)
-                .await
-                .map_err(|error| error.to_string());
-            self.repository
-                .finish_server_event(job, result, now)
-                .await?;
-        }
-        Ok(jobs.len())
     }
 }
 
@@ -322,24 +233,10 @@ impl AnalyticsDeliveryWorker {
         Ok(scheduled + jobs.len())
     }
 }
-fn require_owner(actor: StoreActor) -> Result<(), ApplicationError> {
-    if actor.role() == StoreRole::Owner {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
-    }
-}
-
-fn store_not_found(store_id: StoreId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "store",
-        id: store_id.as_uuid().to_string(),
-    }
-}
 
 fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
     ApplicationError::Validation {
-        violations: vec![FieldViolation {
+        violations: vec![chaos_domain::FieldViolation {
             field,
             reason: reason.into(),
         }],
@@ -349,34 +246,39 @@ fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chaos_domain::analytics::{BrowserEventProperties, ConsentSnapshot, TrafficAttribution};
-    use uuid::Uuid;
+    use serde_json::json;
 
-    fn event(consented: bool, basis: BrowserCollectionBasis) -> BrowserEvent {
-        BrowserEvent::new(
-            Uuid::now_v7(),
-            1,
-            OffsetDateTime::now_utc(),
-            Uuid::now_v7(),
-            Uuid::now_v7(),
-            ConsentSnapshot::new(consented, false, "test-v1").unwrap(),
-            basis,
-            None::<TrafficAttribution>,
-            BrowserEventProperties::page_view("/", None, None).unwrap(),
-        )
-        .unwrap()
+    #[test]
+    fn accepts_unknown_event_names_with_object_properties() {
+        let now = OffsetDateTime::now_utc();
+        assert!(
+            validate_event(
+                &AnalyticsEventInput {
+                    event_id: Uuid::now_v7(),
+                    event_name: "wishlist_added".into(),
+                    occurred_at: now,
+                    properties: json!({"product_id": Uuid::now_v7()}),
+                },
+                now,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
-    fn store_policy_collection_requires_the_authoritative_store_setting() {
-        let policy_event = event(false, BrowserCollectionBasis::StorePolicy);
-        let required = AnalyticsSettings::new(true, BrowserCollectionMode::OptIn, false).unwrap();
-        let opt_out = AnalyticsSettings::new(true, BrowserCollectionMode::OptOut, false).unwrap();
-        assert!(!browser_event_is_collectable(&policy_event, required));
-        assert!(browser_event_is_collectable(&policy_event, opt_out));
-        assert!(browser_event_is_collectable(
-            &event(true, BrowserCollectionBasis::Consent),
-            required,
-        ));
+    fn rejects_non_object_properties_only() {
+        let now = OffsetDateTime::now_utc();
+        assert!(
+            validate_event(
+                &AnalyticsEventInput {
+                    event_id: Uuid::now_v7(),
+                    event_name: "page_view".into(),
+                    occurred_at: now,
+                    properties: json!(["not-an-object"]),
+                },
+                now,
+            )
+            .is_err()
+        );
     }
 }

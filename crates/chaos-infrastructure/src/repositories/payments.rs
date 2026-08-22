@@ -40,6 +40,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{
+    analytics::{AnalyticsEventToAppend, append_event},
     idempotency::{self, IdempotencyScope},
     inventory::{ReservationClosure, close_reservation},
 };
@@ -707,18 +708,22 @@ impl PaymentRepository for PostgresPaymentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        sqlx::query(
-            "INSERT INTO integration.event_outbox \
-             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.initiated', $4)",
+        append_event(
+            &mut transaction,
+            AnalyticsEventToAppend {
+                store_id: actor.store_id.as_uuid(),
+                shopper_id: shopper.shopper_id.as_uuid(),
+                event_id: attempt.id().as_uuid(),
+                event_name: "add_payment_info".into(),
+                properties: json!({
+                    "_source": "server",
+                    "payment_attempt_id": attempt.id().as_uuid(),
+                }),
+                occurred_at: OffsetDateTime::now_utc(),
+                received_at: OffsetDateTime::now_utc(),
+            },
         )
-        .bind(Uuid::now_v7())
-        .bind(actor.store_id.as_uuid())
-        .bind(attempt.id().as_uuid())
-        .bind(json!({ "payment_attempt_id": attempt.id().as_uuid() }))
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        .await?;
         insert_outbox(
             &mut transaction,
             actor.store_id,
@@ -1412,12 +1417,13 @@ async fn apply_payment_event(
             Option<Uuid>,
             String,
             Uuid,
+            Uuid,
         ),
     >(
         "SELECT attempt.order_id, attempt.amount_minor, attempt.currency::text, \
                 attempt.status::text, attempt.provider_reference, \
                 sales_order.inventory_reservation_id, sales_order.status::text, \
-                sales_order.checkout_id \
+                sales_order.checkout_id, sales_order.shopper_id \
          FROM commerce.payment_attempts AS attempt \
          INNER JOIN commerce.orders AS sales_order \
            ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
@@ -1486,18 +1492,25 @@ async fn apply_payment_event(
             now,
         )
         .await?;
-        sqlx::query(
-            "INSERT INTO integration.event_outbox \
-             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, 'payment_attempt', $3, 'analytics.payment.captured', $4)",
+        append_event(
+            transaction,
+            AnalyticsEventToAppend {
+                store_id: store_id.as_uuid(),
+                shopper_id: row.8,
+                event_id: row.0,
+                event_name: "purchase".into(),
+                properties: json!({
+                    "_source": "server",
+                    "order_id": row.0,
+                    "payment_attempt_id": attempt_id.as_uuid(),
+                    "value_minor": row.1,
+                    "currency": row.2,
+                }),
+                occurred_at: now,
+                received_at: now,
+            },
         )
-        .bind(Uuid::now_v7())
-        .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(json!({ "payment_attempt_id": attempt_id.as_uuid() }))
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
+        .await?;
     }
     Ok(())
 }
@@ -1580,10 +1593,16 @@ async fn apply_refund_event(
     failure_code: Option<String>,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>)>(
-        "SELECT payment_attempt_id, amount_minor, currency::text, status::text, provider_reference \
-         FROM commerce.refunds WHERE store_id = $1 AND id = $2 \
-         FOR UPDATE",
+    let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>, Uuid, Uuid)>(
+        "SELECT refund.payment_attempt_id, refund.amount_minor, refund.currency::text,
+                refund.status::text, refund.provider_reference, attempt.order_id, order_row.shopper_id \
+         FROM commerce.refunds refund
+         JOIN commerce.payment_attempts attempt
+           ON attempt.store_id=refund.store_id AND attempt.id=refund.payment_attempt_id
+         JOIN commerce.orders order_row
+           ON order_row.store_id=attempt.store_id AND order_row.id=attempt.order_id
+         WHERE refund.store_id = $1 AND refund.id = $2 \
+         FOR UPDATE OF refund, attempt, order_row",
     )
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
@@ -1627,18 +1646,26 @@ async fn apply_refund_event(
     .await
     .map_err(database_error)?;
     if refund.status() == RefundStatus::Succeeded {
-        sqlx::query(
-            "INSERT INTO integration.event_outbox \
-             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, 'refund', $3, 'analytics.refund.succeeded', $4)",
+        append_event(
+            transaction,
+            AnalyticsEventToAppend {
+                store_id: store_id.as_uuid(),
+                shopper_id: row.6,
+                event_id: refund_id.as_uuid(),
+                event_name: "refund".into(),
+                properties: json!({
+                    "_source": "server",
+                    "refund_id": refund_id.as_uuid(),
+                    "payment_attempt_id": row.0,
+                    "order_id": row.5,
+                    "value_minor": row.1,
+                    "currency": row.2,
+                }),
+                occurred_at: now,
+                received_at: now,
+            },
         )
-        .bind(Uuid::now_v7())
-        .bind(store_id.as_uuid())
-        .bind(refund_id.as_uuid())
-        .bind(json!({ "refund_id": refund_id.as_uuid() }))
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
+        .await?;
     }
     Ok(())
 }

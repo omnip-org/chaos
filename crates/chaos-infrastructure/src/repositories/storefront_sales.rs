@@ -36,6 +36,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::analytics::{AnalyticsEventToAppend, append_event};
 use super::idempotency::{self, IdempotencyScope};
 use super::inventory::{ReservationClosure, close_reservation};
 
@@ -410,22 +411,25 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or_default();
         if quantity > previous_quantity {
-            sqlx::query(
-                "INSERT INTO integration.event_outbox \
-                 (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-                 VALUES ($1, $2, 'cart', $3, 'analytics.cart.line_added', $4)",
+            let now = OffsetDateTime::now_utc();
+            append_event(
+                &mut transaction,
+                AnalyticsEventToAppend {
+                    store_id: actor.store_id.as_uuid(),
+                    shopper_id: shopper.shopper_id.as_uuid(),
+                    event_id: Uuid::now_v7(),
+                    event_name: "add_to_cart".into(),
+                    properties: json!({
+                        "_source": "server",
+                        "cart_id": cart_id.as_uuid(),
+                        "product_variant_id": product_variant_id.as_uuid(),
+                        "quantity": quantity - previous_quantity,
+                    }),
+                    occurred_at: now,
+                    received_at: now,
+                },
             )
-            .bind(Uuid::now_v7())
-            .bind(actor.store_id.as_uuid())
-            .bind(cart_id.as_uuid())
-            .bind(json!({
-                "cart_id": cart_id.as_uuid(),
-                "product_variant_id": product_variant_id.as_uuid(),
-                "quantity": quantity - previous_quantity,
-            }))
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+            .await?;
         }
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
@@ -664,21 +668,23 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             &locale,
         )
         .await?;
-        sqlx::query(
-            "INSERT INTO integration.event_outbox \
-             (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
-             VALUES ($1, $2, 'checkout', $3, 'analytics.checkout.initiated', $4)",
+        append_event(
+            &mut transaction,
+            AnalyticsEventToAppend {
+                store_id: actor.store_id.as_uuid(),
+                shopper_id: shopper.shopper_id.as_uuid(),
+                event_id: checkout.id().as_uuid(),
+                event_name: "initiate_checkout".into(),
+                properties: json!({
+                    "_source": "server",
+                    "cart_id": cart_id.as_uuid(),
+                    "checkout_id": checkout.id().as_uuid(),
+                }),
+                occurred_at: now,
+                received_at: now,
+            },
         )
-        .bind(Uuid::now_v7())
-        .bind(actor.store_id.as_uuid())
-        .bind(checkout.id().as_uuid())
-        .bind(json!({
-            "cart_id": cart_id.as_uuid(),
-            "checkout_id": checkout.id().as_uuid(),
-        }))
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        .await?;
         let detail = load_checkout(&mut transaction, actor, checkout.id())
             .await?
             .ok_or_else(|| checkout_not_found(checkout.id()))?;
