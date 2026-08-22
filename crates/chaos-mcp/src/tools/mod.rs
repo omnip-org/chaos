@@ -131,7 +131,7 @@ impl rmcp::ServerHandler for ChaosMcp {
             .build();
         info.instructions = Some(
             "Chaos Commerce admin tools. Every tool call authenticates against the \
-             Authorization: Bearer <mcp-key> header using a user-owned Access Key. Every \
+             Authorization: Bearer <access-key> header using a user-owned Access Key. Every \
              Store-scoped request must include X-Chaos-Store-Id and current Store membership \
              is checked before the tool runs. create_store and list_stores are User-scoped and \
              do not require that header. Read tools return \

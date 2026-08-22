@@ -28,7 +28,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 test("does not construct browser analytics during SSR", () => {
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     baseUrl: "https://shop.example.com/store/v1",
     storage: null,
     randomUUID: () => "idempotency-key",
@@ -44,7 +44,7 @@ test("creates a shopper session when a browser client initializes", async () => 
   const requests: string[] = [];
   try {
     createStorefrontClient({
-      publishableKey: "pk_test",
+      publishableKey: "public_test",
       storage: null,
       analytics: false,
       fetch: (async (url: string) => {
@@ -70,7 +70,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
   let sequence = 0;
   const storage = new MemoryStorage();
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage,
     randomUUID: () => `id-${++sequence}`,
     analytics: false,
@@ -100,7 +100,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
 test("reuses a shopper token persisted from a previous session", async () => {
   const storage = new MemoryStorage();
   const firstClient = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage,
     analytics: false,
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
@@ -108,7 +108,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
   firstClient.setShopperToken("existing-token");
   const requests: string[] = [];
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage,
     analytics: false,
     fetch: (async (url: string) => {
@@ -126,7 +126,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
 test("explicit shopper sessions update the client token", async () => {
   const storage = new MemoryStorage();
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage,
     analytics: false,
     fetch: (async () => jsonResponse(201, { data: { shopper_token: "manual-token" } })) as unknown as typeof fetch,
@@ -141,7 +141,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
   const storage = new MemoryStorage();
   const requests: Array<{ url: string; token: string | undefined }> = [];
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage,
     analytics: false,
     fetch: (async (url: string, init: RequestInit) => {
@@ -168,7 +168,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
 test("serializes concurrent addLine calls for one cart", async () => {
   let quantity = 1;
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage: null,
     analytics: false,
     randomUUID: () => "idempotency-key",
@@ -199,7 +199,7 @@ test("serializes concurrent addLine calls for one cart", async () => {
 
 test("maps non-2xx responses to a typed ChaosApiError with server details", async () => {
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage: new MemoryStorage(),
     analytics: false,
     fetch: (async () =>
@@ -227,7 +227,7 @@ test("maps non-2xx responses to a typed ChaosApiError with server details", asyn
 test("catalog.listProducts forwards query parameters", async () => {
   const captured: { url: URL | null } = { url: null };
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     baseUrl: "https://shop.example.com/store/v1",
     storage: new MemoryStorage(),
     analytics: false,
@@ -249,7 +249,7 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
   const requests: Array<{ url: string; method: string; headers: Headers; body: string | undefined }> = [];
   let sequence = 0;
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage: null,
     analytics: false,
     randomUUID: () => `id-${++sequence}`,
@@ -312,7 +312,7 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
 test("browser SDK observations record only after successful responses", async () => {
   const recorded: Array<[string, unknown]> = [];
   const client = createStorefrontClient({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     storage: new MemoryStorage(),
     analytics: false,
     randomUUID: () => "idempotency-key",

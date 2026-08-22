@@ -24,6 +24,9 @@ use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CREATE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.create.v1";
 const REVOKE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.revoke.v1";
+const PUBLIC_KEY_PREFIX: &str = "public_";
+const KEY_IDENTIFIER_LENGTH: usize = 16;
+const KEY_SECRET_LENGTH: usize = 43;
 
 #[derive(Default)]
 pub struct SecurePublishableKeyMaterialGenerator;
@@ -36,7 +39,7 @@ impl PublishableKeyMaterialGenerator for SecurePublishableKeyMaterialGenerator {
         rand::rng().fill_bytes(&mut secret_bytes);
         let key_identifier = URL_SAFE_NO_PAD.encode(identifier_bytes);
         let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext = format!("cc_v1_publishable_{key_identifier}_{secret}");
+        let plaintext = format!("{PUBLIC_KEY_PREFIX}{key_identifier}_{secret}");
         let secret_digest = Sha256::digest(plaintext.as_bytes()).into();
         let display_suffix = secret[secret.len() - 4..].to_owned();
 
@@ -303,20 +306,13 @@ async fn require_store(
 }
 
 fn parse_key_identifier(presented_key: &str) -> Option<&str> {
-    let remainder = presented_key.strip_prefix("cc_")?;
-    let (version, remainder) = remainder.split_once('_')?;
-    let (class, credential) = remainder.split_once('_')?;
-    if version != "v1"
-        || class != "publishable"
-        || !credential.is_ascii()
-        || credential.len() != 60
-        || credential.as_bytes()[16] != b'_'
+    let remainder = presented_key.strip_prefix(PUBLIC_KEY_PREFIX)?;
+    let (identifier, remainder) = remainder.split_at_checked(KEY_IDENTIFIER_LENGTH)?;
+    let secret = remainder.strip_prefix('_')?;
+    if secret.len() != KEY_SECRET_LENGTH
+        || !identifier.bytes().all(is_base64url_byte)
+        || !secret.bytes().all(is_base64url_byte)
     {
-        return None;
-    }
-    let identifier = &credential[..16];
-    let secret = &credential[17..];
-    if !identifier.bytes().all(is_base64url_byte) || !secret.bytes().all(is_base64url_byte) {
         return None;
     }
     Some(identifier)
@@ -346,7 +342,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_key_has_parseable_versioned_shape() {
+    fn generated_key_has_parseable_public_shape() {
         let generated = SecurePublishableKeyMaterialGenerator.generate();
         let plaintext = generated.plaintext.expose_secret();
 
@@ -356,14 +352,24 @@ mod tests {
         );
         let expected_digest: [u8; 32] = Sha256::digest(plaintext.as_bytes()).into();
         assert_eq!(generated.secret_digest, expected_digest);
-        assert!(plaintext.starts_with("cc_v1_publishable_"));
+        assert!(plaintext.starts_with(PUBLIC_KEY_PREFIX));
         assert!(plaintext.ends_with(&generated.display_suffix));
     }
 
     #[test]
     fn malformed_key_is_rejected_before_database_lookup() {
-        assert_eq!(parse_key_identifier("cc_v1_publishable_short_secret"), None);
+        assert_eq!(parse_key_identifier("public_short_secret"), None);
         assert_eq!(parse_key_identifier("not-a-key"), None);
+    }
+
+    #[test]
+    fn old_publishable_key_shape_is_rejected() {
+        let old_key = format!(
+            "cc_v1_publishable_{}_{}",
+            "a".repeat(KEY_IDENTIFIER_LENGTH),
+            "b".repeat(KEY_SECRET_LENGTH)
+        );
+        assert_eq!(parse_key_identifier(&old_key), None);
     }
 
     #[tokio::test]

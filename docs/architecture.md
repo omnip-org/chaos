@@ -20,11 +20,11 @@ A User may create and leave Stores, while Store Owners explicitly add Users and 
 
 Human Users authenticate with an external identity provider and receive a short-lived Chaos JWT. Google and Apple are the initial providers behind one application port. The provider subject, not the email address, is the durable external identity.
 
-Users create private Access Keys in the Identity control plane. An Access Key identifies one User, not one Store, and is never embedded in a storefront. Every MCP request selects a Store explicitly and rechecks the User's current Store membership before invoking a commerce use case. Leaving a Store removes access immediately without rotating the User's Key.
+Users create private Access Keys in the Identity control plane. An Access Key identifies one User, not one Store, and is never embedded in a storefront. It is a general trusted-client credential; MCP is its first consumer. Every Store-scoped request selects a Store explicitly and rechecks the User's current Store membership before invoking a commerce use case. Leaving a Store removes access immediately without rotating the User's Key.
 
 The MCP HTTP transport is stateless. Protocol context and authentication are supplied on each request, allowing any API replica to handle it without local session affinity.
 
-Stores issue only Publishable Keys for Sales Channels. These keys carry storefront capabilities and may select a Sales Channel; they cannot invoke MCP or administration use cases.
+Stores issue public Storefront Keys for Sales Channels. These keys carry storefront capabilities and may select a Sales Channel; they cannot invoke trusted-client or administration use cases.
 
 Commerce administration is exposed through MCP rather than an Admin HTTP API. HTTP remains for identity bootstrap, storefront and channel traffic, provider webhooks, and health checks.
 

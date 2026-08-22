@@ -4,7 +4,7 @@
 
 PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and Publishable Keys. There is no merchant-account schema or aggregate. A User-owned MCP credential is stored in `identity.access_keys`; a Storefront credential is stored in `commerce.publishable_keys`.
+`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and public Storefront Keys. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront credential is stored in `commerce.publishable_keys`.
 
 Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned transactional data and rebuildable Storefront read models. `integration` contains idempotency, inbox/outbox delivery, external provider delivery, and analytical processing state.
 

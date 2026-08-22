@@ -2,7 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Chaos Identity API",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "description": "Identity API for User sessions and trusted-client Access Keys. An Access Key plaintext has the form access_<identifier>_<secret> and is returned only once."
   },
   "servers": [{ "url": "/identity/v1" }],
   "paths": {

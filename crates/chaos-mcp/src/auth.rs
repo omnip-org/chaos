@@ -186,10 +186,7 @@ mod tests {
             })));
         let queries = StoreQueries::new(Arc::new(FixedMembership { user_id, store_id }));
         let request = http::Request::builder()
-            .header(
-                http::header::AUTHORIZATION,
-                "Bearer cc_access_v1_test_secret",
-            )
+            .header(http::header::AUTHORIZATION, "Bearer access_test_secret")
             .header("x-chaos-store-id", store_id.as_uuid().to_string())
             .body(())
             .unwrap();
@@ -220,10 +217,7 @@ mod tests {
             store_id: allowed_store_id,
         }));
         let request = http::Request::builder()
-            .header(
-                http::header::AUTHORIZATION,
-                "Bearer cc_access_v1_test_secret",
-            )
+            .header(http::header::AUTHORIZATION, "Bearer access_test_secret")
             .header("x-chaos-store-id", StoreId::new().as_uuid().to_string())
             .body(())
             .unwrap();

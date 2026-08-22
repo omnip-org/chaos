@@ -73,7 +73,7 @@ function harness(
     },
   });
   const analytics = createStorefrontAnalytics({
-    publishableKey: "pk_test",
+    publishableKey: "public_test",
     getShopperToken: () => "shopper-token",
     document: document as unknown as Document,
     window: window as unknown as Window & typeof globalThis,

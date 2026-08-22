@@ -1,7 +1,7 @@
 # @omnip-org/chaos-js
 
 A typed client and first-party analytics collector for the Chaos Commerce
-[Store API](../../openapi/store-v1.json) — the publishable-key-authenticated
+[Store API](../../openapi/store-v1.json) — the public-key-authenticated
 surface meant to be called directly from storefront browsers. One SDK covers
 catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
 
@@ -28,7 +28,7 @@ npm install @omnip-org/chaos-js
 import { createStorefrontClient } from "@omnip-org/chaos-js";
 
 const chaos = createStorefrontClient({
-  publishableKey: "pk_live_...",
+  publishableKey: "public_...",
   analytics: {
     providers: {
       // Must match the Store's Meta CAPI Dataset ID.

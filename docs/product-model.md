@@ -53,10 +53,10 @@ A Payment records authorization and capture against one Order. A Refund referenc
 
 ## Access Key
 
-A private credential owned by one User and used only to authenticate MCP. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every tool call selects a Store and checks the User's current membership and role.
+A private credential owned by one User and used by trusted clients such as MCP, CLI, or server-side integrations. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every Store-scoped request selects a Store and checks the User's current membership and role. Its plaintext format is `access_<identifier>_<secret>`.
 
 The authenticated operation chain is `Access Key -> User -> Store Membership -> Store`. Request telemetry retains the Access Key, User, Store, and request identities so AI-driven mutations are attributable.
 
 ## Publishable Key
 
-A Store-scoped credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate MCP or invoke Store administration.
+A Store-scoped public credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `public_<identifier>_<secret>`.

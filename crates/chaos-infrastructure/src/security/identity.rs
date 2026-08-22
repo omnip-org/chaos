@@ -29,7 +29,9 @@ use url::Url;
 use uuid::Uuid;
 
 const JWKS_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60);
-const ACCESS_KEY_PREFIX: &str = "cc_access_v1_";
+const ACCESS_KEY_PREFIX: &str = "access_";
+const KEY_IDENTIFIER_LENGTH: usize = 16;
+const KEY_SECRET_LENGTH: usize = 43;
 
 #[derive(Clone, Debug)]
 pub struct OidcProviderConfiguration {
@@ -453,9 +455,19 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
 
 fn parse_access_key_identifier(presented_key: &str) -> Option<&str> {
     let remainder = presented_key.strip_prefix(ACCESS_KEY_PREFIX)?;
-    let (identifier, remainder) = remainder.split_at_checked(16)?;
+    let (identifier, remainder) = remainder.split_at_checked(KEY_IDENTIFIER_LENGTH)?;
     let secret = remainder.strip_prefix('_')?;
-    (!secret.is_empty()).then_some(identifier)
+    if secret.len() != KEY_SECRET_LENGTH
+        || !identifier.bytes().all(is_base64url_byte)
+        || !secret.bytes().all(is_base64url_byte)
+    {
+        return None;
+    }
+    Some(identifier)
+}
+
+fn is_base64url_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
 #[derive(Clone)]
@@ -566,7 +578,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_access_key_has_a_versioned_user_credential_shape() {
+    fn generated_access_key_has_a_stable_credential_shape() {
         let generated = SecureAccessKeyMaterialGenerator.generate();
         let plaintext = generated.plaintext.expose_secret();
         assert!(plaintext.starts_with(ACCESS_KEY_PREFIX));
@@ -579,6 +591,16 @@ mod tests {
             <[u8; 32]>::from(Sha256::digest(plaintext.as_bytes()))
         );
         assert!(plaintext.ends_with(&generated.display_suffix));
+    }
+
+    #[test]
+    fn old_access_key_shape_is_rejected() {
+        let old_key = format!(
+            "cc_access_v1_{}_{}",
+            "a".repeat(KEY_IDENTIFIER_LENGTH),
+            "b".repeat(KEY_SECRET_LENGTH)
+        );
+        assert_eq!(parse_access_key_identifier(&old_key), None);
     }
 
     #[test]

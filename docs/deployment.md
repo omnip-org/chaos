@@ -87,9 +87,9 @@ curl --fail https://api.example.com/health/ready
 
 1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
 2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
-3. Configure the AI client with `Authorization: Bearer <mcp-key>` and `X-Chaos-Store-Id: <store-id>`.
+3. Configure the client with `Authorization: Bearer <access-key>` and `X-Chaos-Store-Id: <store-id>` when using Store-scoped operations.
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
-5. Create only Publishable Keys for storefront or Sales Channel clients.
+5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `public_<identifier>_<secret>` and must be treated as a client credential.
 6. Upload third-party credentials and configure Providers through MCP tools.
 7. Activate the Store and exercise a non-destructive quote or test transaction.
 

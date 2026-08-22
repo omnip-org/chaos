@@ -3,7 +3,7 @@
   "info": {
     "title": "Chaos Commerce Store API",
     "version": "1.0.0",
-    "description": "Public Storefront API authenticated by Store-scoped publishable keys."
+    "description": "Public Storefront API authenticated by Store-scoped public keys."
   },
   "servers": [
     {
@@ -1072,7 +1072,7 @@
       "publishableKey": {
         "type": "http",
         "scheme": "bearer",
-        "description": "An active Store-scoped Publishable Key."
+        "description": "An active Store-scoped public key with the public_<identifier>_<secret> format."
       }
     },
     "parameters": {
