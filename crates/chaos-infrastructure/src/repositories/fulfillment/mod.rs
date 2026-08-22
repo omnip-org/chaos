@@ -3,10 +3,10 @@
 //! Files are organized by the business workflow rather than by database operation.
 //! They intentionally share this module namespace so the repository API stays stable.
 
-include!("base.rs");
-include!("repository.rs");
+include!("repository_core.rs");
+include!("commands.rs");
 include!("events.rs");
 include!("returns.rs");
 include!("queries.rs");
 include!("snapshots.rs");
-include!("shared.rs");
+include!("workflow_helpers.rs");

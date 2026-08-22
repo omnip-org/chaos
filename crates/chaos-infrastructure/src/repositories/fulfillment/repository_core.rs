@@ -1,4 +1,4 @@
-// Fulfillment repository wiring and shared imports.
+// Fulfillment repository core wiring and shared imports.
 
 use async_trait::async_trait;
 use chaos_application::{

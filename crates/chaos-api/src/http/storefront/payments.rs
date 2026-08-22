@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{
+use crate::http::shared::pagination::idempotency_key;
+use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutShopper,
-    pagination::idempotency_key,
 };
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
             "/store/v1/orders/{order_id}/payment-attempts",

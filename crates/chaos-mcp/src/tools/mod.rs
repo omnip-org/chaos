@@ -70,25 +70,39 @@ impl ChaosMcp {
     pub fn new(state: McpState) -> Self {
         Self {
             state,
-            tool_router: Self::products_tool_router()
-                + Self::stores_tool_router()
-                + Self::price_lists_tool_router()
-                + Self::inventory_tool_router()
-                + Self::orders_tool_router()
-                + Self::collections_tool_router()
-                + Self::promotions_tool_router()
-                + Self::tax_rules_tool_router()
-                + Self::fulfillment_tool_router()
-                + Self::store_admin_tool_router()
-                + Self::payments_tool_router()
-                + Self::payment_providers_tool_router()
-                + Self::media_tool_router()
-                + Self::localization_tool_router()
-                + Self::reviews_tool_router()
-                + Self::publishable_keys_tool_router()
-                + Self::analytics_tool_router()
-                + Self::provider_secrets_tool_router(),
+            tool_router: Self::tool_router(),
         }
+    }
+
+    fn tool_router() -> ToolRouter<ChaosMcp> {
+        let mut router = ToolRouter::new();
+        for capability_router in Self::capability_tool_routers() {
+            router.merge(capability_router);
+        }
+        router
+    }
+
+    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 18] {
+        [
+            Self::products_tool_router(),
+            Self::stores_tool_router(),
+            Self::price_lists_tool_router(),
+            Self::inventory_tool_router(),
+            Self::orders_tool_router(),
+            Self::collections_tool_router(),
+            Self::promotions_tool_router(),
+            Self::tax_rules_tool_router(),
+            Self::fulfillment_tool_router(),
+            Self::store_admin_tool_router(),
+            Self::payments_tool_router(),
+            Self::payment_providers_tool_router(),
+            Self::media_tool_router(),
+            Self::localization_tool_router(),
+            Self::reviews_tool_router(),
+            Self::publishable_keys_tool_router(),
+            Self::analytics_tool_router(),
+            Self::provider_secrets_tool_router(),
+        ]
     }
 
     async fn store_actor(
@@ -126,5 +140,27 @@ impl rmcp::ServerHandler for ChaosMcp {
                 .into(),
         );
         info
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChaosMcp;
+
+    #[test]
+    fn every_capability_tool_router_is_in_the_aggregate_router() {
+        let capability_routers = ChaosMcp::capability_tool_routers();
+        let expected_route_count = capability_routers
+            .iter()
+            .map(|router| router.map.len())
+            .sum::<usize>();
+        let aggregate_router = ChaosMcp::tool_router();
+
+        assert_eq!(aggregate_router.map.len(), expected_route_count);
+        for capability_router in capability_routers {
+            for name in capability_router.map.keys() {
+                assert!(aggregate_router.has_route(name));
+            }
+        }
     }
 }

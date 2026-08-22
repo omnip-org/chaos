@@ -1,12 +1,12 @@
 use axum::{Router, http::header::CONTENT_TYPE, response::IntoResponse, routing::get};
 
-use super::ApiState;
+use crate::http::ApiState;
 
 const IDENTITY_V1: &str = include_str!("../../../../../openapi/identity-v1.json");
 const STORE_V1: &str = include_str!("../../../../../openapi/store-v1.json");
 const WEBHOOKS_V1: &str = include_str!("../../../../../openapi/webhooks-v1.json");
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/identity-v1.json", get(identity_v1))
         .route("/store-v1.json", get(store_v1))

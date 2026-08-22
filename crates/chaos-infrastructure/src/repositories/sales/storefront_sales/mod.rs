@@ -3,13 +3,13 @@
 //! The files share one module namespace to keep Repository implementations and private
 //! domain reconstruction helpers compatible while making each workflow easy to locate.
 
-include!("base.rs");
-include!("repository.rs");
+include!("repository_core.rs");
+include!("sales_commands.rs");
 include!("cart.rs");
 include!("checkout.rs");
 include!("order.rs");
 include!("snapshots.rs");
-include!("shared.rs");
+include!("sales_helpers.rs");
 
 #[cfg(test)]
 #[path = "tests.rs"]

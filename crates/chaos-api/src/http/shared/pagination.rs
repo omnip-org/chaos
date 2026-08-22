@@ -4,19 +4,19 @@ use chaos_application::ApplicationError;
 use chaos_domain::FieldViolation;
 use uuid::Uuid;
 
-use super::{ApiError, PageMeta, ResponseMeta};
+use crate::http::{ApiError, PageMeta, ResponseMeta};
 
 const IDEMPOTENCY_KEY: &str = "idempotency-key";
 const CURSOR_VERSION: u8 = 1;
 
 #[derive(Clone, Copy)]
-pub(super) enum CursorKind {
+pub(crate) enum CursorKind {
     Product = 5,
     Collection = 15,
     Review = 17,
 }
 
-pub(super) fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
+pub(crate) fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
     match limit.unwrap_or(20) {
         limit @ 1..=100 => Ok(limit),
         _ => Err(ApplicationError::Validation {
@@ -29,7 +29,7 @@ pub(super) fn page_limit(limit: Option<u16>) -> Result<u16, ApiError> {
     }
 }
 
-pub(super) fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
+pub(crate) fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
     let mut payload = [0_u8; 18];
     payload[0] = CURSOR_VERSION;
     payload[1] = kind as u8;
@@ -37,7 +37,7 @@ pub(super) fn encode_cursor(id: Uuid, kind: CursorKind) -> String {
     URL_SAFE_NO_PAD.encode(payload)
 }
 
-pub(super) fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<Uuid, ApiError> {
+pub(crate) fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<Uuid, ApiError> {
     let bytes = URL_SAFE_NO_PAD.decode(cursor).ok();
     bytes
         .as_deref()
@@ -56,7 +56,7 @@ pub(super) fn decode_cursor(cursor: &str, expected_kind: CursorKind) -> Result<U
         })
 }
 
-pub(super) fn page_meta(has_more: bool, next_cursor: Option<String>) -> ResponseMeta {
+pub(crate) fn page_meta(has_more: bool, next_cursor: Option<String>) -> ResponseMeta {
     ResponseMeta {
         page: Some(PageMeta {
             has_more,
@@ -65,7 +65,7 @@ pub(super) fn page_meta(has_more: bool, next_cursor: Option<String>) -> Response
     }
 }
 
-pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
+pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
     headers
         .get(IDEMPOTENCY_KEY)
         .and_then(|value| value.to_str().ok())

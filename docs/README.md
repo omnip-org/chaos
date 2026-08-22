@@ -11,6 +11,7 @@ preserve the dependency direction in
 | --- | --- |
 | [`product-model.md`](product-model.md) | Current product terms and ownership boundaries |
 | [`architecture.md`](architecture.md) | Current runtime, authentication, authorization, and reliability model |
+| [`capability-map.md`](capability-map.md) | File-level navigation map for AI-assisted changes and cross-layer flows |
 | [`database-conventions.md`](database-conventions.md) | Required schema, SQL, isolation, migration, money, and time rules |
 | [`deployment.md`](deployment.md) | Production topology, secrets, bootstrap, rollout, and rollback |
 | [`postgresql-extensions.md`](postgresql-extensions.md) | PostgreSQL image and extension lifecycle |
@@ -58,7 +59,7 @@ HTTP delivery code is grouped by public responsibility under
 
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
-- `webhooks/` contains Provider callback endpoints;
+- `storefront/payments.rs` contains payment creation, client actions, and Provider callback endpoints;
 - `operations/` contains health checks;
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 

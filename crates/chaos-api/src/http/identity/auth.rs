@@ -9,9 +9,9 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedUser};
+use crate::http::{ApiDateTime, ApiError, ApiJson, ApiResponse, ApiState, AuthenticatedUser};
 
-pub fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/auth/external", post(sign_in))
         .route(
@@ -176,7 +176,7 @@ mod tests {
 
     use crate::http::{
         router,
-        test_support::{request, response_json, test_state},
+        shared::test_support::{request, response_json, test_state},
     };
 
     use super::*;

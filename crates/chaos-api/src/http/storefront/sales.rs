@@ -26,12 +26,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{
+use crate::http::shared::pagination::idempotency_key;
+use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartMachine, CartShopper,
-    CheckoutShopper, OrderLookupMachine, pagination::idempotency_key,
+    CheckoutShopper, OrderLookupMachine,
 };
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/shopper-sessions", post(create_shopper_session))
         .route("/carts", post(create_cart))

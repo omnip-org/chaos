@@ -11,9 +11,10 @@ use chaos_application::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{AnalyticsShopper, ApiJson, ApiResponse, ApiState, response::parse_api_time};
+use crate::http::shared::response::parse_api_time;
+use crate::http::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState};
 
-pub(super) fn storefront_routes() -> Router<ApiState> {
+pub(crate) fn storefront_routes() -> Router<ApiState> {
     Router::new()
         .route("/analytics/events", post(collect_events))
         .layer(DefaultBodyLimit::max(32 * 1024))
@@ -45,12 +46,12 @@ async fn collect_events(
     State(state): State<ApiState>,
     AnalyticsShopper(shopper): AnalyticsShopper,
     ApiJson(body): ApiJson<CollectEventsBody>,
-) -> Result<ApiResponse<CollectionResultData>, super::ApiError> {
+) -> Result<ApiResponse<CollectionResultData>, ApiError> {
     let events = body
         .events
         .into_iter()
         .map(|event| {
-            Ok::<_, super::ApiError>(AnalyticsEventInput {
+            Ok::<_, ApiError>(AnalyticsEventInput {
                 event_id: event.event_id,
                 event_name: event.event_name,
                 occurred_at: parse_api_time(&event.occurred_at).map_err(|_| {
@@ -85,7 +86,7 @@ fn collection_result_data(result: BrowserEventCollectionResult) -> CollectionRes
     }
 }
 
-fn invalid_value(field: &'static str, reason: &'static str) -> super::ApiError {
+fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
     ApplicationError::Validation {
         violations: vec![chaos_domain::FieldViolation {
             field,

@@ -8,12 +8,12 @@ use chaos_domain::catalog::ProductId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{
-    ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
-    pagination::{CursorKind, decode_cursor, encode_cursor, page_limit, page_meta},
+use crate::http::shared::pagination::{
+    CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
 };
+use crate::http::{ApiError, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine};
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/products", get(list_products))
         .route("/products/{handle}", get(get_product))
@@ -272,7 +272,7 @@ mod tests {
 
     use crate::http::{
         router,
-        test_support::{response_json, test_state},
+        shared::test_support::{response_json, test_state},
     };
 
     use super::*;

@@ -1,4 +1,4 @@
-// Payment repository wiring, provider implementations, and shared imports.
+// Payment repository core wiring, provider implementations, and shared imports.
 
 use async_trait::async_trait;
 use base64::{

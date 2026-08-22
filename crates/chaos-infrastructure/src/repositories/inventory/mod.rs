@@ -4,11 +4,11 @@
 //! changes and shopper reservation transitions. Shared SQL helpers and snapshots stay
 //! separate so an AI collaborator can locate the data path quickly.
 
-include!("base.rs");
+include!("repository_core.rs");
 include!("operations.rs");
 include!("reservations.rs");
 include!("snapshots.rs");
-include!("shared.rs");
+include!("persistence_helpers.rs");
 
 #[cfg(test)]
 #[path = "tests.rs"]

@@ -11,7 +11,7 @@ include!("ids.rs");
 include!("locations.rs");
 include!("balance.rs");
 include!("reservations.rs");
-include!("shared.rs");
+include!("validation.rs");
 
 #[cfg(test)]
 #[path = "tests.rs"]

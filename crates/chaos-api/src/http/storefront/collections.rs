@@ -4,10 +4,10 @@ use chaos_domain::catalog::CollectionId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{
-    ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
-    pagination::{CursorKind, decode_cursor, encode_cursor, page_limit, page_meta},
+use crate::http::shared::pagination::{
+    CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
 };
+use crate::http::{ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine};
 
 pub fn storefront_routes() -> Router<ApiState> {
     Router::new()
@@ -48,7 +48,7 @@ async fn list_storefront_collections(
     State(state): State<ApiState>,
     StorefrontMachine(actor): StorefrontMachine,
     ApiQuery(query): ApiQuery<ListQuery>,
-) -> Result<ApiResponse<Vec<StorefrontCollectionData>>, super::ApiError> {
+) -> Result<ApiResponse<Vec<StorefrontCollectionData>>, crate::http::ApiError> {
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -79,7 +79,7 @@ async fn get_storefront_collection(
     StorefrontMachine(actor): StorefrontMachine,
     ApiPath(path): ApiPath<HandlePath>,
     ApiQuery(query): ApiQuery<LocaleQuery>,
-) -> Result<ApiResponse<StorefrontCollectionData>, super::ApiError> {
+) -> Result<ApiResponse<StorefrontCollectionData>, crate::http::ApiError> {
     Ok(ApiResponse::ok(storefront_data(
         state
             .storefront_collections

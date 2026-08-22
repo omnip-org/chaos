@@ -9,7 +9,7 @@ struct HealthData {
     status: &'static str,
 }
 
-pub(super) fn routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/live", get(live))
         .route("/ready", get(ready))

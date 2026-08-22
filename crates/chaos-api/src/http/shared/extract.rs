@@ -15,7 +15,7 @@ use secrecy::SecretString;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use super::{ApiError, ApiState};
+use crate::http::{ApiError, ApiState};
 
 pub struct ApiJson<T>(pub T);
 pub struct ApiPath<T>(pub T);

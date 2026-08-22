@@ -1,4 +1,4 @@
-// Inventory repository imports, row shapes, constructor, and shared constants.
+// Inventory repository core imports, row shapes, constructor, and shared constants.
 
 use async_trait::async_trait;
 use chaos_application::{

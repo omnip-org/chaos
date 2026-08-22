@@ -14,14 +14,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{
+use crate::http::shared::pagination::{
+    CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta,
+};
+use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
-    pagination::{
-        CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta,
-    },
 };
 
-pub fn storefront_routes() -> Router<ApiState> {
+pub(crate) fn storefront_routes() -> Router<ApiState> {
     Router::new()
         .route(
             "/products/{product_id}/reviews",

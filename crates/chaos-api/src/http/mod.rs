@@ -1,32 +1,7 @@
-#[path = "storefront/analytics.rs"]
-mod analytics;
-#[path = "identity/auth.rs"]
-mod auth;
-#[path = "storefront/collections.rs"]
-mod collection;
-#[path = "shared/error.rs"]
-mod error;
-#[path = "shared/extract.rs"]
-mod extract;
-#[path = "operations/health.rs"]
-mod health;
-#[path = "shared/openapi.rs"]
-mod openapi;
-#[path = "shared/pagination.rs"]
-mod pagination;
-#[path = "storefront/payments.rs"]
-mod payment;
-#[path = "shared/response.rs"]
-mod response;
-#[path = "storefront/reviews.rs"]
-mod review;
-#[path = "storefront/catalog.rs"]
+mod identity;
+mod operations;
+mod shared;
 mod storefront;
-#[path = "storefront/sales.rs"]
-mod storefront_sales;
-#[cfg(test)]
-#[path = "shared/test_support.rs"]
-mod test_support;
 
 use axum::Router;
 use chaos_application::{
@@ -91,12 +66,12 @@ use tower_http::{
 
 use crate::lifecycle::Lifecycle;
 
-pub use error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
-pub use extract::{
+pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
+pub use shared::extract::{
     AnalyticsShopper, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
     CheckoutShopper, OrderLookupMachine, StoreContext, StorefrontMachine,
 };
-pub use response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
+pub use shared::response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -446,15 +421,15 @@ pub fn router(state: ApiState) -> Router {
         state.mcp_allowed_hosts.clone(),
     );
     Router::new()
-        .nest("/health", health::routes())
-        .nest("/identity/v1", auth::routes())
-        .merge(payment::routes())
-        .nest("/store/v1", storefront::routes())
-        .nest("/store/v1", collection::storefront_routes())
-        .nest("/store/v1", review::storefront_routes())
-        .nest("/store/v1", analytics::storefront_routes())
-        .nest("/store/v1", storefront_sales::routes())
-        .nest("/openapi", openapi::routes())
+        .nest("/health", operations::health::routes())
+        .nest("/identity/v1", identity::auth::routes())
+        .merge(storefront::payments::routes())
+        .nest("/store/v1", storefront::catalog::routes())
+        .nest("/store/v1", storefront::collections::storefront_routes())
+        .nest("/store/v1", storefront::reviews::storefront_routes())
+        .nest("/store/v1", storefront::analytics::storefront_routes())
+        .nest("/store/v1", storefront::sales::routes())
+        .nest("/openapi", shared::openapi::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -468,7 +443,7 @@ mod tests {
 
     use axum::{
         body::{Body, to_bytes},
-        http::{Request, StatusCode},
+        http::{Method, Request, StatusCode},
     };
     use chaos_infrastructure::runtime::{config::Settings, state::AppState};
     use serde_json::Value;
@@ -540,6 +515,42 @@ mod tests {
             serde_json::from_slice::<Value>(&body).unwrap()["data"]["status"],
             "ok"
         );
+    }
+
+    #[tokio::test]
+    async fn route_registry_contains_each_public_boundary() {
+        let state = test_state();
+        let requests = [
+            (Method::GET, "/health/live"),
+            (Method::POST, "/identity/v1/auth/external"),
+            (Method::GET, "/store/v1/products"),
+            (Method::GET, "/store/v1/collections"),
+            (Method::POST, "/store/v1/analytics/events"),
+            (Method::POST, "/store/v1/carts"),
+            (
+                Method::POST,
+                "/webhooks/v1/payments/stripe_checkout/00000000-0000-0000-0000-000000000000",
+            ),
+            (Method::GET, "/openapi/store-v1.json"),
+        ];
+
+        for (method, path) in requests {
+            let response = router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "route missing: {path}"
+            );
+        }
     }
 
     #[tokio::test]

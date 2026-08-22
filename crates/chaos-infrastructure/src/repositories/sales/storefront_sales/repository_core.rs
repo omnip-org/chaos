@@ -1,4 +1,4 @@
-// Storefront sales imports, row shapes, repository wiring, and shared constants.
+// Storefront sales repository core imports, row shapes, wiring, and shared constants.
 
 use std::collections::HashMap;
 

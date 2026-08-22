@@ -4,10 +4,10 @@
 //! module namespace. This makes the payment workflow discoverable without changing the
 //! repository wiring used by the application layer.
 
-include!("base.rs");
+include!("repository_core.rs");
 include!("provider_accounts.rs");
 include!("readiness.rs");
-include!("repository.rs");
+include!("payment_commands.rs");
 include!("events.rs");
 include!("snapshots.rs");
-include!("shared.rs");
+include!("payment_helpers.rs");
