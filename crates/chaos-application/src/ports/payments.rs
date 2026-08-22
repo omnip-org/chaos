@@ -15,13 +15,13 @@ use crate::{ApplicationError, store::StoreActor};
 use super::{AdminActor, IdempotencyRequest, ShopperActor, integration::QueueJob};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PaymentProviderReadinessStatus {
+pub enum StripeReadinessStatus {
     Unchecked,
     Ready,
     ActionRequired,
 }
 
-impl PaymentProviderReadinessStatus {
+impl StripeReadinessStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unchecked => "unchecked",
@@ -31,23 +31,23 @@ impl PaymentProviderReadinessStatus {
     }
 }
 
-pub struct PaymentProviderReadiness {
+pub struct StripeReadiness {
     pub ready: bool,
     pub blocker_codes: Vec<String>,
     pub configuration: Value,
     pub checked_at: OffsetDateTime,
 }
 
-pub struct PaymentProviderAccountConfiguration {
+pub struct StripeAccountConfiguration {
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub webhook_secret_reference: chaos_domain::payments::PaymentSecretReference,
-    pub readiness: Option<PaymentProviderReadiness>,
+    pub readiness: Option<StripeReadiness>,
 }
 
-pub struct PaymentProviderAccountDetail {
-    pub account: chaos_domain::payments::PaymentProviderAccount,
+pub struct StripeAccountDetail {
+    pub account: chaos_domain::payments::StripeAccount,
     pub credentials_configured: bool,
-    pub readiness_status: PaymentProviderReadinessStatus,
+    pub readiness_status: StripeReadinessStatus,
     pub readiness_checked_at: Option<OffsetDateTime>,
     pub readiness_valid_until: Option<OffsetDateTime>,
     pub readiness_blocker_codes: Vec<String>,
@@ -57,19 +57,18 @@ pub struct PaymentProviderAccountDetail {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct PaymentProviderAccountPage {
-    pub items: Vec<PaymentProviderAccountDetail>,
+pub struct StripeAccountPage {
+    pub items: Vec<StripeAccountDetail>,
     pub has_more: bool,
 }
 
 pub struct PaymentAttemptDetail {
     pub id: PaymentAttemptId,
     pub order_id: OrderId,
-    pub provider: String,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub status: PaymentAttemptStatus,
-    pub provider_reference: Option<String>,
+    pub stripe_checkout_session_id: Option<String>,
     pub failure_code: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -81,16 +80,15 @@ pub struct RefundDetail {
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub status: RefundStatus,
-    pub provider_reference: Option<String>,
+    pub stripe_refund_id: Option<String>,
     pub failure_code: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
-pub struct VerifiedWebhookEvent {
-    pub provider: String,
-    pub provider_account_id: Uuid,
-    pub provider_event_id: String,
+pub struct StripeWebhookEvent {
+    pub stripe_account_id: Uuid,
+    pub stripe_event_id: String,
     pub event_type: String,
     pub object_reference: String,
     pub failure_code: Option<String>,
@@ -98,15 +96,14 @@ pub struct VerifiedWebhookEvent {
     pub verified_at: OffsetDateTime,
 }
 
-pub struct PaymentWebhookConfiguration {
-    pub provider_account_id: Uuid,
+pub struct StripeWebhookConfiguration {
+    pub stripe_account_id: Uuid,
     pub secret_reference: chaos_domain::payments::PaymentSecretReference,
 }
 
-pub struct PaymentProviderReadinessJob {
-    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
+pub struct StripeReadinessJob {
+    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
     pub store_id: StoreId,
-    pub provider: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub attempts: u32,
 }
@@ -115,6 +112,27 @@ pub struct PaymentCheckoutDetails {
     pub customer_email: String,
     pub customer_phone: Option<String>,
     pub shipping_address: Option<PaymentShippingAddress>,
+    pub line_items: Vec<PaymentLineItem>,
+    pub shipping_countries: Vec<String>,
+    pub shipping_options: Vec<PaymentShippingOption>,
+    pub automatic_tax: bool,
+}
+
+pub struct PaymentLineItem {
+    pub name: String,
+    pub sku: Option<String>,
+    pub quantity: u32,
+    pub unit_amount_minor: i64,
+}
+
+pub struct PaymentShippingOption {
+    pub service_id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub amount_minor: i64,
+    pub currency: CurrencyCode,
+    pub estimated_min_days: u16,
+    pub estimated_max_days: u16,
 }
 
 pub struct PaymentShippingAddress {
@@ -127,33 +145,32 @@ pub struct PaymentShippingAddress {
     pub country_code: String,
 }
 
-pub struct ProviderCommand {
-    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
+pub struct StripeCommand {
+    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
     pub event_type: String,
     pub aggregate_id: Uuid,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
-    pub payment_provider_reference: Option<String>,
+    pub stripe_payment_reference: Option<String>,
     /// Required for `payment.create_requested` by the Stripe Checkout adapter;
-    /// absent for provider commands that do not create a Checkout Session.
+    /// absent for Stripe commands that do not create a Checkout Session.
     pub checkout_details: Option<PaymentCheckoutDetails>,
     pub return_url: Option<String>,
 }
 
-pub struct ProviderCommandResult {
-    pub provider_reference: String,
+pub struct StripeCommandResult {
+    pub stripe_object_id: String,
 }
 
-pub struct ProviderClientActionCommand {
-    pub provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
-    pub provider_reference: String,
+pub struct StripeClientActionCommand {
+    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
+    pub stripe_checkout_session_id: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
 }
 
 pub struct PaymentClientAction {
-    pub provider: String,
     /// One of `"confirm_payment"` (client_token is a PaymentIntent client
     /// secret for Stripe.js/Elements confirmation) or
     /// `"mount_embedded_checkout"` (client_token is an embedded Checkout
@@ -164,80 +181,77 @@ pub struct PaymentClientAction {
 }
 
 #[async_trait]
-pub trait PaymentProvider: Send + Sync {
+pub trait StripePaymentGateway: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn execute(
         &self,
-        command: ProviderCommand,
-    ) -> Result<ProviderCommandResult, ApplicationError>;
+        command: StripeCommand,
+    ) -> Result<StripeCommandResult, ApplicationError>;
 
     async fn client_action(
         &self,
-        command: ProviderClientActionCommand,
+        command: StripeClientActionCommand,
     ) -> Result<PaymentClientAction, ApplicationError>;
 }
 
 #[async_trait]
-pub trait PaymentProviderOnboarding: Send + Sync {
+pub trait StripeAccountReadiness: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn check_readiness(
         &self,
         credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
         checked_at: OffsetDateTime,
-    ) -> Result<PaymentProviderReadiness, ApplicationError>;
+    ) -> Result<StripeReadiness, ApplicationError>;
 }
 
 #[async_trait]
-pub trait PaymentProviderReadinessQueue: Send + Sync {
-    async fn claim_provider_readiness(
+pub trait StripeReadinessQueue: Send + Sync {
+    async fn claim_stripe_readiness(
         &self,
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
-    ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError>;
+    ) -> Result<Vec<StripeReadinessJob>, ApplicationError>;
 
-    async fn finish_provider_readiness(
+    async fn finish_stripe_readiness(
         &self,
         worker_id: Uuid,
-        provider_account_id: chaos_domain::payments::PaymentProviderAccountId,
-        result: Result<PaymentProviderReadiness, String>,
+        stripe_account_id: chaos_domain::payments::StripeAccountId,
+        result: Result<StripeReadiness, String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]
-pub trait PaymentWebhookVerifier: Send + Sync {
+pub trait StripeWebhookSignatureVerifier: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn verify(
         &self,
-        provider: &str,
-        provider_account_id: Uuid,
+        stripe_account_id: Uuid,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
-    ) -> Result<VerifiedWebhookEvent, ApplicationError>;
+    ) -> Result<StripeWebhookEvent, ApplicationError>;
 }
 
 #[async_trait]
-pub trait PaymentWebhookConfigurationRepository: Send + Sync {
+pub trait StripeWebhookConfigurationRepository: Send + Sync {
     async fn webhook_configurations(
         &self,
-        provider: &str,
-        provider_account_id: Uuid,
-    ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError>;
+        stripe_account_id: Uuid,
+    ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError>;
 }
 
 #[async_trait]
-pub trait PaymentRepository: Send + Sync {
+pub trait StripePaymentRepository: Send + Sync {
     async fn create_attempt(
         &self,
         actor: &ShopperActor,
         order_id: OrderId,
-        provider: &str,
         return_url: Option<&str>,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError>;
@@ -257,7 +271,7 @@ pub trait PaymentRepository: Send + Sync {
         idempotency: &IdempotencyRequest,
     ) -> Result<RefundDetail, ApplicationError>;
 
-    async fn ingest_webhook(&self, event: &VerifiedWebhookEvent) -> Result<bool, ApplicationError>;
+    async fn ingest_webhook(&self, event: &StripeWebhookEvent) -> Result<bool, ApplicationError>;
 
     async fn process_webhook_job(
         &self,
@@ -265,19 +279,19 @@ pub trait PaymentRepository: Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 
-    async fn prepare_provider_command(
+    async fn prepare_stripe_command(
         &self,
         job: &QueueJob,
-    ) -> Result<ProviderCommand, ApplicationError>;
+    ) -> Result<StripeCommand, ApplicationError>;
 
-    async fn record_provider_result(
+    async fn record_stripe_result(
         &self,
         job: &QueueJob,
-        result: &ProviderCommandResult,
+        result: &StripeCommandResult,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 
-    async fn fail_provider_command(
+    async fn fail_stripe_command(
         &self,
         job: &QueueJob,
         failure: &str,
@@ -288,7 +302,7 @@ pub trait PaymentRepository: Send + Sync {
         &self,
         actor: &ShopperActor,
         attempt_id: PaymentAttemptId,
-    ) -> Result<Option<(String, ProviderClientActionCommand)>, ApplicationError>;
+    ) -> Result<Option<StripeClientActionCommand>, ApplicationError>;
 }
 
 #[async_trait]
@@ -300,37 +314,37 @@ pub trait PaymentSecretResolver: Send + Sync {
 }
 
 #[async_trait]
-pub trait PaymentProviderAccountRepository: Send + Sync {
+pub trait StripeAccountRepository: Send + Sync {
     async fn list(
         &self,
         actor: StoreActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<PaymentProviderAccountPage, ApplicationError>;
+    ) -> Result<StripeAccountPage, ApplicationError>;
 
     async fn get(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        id: chaos_domain::payments::PaymentProviderAccountId,
-    ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError>;
+        id: chaos_domain::payments::StripeAccountId,
+    ) -> Result<Option<StripeAccountDetail>, ApplicationError>;
 
     async fn create(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &chaos_domain::payments::PaymentProviderAccount,
-        configuration: &PaymentProviderAccountConfiguration,
+        account: &chaos_domain::payments::StripeAccount,
+        configuration: &StripeAccountConfiguration,
         idempotency: &IdempotencyRequest,
-    ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
+    ) -> Result<StripeAccountDetail, ApplicationError>;
 
     async fn update(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &chaos_domain::payments::PaymentProviderAccount,
-        configuration: &PaymentProviderAccountConfiguration,
+        account: &chaos_domain::payments::StripeAccount,
+        configuration: &StripeAccountConfiguration,
         idempotency: &IdempotencyRequest,
-    ) -> Result<PaymentProviderAccountDetail, ApplicationError>;
+    ) -> Result<StripeAccountDetail, ApplicationError>;
 }

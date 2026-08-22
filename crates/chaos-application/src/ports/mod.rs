@@ -82,13 +82,13 @@ pub use media::{
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
 };
 pub use payments::{
-    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentProvider,
-    PaymentProviderAccountConfiguration, PaymentProviderAccountDetail, PaymentProviderAccountPage,
-    PaymentProviderAccountRepository, PaymentProviderOnboarding, PaymentProviderReadiness,
-    PaymentProviderReadinessJob, PaymentProviderReadinessQueue, PaymentProviderReadinessStatus,
-    PaymentRepository, PaymentSecretResolver, PaymentShippingAddress, PaymentWebhookConfiguration,
-    PaymentWebhookConfigurationRepository, PaymentWebhookVerifier, ProviderClientActionCommand,
-    ProviderCommand, ProviderCommandResult, RefundDetail, VerifiedWebhookEvent,
+    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
+    PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption, RefundDetail,
+    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
+    StripeAccountRepository, StripeClientActionCommand, StripeCommand, StripeCommandResult,
+    StripePaymentGateway, StripePaymentRepository, StripeReadiness, StripeReadinessJob,
+    StripeReadinessQueue, StripeReadinessStatus, StripeWebhookConfiguration,
+    StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };
 pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use pricing_management::{
@@ -106,6 +106,7 @@ pub use sales::{
     CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
     CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
     OrderPage, OrderTrackingSession, OrderTransitionItem, StorefrontSalesRepository,
+    StripeCheckoutDraft,
 };
 pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};

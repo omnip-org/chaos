@@ -1,12 +1,33 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { CreatePaymentAttemptRequest, DataEnvelope, PaymentAttempt, PaymentClientAction } from "../types.js";
+import type {
+  CreateEmbeddedCheckoutRequest,
+  CreatePaymentAttemptRequest,
+  DataEnvelope,
+  EmbeddedCheckoutSession,
+  PaymentAttempt,
+  PaymentClientAction,
+} from "../types.js";
 
 export class PaymentsResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
-  /**
-   * For the stripe_checkout provider, `body.return_url` is required.
-   */
+  createEmbeddedCheckout(
+    cartId: string,
+    body: CreateEmbeddedCheckoutRequest,
+    idempotencyKey?: string,
+  ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
+    return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
+      `/carts/${encodeURIComponent(cartId)}/embedded-checkout`,
+      {
+        method: "POST",
+        body,
+        requiresShopperToken: true,
+        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
+      },
+    );
+  }
+
+  /** Creates a Stripe Embedded Checkout payment attempt. */
   createAttempt(
     orderId: string,
     body: CreatePaymentAttemptRequest,
@@ -28,9 +49,9 @@ export class PaymentsResource {
   }
 
   /**
-   * Returns short-lived provider client handoff material.
+   * Returns short-lived Stripe client handoff material.
    *
-   * For the current `stripe_checkout` provider, type is
+   * For Embedded Checkout, type is
    * `mount_embedded_checkout` and client_token is an Embedded Checkout Session
    * client secret. Never log, cache, or place it in a URL.
    */

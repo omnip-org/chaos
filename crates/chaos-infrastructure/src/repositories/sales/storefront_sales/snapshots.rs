@@ -1,5 +1,36 @@
 // Cart, checkout, and order idempotency snapshots and domain reconstruction.
 
+#[derive(Deserialize, Serialize)]
+struct StripeCheckoutSnapshot {
+    checkout_id: Uuid,
+    order_id: Uuid,
+    currency: String,
+    subtotal_amount_minor: i64,
+    expires_at: String,
+}
+
+fn stripe_checkout_snapshot(detail: &StripeCheckoutDraft) -> Result<Value, ApplicationError> {
+    serde_json::to_value(StripeCheckoutSnapshot {
+        checkout_id: detail.checkout_id.as_uuid(),
+        order_id: detail.order_id.as_uuid(),
+        currency: detail.currency.as_str().into(),
+        subtotal_amount_minor: detail.subtotal_amount_minor,
+        expires_at: format_time(detail.expires_at)?,
+    })
+    .map_err(|error| ApplicationError::Unexpected(error.into()))
+}
+
+fn replay_stripe_checkout(value: Value) -> Result<StripeCheckoutDraft, ApplicationError> {
+    let snapshot: StripeCheckoutSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
+    Ok(StripeCheckoutDraft {
+        checkout_id: CheckoutId::from_uuid(snapshot.checkout_id),
+        order_id: OrderId::from_uuid(snapshot.order_id),
+        currency: parse_currency(&snapshot.currency)?,
+        subtotal_amount_minor: snapshot.subtotal_amount_minor,
+        expires_at: parse_time(&snapshot.expires_at)?,
+    })
+}
+
 fn cart_snapshot(detail: &CartDetail) -> Result<Value, ApplicationError> {
     serde_json::to_value(CartSnapshot {
         id: detail.id.as_uuid(),

@@ -444,6 +444,250 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         Ok(detail)
     }
 
+    async fn create_stripe_checkout(
+        &self,
+        shopper: &ShopperActor,
+        cart_id: CartId,
+        email: &str,
+        now: OffsetDateTime,
+        expires_at: OffsetDateTime,
+        request: &IdempotencyRequest,
+    ) -> Result<StripeCheckoutDraft, ApplicationError> {
+        let actor = &shopper.machine;
+        let channel_id = require_channel(actor)?;
+        let mut transaction = self.begin_shopper(shopper).await?;
+        ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
+        if let Some(snapshot) = reserve(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_STRIPE_CHECKOUT_OPERATION,
+            request,
+        )
+        .await?
+        {
+            return replay_stripe_checkout(snapshot);
+        }
+        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        if header.0 != channel_id.as_uuid() {
+            return Err(cart_not_found(cart_id));
+        }
+        let currency = parse_currency(&header.2)?;
+        let locale = parse_locale(&header.3)?;
+        require_price_list_active(
+            &mut transaction,
+            actor,
+            PriceListId::from_uuid(header.1),
+            currency,
+            now,
+        )
+        .await?;
+        let lines = refresh_cart_lines(
+            &mut transaction,
+            actor,
+            cart_id,
+            channel_id,
+            PriceListId::from_uuid(header.1),
+            currency,
+        )
+        .await?;
+        if lines.is_empty() {
+            return Err(cart_line_unavailable());
+        }
+        let existing_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM commerce.cart_lines WHERE store_id = $1 AND cart_id = $2",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if usize::try_from(existing_count).ok() != Some(lines.len()) {
+            return Err(cart_line_unavailable());
+        }
+        let existing_checkout: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM commerce.checkouts \
+             WHERE store_id = $1 AND cart_id = $2 AND status = 'pending' FOR UPDATE",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if existing_checkout.is_some() {
+            return Err(checkout_already_pending());
+        }
+        let cart = Cart::rehydrate(
+            cart_id,
+            actor.store_id,
+            channel_id,
+            PriceListId::from_uuid(header.1),
+            currency,
+            CartStatus::Active,
+            lines.clone(),
+        )?;
+        if cart.lines().iter().any(CartLine::requires_shipping) {
+            let has_configuration: bool = sqlx::query_scalar(
+                "SELECT EXISTS (\
+                    SELECT 1 FROM commerce.shipping_services AS service\
+                    INNER JOIN commerce.shipping_service_regions AS region\
+                      ON region.store_id = service.store_id\
+                     AND region.shipping_service_id = service.id\
+                    INNER JOIN commerce.tax_rules AS tax_rule\
+                      ON tax_rule.store_id = region.store_id\
+                     AND tax_rule.country_code = region.country_code\
+                     AND tax_rule.status = 'active'\
+                    WHERE service.store_id = $1 AND service.currency = $2\
+                      AND service.status = 'active'\
+                )",
+            )
+            .bind(actor.store_id.as_uuid())
+            .bind(currency.as_str())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if !has_configuration {
+                return Err(embedded_checkout_configuration_unavailable());
+            }
+        }
+        let reservation_id = reserve_inventory(&mut transaction, actor, channel_id, &cart, expires_at)
+            .await?;
+        let checkout_id = CheckoutId::new();
+        let order_id = OrderId::new();
+        let subtotal = cart.total()?.amount_minor();
+        sqlx::query(
+            "INSERT INTO commerce.checkouts \
+             (id, store_id, cart_id, shopper_id, sales_channel_id, price_list_id, \
+              inventory_reservation_id, currency, locale, subtotal_amount_minor, \
+              discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, \
+              total_amount_minor, expires_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,0,$11,0,$10,$12)",
+        )
+        .bind(checkout_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .bind(header.1)
+        .bind(reservation_id.map(InventoryReservationId::as_uuid))
+        .bind(currency.as_str())
+        .bind(locale.as_str())
+        .bind(subtotal)
+        .bind(cart.lines().first().is_some_and(CartLine::tax_inclusive))
+        .bind(expires_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO commerce.checkout_contacts (store_id, checkout_id, email) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .bind(email)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        insert_stripe_checkout_lines(&mut transaction, actor, checkout_id, &cart, now).await?;
+
+        let order_number = generate_order_number(now)?;
+        sqlx::query(
+            "INSERT INTO commerce.orders \
+             (id, store_id, order_number, sales_channel_id, checkout_id, shopper_id, \
+              inventory_reservation_id, price_list_id, currency, locale, subtotal_amount_minor, \
+              discount_amount_minor, tax_amount_minor, tax_inclusive, shipping_amount_minor, \
+              total_amount_minor, created_at, updated_at) \
+             SELECT $1, store_id, $2, sales_channel_id, id, shopper_id, inventory_reservation_id, \
+                    price_list_id, currency, locale, subtotal_amount_minor, discount_amount_minor, \
+                    tax_amount_minor, tax_inclusive, shipping_amount_minor, total_amount_minor, $3, $3 \
+             FROM commerce.checkouts WHERE store_id = $4 AND id = $5",
+        )
+        .bind(order_id.as_uuid())
+        .bind(order_number.as_str())
+        .bind(now)
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO commerce.order_lines \
+             (store_id, order_id, position, product_id, product_variant_id, product_title, \
+              variant_title, sku, requires_shipping, track_inventory, quantity, \
+              unit_price_amount_minor, subtotal_amount_minor, discount_amount_minor, \
+              tax_amount_minor, total_amount_minor, tax_inclusive, created_at) \
+             SELECT store_id, $1, position, product_id, product_variant_id, product_title, \
+                    variant_title, sku, requires_shipping, track_inventory, quantity, \
+                    unit_price_amount_minor, subtotal_amount_minor, discount_amount_minor, \
+                    tax_amount_minor, total_amount_minor, tax_inclusive, $2 \
+             FROM commerce.checkout_lines WHERE store_id = $3 AND checkout_id = $4",
+        )
+        .bind(order_id.as_uuid())
+        .bind(now)
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO commerce.order_contacts (store_id, order_id, email) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(email)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO commerce.order_transitions \
+             (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
+             VALUES ($1, $2, $3, NULL, 'pending', 'created', $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(actor.store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        append_event(
+            &mut transaction,
+            AnalyticsEventToAppend {
+                store_id: actor.store_id.as_uuid(),
+                shopper_id: shopper.shopper_id.as_uuid(),
+                event_id: checkout_id.as_uuid(),
+                event_name: "initiate_checkout".into(),
+                properties: json!({
+                    "_source": "server",
+                    "cart_id": cart_id.as_uuid(),
+                    "checkout_id": checkout_id.as_uuid(),
+                    "payment_ui": "stripe_embedded_checkout",
+                }),
+                occurred_at: now,
+                received_at: now,
+            },
+        )
+        .await?;
+        let draft = StripeCheckoutDraft {
+            checkout_id,
+            order_id,
+            currency,
+            subtotal_amount_minor: subtotal,
+            expires_at,
+        };
+        complete(
+            &mut transaction,
+            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
+            CREATE_STRIPE_CHECKOUT_OPERATION,
+            request,
+            201,
+            stripe_checkout_snapshot(&draft)?,
+        )
+        .await?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(draft)
+    }
+
     async fn quote_shipping(
         &self,
         shopper: &ShopperActor,
@@ -774,6 +1018,45 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
     }
+}
+
+async fn insert_stripe_checkout_lines(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    checkout_id: CheckoutId,
+    cart: &Cart,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    for (position, line) in cart.lines().iter().enumerate() {
+        let subtotal = line.subtotal()?;
+        sqlx::query(
+            "INSERT INTO commerce.checkout_lines \
+             (store_id, checkout_id, position, product_id, product_variant_id, product_title, \
+              variant_title, sku, requires_shipping, track_inventory, quantity, \
+              unit_price_amount_minor, subtotal_amount_minor, discount_amount_minor, \
+              tax_amount_minor, total_amount_minor, tax_inclusive, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,$13,$14,$15)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .bind(i16::try_from(position).map_err(unexpected_conversion)?)
+        .bind(line.product_id().as_uuid())
+        .bind(line.product_variant_id().as_uuid())
+        .bind(line.product_title())
+        .bind(line.variant_title())
+        .bind(line.sku())
+        .bind(line.requires_shipping())
+        .bind(line.track_inventory())
+        .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
+        .bind(line.unit_price().amount_minor())
+        .bind(subtotal.amount_minor())
+        .bind(line.tax_inclusive())
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    Ok(())
 }
 
 fn valid_capability(value: &str, prefix: &str) -> bool {

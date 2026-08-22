@@ -3,19 +3,20 @@
 use async_trait::async_trait;
 use base64::{
     Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    engine::general_purpose::URL_SAFE_NO_PAD,
 };
 use chaos_application::{
     ApplicationError,
     ports::{
         AdminActor, IdempotencyRequest, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
-        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
-        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentProviderOnboarding, PaymentProviderReadiness, PaymentProviderReadinessJob,
-        PaymentProviderReadinessQueue, PaymentProviderReadinessStatus, PaymentRepository,
-        PaymentShippingAddress, PaymentWebhookConfiguration, PaymentWebhookConfigurationRepository,
-        PaymentWebhookVerifier, ProviderClientActionCommand, ProviderCommand,
-        ProviderCommandResult, QueueJob, RefundDetail, ShopperActor, VerifiedWebhookEvent,
+        PaymentLineItem, StripeAccountConfiguration,
+        StripeAccountDetail, StripeAccountPage, StripeAccountRepository,
+        StripeReadiness, StripeReadinessJob, StripeReadinessQueue, StripeReadinessStatus,
+        StripePaymentRepository,
+        PaymentShippingAddress, PaymentShippingOption,
+        StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
+        StripeCommandResult, StripeClientActionCommand, QueueJob, RefundDetail, ShopperActor,
+        StripeWebhookEvent,
     },
     store::StoreActor,
 };
@@ -23,16 +24,14 @@ use chaos_domain::{
     CurrencyCode,
     inventory::InventoryReservationId,
     payments::{
-        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, PaymentProviderAccount,
-        PaymentProviderAccountId, PaymentSecretReference, Refund, RefundId, RefundStatus,
+        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, StripeAccount, StripeAccountId,
+        PaymentSecretReference, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
     sales::{CheckoutId, Order, OrderId, OrderStatus},
     store::{SalesChannelId, StoreId},
 };
-use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
-use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -74,149 +73,6 @@ type ProviderAccountRow = (
     OffsetDateTime,
     OffsetDateTime,
 );
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WebhookPayload {
-    id: String,
-    event_type: String,
-    #[serde(default)]
-    _account: Option<String>,
-    object: String,
-    #[serde(rename = "aggregate_id")]
-    _aggregate_id: Uuid,
-    #[serde(default)]
-    failure_code: Option<String>,
-}
-
-pub struct HmacPaymentWebhookVerifier {
-    secret: Vec<u8>,
-}
-
-pub struct SandboxPaymentProvider;
-
-#[async_trait]
-impl PaymentProvider for SandboxPaymentProvider {
-    fn name(&self) -> &'static str {
-        "testpay"
-    }
-
-    async fn execute(
-        &self,
-        command: ProviderCommand,
-    ) -> Result<ProviderCommandResult, ApplicationError> {
-        Ok(ProviderCommandResult {
-            provider_reference: format!("testpay_{}", command.aggregate_id.simple()),
-        })
-    }
-
-    async fn client_action(
-        &self,
-        command: ProviderClientActionCommand,
-    ) -> Result<PaymentClientAction, ApplicationError> {
-        Ok(PaymentClientAction {
-            provider: "testpay".into(),
-            kind: "confirm_payment",
-            public_key: SecretString::from("testpay_public".to_owned()),
-            client_token: SecretString::from(format!(
-                "{}_client_token",
-                command.provider_reference
-            )),
-        })
-    }
-}
-
-#[async_trait]
-impl PaymentProviderOnboarding for SandboxPaymentProvider {
-    fn name(&self) -> &'static str {
-        "testpay"
-    }
-
-    async fn check_readiness(
-        &self,
-        _credential_secret_reference: &PaymentSecretReference,
-        checked_at: OffsetDateTime,
-    ) -> Result<PaymentProviderReadiness, ApplicationError> {
-        Ok(PaymentProviderReadiness {
-            ready: true,
-            blocker_codes: Vec::new(),
-            configuration: json!({"sandbox": true}),
-            checked_at,
-        })
-    }
-}
-
-impl HmacPaymentWebhookVerifier {
-    pub fn new(secret: impl AsRef<[u8]>) -> Result<Self, anyhow::Error> {
-        let secret = secret.as_ref();
-        if secret.len() < 32 {
-            anyhow::bail!("payment webhook secret must contain at least 32 bytes");
-        }
-        Ok(Self {
-            secret: secret.to_vec(),
-        })
-    }
-}
-
-#[async_trait]
-impl PaymentWebhookVerifier for HmacPaymentWebhookVerifier {
-    fn name(&self) -> &'static str {
-        "testpay"
-    }
-
-    async fn verify(
-        &self,
-        provider: &str,
-        provider_account_id: Uuid,
-        signature: &str,
-        payload: &[u8],
-        received_at: OffsetDateTime,
-    ) -> Result<VerifiedWebhookEvent, ApplicationError> {
-        let signature = STANDARD
-            .decode(signature)
-            .map_err(|_| ApplicationError::Unauthorized)?;
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
-            .map_err(|error| ApplicationError::Unexpected(error.into()))?;
-        mac.update(payload);
-        mac.verify_slice(&signature)
-            .map_err(|_| ApplicationError::Unauthorized)?;
-        if provider.trim().is_empty()
-            || provider.len() > 64
-            || !provider
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        {
-            return Err(ApplicationError::NotFound {
-                resource: "payment_provider",
-                id: provider.to_owned(),
-            });
-        }
-        let raw: Value =
-            serde_json::from_slice(payload).map_err(|_| ApplicationError::Validation {
-                violations: vec![chaos_domain::FieldViolation {
-                    field: "payload",
-                    reason: "must be a valid payment webhook event".into(),
-                }],
-            })?;
-        let event: WebhookPayload =
-            serde_json::from_value(raw.clone()).map_err(|_| ApplicationError::Validation {
-                violations: vec![chaos_domain::FieldViolation {
-                    field: "payload",
-                    reason: "must contain the required payment webhook fields".into(),
-                }],
-            })?;
-        Ok(VerifiedWebhookEvent {
-            provider: provider.to_owned(),
-            provider_account_id,
-            provider_event_id: event.id,
-            event_type: event.event_type,
-            object_reference: event.object,
-            failure_code: event.failure_code,
-            payload: raw,
-            verified_at: received_at,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct PostgresPaymentRepository {

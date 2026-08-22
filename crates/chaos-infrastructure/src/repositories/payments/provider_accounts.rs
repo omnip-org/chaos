@@ -1,14 +1,14 @@
 // Payment provider account configuration and onboarding persistence.
 
 #[async_trait]
-impl PaymentProviderAccountRepository for PostgresPaymentRepository {
+impl StripeAccountRepository for PostgresPaymentRepository {
     async fn list(
         &self,
         actor: StoreActor,
         store_id: StoreId,
         after: Option<Uuid>,
         limit: u16,
-    ) -> Result<PaymentProviderAccountPage, ApplicationError> {
+    ) -> Result<StripeAccountPage, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, enabled, \
@@ -32,20 +32,20 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         let items = rows
             .into_iter()
             .take(usize::from(limit))
-            .map(provider_account_detail)
+            .map(stripe_account_detail)
             .collect::<Result<Vec<_>, _>>()?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(PaymentProviderAccountPage { items, has_more })
+        Ok(StripeAccountPage { items, has_more })
     }
 
     async fn get(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        id: PaymentProviderAccountId,
-    ) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
+        id: StripeAccountId,
+    ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        let value = load_provider_account(&mut transaction, store_id, id).await?;
+        let value = load_stripe_account(&mut transaction, store_id, id).await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(value)
     }
@@ -54,10 +54,10 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &PaymentProviderAccount,
-        configuration: &PaymentProviderAccountConfiguration,
+        account: &StripeAccount,
+        configuration: &StripeAccountConfiguration,
         request: &IdempotencyRequest,
-    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+    ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
@@ -67,7 +67,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         )
         .await?
         {
-            return replay_provider_account(&mut transaction, store_id, snapshot).await;
+            return replay_stripe_account(&mut transaction, store_id, snapshot).await;
         }
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
@@ -81,12 +81,12 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
-        .bind(account.provider())
+        .bind("stripe_checkout")
         .bind(account.display_name())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
         .bind(readiness.map_or(
-            PaymentProviderReadinessStatus::Unchecked.as_str(),
+            StripeReadinessStatus::Unchecked.as_str(),
             |value| readiness_status(value).as_str(),
         ))
         .bind(readiness.map(|value| &value.configuration))
@@ -106,7 +106,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
-        complete_provider_account(
+        complete_stripe_account(
             &mut transaction,
             store_id,
             CREATE_PROVIDER_ACCOUNT_OPERATION,
@@ -114,7 +114,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, store_id, account.id())
+        let value = load_stripe_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;
         transaction.commit().await.map_err(database_error)?;
@@ -125,10 +125,10 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &PaymentProviderAccount,
-        configuration: &PaymentProviderAccountConfiguration,
+        account: &StripeAccount,
+        configuration: &StripeAccountConfiguration,
         request: &IdempotencyRequest,
-    ) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+    ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
@@ -138,7 +138,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         )
         .await?
         {
-            return replay_provider_account(&mut transaction, store_id, snapshot).await;
+            return replay_stripe_account(&mut transaction, store_id, snapshot).await;
         }
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
@@ -222,7 +222,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
         if result.rows_affected() != 1 {
             return Err(provider_account_not_found(account.id()));
         }
-        complete_provider_account(
+        complete_stripe_account(
             &mut transaction,
             store_id,
             UPDATE_PROVIDER_ACCOUNT_OPERATION,
@@ -230,7 +230,7 @@ impl PaymentProviderAccountRepository for PostgresPaymentRepository {
             account.id(),
         )
         .await?;
-        let value = load_provider_account(&mut transaction, store_id, account.id())
+        let value = load_stripe_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;
         transaction.commit().await.map_err(database_error)?;

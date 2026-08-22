@@ -12,7 +12,7 @@ use crate::{
     ApplicationError,
     ports::{
         CartDetail, CheckoutDetail, CheckoutExpiryQueue, IdempotencyRequest, MachineActor,
-        ShopperActor, StorefrontSalesRepository,
+        ShopperActor, StorefrontSalesRepository, StripeCheckoutDraft,
     },
 };
 
@@ -51,6 +51,14 @@ pub struct CreateCheckoutInput {
     pub shipping_address: Option<PostalAddressInput>,
     pub shipping_service_id: Option<ShippingServiceId>,
     pub promotion_code: Option<String>,
+    pub now: OffsetDateTime,
+    pub idempotency: IdempotencyRequest,
+}
+
+pub struct CreateStripeCheckoutInput {
+    pub actor: ShopperActor,
+    pub cart_id: CartId,
+    pub email: String,
     pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
 }
@@ -216,6 +224,24 @@ impl StorefrontSales {
                 identity,
                 input.shipping_service_id,
                 input.promotion_code.as_deref(),
+                &input.idempotency,
+            )
+            .await
+    }
+
+    pub async fn create_stripe_checkout(
+        &self,
+        input: CreateStripeCheckoutInput,
+    ) -> Result<StripeCheckoutDraft, ApplicationError> {
+        require_storefront_actor(&input.actor.machine)?;
+        let contact = CheckoutContact::new(input.email, None)?;
+        self.repository
+            .create_stripe_checkout(
+                &input.actor,
+                input.cart_id,
+                contact.email(),
+                input.now,
+                input.now + Duration::minutes(30),
                 &input.idempotency,
             )
             .await

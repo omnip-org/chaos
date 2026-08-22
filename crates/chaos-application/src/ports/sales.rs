@@ -48,6 +48,14 @@ pub struct CartDetail {
     pub updated_at: OffsetDateTime,
 }
 
+pub struct StripeCheckoutDraft {
+    pub checkout_id: CheckoutId,
+    pub order_id: OrderId,
+    pub currency: CurrencyCode,
+    pub subtotal_amount_minor: i64,
+    pub expires_at: OffsetDateTime,
+}
+
 pub struct CheckoutLineItem {
     pub product_id: ProductId,
     pub product_variant_id: ProductVariantId,
@@ -220,6 +228,16 @@ pub trait StorefrontSalesRepository: Send + Sync {
         promotion_code: Option<&str>,
         idempotency: &IdempotencyRequest,
     ) -> Result<CheckoutDetail, ApplicationError>;
+
+    async fn create_stripe_checkout(
+        &self,
+        actor: &ShopperActor,
+        cart_id: CartId,
+        email: &str,
+        now: OffsetDateTime,
+        expires_at: OffsetDateTime,
+        idempotency: &IdempotencyRequest,
+    ) -> Result<StripeCheckoutDraft, ApplicationError>;
 
     async fn get_checkout(
         &self,

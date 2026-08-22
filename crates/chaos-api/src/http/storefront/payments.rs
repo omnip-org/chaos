@@ -10,6 +10,7 @@ use chaos_application::{
     ApplicationError,
     payments::CreatePaymentAttemptInput,
     ports::{IdempotencyRequest, PaymentAttemptDetail, PaymentClientAction},
+    sales::CreateStripeCheckoutInput,
 };
 use chaos_domain::{payments::PaymentAttemptId, sales::OrderId};
 use secrecy::ExposeSecret;
@@ -25,6 +26,10 @@ use crate::http::{
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route(
+            "/store/v1/carts/{cart_id}/embedded-checkout",
+            post(create_embedded_checkout),
+        )
+        .route(
             "/store/v1/orders/{order_id}/payment-attempts",
             post(create_attempt),
         )
@@ -37,7 +42,7 @@ pub(crate) fn routes() -> Router<ApiState> {
             get(get_client_action),
         )
         .route(
-            "/webhooks/v1/payments/{provider}/{provider_account_id}",
+            "/webhooks/v1/stripe/{stripe_account_id}",
             post(receive_webhook),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -49,34 +54,50 @@ struct OrderPath {
 }
 
 #[derive(Deserialize)]
+struct CartPath {
+    cart_id: Uuid,
+}
+
+#[derive(Deserialize)]
 struct AttemptPath {
     payment_attempt_id: Uuid,
 }
 
 #[derive(Deserialize)]
 struct WebhookPath {
-    provider: String,
-    provider_account_id: Uuid,
+    stripe_account_id: Uuid,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CreateAttemptBody {
-    provider: String,
     #[serde(default)]
     return_url: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CreateEmbeddedCheckoutBody {
+    email: String,
+    return_url: String,
+}
+
+#[derive(Serialize)]
+struct EmbeddedCheckoutData {
+    checkout_id: Uuid,
+    order_id: Uuid,
+    payment_attempt_id: Uuid,
 }
 
 #[derive(Serialize)]
 struct PaymentAttemptData {
     id: Uuid,
     order_id: Uuid,
-    provider: String,
     amount_minor: i64,
     currency: String,
     status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    provider_reference: Option<String>,
+    stripe_checkout_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
     created_at: ApiDateTime,
@@ -85,7 +106,6 @@ struct PaymentAttemptData {
 
 #[derive(Serialize)]
 struct PaymentClientActionData {
-    provider: String,
     r#type: &'static str,
     public_key: String,
     client_token: String,
@@ -94,6 +114,52 @@ struct PaymentClientActionData {
 #[derive(Serialize)]
 struct WebhookReceiptData {
     accepted: bool,
+}
+
+async fn create_embedded_checkout(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    CheckoutShopper(actor): CheckoutShopper,
+    ApiPath(path): ApiPath<CartPath>,
+    ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
+) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
+    validate_return_url(&CreateAttemptBody {
+        return_url: Some(body.return_url.clone()),
+    })?;
+    let idempotency = body_request(&headers, "create_stripe_checkout", &(path.cart_id, &body))?;
+    let draft = state
+        .storefront_sales
+        .create_stripe_checkout(CreateStripeCheckoutInput {
+            actor: actor.clone(),
+            cart_id: chaos_domain::sales::CartId::from_uuid(path.cart_id),
+            email: body.email.clone(),
+            now: state.clock.now(),
+            idempotency,
+        })
+        .await?;
+    let mut return_url = url::Url::parse(&body.return_url)
+        .map_err(|_| invalid_value("return_url", "must be an absolute URL"))?;
+    return_url
+        .query_pairs_mut()
+        .append_pair("order_id", &draft.order_id.as_uuid().to_string());
+    let attempt = state
+        .payment_service
+        .create_attempt(CreatePaymentAttemptInput {
+            actor,
+            order_id: draft.order_id,
+            return_url: Some(return_url.to_string()),
+            idempotency: body_request(
+                &headers,
+                "create_embedded_checkout_payment_attempt",
+                &(draft.order_id.as_uuid(), &body),
+            )?,
+        })
+        .await?;
+    Ok(ApiResponse::created(EmbeddedCheckoutData {
+        checkout_id: draft.checkout_id.as_uuid(),
+        order_id: draft.order_id.as_uuid(),
+        payment_attempt_id: attempt.id.as_uuid(),
+    }))
 }
 
 async fn create_attempt(
@@ -110,7 +176,6 @@ async fn create_attempt(
         .create_attempt(CreatePaymentAttemptInput {
             actor,
             order_id: OrderId::from_uuid(path.order_id),
-            provider: body.provider,
             return_url: body.return_url,
             idempotency,
         })
@@ -137,10 +202,10 @@ fn validate_return_url(body: &CreateAttemptBody) -> Result<(), ApiError> {
             ));
         }
     }
-    if body.provider == "stripe_checkout" && body.return_url.is_none() {
+    if body.return_url.is_none() {
         return Err(invalid_value(
             "return_url",
-            "return_url is required for the stripe_checkout provider",
+            "return_url is required for Stripe Embedded Checkout",
         ));
     }
     Ok(())
@@ -186,13 +251,7 @@ async fn receive_webhook(
         .ok_or(ApplicationError::Unauthorized)?;
     let accepted = state
         .payment_service
-        .receive_webhook(
-            &path.provider,
-            path.provider_account_id,
-            signature,
-            &body,
-            state.clock.now(),
-        )
+        .receive_webhook(path.stripe_account_id, signature, &body, state.clock.now())
         .await?;
     Ok(ApiResponse::new(
         StatusCode::ACCEPTED,
@@ -202,7 +261,6 @@ async fn receive_webhook(
 
 fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
     PaymentClientActionData {
-        provider: value.provider,
         r#type: value.kind,
         public_key: value.public_key.expose_secret().to_owned(),
         client_token: value.client_token.expose_secret().to_owned(),
@@ -228,11 +286,10 @@ fn attempt_data(value: PaymentAttemptDetail) -> PaymentAttemptData {
     PaymentAttemptData {
         id: value.id.as_uuid(),
         order_id: value.order_id.as_uuid(),
-        provider: value.provider,
         amount_minor: value.amount_minor,
         currency: value.currency.as_str().into(),
         status: value.status.as_str(),
-        provider_reference: value.provider_reference,
+        stripe_checkout_session_id: value.stripe_checkout_session_id,
         failure_code: value.failure_code,
         created_at: value.created_at.into(),
         updated_at: value.updated_at.into(),
@@ -261,38 +318,28 @@ mod tests {
     fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
         assert!(
             validate_return_url(&CreateAttemptBody {
-                provider: "stripe_checkout".into(),
                 return_url: Some("https://shop.example.com/checkout/success".into()),
             })
             .is_ok()
         );
         assert!(
             validate_return_url(&CreateAttemptBody {
-                provider: "stripe_checkout".into(),
                 return_url: Some("http://127.0.0.1:4321/checkout/success".into()),
             })
             .is_ok()
         );
         assert!(
             validate_return_url(&CreateAttemptBody {
-                provider: "stripe_checkout".into(),
                 return_url: Some("http://shop.example.com/checkout/success".into()),
             })
             .is_err()
         );
-        assert!(
-            validate_return_url(&CreateAttemptBody {
-                provider: "stripe_checkout".into(),
-                return_url: None,
-            })
-            .is_err()
-        );
+        assert!(validate_return_url(&CreateAttemptBody { return_url: None }).is_err());
     }
 
     #[test]
     fn embedded_checkout_client_action_has_no_connect_account_reference() {
         let action = client_action_data(PaymentClientAction {
-            provider: "stripe_checkout".into(),
             kind: "mount_embedded_checkout",
             public_key: SecretString::from("pk_test_stripe"),
             client_token: SecretString::from("cs_test_secret"),
@@ -301,7 +348,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(action).unwrap(),
             json!({
-                "provider": "stripe_checkout",
                 "type": "mount_embedded_checkout",
                 "public_key": "pk_test_stripe",
                 "client_token": "cs_test_secret",

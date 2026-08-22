@@ -268,7 +268,6 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
           data: {
             id: "attempt-1",
             order_id: "order-1",
-            provider: "stripe_checkout",
             amount_minor: 1299,
             currency: "USD",
             status: "pending",
@@ -279,7 +278,6 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
       }
       return jsonResponse(200, {
         data: {
-          provider: "stripe_checkout",
           type: "mount_embedded_checkout",
           public_key: "pk_test_stripe",
           client_token: "cs_test_secret",
@@ -289,7 +287,6 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
   });
 
   const attempt = await client.payments.createAttempt("order-1", {
-    provider: "stripe_checkout",
     return_url: "https://shop.example.com/checkout/success",
   });
   const action = await client.payments.getClientAction(attempt.data.id);
@@ -297,11 +294,9 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
   assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
   assert.equal(requests[1]?.headers.get("idempotency-key"), "id-1");
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
-    provider: "stripe_checkout",
     return_url: "https://shop.example.com/checkout/success",
   });
   assert.deepEqual(action.data, {
-    provider: "stripe_checkout",
     type: "mount_embedded_checkout",
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",

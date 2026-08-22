@@ -211,12 +211,10 @@ async fn coordinate_return_refund(
     if returned.2.is_some() || returned.3 == 0 {
         return Ok(());
     }
-    let attempt_row = sqlx::query_as::<_, (Uuid, i64, String, Option<String>, String)>(
+    let attempt_row = sqlx::query_as::<_, (Uuid, i64, String, Option<String>)>(
         "SELECT attempt.id, attempt.amount_minor, attempt.status::text, \
-                attempt.provider_reference, account.provider \
+                attempt.stripe_checkout_session_id \
          FROM commerce.payment_attempts AS attempt \
-         INNER JOIN commerce.provider_accounts AS account \
-           ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
          WHERE attempt.store_id = $1 \
            AND attempt.order_id = $2 AND attempt.status = 'captured' \
          ORDER BY attempt.created_at DESC, attempt.id DESC LIMIT 1 FOR UPDATE OF attempt",
@@ -282,7 +280,6 @@ async fn coordinate_return_refund(
     .bind(job.store_id)
     .bind(refund.id().as_uuid())
     .bind(serde_json::json!({
-        "provider": attempt_row.4,
         "aggregate_id": refund.id().as_uuid(),
         "amount_minor": returned.3,
         "currency": currency.as_str(),

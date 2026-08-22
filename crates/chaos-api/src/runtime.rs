@@ -7,15 +7,14 @@ use chaos_application::{
     fulfillment::FulfillmentWorkers,
     payments::PaymentWorkers,
     ports::{
-        AnalyticsEventDestination, Clock, IntegrationQueue, PaymentProvider,
-        PaymentProviderOnboarding, ShippingProvider,
+        AnalyticsEventDestination, Clock, IntegrationQueue, ShippingProvider,
+        StripeAccountReadiness, StripePaymentGateway,
     },
     sales::CheckoutExpiryWorkers,
 };
 use chaos_infrastructure::{
     integrations::{
-        analytics::meta::MetaConversionsDestination,
-        payments::stripe::StripeCheckoutPaymentProvider,
+        analytics::meta::MetaConversionsDestination, payments::stripe::StripeGateway,
         shipping::easypost::EasyPostShippingProvider,
     },
     repositories::{
@@ -61,20 +60,18 @@ impl WorkerRuntime {
         ));
         let integration_queue: Arc<dyn IntegrationQueue> =
             Arc::new(PostgresIntegrationQueue::new(infrastructure.runtime_pool()));
-        let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
+        let stripe_gateway = Arc::new(StripeGateway::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
             dynamic_secrets.clone(),
         )?);
-        let payment_providers =
-            vec![stripe_checkout_payment_provider.clone() as Arc<dyn PaymentProvider>];
-        let payment_onboarding =
-            vec![stripe_checkout_payment_provider as Arc<dyn PaymentProviderOnboarding>];
+        let payment_provider = stripe_gateway.clone() as Arc<dyn StripePaymentGateway>;
+        let payment_onboarding = stripe_gateway as Arc<dyn StripeAccountReadiness>;
         let payment_workers = PaymentWorkers::new(
             integration_queue,
             payment_repository.clone(),
             payment_repository,
-            payment_providers,
+            payment_provider,
             payment_onboarding,
         );
 

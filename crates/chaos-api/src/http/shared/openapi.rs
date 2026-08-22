@@ -84,24 +84,19 @@ mod tests {
     }
 
     #[test]
-    fn webhook_contract_matches_the_provider_account_route() {
+    fn webhook_contract_matches_the_stripe_account_route() {
         let specification: Value = serde_json::from_str(WEBHOOKS_V1).unwrap();
         let paths = specification["paths"].as_object().unwrap();
-        let path = "/payments/{provider}/{provider_account_id}";
+        let path = "/stripe/{stripe_account_id}";
         assert!(paths.contains_key(path));
-        assert!(!paths.contains_key("/payments/{provider}"));
 
         let operation = &paths[path]["post"];
         assert_eq!(
             operation["security"],
             serde_json::json!([{ "stripeSignature": [] }])
         );
-        assert_eq!(
-            operation["parameters"][0]["schema"]["enum"],
-            serde_json::json!(["stripe_checkout"])
-        );
-        assert_eq!(operation["parameters"][1]["name"], "provider_account_id");
-        assert_eq!(operation["parameters"][1]["schema"]["format"], "uuid");
+        assert_eq!(operation["parameters"][0]["name"], "stripe_account_id");
+        assert_eq!(operation["parameters"][0]["schema"]["format"], "uuid");
         assert_eq!(
             operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/StripeWebhookEvent"

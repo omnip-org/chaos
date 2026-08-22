@@ -10,7 +10,7 @@ use chaos_application::{
         CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
         CheckoutLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
         OrderTrackingSession, OrderTransitionItem, ShopperActor, StorefrontMediaAsset,
-        StorefrontSalesRepository,
+        StorefrontSalesRepository, StripeCheckoutDraft,
     },
 };
 use chaos_domain::{
@@ -68,6 +68,7 @@ const SET_CART_LINE_OPERATION: &str = "cart_lines.set.v1";
 const REMOVE_CART_LINE_OPERATION: &str = "cart_lines.remove.v1";
 const CREATE_CHECKOUT_OPERATION: &str = "checkouts.create.v1";
 const CREATE_ORDER_OPERATION: &str = "orders.create.v1";
+const CREATE_STRIPE_CHECKOUT_OPERATION: &str = "stripe_checkouts.create.v1";
 
 type CartHeaderRow = (
     Uuid,

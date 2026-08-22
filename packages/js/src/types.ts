@@ -284,27 +284,35 @@ export interface OrderTrackingSession {
 }
 
 export interface CreatePaymentAttemptRequest {
-  /** The only payment provider supported by the current deployment. */
-  provider: "stripe_checkout";
-  /** Required for stripe_checkout. HTTPS is required except on loopback hosts. */
-  return_url?: string;
+  /** Stripe returns the shopper here after Embedded Checkout completes. */
+  return_url: string;
+}
+
+export interface CreateEmbeddedCheckoutRequest {
+  email: string;
+  /** Stripe appends the order ID to this URL before redirecting the shopper. */
+  return_url: string;
+}
+
+export interface EmbeddedCheckoutSession {
+  checkout_id: UUID;
+  order_id: UUID;
+  payment_attempt_id: UUID;
 }
 
 export interface PaymentAttempt {
   id: UUID;
   order_id: UUID;
-  provider: "stripe_checkout";
   amount_minor: number;
   currency: CurrencyCode;
   status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
-  provider_reference?: string;
+  stripe_checkout_session_id?: string;
   failure_code?: string;
   created_at: string;
   updated_at: string;
 }
 
 export interface PaymentClientAction {
-  provider: "stripe_checkout";
   /**
    * "confirm_payment": client_token is a PaymentIntent client secret for
    * Stripe.js/Elements confirmation.

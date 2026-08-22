@@ -14,7 +14,7 @@ use chaos_application::{
     fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
-    payments::{PaymentProviderAdministration, PaymentService},
+    payments::{PaymentService, StripeAccountAdministration},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
     sales::{OrderManagement, StorefrontSales},
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use chaos_infrastructure::{
     integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
-        payments::stripe::{StripeCheckoutPaymentProvider, StripeWebhookVerifier},
+        payments::stripe::{StripeGateway, StripeWebhookVerifier},
         shipping::easypost::EasyPostShippingProvider,
     },
     repositories::{
@@ -109,7 +109,7 @@ pub struct ApiState {
     pub storefront_sales: Arc<StorefrontSales>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
-    pub payment_provider_administration: Arc<PaymentProviderAdministration>,
+    pub stripe_account_administration: Arc<StripeAccountAdministration>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub shipping_management: Arc<ShippingManagement>,
     pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
@@ -289,31 +289,27 @@ impl ApiState {
             infrastructure.runtime_pool(),
         ));
         let payment_secrets = dynamic_secrets.clone();
-        let stripe_checkout_payment_provider = Arc::new(StripeCheckoutPaymentProvider::new(
+        let stripe_gateway = Arc::new(StripeGateway::new(
             settings.stripe_api_base_url.clone(),
             settings.dependency_timeout,
             payment_secrets.clone(),
         )?);
-        let providers = vec![stripe_checkout_payment_provider.clone()
-            as Arc<dyn chaos_application::ports::PaymentProvider>];
-        let payment_onboarding = vec![
-            stripe_checkout_payment_provider
-                as Arc<dyn chaos_application::ports::PaymentProviderOnboarding>,
-        ];
-        let webhook_verifiers = vec![Arc::new(StripeWebhookVerifier::new(
+        let payment_provider =
+            stripe_gateway.clone() as Arc<dyn chaos_application::ports::StripePaymentGateway>;
+        let payment_onboarding =
+            stripe_gateway.clone() as Arc<dyn chaos_application::ports::StripeAccountReadiness>;
+        let webhook_verifier = Arc::new(StripeWebhookVerifier::new(
             payment_repository.clone(),
             payment_secrets,
         ))
-            as Arc<dyn chaos_application::ports::PaymentWebhookVerifier>];
+            as Arc<dyn chaos_application::ports::StripeWebhookSignatureVerifier>;
         let payment_service = PaymentService::new(
             payment_repository.clone(),
-            webhook_verifiers,
-            providers.clone(),
+            webhook_verifier,
+            payment_provider,
         );
-        let payment_provider_administration = PaymentProviderAdministration::new(
-            payment_repository.clone(),
-            payment_onboarding.clone(),
-        );
+        let stripe_account_administration =
+            StripeAccountAdministration::new(payment_repository.clone(), payment_onboarding);
         let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
             infrastructure.runtime_pool(),
         ));
@@ -376,7 +372,7 @@ impl ApiState {
             storefront_sales: Arc::new(storefront_sales),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
-            payment_provider_administration: Arc::new(payment_provider_administration),
+            stripe_account_administration: Arc::new(stripe_account_administration),
             fulfillment_management: Arc::new(fulfillment_management),
             shipping_management: Arc::new(shipping_management),
             shipping_provider_administration: Arc::new(shipping_provider_administration),
@@ -409,7 +405,7 @@ pub fn router(state: ApiState) -> Router {
             shipping_provider_administration: state.shipping_provider_administration.clone(),
             store_administration: state.store_administration.clone(),
             payment_service: state.payment_service.clone(),
-            payment_provider_administration: state.payment_provider_administration.clone(),
+            stripe_account_administration: state.stripe_account_administration.clone(),
             media_administration: state.media_administration.clone(),
             catalog_localization: state.catalog_localization.clone(),
             review_administration: state.review_administration.clone(),
@@ -529,7 +525,7 @@ mod tests {
             (Method::POST, "/store/v1/carts"),
             (
                 Method::POST,
-                "/webhooks/v1/payments/stripe_checkout/00000000-0000-0000-0000-000000000000",
+                "/webhooks/v1/stripe/00000000-0000-0000-0000-000000000000",
             ),
             (Method::GET, "/openapi/store-v1.json"),
         ];

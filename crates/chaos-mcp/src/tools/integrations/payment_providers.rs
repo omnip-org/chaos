@@ -1,8 +1,8 @@
 use chaos_application::{
-    payments::{CreatePaymentProviderAccountInput, UpdatePaymentProviderAccountInput},
-    ports::PaymentProviderAccountDetail,
+    payments::{CreateStripeAccountInput, UpdateStripeAccountInput},
+    ports::StripeAccountDetail,
 };
-use chaos_domain::payments::PaymentProviderAccountId;
+use chaos_domain::payments::StripeAccountId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListPaymentProvidersParams {
+pub struct ListStripeAccountsParams {
     #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default)]
@@ -28,14 +28,13 @@ pub struct ListPaymentProvidersParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct GetPaymentProviderParams {
-    pub payment_provider_account_id: String,
+pub struct GetStripeAccountParams {
+    pub stripe_account_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-pub struct CreatePaymentProviderParams {
-    /// The only supported payment adapter in this deployment: Stripe Embedded Checkout.
-    pub provider: PaymentProviderParam,
+pub struct CreateStripeAccountParams {
+    /// Display name for the store's direct Stripe account.
     pub display_name: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`. The stored value must be JSON containing `secret_key` and `publishable_key`.
     pub credential_secret_reference: String,
@@ -48,22 +47,8 @@ pub struct CreatePaymentProviderParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PaymentProviderParam {
-    StripeCheckout,
-}
-
-impl PaymentProviderParam {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::StripeCheckout => "stripe_checkout",
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct UpdatePaymentProviderParams {
-    pub payment_provider_account_id: String,
+pub struct UpdateStripeAccountParams {
+    pub stripe_account_id: String,
     pub display_name: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`.
     pub credential_secret_reference: String,
@@ -77,11 +62,11 @@ pub struct UpdatePaymentProviderParams {
 
 #[tool_router(router = payment_providers_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
-    #[tool(description = "List Payment Provider accounts in the selected Store.")]
-    async fn list_payment_provider_accounts(
+    #[tool(description = "List Stripe accounts in the selected Store.")]
+    async fn list_stripe_accounts(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ListPaymentProvidersParams>,
+        Parameters(params): Parameters<ListStripeAccountsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
@@ -95,7 +80,7 @@ impl ChaosMcp {
         let store_id = actor.store_id();
         match self
             .state
-            .payment_provider_administration
+            .stripe_account_administration
             .list(
                 actor,
                 store_id,
@@ -108,7 +93,7 @@ impl ChaosMcp {
                 let items = page
                     .items
                     .into_iter()
-                    .map(|value| provider_json(value, &self.state.public_base_url))
+                    .map(|value| stripe_account_json(value, &self.state.public_base_url))
                     .collect::<Vec<_>>();
                 let next_cursor = page
                     .has_more
@@ -128,28 +113,28 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Get one Payment Provider account in the selected Store.")]
-    async fn get_payment_provider_account(
+    #[tool(description = "Get one Stripe account in the selected Store.")]
+    async fn get_stripe_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<GetPaymentProviderParams>,
+        Parameters(params): Parameters<GetStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
-        let id = match uuid::Uuid::parse_str(&params.payment_provider_account_id) {
-            Ok(id) => PaymentProviderAccountId::from_uuid(id),
-            Err(_) => return Ok(invalid_id("payment_provider_account_id")),
+        let id = match uuid::Uuid::parse_str(&params.stripe_account_id) {
+            Ok(id) => StripeAccountId::from_uuid(id),
+            Err(_) => return Ok(invalid_id("stripe_account_id")),
         };
         let store_id = actor.store_id();
         match self
             .state
-            .payment_provider_administration
+            .stripe_account_administration
             .get(actor, store_id, id)
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(
+            Ok(value) => Ok(text_result(stripe_account_json(
                 value,
                 &self.state.public_base_url,
             ))),
@@ -158,12 +143,12 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create and readiness-check the selected Store's direct Stripe account for Embedded Checkout. The only provider is `stripe_checkout`; Stripe Connect, Stripe-Account headers, and platform labels are not supported. Store Stripe credentials with create_provider_secret first. The result includes the exact per-account Webhook Endpoint URL and the four event types to enable in Stripe Dashboard. If readiness fails, the account remains disabled. Requires confirmation."
+        description = "Create and readiness-check the selected Store's direct Stripe account for Embedded Checkout. Stripe Connect and Stripe-Account headers are not used. Store Stripe credentials with create_provider_secret first. The result includes the exact per-account Webhook Endpoint URL and the events to enable in Stripe Dashboard. If readiness fails, the account remains disabled. Requires confirmation."
     )]
-    async fn create_payment_provider_account(
+    async fn create_stripe_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<CreatePaymentProviderParams>,
+        Parameters(params): Parameters<CreateStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
@@ -176,11 +161,10 @@ impl ChaosMcp {
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
-            .payment_provider_administration
-            .create(CreatePaymentProviderAccountInput {
+            .stripe_account_administration
+            .create(CreateStripeAccountInput {
                 actor,
                 store_id,
-                provider: params.provider.as_str().to_owned(),
                 display_name: params.display_name,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
@@ -190,7 +174,7 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(
+            Ok(value) => Ok(text_result(stripe_account_json(
                 value,
                 &self.state.public_base_url,
             ))),
@@ -201,10 +185,10 @@ impl ChaosMcp {
     #[tool(
         description = "Update and re-check the selected Store's direct Stripe Embedded Checkout account. Stripe Connect, Stripe-Account headers, and platform labels are not supported. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. The exact per-account Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
     )]
-    async fn update_payment_provider_account(
+    async fn update_stripe_account(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<UpdatePaymentProviderParams>,
+        Parameters(params): Parameters<UpdateStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match self.store_actor(&parts).await {
             Ok(actor) => actor,
@@ -213,16 +197,16 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let id = match uuid::Uuid::parse_str(&params.payment_provider_account_id) {
-            Ok(id) => PaymentProviderAccountId::from_uuid(id),
-            Err(_) => return Ok(invalid_id("payment_provider_account_id")),
+        let id = match uuid::Uuid::parse_str(&params.stripe_account_id) {
+            Ok(id) => StripeAccountId::from_uuid(id),
+            Err(_) => return Ok(invalid_id("stripe_account_id")),
         };
         let store_id = actor.store_id();
         let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
-            .payment_provider_administration
-            .update(UpdatePaymentProviderAccountInput {
+            .stripe_account_administration
+            .update(UpdateStripeAccountInput {
                 actor,
                 store_id,
                 id,
@@ -235,7 +219,7 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(value) => Ok(text_result(provider_json(
+            Ok(value) => Ok(text_result(stripe_account_json(
                 value,
                 &self.state.public_base_url,
             ))),
@@ -251,9 +235,9 @@ fn invalid_id(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn provider_json(value: PaymentProviderAccountDetail, public_base_url: &str) -> serde_json::Value {
+fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> serde_json::Value {
     let id = value.account.id().as_uuid();
-    let webhook_path = format!("/webhooks/v1/payments/{}/{}", value.account.provider(), id);
+    let webhook_path = format!("/webhooks/v1/stripe/{}", id);
     let webhook_url = format!(
         "{}/{}",
         public_base_url.trim_end_matches('/'),
@@ -261,7 +245,7 @@ fn provider_json(value: PaymentProviderAccountDetail, public_base_url: &str) -> 
     );
     json!({
         "id": id,
-        "provider": value.account.provider(),
+        "account_type": "direct_stripe_account",
         "display_name": value.account.display_name(),
         "enabled": value.account.enabled(),
         "credentials_configured": value.credentials_configured,
@@ -279,7 +263,9 @@ fn provider_json(value: PaymentProviderAccountDetail, public_base_url: &str) -> 
                 "checkout.session.completed",
                 "checkout.session.async_payment_succeeded",
                 "checkout.session.async_payment_failed",
-                "checkout.session.expired"
+                "checkout.session.expired",
+                "refund.created",
+                "refund.updated"
             ],
             "signing_secret": "Use the whsec_... signing secret from Stripe Dashboard → Developers → Webhooks → this endpoint",
             "mode": "Use Stripe Test mode with sk_test_/pk_test_ keys and Live mode with sk_live_/pk_live_ keys"

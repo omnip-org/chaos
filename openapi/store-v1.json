@@ -675,6 +675,72 @@
         }
       }
     },
+    "/carts/{cart_id}/embedded-checkout": {
+      "post": {
+        "operationId": "createEmbeddedCheckout",
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Create a Stripe Embedded Checkout Session with a provisional Order",
+        "description": "Reserves tracked inventory and creates a provisional Checkout and Order. Stripe Embedded Checkout collects the shopper's shipping address, phone, billing details, shipping option, tax, and payment details. The Order is confirmed only after the verified Stripe webhook.",
+        "security": [
+          {
+            "publishableKey": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CartId"
+          },
+          {
+            "$ref": "#/components/parameters/ShopperToken"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEmbeddedCheckoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Embedded Checkout Session prepared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddedCheckoutSessionEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationFailed"
+          }
+        }
+      }
+    },
     "/checkouts/{checkout_id}": {
       "get": {
         "operationId": "getCheckout",
@@ -906,7 +972,7 @@
         "tags": [
           "Payments"
         ],
-        "summary": "Create a Payment Attempt and enqueue a provider command atomically",
+        "summary": "Create a Stripe Payment Attempt and enqueue the Stripe command atomically",
         "security": [
           {
             "publishableKey": []
@@ -1015,7 +1081,7 @@
           "Payments"
         ],
         "summary": "Retrieve the short-lived client action for a pending Payment Attempt",
-        "description": "Returns provider-neutral client handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
+        "description": "Returns Stripe Embedded Checkout handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
         "security": [
           {
             "publishableKey": []
@@ -1886,6 +1952,62 @@
           }
         }
       },
+      "CreateEmbeddedCheckoutRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "email",
+          "return_url"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "minLength": 3,
+            "maxLength": 320
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Stripe returns the shopper here after Embedded Checkout completes. HTTPS is required except for local loopback development. Chaos appends order_id to the query string."
+          }
+        }
+      },
+      "EmbeddedCheckoutSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checkout_id",
+          "order_id",
+          "payment_attempt_id"
+        ],
+        "properties": {
+          "checkout_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "order_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payment_attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "EmbeddedCheckoutSessionEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/EmbeddedCheckoutSession"
+          }
+        }
+      },
       "QuoteShippingRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -2527,20 +2649,13 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "provider"
+          "return_url"
         ],
         "properties": {
-          "provider": {
-            "type": "string",
-            "enum": [
-              "stripe_checkout"
-            ],
-            "description": "The only payment provider supported by this deployment."
-          },
           "return_url": {
             "type": "string",
             "format": "uri",
-            "description": "Required for the stripe_checkout provider. Stripe returns the shopper here after Embedded Checkout completes. HTTPS is required except for local loopback development."
+            "description": "Stripe returns the shopper here after Embedded Checkout completes. HTTPS is required except for local loopback development."
           }
         }
       },
@@ -2550,7 +2665,6 @@
         "required": [
           "id",
           "order_id",
-          "provider",
           "amount_minor",
           "currency",
           "status",
@@ -2565,12 +2679,6 @@
           "order_id": {
             "type": "string",
             "format": "uuid"
-          },
-          "provider": {
-            "type": "string",
-            "enum": [
-              "stripe_checkout"
-            ]
           },
           "amount_minor": {
             "type": "integer",
@@ -2591,7 +2699,7 @@
               "cancelled"
             ]
           },
-          "provider_reference": {
+          "stripe_checkout_session_id": {
             "type": "string"
           },
           "failure_code": {
@@ -2623,18 +2731,11 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "provider",
           "type",
           "public_key",
           "client_token"
         ],
         "properties": {
-          "provider": {
-            "type": "string",
-            "enum": [
-              "stripe_checkout"
-            ]
-          },
           "type": {
             "type": "string",
             "enum": [

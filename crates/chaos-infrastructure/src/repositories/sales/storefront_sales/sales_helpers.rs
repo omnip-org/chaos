@@ -157,6 +157,13 @@ fn invalid_shipping_selection() -> ApplicationError {
     }
 }
 
+fn embedded_checkout_configuration_unavailable() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_configuration_unavailable",
+        message: "no destination has both an active shipping service and an active tax rule",
+    }
+}
+
 fn invalid_promotion_code() -> ApplicationError {
     ApplicationError::Validation {
         violations: vec![chaos_domain::FieldViolation {

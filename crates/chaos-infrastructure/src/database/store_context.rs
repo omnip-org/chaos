@@ -223,7 +223,7 @@ mod tests {
             sqlx::query(
                 "INSERT INTO commerce.provider_accounts \
                  (id, store_id, provider) \
-                 VALUES ($1, $2, 'testpay')",
+                 VALUES ($1, $2, 'stripe_checkout')",
             )
             .bind(id)
             .bind(store_id)

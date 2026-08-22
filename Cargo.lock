@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-api"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-application"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-domain"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "email_address",
  "language-tags",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-infrastructure"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -743,7 +743,7 @@ dependencies = [
 
 [[package]]
 name = "chaos-mcp"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "async-trait",
  "axum",

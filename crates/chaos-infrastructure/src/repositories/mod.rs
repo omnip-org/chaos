@@ -24,7 +24,7 @@ pub use catalog::{
 pub use fulfillment::PostgresFulfillmentRepository;
 pub use integration::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
-pub use payments::{HmacPaymentWebhookVerifier, PostgresPaymentRepository, SandboxPaymentProvider};
+pub use payments::PostgresPaymentRepository;
 pub use pricing::{
     PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
     PostgresPromotionRepository, PostgresTaxRuleRepository,

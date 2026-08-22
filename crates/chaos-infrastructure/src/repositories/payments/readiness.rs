@@ -1,25 +1,24 @@
 // Provider webhook configuration and readiness queue persistence.
 
 #[async_trait]
-impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
+impl StripeWebhookConfigurationRepository for PostgresPaymentRepository {
     async fn webhook_configurations(
         &self,
-        provider: &str,
-        provider_account_id: Uuid,
-    ) -> Result<Vec<PaymentWebhookConfiguration>, ApplicationError> {
+        stripe_account_id: Uuid,
+    ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, String)>(
             "SELECT provider_account_id, secret_reference \
              FROM commerce.resolve_provider_webhook_secret_references($1, $2)",
         )
-        .bind(provider)
-        .bind(provider_account_id)
+        .bind("stripe_checkout")
+        .bind(stripe_account_id)
         .fetch_all(&self.pool)
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|(provider_account_id, reference)| {
-            Ok(PaymentWebhookConfiguration {
-                provider_account_id,
+        .map(|(_provider_account_id, reference)| {
+            Ok(StripeWebhookConfiguration {
+                stripe_account_id,
                 secret_reference: PaymentSecretReference::new(
                     "webhook_secret_reference",
                     reference,
@@ -31,14 +30,14 @@ impl PaymentWebhookConfigurationRepository for PostgresPaymentRepository {
 }
 
 #[async_trait]
-impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
-    async fn claim_provider_readiness(
+impl StripeReadinessQueue for PostgresPaymentRepository {
+    async fn claim_stripe_readiness(
         &self,
         worker_id: Uuid,
         limit: u16,
         now: OffsetDateTime,
         stale_before: OffsetDateTime,
-    ) -> Result<Vec<PaymentProviderReadinessJob>, ApplicationError> {
+    ) -> Result<Vec<StripeReadinessJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, i32)>(
             "SELECT provider_account_id, store_id, provider, \
                     credential_secret_reference, attempts \
@@ -53,10 +52,9 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         .map_err(database_error)?
         .into_iter()
         .map(|row| {
-            Ok(PaymentProviderReadinessJob {
-                provider_account_id: PaymentProviderAccountId::from_uuid(row.0),
+            Ok(StripeReadinessJob {
+                stripe_account_id: StripeAccountId::from_uuid(row.0),
                 store_id: StoreId::from_uuid(row.1),
-                provider: row.2,
                 credential_secret_reference: PaymentSecretReference::new(
                     "credential_secret_reference",
                     row.3,
@@ -68,11 +66,11 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         .collect()
     }
 
-    async fn finish_provider_readiness(
+    async fn finish_stripe_readiness(
         &self,
         worker_id: Uuid,
-        provider_account_id: PaymentProviderAccountId,
-        result: Result<PaymentProviderReadiness, String>,
+        stripe_account_id: StripeAccountId,
+        result: Result<StripeReadiness, String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let (succeeded, ready, snapshot, checked_at, failure) = match result {
@@ -88,7 +86,7 @@ impl PaymentProviderReadinessQueue for PostgresPaymentRepository {
         let finished: Option<bool> = sqlx::query_scalar(
             "SELECT commerce.finish_provider_readiness_check($1, $2, $3, $4, $5, $6, $7)",
         )
-        .bind(provider_account_id.as_uuid())
+        .bind(stripe_account_id.as_uuid())
         .bind(worker_id)
         .bind(succeeded)
         .bind(ready)

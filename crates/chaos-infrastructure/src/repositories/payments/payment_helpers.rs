@@ -31,18 +31,17 @@ fn invalid_snapshot(error: serde_json::Error) -> ApplicationError {
     ))
 }
 
+fn unexpected_conversion(
+    error: impl std::error::Error + Send + Sync + 'static,
+) -> ApplicationError {
+    ApplicationError::Unexpected(error.into())
+}
+
 fn outbox_aggregate_id(job: &QueueJob) -> Result<Uuid, ApplicationError> {
     job.payload
         .get("aggregate_id")
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(invalid_outbox_payload)
-}
-
-fn outbox_provider(job: &QueueJob) -> Result<&str, ApplicationError> {
-    job.payload
-        .get("provider")
-        .and_then(Value::as_str)
         .ok_or_else(invalid_outbox_payload)
 }
 
@@ -71,10 +70,10 @@ fn invalid_outbox_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("payment outbox payload is invalid"))
 }
 
-fn provider_invalid_response() -> ApplicationError {
+fn stripe_invalid_response() -> ApplicationError {
     ApplicationError::Unavailable {
-        service: "payment_provider",
-        source: anyhow::anyhow!("provider returned an invalid reference"),
+        service: "stripe",
+        source: anyhow::anyhow!("Stripe returned an invalid object reference"),
     }
 }
 
@@ -99,11 +98,11 @@ fn refund_not_found(refund_id: RefundId) -> ApplicationError {
     }
 }
 
-async fn load_provider_account(
+async fn load_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    id: PaymentProviderAccountId,
-) -> Result<Option<PaymentProviderAccountDetail>, ApplicationError> {
+    id: StripeAccountId,
+    ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
@@ -118,25 +117,24 @@ async fn load_provider_account(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?
-    .map(provider_account_detail)
+    .map(stripe_account_detail)
     .transpose()
 }
 
-fn provider_account_detail(
+fn stripe_account_detail(
     row: ProviderAccountRow,
-) -> Result<PaymentProviderAccountDetail, ApplicationError> {
-    Ok(PaymentProviderAccountDetail {
-        account: PaymentProviderAccount::rehydrate(
-            PaymentProviderAccountId::from_uuid(row.0),
-            row.1,
+) -> Result<StripeAccountDetail, ApplicationError> {
+    Ok(StripeAccountDetail {
+        account: StripeAccount::rehydrate(
+            StripeAccountId::from_uuid(row.0),
             row.2,
             row.3,
         )?,
         credentials_configured: row.4,
         readiness_status: match row.5.as_str() {
-            "unchecked" => PaymentProviderReadinessStatus::Unchecked,
-            "ready" => PaymentProviderReadinessStatus::Ready,
-            "action_required" => PaymentProviderReadinessStatus::ActionRequired,
+            "unchecked" => StripeReadinessStatus::Unchecked,
+            "ready" => StripeReadinessStatus::Ready,
+            "action_required" => StripeReadinessStatus::ActionRequired,
             _ => return Err(corrupt_state()),
         },
         readiness_checked_at: row.6,
@@ -149,36 +147,36 @@ fn provider_account_detail(
     })
 }
 
-fn readiness_status(readiness: &PaymentProviderReadiness) -> PaymentProviderReadinessStatus {
+fn readiness_status(readiness: &StripeReadiness) -> StripeReadinessStatus {
     if readiness.ready {
-        PaymentProviderReadinessStatus::Ready
+        StripeReadinessStatus::Ready
     } else {
-        PaymentProviderReadinessStatus::ActionRequired
+        StripeReadinessStatus::ActionRequired
     }
 }
 
-async fn replay_provider_account(
+async fn replay_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     snapshot: Value,
-) -> Result<PaymentProviderAccountDetail, ApplicationError> {
+) -> Result<StripeAccountDetail, ApplicationError> {
     let id = snapshot
         .pointer("/data/id")
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .map(PaymentProviderAccountId::from_uuid)
+        .map(StripeAccountId::from_uuid)
         .ok_or_else(corrupt_state)?;
-    load_provider_account(transaction, store_id, id)
+    load_stripe_account(transaction, store_id, id)
         .await?
         .ok_or_else(corrupt_state)
 }
 
-async fn complete_provider_account(
+async fn complete_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     operation: &'static str,
     request: &IdempotencyRequest,
-    id: PaymentProviderAccountId,
+    id: StripeAccountId,
 ) -> Result<(), ApplicationError> {
     idempotency::complete(
         transaction,
@@ -205,7 +203,7 @@ fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     database_error(error)
 }
 
-fn provider_account_not_found(id: PaymentProviderAccountId) -> ApplicationError {
+fn provider_account_not_found(id: StripeAccountId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "payment_provider_account",
         id: id.as_uuid().to_string(),
@@ -232,6 +230,13 @@ fn payment_order_not_pending() -> ApplicationError {
     }
 }
 
+fn checkout_configuration_unavailable() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_configuration_unavailable",
+        message: "no destination has both an active shipping service and an active tax rule",
+    }
+}
+
 fn active_attempt_exists() -> ApplicationError {
     ApplicationError::Conflict {
         code: "active_payment_attempt_exists",
@@ -239,10 +244,17 @@ fn active_attempt_exists() -> ApplicationError {
     }
 }
 
-fn provider_reference_mismatch() -> ApplicationError {
+fn stripe_object_mismatch() -> ApplicationError {
     ApplicationError::Conflict {
-        code: "provider_reference_mismatch",
-        message: "the provider reference does not match the Payment Attempt",
+        code: "stripe_object_mismatch",
+        message: "the Stripe object does not match the Payment Attempt",
+    }
+}
+
+fn stripe_currency_mismatch() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "stripe_currency_mismatch",
+        message: "the Stripe currency does not match the Payment Attempt",
     }
 }
 

@@ -47,20 +47,14 @@ const { data: product } = await chaos.catalog.getProduct("running-shoes");
 const { data: cart } = await chaos.cart.create();
 await chaos.cart.addLine(cart.id, product.variants[0].id);
 
-// Checkout and Order
-const { data: checkout } = await chaos.checkout.create(cart.id, {
-  contact: { email: "shopper@example.com" },
-  billing_address: { full_name: "Ada Lovelace", address_line1: "1 Main St", locality: "London", country_code: "GB" },
+// Stripe Embedded Checkout — Chaos reserves inventory and creates the
+// provisional Checkout/Order before Stripe collects the remaining details.
+// The return URL must be HTTPS outside local loopback development.
+const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
+  email: "shopper@example.com",
+  return_url: "https://shop.example.com/checkout/success",
 });
-const { data: order } = await chaos.checkout.createOrder(checkout.id);
-
-// Stripe Embedded Checkout — amount and currency are taken from the immutable
-// Chaos Order. The return URL must be HTTPS outside local loopback development.
-const { data: attempt } = await chaos.payments.createAttempt(order.id, {
-  provider: "stripe_checkout",
-  return_url: "https://shop.example.com/checkout/success?order_id=" + order.id,
-});
-const { data: action } = await chaos.payments.getClientAction(attempt.id);
+const { data: action } = await chaos.payments.getClientAction(session.payment_attempt_id);
 // Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
 // a Stripe-Account header or an account_reference field.

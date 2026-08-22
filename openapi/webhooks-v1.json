@@ -1,13 +1,13 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Chaos Provider Webhooks API",
+    "title": "Chaos Stripe Webhooks API",
     "version": "1.0.0",
-    "description": "Stripe Checkout callbacks authenticated before Store resolution and durably deduplicated. The provider_account_id is the Chaos Provider Account UUID, not a Stripe acct_ identifier."
+    "description": "Stripe callbacks authenticated before Store resolution and durably deduplicated. The stripe_account_id is the Chaos Store's configured account UUID, not a Stripe acct_ identifier."
   },
   "servers": [{ "url": "/webhooks/v1" }],
   "paths": {
-    "/payments/{provider}/{provider_account_id}": {
+    "/stripe/{stripe_account_id}": {
       "post": {
         "operationId": "receivePaymentWebhook",
         "tags": ["Payment webhooks"],
@@ -15,17 +15,10 @@
         "security": [{ "stripeSignature": [] }],
         "parameters": [
           {
-            "name": "provider",
+            "name": "stripe_account_id",
             "in": "path",
             "required": true,
-            "description": "The configured payment provider. Only stripe_checkout is supported.",
-            "schema": { "type": "string", "enum": ["stripe_checkout"] }
-          },
-          {
-            "name": "provider_account_id",
-            "in": "path",
-            "required": true,
-            "description": "The Chaos Provider Account UUID returned when the Store configures stripe_checkout. This is not a Stripe account ID.",
+            "description": "The Chaos UUID returned when the Store configures Stripe. This is not a Stripe account ID.",
             "schema": { "type": "string", "format": "uuid" }
           }
         ],
@@ -67,7 +60,9 @@
               "checkout.session.completed",
               "checkout.session.async_payment_succeeded",
               "checkout.session.async_payment_failed",
-              "checkout.session.expired"
+              "checkout.session.expired",
+              "refund.created",
+              "refund.updated"
             ]
           },
           "data": {
@@ -76,18 +71,19 @@
             "properties": {
               "object": {
                 "type": "object",
-                "required": ["id", "metadata"],
+                "required": ["id"],
                 "properties": {
-                  "id": { "type": "string", "pattern": "^cs_[A-Za-z0-9_]+$", "maxLength": 255 },
-                  "payment_status": { "type": "string", "enum": ["paid", "no_payment_required"] },
+                  "id": { "type": "string", "pattern": "^(cs_|re_)[A-Za-z0-9_]+$", "maxLength": 255 },
+                  "payment_status": { "type": "string", "enum": ["paid", "no_payment_required", "unpaid"] },
                   "metadata": {
                     "type": "object",
-                    "required": ["chaos_payment_attempt_id"],
                     "properties": {
-                      "chaos_payment_attempt_id": { "type": "string", "format": "uuid" }
+                      "chaos_payment_attempt_id": { "type": "string", "format": "uuid", "description": "Required for checkout.session.* events." },
+                      "chaos_refund_id": { "type": "string", "format": "uuid", "description": "Required for refund.created and refund.updated events created by Chaos." }
                     },
                     "additionalProperties": { "type": "string" }
                   },
+                  "status": { "type": "string", "enum": ["pending", "succeeded", "failed", "canceled"] },
                   "last_payment_error": { "type": "object", "additionalProperties": true },
                   "failure_reason": { "type": "string", "maxLength": 255 }
                 },
@@ -135,11 +131,11 @@
     },
     "responses": {
       "Unauthorized": {
-        "description": "Missing or invalid provider signature",
+        "description": "Missing or invalid Stripe signature",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "NotFound": {
-        "description": "Provider or enabled Provider Account not found",
+        "description": "Stripe account or enabled Stripe account configuration not found",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "ValidationFailed": {

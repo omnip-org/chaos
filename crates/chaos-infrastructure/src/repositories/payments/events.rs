@@ -7,7 +7,6 @@ async fn insert_outbox(
     aggregate_type: &'static str,
     aggregate_id: Uuid,
     event_type: &'static str,
-    provider: &str,
     amount_minor: i64,
     currency: CurrencyCode,
     return_url: Option<&str>,
@@ -23,7 +22,6 @@ async fn insert_outbox(
     .bind(aggregate_id)
     .bind(event_type)
     .bind(json!({
-        "provider": provider,
         "aggregate_id": aggregate_id,
         "amount_minor": amount_minor,
         "currency": currency.as_str(),
@@ -47,7 +45,6 @@ async fn load_attempt(
         (
             Uuid,
             Uuid,
-            String,
             i64,
             String,
             String,
@@ -57,12 +54,10 @@ async fn load_attempt(
             OffsetDateTime,
         ),
     >(
-        "SELECT attempt.id, attempt.order_id, account.provider, attempt.amount_minor, \
-                attempt.currency::text, attempt.status::text, attempt.provider_reference, \
+        "SELECT attempt.id, attempt.order_id, attempt.amount_minor, \
+                attempt.currency::text, attempt.status::text, attempt.stripe_checkout_session_id, \
                 attempt.failure_code, attempt.created_at, attempt.updated_at \
          FROM commerce.payment_attempts AS attempt \
-         INNER JOIN commerce.provider_accounts AS account \
-           ON account.store_id = attempt.store_id AND account.id = attempt.provider_account_id \
          INNER JOIN commerce.orders AS sales_order \
            ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
          WHERE attempt.store_id = $1 AND attempt.id = $2 \
@@ -80,14 +75,13 @@ async fn load_attempt(
         Ok(PaymentAttemptDetail {
             id: PaymentAttemptId::from_uuid(row.0),
             order_id: OrderId::from_uuid(row.1),
-            provider: row.2,
-            amount_minor: row.3,
-            currency: CurrencyCode::parse(&row.4)?,
-            status: PaymentAttemptStatus::parse(&row.5).ok_or_else(corrupt_payment_state)?,
-            provider_reference: row.6,
-            failure_code: row.7,
-            created_at: row.8,
-            updated_at: row.9,
+            amount_minor: row.2,
+            currency: CurrencyCode::parse(&row.3)?,
+            status: PaymentAttemptStatus::parse(&row.4).ok_or_else(corrupt_payment_state)?,
+            stripe_checkout_session_id: row.5,
+            failure_code: row.6,
+            created_at: row.7,
+            updated_at: row.8,
         })
     })
     .transpose()
@@ -113,7 +107,7 @@ async fn load_refund(
         ),
     >(
         "SELECT id, payment_attempt_id, amount_minor, currency::text, status::text, \
-                provider_reference, failure_code, created_at, updated_at \
+                stripe_refund_id, failure_code, created_at, updated_at \
          FROM commerce.refunds WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -128,7 +122,7 @@ async fn load_refund(
             amount_minor: row.2,
             currency: CurrencyCode::parse(&row.3)?,
             status: RefundStatus::parse(&row.4).ok_or_else(corrupt_payment_state)?,
-            provider_reference: row.5,
+            stripe_refund_id: row.5,
             failure_code: row.6,
             created_at: row.7,
             updated_at: row.8,
@@ -143,8 +137,9 @@ async fn apply_payment_event(
     store_id: StoreId,
     attempt_id: PaymentAttemptId,
     event_type: &str,
-    provider_reference: String,
+    stripe_checkout_session_id: String,
     failure_code: Option<String>,
+    provider_payload: &Value,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let row = sqlx::query_as::<
@@ -162,7 +157,7 @@ async fn apply_payment_event(
         ),
     >(
         "SELECT attempt.order_id, attempt.amount_minor, attempt.currency::text, \
-                attempt.status::text, attempt.provider_reference, \
+                attempt.status::text, attempt.stripe_checkout_session_id, \
                 sales_order.inventory_reservation_id, sales_order.status::text, \
                 sales_order.checkout_id, sales_order.shopper_id \
          FROM commerce.payment_attempts AS attempt \
@@ -186,17 +181,19 @@ async fn apply_payment_event(
         row.4,
     );
     let changed = match event_type {
-        "payment.authorized" => attempt.authorize(provider_reference)?,
+        "payment.authorized" => attempt.authorize(stripe_checkout_session_id)?,
         "payment.captured" => {
             if attempt.status() == PaymentAttemptStatus::Pending {
-                attempt.authorize(provider_reference)?;
-            } else if attempt.provider_reference() != Some(provider_reference.as_str()) {
-                return Err(provider_reference_mismatch());
+                attempt.authorize(stripe_checkout_session_id.clone())?;
+            } else if attempt.stripe_checkout_session_id()
+                != Some(stripe_checkout_session_id.as_str())
+            {
+                return Err(stripe_object_mismatch());
             }
             attempt.capture()?
         }
-        "payment.failed" => attempt.fail(Some(provider_reference))?,
-        "payment.cancelled" => attempt.cancel(Some(provider_reference))?,
+        "payment.failed" => attempt.fail(Some(stripe_checkout_session_id))?,
+        "payment.cancelled" => attempt.cancel(Some(stripe_checkout_session_id))?,
         _ => return Err(corrupt_webhook_payload()),
     };
     if !changed {
@@ -209,20 +206,33 @@ async fn apply_payment_event(
     };
     sqlx::query(
         "UPDATE commerce.payment_attempts \
-         SET status = $3::commerce.payment_attempt_status, provider_reference = $4, \
+         SET status = $3::commerce.payment_attempt_status, stripe_checkout_session_id = $4, \
              failure_code = $5, updated_at = $6 \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(attempt_id.as_uuid())
     .bind(attempt.status().as_str())
-    .bind(attempt.provider_reference())
+    .bind(attempt.stripe_checkout_session_id())
     .bind(stored_failure)
     .bind(now)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let mut event_amount = row.1;
     if attempt.status() == PaymentAttemptStatus::Captured {
+        if let Some(snapshot) = StripeCheckoutSnapshot::from_payload(provider_payload)? {
+            event_amount = apply_stripe_checkout_snapshot(
+                transaction,
+                store_id,
+                attempt_id,
+                OrderId::from_uuid(row.0),
+                CheckoutId::from_uuid(row.7),
+                &snapshot,
+                now,
+            )
+            .await?;
+        }
         confirm_paid_order(
             transaction,
             store_id,
@@ -244,7 +254,7 @@ async fn apply_payment_event(
                     "_source": "server",
                     "order_id": row.0,
                     "payment_attempt_id": attempt_id.as_uuid(),
-                    "value_minor": row.1,
+                    "value_minor": event_amount,
                     "currency": row.2,
                 }),
                 occurred_at: now,
@@ -266,6 +276,523 @@ async fn apply_payment_event(
             now,
         )
         .await?;
+    }
+    Ok(())
+}
+
+struct StripeCheckoutSnapshot {
+    amount_subtotal: i64,
+    amount_tax: i64,
+    amount_shipping: i64,
+    amount_total: i64,
+    currency: String,
+    payment_intent_id: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    billing_address: Option<StripeAddressSnapshot>,
+    shipping_address: Option<StripeAddressSnapshot>,
+}
+
+struct StripeAddressSnapshot {
+    full_name: String,
+    line1: String,
+    line2: Option<String>,
+    city: String,
+    state: Option<String>,
+    postal_code: Option<String>,
+    country: String,
+}
+
+impl StripeCheckoutSnapshot {
+    fn from_payload(payload: &Value) -> Result<Option<Self>, ApplicationError> {
+        let Some(object) = payload
+            .get("stripe_event")
+            .and_then(|event| event.get("data"))
+            .and_then(|data| data.get("object"))
+        else {
+            return Ok(None);
+        };
+        let amount_total = object
+            .get("amount_total")
+            .and_then(Value::as_i64)
+            .ok_or_else(corrupt_webhook_payload)?;
+        let amount_subtotal = object
+            .get("amount_subtotal")
+            .and_then(Value::as_i64)
+            .unwrap_or(amount_total);
+        let amount_tax = object
+            .get("total_details")
+            .and_then(|details| details.get("amount_tax"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let amount_shipping = object
+            .get("shipping_cost")
+            .and_then(|shipping| shipping.get("amount_total"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let currency = object
+            .get("currency")
+            .and_then(Value::as_str)
+            .ok_or_else(corrupt_webhook_payload)?
+            .to_ascii_uppercase();
+        let payment_intent_id = object
+            .get("payment_intent")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if payment_intent_id
+            .as_deref()
+            .is_some_and(|value| !value.starts_with("pi_"))
+        {
+            return Err(corrupt_webhook_payload());
+        }
+        if amount_total <= 0 || amount_subtotal < 0 || amount_tax < 0 || amount_shipping < 0 {
+            return Err(corrupt_webhook_payload());
+        }
+        let customer_details = object.get("customer_details");
+        let shipping_details = object.get("shipping_details");
+        let email = customer_details
+            .and_then(|value| value.get("email"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let phone = customer_details
+            .and_then(|value| value.get("phone"))
+            .and_then(Value::as_str)
+            .filter(|value| valid_e164(value))
+            .map(str::to_owned);
+        let billing_address = customer_details
+            .and_then(|value| value.get("address"))
+            .and_then(|address| {
+                stripe_address(
+                    address,
+                    customer_details
+                        .and_then(|value| value.get("name"))
+                        .and_then(Value::as_str),
+                )
+                .transpose()
+            })
+            .transpose()?;
+        let shipping_address = shipping_details
+            .and_then(|value| value.get("address"))
+            .and_then(|address| {
+                stripe_address(
+                    address,
+                    shipping_details
+                        .and_then(|value| value.get("name"))
+                        .and_then(Value::as_str),
+                )
+                .transpose()
+            })
+            .transpose()?;
+        Ok(Some(Self {
+            amount_subtotal,
+            amount_tax,
+            amount_shipping,
+            amount_total,
+            currency,
+            payment_intent_id,
+            email,
+            phone,
+            billing_address,
+            shipping_address,
+        }))
+    }
+}
+
+fn stripe_address(
+    value: &Value,
+    name: Option<&str>,
+) -> Result<Option<StripeAddressSnapshot>, ApplicationError> {
+    let Some(line1) = value.get("line1").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(city) = value.get("city").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(country) = value.get("country").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(full_name) = name.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let country = country.to_ascii_uppercase();
+    if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
+        return Err(corrupt_webhook_payload());
+    }
+    Ok(Some(StripeAddressSnapshot {
+        full_name: full_name.to_owned(),
+        line1: line1.to_owned(),
+        line2: value
+            .get("line2")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        city: city.to_owned(),
+        state: value
+            .get("state")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        postal_code: value
+            .get("postal_code")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        country,
+    }))
+}
+
+fn valid_e164(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (9..=16).contains(&bytes.len())
+        && bytes.first() == Some(&b'+')
+        && bytes.get(1).is_some_and(|byte| *byte != b'0')
+        && bytes[1..].iter().all(u8::is_ascii_digit)
+}
+
+async fn apply_stripe_checkout_snapshot(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+    attempt_id: PaymentAttemptId,
+    order_id: OrderId,
+    checkout_id: CheckoutId,
+    snapshot: &StripeCheckoutSnapshot,
+    now: OffsetDateTime,
+) -> Result<i64, ApplicationError> {
+    let current_currency: String = sqlx::query_scalar(
+        "SELECT currency::text FROM commerce.payment_attempts WHERE store_id = $1 AND id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(attempt_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if current_currency != snapshot.currency {
+        return Err(stripe_currency_mismatch());
+    }
+    sqlx::query(
+        "UPDATE commerce.payment_attempts SET amount_minor = $3, \
+                stripe_payment_intent_id = COALESCE($4, stripe_payment_intent_id), \
+                updated_at = $5 \
+         WHERE store_id = $1 AND id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(attempt_id.as_uuid())
+    .bind(snapshot.amount_total)
+    .bind(snapshot.payment_intent_id.as_deref())
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.orders SET subtotal_amount_minor = $3, tax_amount_minor = $4, \
+                shipping_amount_minor = $5, total_amount_minor = $6, tax_inclusive = false, \
+                updated_at = $7 WHERE store_id = $1 AND id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(snapshot.amount_subtotal)
+    .bind(snapshot.amount_tax)
+    .bind(snapshot.amount_shipping)
+    .bind(snapshot.amount_total)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.checkouts SET subtotal_amount_minor = $3, tax_amount_minor = $4, \
+                shipping_amount_minor = $5, total_amount_minor = $6, tax_inclusive = false, \
+                updated_at = $7 WHERE store_id = $1 AND id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(snapshot.amount_subtotal)
+    .bind(snapshot.amount_tax)
+    .bind(snapshot.amount_shipping)
+    .bind(snapshot.amount_total)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.order_lines SET tax_amount_minor = 0, total_amount_minor = subtotal_amount_minor, \
+                tax_inclusive = false WHERE store_id = $1 AND order_id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.checkout_lines SET tax_amount_minor = 0, total_amount_minor = subtotal_amount_minor, \
+                tax_inclusive = false WHERE store_id = $1 AND checkout_id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if let Some(email) = snapshot.email.as_deref() {
+        sqlx::query(
+            "UPDATE commerce.order_contacts SET email = $3 WHERE store_id = $1 AND order_id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(email)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE commerce.checkout_contacts SET email = $3 WHERE store_id = $1 AND checkout_id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .bind(email)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    if let Some(phone) = snapshot.phone.as_deref() {
+        sqlx::query(
+            "UPDATE commerce.order_contacts SET phone = $3 WHERE store_id = $1 AND order_id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(phone)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE commerce.checkout_contacts SET phone = $3 WHERE store_id = $1 AND checkout_id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(checkout_id.as_uuid())
+        .bind(phone)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    if let Some(address) = snapshot.billing_address.as_ref() {
+        upsert_address(transaction, "order_addresses", store_id, order_id.as_uuid(), "billing", address).await?;
+        upsert_address(
+            transaction,
+            "checkout_addresses",
+            store_id,
+            checkout_id.as_uuid(),
+            "billing",
+            address,
+        )
+        .await?;
+    }
+    if let Some(address) = snapshot.shipping_address.as_ref() {
+        upsert_address(transaction, "order_addresses", store_id, order_id.as_uuid(), "shipping", address).await?;
+        upsert_address(
+            transaction,
+            "checkout_addresses",
+            store_id,
+            checkout_id.as_uuid(),
+            "shipping",
+            address,
+        )
+        .await?;
+    }
+    let country = snapshot
+        .shipping_address
+        .as_ref()
+        .or(snapshot.billing_address.as_ref())
+        .map(|address| address.country.as_str())
+        .ok_or_else(corrupt_webhook_payload)?;
+    let tax_rule = sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT id, code, name FROM commerce.tax_rules WHERE store_id = $1 \
+         AND country_code = $2 ORDER BY status = 'active' DESC, id LIMIT 1",
+    )
+    .bind(store_id.as_uuid())
+    .bind(country)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let rate_basis_points = if snapshot.amount_subtotal == 0 {
+        0
+    } else {
+        i32::try_from(
+            snapshot
+                .amount_tax
+                .saturating_mul(10_000)
+                .checked_div(snapshot.amount_subtotal)
+                .unwrap_or_default(),
+        )
+        .map_err(unexpected_conversion)?
+    };
+    let tax_rule = match tax_rule {
+        Some(rule) => rule,
+        None => {
+            let code = format!("stripe-tax-{}", country.to_ascii_lowercase());
+            sqlx::query_as::<_, (Uuid, String, String)>(
+                "INSERT INTO commerce.tax_rules \
+                 (id, store_id, code, name, country_code, rate_basis_points, status) \
+                 VALUES ($1, $2, $3, 'Stripe Tax', $4, $5, 'active') \
+                 ON CONFLICT (store_id, code) DO UPDATE SET \
+                   name = EXCLUDED.name, country_code = EXCLUDED.country_code, \
+                   rate_basis_points = EXCLUDED.rate_basis_points, status = 'active', \
+                   updated_at = CURRENT_TIMESTAMP \
+                 RETURNING id, code, name",
+            )
+            .bind(Uuid::now_v7())
+            .bind(store_id.as_uuid())
+            .bind(code)
+            .bind(country)
+            .bind(rate_basis_points)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?
+        }
+    };
+    sqlx::query(
+        "INSERT INTO commerce.order_tax_calculations \
+         (store_id, order_id, tax_rule_id, rule_code, rule_name, country_code, rate_basis_points) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7) \
+         ON CONFLICT (store_id, order_id) DO UPDATE SET tax_rule_id=EXCLUDED.tax_rule_id, \
+           rule_code=EXCLUDED.rule_code, rule_name=EXCLUDED.rule_name, country_code=EXCLUDED.country_code, \
+           rate_basis_points=EXCLUDED.rate_basis_points",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(tax_rule.0)
+    .bind("stripe_tax")
+    .bind("Stripe Tax")
+    .bind(country)
+    .bind(rate_basis_points)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO commerce.checkout_tax_calculations \
+         (store_id, checkout_id, tax_rule_id, rule_code, rule_name, country_code, rate_basis_points) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7) \
+         ON CONFLICT (store_id, checkout_id) DO UPDATE SET tax_rule_id=EXCLUDED.tax_rule_id, \
+           rule_code=EXCLUDED.rule_code, rule_name=EXCLUDED.rule_name, country_code=EXCLUDED.country_code, \
+           rate_basis_points=EXCLUDED.rate_basis_points",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(tax_rule.0)
+    .bind("stripe_tax")
+    .bind("Stripe Tax")
+    .bind(country)
+    .bind(rate_basis_points)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if snapshot.amount_shipping > 0
+        && let Some(service) = sqlx::query_as::<_, (Uuid, String, String, String, i16, i16)>(
+            "SELECT service.id, service.code, service.name, service.currency::text, \
+                    service.estimated_min_days, service.estimated_max_days \
+             FROM commerce.shipping_services AS service \
+             INNER JOIN commerce.shipping_service_regions AS region \
+               ON region.store_id = service.store_id AND region.shipping_service_id = service.id \
+             WHERE service.store_id = $1 AND service.currency = $2 AND service.status = 'active' \
+               AND region.country_code = $3 ORDER BY abs(service.amount_minor - $4), service.id LIMIT 1",
+        )
+        .bind(store_id.as_uuid())
+        .bind(&snapshot.currency)
+        .bind(country)
+        .bind(snapshot.amount_shipping)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        {
+        sqlx::query(
+                "INSERT INTO commerce.order_shipping_selections \
+                 (store_id, order_id, shipping_service_id, service_code, service_name, amount_minor, currency, estimated_min_days, estimated_max_days) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
+                 ON CONFLICT (store_id, order_id) DO UPDATE SET shipping_service_id=EXCLUDED.shipping_service_id, \
+                   service_code=EXCLUDED.service_code, service_name=EXCLUDED.service_name, amount_minor=EXCLUDED.amount_minor, \
+                   currency=EXCLUDED.currency, estimated_min_days=EXCLUDED.estimated_min_days, estimated_max_days=EXCLUDED.estimated_max_days",
+            )
+            .bind(store_id.as_uuid())
+            .bind(order_id.as_uuid())
+            .bind(service.0)
+            .bind(&service.1)
+            .bind(&service.2)
+            .bind(snapshot.amount_shipping)
+            .bind(&service.3)
+            .bind(service.4)
+            .bind(service.5)
+            .execute(&mut **transaction)
+            .await
+        .map_err(database_error)?;
+        sqlx::query(
+                "INSERT INTO commerce.checkout_shipping_selections \
+                 (store_id, checkout_id, shipping_service_id, service_code, service_name, amount_minor, currency, estimated_min_days, estimated_max_days) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
+                 ON CONFLICT (store_id, checkout_id) DO UPDATE SET shipping_service_id=EXCLUDED.shipping_service_id, \
+                   service_code=EXCLUDED.service_code, service_name=EXCLUDED.service_name, amount_minor=EXCLUDED.amount_minor, \
+                   currency=EXCLUDED.currency, estimated_min_days=EXCLUDED.estimated_min_days, estimated_max_days=EXCLUDED.estimated_max_days",
+            )
+            .bind(store_id.as_uuid())
+            .bind(checkout_id.as_uuid())
+            .bind(service.0)
+            .bind(&service.1)
+            .bind(&service.2)
+            .bind(snapshot.amount_shipping)
+            .bind(&service.3)
+            .bind(service.4)
+            .bind(service.5)
+            .execute(&mut **transaction)
+            .await
+        .map_err(database_error)?;
+    }
+    Ok(snapshot.amount_total)
+}
+
+async fn upsert_address(
+    transaction: &mut Transaction<'static, Postgres>,
+    table: &str,
+    store_id: StoreId,
+    owner_id: Uuid,
+    kind: &str,
+    address: &StripeAddressSnapshot,
+) -> Result<(), ApplicationError> {
+    if table == "order_addresses" {
+        sqlx::query(
+            "INSERT INTO commerce.order_addresses \
+             (store_id, order_id, kind, full_name, address_line1, address_line2, locality, administrative_area, postal_code, country_code) \
+             VALUES ($1,$2,$3::commerce.address_kind,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (store_id, order_id, kind) DO UPDATE SET full_name=EXCLUDED.full_name, \
+               address_line1=EXCLUDED.address_line1, address_line2=EXCLUDED.address_line2, locality=EXCLUDED.locality, \
+               administrative_area=EXCLUDED.administrative_area, postal_code=EXCLUDED.postal_code, country_code=EXCLUDED.country_code",
+        )
+        .bind(store_id.as_uuid())
+        .bind(owner_id)
+        .bind(kind)
+        .bind(&address.full_name)
+        .bind(&address.line1)
+        .bind(&address.line2)
+        .bind(&address.city)
+        .bind(&address.state)
+        .bind(&address.postal_code)
+        .bind(&address.country)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    } else {
+        sqlx::query(
+            "INSERT INTO commerce.checkout_addresses \
+             (store_id, checkout_id, kind, full_name, address_line1, address_line2, locality, administrative_area, postal_code, country_code) \
+             VALUES ($1,$2,$3::commerce.address_kind,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (store_id, checkout_id, kind) DO UPDATE SET full_name=EXCLUDED.full_name, \
+               address_line1=EXCLUDED.address_line1, address_line2=EXCLUDED.address_line2, locality=EXCLUDED.locality, \
+               administrative_area=EXCLUDED.administrative_area, postal_code=EXCLUDED.postal_code, country_code=EXCLUDED.country_code",
+        )
+        .bind(store_id.as_uuid())
+        .bind(owner_id)
+        .bind(kind)
+        .bind(&address.full_name)
+        .bind(&address.line1)
+        .bind(&address.line2)
+        .bind(&address.city)
+        .bind(&address.state)
+        .bind(&address.postal_code)
+        .bind(&address.country)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
     }
     Ok(())
 }
@@ -312,6 +839,17 @@ async fn cancel_pending_order(
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.checkouts SET status = 'expired', closed_at = COALESCE(closed_at, $3), \
+                updated_at = $3, expiry_locked_by = NULL, expiry_locked_at = NULL \
+         WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
     .bind(now)
     .execute(&mut **transaction)
     .await
@@ -368,6 +906,37 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let cart_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT cart_id FROM commerce.checkouts WHERE store_id = $1 AND id = $2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.checkouts SET status = 'completed', closed_at = COALESCE(closed_at, $3), \
+                updated_at = $3, expiry_locked_by = NULL, expiry_locked_at = NULL \
+         WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+    )
+    .bind(store_id.as_uuid())
+    .bind(checkout_id.as_uuid())
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if let Some(cart_id) = cart_id {
+        sqlx::query(
+            "UPDATE commerce.carts SET status = 'completed', version = version + 1, updated_at = $3 \
+             WHERE store_id = $1 AND id = $2 AND status = 'active'",
+        )
+        .bind(store_id.as_uuid())
+        .bind(cart_id)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    }
     let transition_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO commerce.order_transitions \
@@ -406,13 +975,13 @@ async fn apply_refund_event(
     store_id: StoreId,
     refund_id: RefundId,
     event_type: &str,
-    provider_reference: String,
+    stripe_refund_id: String,
     failure_code: Option<String>,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, i64, String, String, Option<String>, Uuid, Uuid)>(
         "SELECT refund.payment_attempt_id, refund.amount_minor, refund.currency::text,
-                refund.status::text, refund.provider_reference, attempt.order_id, order_row.shopper_id \
+                refund.status::text, refund.stripe_refund_id, attempt.order_id, order_row.shopper_id \
          FROM commerce.refunds refund
          JOIN commerce.payment_attempts attempt
            ON attempt.store_id=refund.store_id AND attempt.id=refund.payment_attempt_id
@@ -435,8 +1004,8 @@ async fn apply_refund_event(
         row.4,
     );
     let changed = match event_type {
-        "refund.succeeded" => refund.succeed(provider_reference)?,
-        "refund.failed" => refund.fail(provider_reference)?,
+        "refund.succeeded" => refund.succeed(stripe_refund_id)?,
+        "refund.failed" => refund.fail(stripe_refund_id)?,
         _ => return Err(corrupt_webhook_payload()),
     };
     if !changed {
@@ -449,14 +1018,14 @@ async fn apply_refund_event(
     };
     sqlx::query(
         "UPDATE commerce.refunds \
-         SET status = $3::commerce.refund_status, provider_reference = $4, \
+         SET status = $3::commerce.refund_status, stripe_refund_id = $4, \
              failure_code = $5, updated_at = $6 \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(refund_id.as_uuid())
     .bind(refund.status().as_str())
-    .bind(refund.provider_reference())
+    .bind(refund.stripe_refund_id())
     .bind(stored_failure)
     .bind(now)
     .execute(&mut **transaction)
