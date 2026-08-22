@@ -3,30 +3,35 @@
   "info": {
     "title": "Chaos Provider Webhooks API",
     "version": "1.0.0",
-    "description": "Provider callbacks authenticated before Store resolution and durably deduplicated."
+    "description": "Stripe Checkout callbacks authenticated before Store resolution and durably deduplicated. The provider_account_id is the Chaos Provider Account UUID, not a Stripe acct_ identifier."
   },
   "servers": [{ "url": "/webhooks/v1" }],
   "paths": {
-    "/payments/{provider}": {
+    "/payments/{provider}/{provider_account_id}": {
       "post": {
         "operationId": "receivePaymentWebhook",
         "tags": ["Payment webhooks"],
-        "summary": "Verify and enqueue a payment provider event",
-        "security": [{ "paymentSignature": [] }, { "stripeSignature": [] }],
+        "summary": "Verify and enqueue a Stripe Checkout event",
+        "security": [{ "stripeSignature": [] }],
         "parameters": [
           {
             "name": "provider",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "pattern": "^[a-z0-9_]{1,64}$" }
+            "description": "The configured payment provider. Only stripe_checkout is supported.",
+            "schema": { "type": "string", "enum": ["stripe_checkout"] }
+          },
+          {
+            "name": "provider_account_id",
+            "in": "path",
+            "required": true,
+            "description": "The Chaos Provider Account UUID returned when the Store configures stripe_checkout. This is not a Stripe account ID.",
+            "schema": { "type": "string", "format": "uuid" }
           }
         ],
         "requestBody": {
           "required": true,
-          "content": { "application/json": { "schema": { "oneOf": [
-            { "$ref": "#/components/schemas/PaymentWebhookEvent" },
-            { "$ref": "#/components/schemas/StripeWebhookEvent" }
-          ] } } }
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/StripeWebhookEvent" } } }
         },
         "responses": {
           "202": {
@@ -42,12 +47,6 @@
   },
   "components": {
     "securitySchemes": {
-      "paymentSignature": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "x-payment-signature",
-        "description": "Base64-encoded HMAC-SHA256 of the exact request body."
-      },
       "stripeSignature": {
         "type": "apiKey",
         "in": "header",
@@ -56,30 +55,47 @@
       }
     },
     "schemas": {
-      "PaymentWebhookEvent": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "event_type", "account", "object", "aggregate_id"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "event_type": {
-            "type": "string",
-            "enum": ["payment.authorized", "payment.captured", "payment.failed", "payment.cancelled", "refund.succeeded", "refund.failed"]
-          },
-          "account": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "object": { "type": "string", "minLength": 1, "maxLength": 255 },
-          "aggregate_id": { "type": "string", "format": "uuid" },
-          "failure_code": { "type": "string", "minLength": 1, "maxLength": 255 }
-        }
-      },
       "StripeWebhookEvent": {
         "type": "object",
         "additionalProperties": true,
         "required": ["id", "type", "data"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "type": { "type": "string", "minLength": 1 },
-          "data": { "type": "object" }
+          "id": { "type": "string", "pattern": "^evt_[A-Za-z0-9_]+$", "maxLength": 255 },
+          "type": {
+            "type": "string",
+            "enum": [
+              "checkout.session.completed",
+              "checkout.session.async_payment_succeeded",
+              "checkout.session.async_payment_failed",
+              "checkout.session.expired"
+            ]
+          },
+          "data": {
+            "type": "object",
+            "required": ["object"],
+            "properties": {
+              "object": {
+                "type": "object",
+                "required": ["id", "metadata"],
+                "properties": {
+                  "id": { "type": "string", "pattern": "^cs_[A-Za-z0-9_]+$", "maxLength": 255 },
+                  "payment_status": { "type": "string", "enum": ["paid", "no_payment_required"] },
+                  "metadata": {
+                    "type": "object",
+                    "required": ["chaos_payment_attempt_id"],
+                    "properties": {
+                      "chaos_payment_attempt_id": { "type": "string", "format": "uuid" }
+                    },
+                    "additionalProperties": { "type": "string" }
+                  },
+                  "last_payment_error": { "type": "object", "additionalProperties": true },
+                  "failure_reason": { "type": "string", "maxLength": 255 }
+                },
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": true
+          }
         }
       },
       "WebhookReceipt": {
