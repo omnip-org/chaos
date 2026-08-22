@@ -1144,10 +1144,9 @@ mod tests {
             .unwrap();
         sqlx::query("INSERT INTO commerce.price_lists(id,store_id,code,name,currency,status) VALUES($1,$2,'default','Default','USD','active')")
             .bind(price_list_id).bind(store_id.as_uuid()).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO commerce.shoppers(id,store_id,sales_channel_id) VALUES($1,$2,$3)")
+        sqlx::query("INSERT INTO commerce.shoppers(id,store_id) VALUES($1,$2)")
             .bind(shopper_id)
             .bind(store_id.as_uuid())
-            .bind(channel_id.as_uuid())
             .execute(&pool)
             .await
             .unwrap();

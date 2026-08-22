@@ -242,6 +242,16 @@ impl PostgresStorefrontSalesRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE commerce.shoppers \
+             SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(shopper.machine.store_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         Ok(transaction)
     }
 }
@@ -249,18 +259,15 @@ impl PostgresStorefrontSalesRepository {
 #[async_trait]
 impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
     async fn create_shopper(&self, actor: &MachineActor) -> Result<ShopperId, ApplicationError> {
-        let channel_id = require_channel(actor)?;
+        require_channel(actor)?;
         let shopper_id = ShopperId::new();
         let mut transaction = self.begin(actor).await?;
-        sqlx::query(
-            "INSERT INTO commerce.shoppers (id, store_id, sales_channel_id) VALUES ($1, $2, $3)",
-        )
-        .bind(shopper_id.as_uuid())
-        .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        sqlx::query("INSERT INTO commerce.shoppers (id, store_id) VALUES ($1, $2)")
+            .bind(shopper_id.as_uuid())
+            .bind(actor.store_id.as_uuid())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(shopper_id)
     }
@@ -544,6 +551,19 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         if usize::try_from(existing_count).ok() != Some(lines.len()) {
             return Err(cart_line_unavailable());
         }
+        let existing_checkout: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM commerce.checkouts \
+             WHERE store_id = $1 AND cart_id = $2 AND status = 'pending' \
+             FOR UPDATE",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if existing_checkout.is_some() {
+            return Err(checkout_already_pending());
+        }
         let cart = Cart::rehydrate(
             cart_id,
             actor.store_id,
@@ -659,19 +679,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let result = sqlx::query(
-            "UPDATE commerce.carts SET status = 'completed', version = version + 1, \
-                    updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2 AND status = 'active'",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(cart_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        if result.rows_affected() != 1 {
-            return Err(cart_not_active());
-        }
         let detail = load_checkout(&mut transaction, actor, checkout.id())
             .await?
             .ok_or_else(|| checkout_not_found(checkout.id()))?;
@@ -767,8 +774,8 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         {
             return replay_order(snapshot);
         }
-        let checkout = sqlx::query_as::<_, (String, OffsetDateTime)>(
-            "SELECT status::text, expires_at FROM commerce.checkouts \
+        let checkout = sqlx::query_as::<_, (Uuid, String, OffsetDateTime)>(
+            "SELECT cart_id, status::text, expires_at FROM commerce.checkouts \
              WHERE store_id = $1 AND sales_channel_id = $2 \
                AND id = $3 FOR UPDATE",
         )
@@ -779,10 +786,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| checkout_not_found(checkout_id))?;
-        if checkout.0 != "pending" {
+        if checkout.1 != "pending" {
             return Err(checkout_not_pending());
         }
-        if checkout.1 <= now {
+        if checkout.2 <= now {
             return Err(checkout_expired());
         }
         let order = Order::create(checkout_id);
@@ -871,6 +878,20 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        let cart_result = sqlx::query(
+            "UPDATE commerce.carts SET status = 'completed', version = version + 1, \
+                    updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2 AND shopper_id = $3 AND status = 'active'",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(checkout.0)
+        .bind(shopper.shopper_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if cart_result.rows_affected() != 1 {
+            return Err(cart_not_active());
+        }
         let detail = load_order(&mut transaction, actor, order.id())
             .await?
             .ok_or_else(|| order_not_found(order.id()))?;
@@ -3626,6 +3647,13 @@ fn checkout_not_pending() -> ApplicationError {
     ApplicationError::Conflict {
         code: "checkout_not_pending",
         message: "the Checkout is no longer pending",
+    }
+}
+
+fn checkout_already_pending() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_already_pending",
+        message: "the Cart already has a pending Checkout",
     }
 }
 

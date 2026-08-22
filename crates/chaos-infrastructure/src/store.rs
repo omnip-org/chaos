@@ -211,20 +211,13 @@ mod tests {
             .await
             .unwrap();
         }
-        for (shopper_id, store_id, channel_id) in [
-            (shopper_a, store_a, channel_a),
-            (shopper_b, store_b, channel_b),
-        ] {
-            sqlx::query(
-                "INSERT INTO commerce.shoppers (id, store_id, sales_channel_id) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(shopper_id)
-            .bind(store_id)
-            .bind(channel_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        for (shopper_id, store_id) in [(shopper_a, store_a), (shopper_b, store_b)] {
+            sqlx::query("INSERT INTO commerce.shoppers (id, store_id) VALUES ($1, $2)")
+                .bind(shopper_id)
+                .bind(store_id)
+                .execute(&pool)
+                .await
+                .unwrap();
         }
         for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(

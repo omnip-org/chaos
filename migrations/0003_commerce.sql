@@ -1692,7 +1692,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
 
--- === Sales, payments, and fulfillment ===
+-- === Sales ===
 
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'completed', 'abandoned');
 
@@ -1745,26 +1745,19 @@ CREATE TYPE commerce.return_status AS ENUM (
 
 CREATE TYPE commerce.return_disposition AS ENUM ('restock', 'discard');
 
+-- Shopper identity, Cart, Checkout, and Order form the Storefront sales flow.
+-- Contact, address, pricing, tax, promotion, and line data are copied into
+-- Checkout and Order snapshots so later catalog changes cannot rewrite history.
 CREATE TABLE commerce.shoppers (
-    id                  UUID              NOT NULL PRIMARY KEY,
-    store_id            UUID              NOT NULL,
-    sales_channel_id    UUID              NOT NULL,
-    email               extensions.citext,
-    phone               TEXT,
-    first_seen_at       TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at        TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id             UUID        NOT NULL PRIMARY KEY,
+    store_id       UUID        NOT NULL,
+    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
-    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (sales_channel_id) REFERENCES commerce.sales_channels(id) ON DELETE CASCADE,
-    CONSTRAINT shoppers_email_length_check CHECK (
-        email IS NULL OR length(trim(email::text)) BETWEEN 3 AND 320
-    ),
-    CONSTRAINT shoppers_phone_format_check CHECK (
-        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
-    )
+    FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.carts (
@@ -1857,7 +1850,6 @@ CREATE TABLE commerce.checkouts (
 
     UNIQUE (store_id, id),
     UNIQUE (store_id, id, shopper_id),
-    UNIQUE (store_id, cart_id),
     UNIQUE (store_id, inventory_reservation_id),
     FOREIGN KEY (store_id, cart_id, shopper_id)
         REFERENCES commerce.carts(store_id, id, shopper_id),
@@ -2371,6 +2363,8 @@ CREATE TABLE commerce.order_fulfillment_transitions (
         REFERENCES commerce.orders(store_id, id)
 );
 
+-- === Fulfillment configuration ===
+
 CREATE TABLE commerce.shipping_services (
     id                         UUID                                NOT NULL PRIMARY KEY,
     store_id                   UUID                                NOT NULL,
@@ -2546,6 +2540,8 @@ CREATE TABLE commerce.order_shipping_selections (
         AND estimated_max_days BETWEEN estimated_min_days AND 365
     )
 );
+
+-- === Payments ===
 
 CREATE TABLE commerce.provider_accounts (
     id                         UUID        NOT NULL PRIMARY KEY,
@@ -2737,6 +2733,8 @@ CREATE TABLE commerce.refunds (
         OR (status <> 'failed' AND failure_code IS NULL)
     )
 );
+
+-- === Fulfillment execution and returns ===
 
 CREATE TABLE commerce.fulfillments (
     id                   UUID                           NOT NULL PRIMARY KEY,
@@ -3051,11 +3049,14 @@ CREATE TABLE commerce.return_lines (
     )
 );
 
+-- === Indexes ===
+
 CREATE INDEX shoppers_store_seen_idx
     ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 
-CREATE INDEX shoppers_channel_seen_idx
-    ON commerce.shoppers (store_id, sales_channel_id, last_seen_at DESC, id DESC);
+CREATE UNIQUE INDEX checkouts_one_pending_per_cart_idx
+    ON commerce.checkouts (store_id, cart_id)
+    WHERE status = 'pending';
 
 CREATE INDEX carts_channel_updated_idx
     ON commerce.carts (store_id,
@@ -3190,6 +3191,8 @@ CREATE INDEX return_lines_variant_idx
         product_variant_id,
         return_id
     );
+
+-- === Sales and fulfillment workflows ===
 
 CREATE FUNCTION commerce.claim_expired_checkouts(
     worker_id UUID,
@@ -3496,6 +3499,8 @@ AS $$
               account.provider, label.provider_shipment_reference,
               account.credential_secret_reference, label.cancellation_attempts;
 $$;
+
+-- === Row-level security ===
 
 ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;

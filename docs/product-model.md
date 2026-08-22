@@ -32,10 +32,20 @@ An immutable commercial record after creation, with controlled state transitions
 
 ## Shopper
 
-A Storefront visitor identity created when the website opens a Shopper session. A
-signed possession token carries its UUID through Cart, Checkout, Payment, Order,
-and Analytics operations. Contact details are captured as Checkout and Order
-snapshots rather than as a separate Customer profile.
+A Storefront visitor identity scoped to one Store and created when the website
+opens a Shopper session. A signed possession token carries its UUID through Cart,
+Checkout, Payment, Order, and Analytics operations. Sales Channel is request
+context, not Shopper identity. Contact details are captured as Checkout and
+Order snapshots rather than as a separate Customer profile.
+
+## Cart and Checkout
+
+A Cart is a mutable Storefront working set owned by a Shopper. It remains active
+while a Checkout is pending or expired. A Checkout freezes the current catalog,
+price, tax, promotion, shipping, inventory reservation, and contact snapshots.
+Only one pending Checkout may exist for a Cart, while expired Checkout attempts
+remain queryable history. Creating an Order completes the Checkout and Cart in
+the same transaction.
 
 ## Payment and Refund
 

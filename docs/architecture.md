@@ -102,13 +102,29 @@ tracking uses a Chaos-hosted URL with a fragment capability. The browser exchang
 one-time-looking long-lived capability for a short-lived, store-bound session; only
 digests are stored after a successful confirmation email delivery.
 
-The Storefront identity is a persisted `commerce.shoppers` row. A website visit
-creates one Shopper through `/store/v1/shopper-sessions`, and the API returns a
-signed possession token for that row. Carts, Checkouts, Orders, Payments, and
-Analytics events carry the same `shopper_id`; there is no Customer entity or
-visitor-to-Customer association table. Contact information and addresses remain
-immutable Checkout and Order snapshots, while an Order-bearing Shopper is the
-buyer for all commerce and analytics purposes.
+The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
+website visit creates one Shopper through `/store/v1/shopper-sessions`, and the
+API returns a signed possession token for that row. The Shopper does not own a
+Sales Channel and does not hold contact information; channel is request context,
+while email, phone, and addresses remain immutable Checkout and Order snapshots.
+Carts, Checkouts, Orders, Payments, and Analytics events carry the same
+`shopper_id`; there is no Customer entity or visitor-to-Customer association
+table. An Order-bearing Shopper is the buyer for all commerce and analytics
+purposes.
+
+The commerce database remains one physical `commerce` schema so Store-scoped
+foreign keys and RLS stay simple, but its migration is organized into logical
+modules: Store foundation, Catalog, Pricing, Inventory, Search read model,
+Sales, Fulfillment configuration, Payments, and Fulfillment execution. Provider
+calls and durable delivery state remain outside these business tables in the
+Integration workflow.
+
+Cart and Checkout have separate lifecycles. Creating a Checkout reserves
+inventory and freezes a Checkout snapshot, but leaves the Cart active. A Cart
+allows at most one pending Checkout at a time; expired Checkouts remain as
+history and the Cart can start a new Checkout. Only successful Order creation
+completes both the Checkout and the Cart. This allows payment or expiry retries
+without rewriting an existing Checkout snapshot.
 
 Analytics uses one append-only, Store-scoped Analytics Event ledger for the
 Storefront conversion path and authoritative server events. External provider
