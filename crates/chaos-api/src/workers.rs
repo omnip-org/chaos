@@ -26,11 +26,6 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
-    let checkout_expiry_worker = tokio::spawn(checkout_expiry_worker_loop(
-        runtime.checkout_expiry_workers.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
     tracing::info!("background worker started");
     shutdown_signal(lifecycle).await;
     tokio::join!(
@@ -38,11 +33,6 @@ pub async fn run(
         drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
-        drain_worker(
-            "checkout-expiry",
-            checkout_expiry_worker,
-            worker_shutdown_timeout
-        ),
     );
 }
 
@@ -198,25 +188,6 @@ async fn fulfillment_worker_loop(
                 tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
             }
         }
-        tokio::time::sleep(backoff.observe(processed)).await;
-    }
-}
-
-async fn checkout_expiry_worker_loop(
-    workers: std::sync::Arc<chaos_application::sales::CheckoutExpiryWorkers>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let worker_id = Uuid::now_v7();
-    let mut backoff = PollBackoff::new();
-    while lifecycle.is_accepting_traffic() {
-        let processed = match workers.run_batch(worker_id, clock.now(), 100).await {
-            Ok(count) => count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "Checkout expiry batch failed");
-                0
-            }
-        };
         tokio::time::sleep(backoff.observe(processed)).await;
     }
 }

@@ -6,7 +6,7 @@
 include!("repository_core.rs");
 include!("sales_commands.rs");
 include!("cart.rs");
-include!("checkout.rs");
+include!("inventory.rs");
 include!("order.rs");
 include!("snapshots.rs");
 include!("sales_helpers.rs");

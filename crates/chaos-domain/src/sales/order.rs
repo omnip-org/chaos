@@ -1,7 +1,7 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{DomainError, FieldViolation, sales::CheckoutId};
+use crate::{DomainError, FieldViolation};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OrderId(Uuid);
@@ -188,33 +188,23 @@ pub struct OrderTransition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Order {
     id: OrderId,
-    checkout_id: CheckoutId,
     status: OrderStatus,
 }
 
 impl Order {
-    pub fn create(checkout_id: CheckoutId) -> Self {
+    pub fn create() -> Self {
         Self {
             id: OrderId::new(),
-            checkout_id,
             status: OrderStatus::Pending,
         }
     }
 
-    pub fn rehydrate(id: OrderId, checkout_id: CheckoutId, status: OrderStatus) -> Self {
-        Self {
-            id,
-            checkout_id,
-            status,
-        }
+    pub fn rehydrate(id: OrderId, status: OrderStatus) -> Self {
+        Self { id, status }
     }
 
     pub const fn id(&self) -> OrderId {
         self.id
-    }
-
-    pub const fn checkout_id(&self) -> CheckoutId {
-        self.checkout_id
     }
 
     pub const fn status(&self) -> OrderStatus {
@@ -270,9 +260,8 @@ mod tests {
 
     #[test]
     fn order_allows_one_terminal_transition_and_records_it() {
-        let checkout_id = CheckoutId::new();
         let now = OffsetDateTime::now_utc();
-        let mut order = Order::create(checkout_id);
+        let mut order = Order::create();
 
         let transition = order.confirm(now).unwrap();
 
@@ -285,7 +274,7 @@ mod tests {
     #[test]
     fn cancelled_order_cannot_be_confirmed() {
         let now = OffsetDateTime::now_utc();
-        let mut order = Order::create(CheckoutId::new());
+        let mut order = Order::create();
 
         order.cancel(now).unwrap();
 

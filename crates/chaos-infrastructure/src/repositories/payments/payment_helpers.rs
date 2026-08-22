@@ -233,7 +233,7 @@ fn payment_order_not_pending() -> ApplicationError {
 fn checkout_configuration_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "checkout_configuration_unavailable",
-        message: "no destination has both an active shipping service and an active tax rule",
+        message: "no active shipping service is configured for this destination",
     }
 }
 

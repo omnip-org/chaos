@@ -25,10 +25,7 @@ pub use fulfillment::PostgresFulfillmentRepository;
 pub use integration::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
 pub use payments::PostgresPaymentRepository;
-pub use pricing::{
-    PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-    PostgresPromotionRepository, PostgresTaxRuleRepository,
-};
+pub use pricing::{PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork};
 pub use sales::{
     PostgresOrderManagementRepository, PostgresStorefrontCatalogRepository,
     PostgresStorefrontSalesRepository,

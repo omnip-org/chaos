@@ -2,7 +2,6 @@ import { ChaosStorefrontAnalytics, type AnalyticsOptions } from "./analytics.js"
 import { throwForResponse } from "./errors.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
-import { CheckoutResource } from "./resources/checkout.js";
 import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
@@ -48,7 +47,6 @@ export class ChaosStorefrontClient {
   readonly catalog: CatalogResource;
   readonly shopperSession: ShopperSessionResource;
   readonly cart: CartResource;
-  readonly checkout: CheckoutResource;
   readonly orders: OrdersResource;
   readonly payments: PaymentsResource;
   readonly analytics?: ChaosStorefrontAnalytics;
@@ -85,7 +83,6 @@ export class ChaosStorefrontClient {
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
     this.cart = new CartResource(this);
-    this.checkout = new CheckoutResource(this);
     this.orders = new OrdersResource(this);
     this.payments = new PaymentsResource(this);
     const analyticsOptions = options.analytics === false ? undefined : options.analytics;

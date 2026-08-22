@@ -1004,21 +1004,12 @@ GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
 
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
 
-CREATE TYPE commerce.tax_rule_status AS ENUM ('active', 'archived');
-
-CREATE TYPE commerce.promotion_status AS ENUM ('active', 'archived');
-
-CREATE TYPE commerce.promotion_trigger AS ENUM ('automatic', 'code');
-
-CREATE TYPE commerce.promotion_value_kind AS ENUM ('percentage', 'fixed_amount');
-
 CREATE TABLE commerce.price_lists (
     id                   UUID                         NOT NULL PRIMARY KEY,
     store_id             UUID                         NOT NULL,
     code                 extensions.citext            NOT NULL,
     name                 TEXT                         NOT NULL,
     currency             CHAR(3)                      NOT NULL,
-    tax_inclusive        BOOLEAN                      NOT NULL DEFAULT false,
     status               commerce.price_list_status    NOT NULL DEFAULT 'draft',
     starts_at            TIMESTAMPTZ,
     ends_at              TIMESTAMPTZ,
@@ -1064,74 +1055,6 @@ CREATE TABLE commerce.prices (
     )
 );
 
-CREATE TABLE commerce.tax_rules (
-    id                    UUID                    NOT NULL PRIMARY KEY,
-    store_id              UUID                    NOT NULL,
-    code                  TEXT                    NOT NULL,
-    name                  TEXT                    NOT NULL,
-    country_code          CHAR(2)                 NOT NULL,
-    rate_basis_points     INTEGER                 NOT NULL,
-    status                commerce.tax_rule_status NOT NULL DEFAULT 'active',
-    created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, code),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT tax_rules_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT tax_rules_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT tax_rules_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT tax_rules_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
-);
-
-CREATE TABLE commerce.promotions (
-    id                            UUID                          NOT NULL PRIMARY KEY,
-    store_id                      UUID                          NOT NULL,
-    handle                        TEXT                          NOT NULL,
-    name                          TEXT                          NOT NULL,
-    trigger                       commerce.promotion_trigger    NOT NULL,
-    redemption_code               extensions.citext,
-    value_kind                    commerce.promotion_value_kind NOT NULL,
-    rate_basis_points             INTEGER,
-    amount_minor                  BIGINT,
-    maximum_amount_minor          BIGINT,
-    currency                      CHAR(3)                       NOT NULL,
-    minimum_subtotal_amount_minor BIGINT                        NOT NULL DEFAULT 0,
-    priority                      SMALLINT                      NOT NULL DEFAULT 100,
-    starts_at                     TIMESTAMPTZ,
-    ends_at                       TIMESTAMPTZ,
-    status                        commerce.promotion_status     NOT NULL DEFAULT 'active',
-    created_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, handle),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, currency)
-        REFERENCES commerce.store_currencies(store_id, currency),
-    CONSTRAINT promotions_handle_format_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT promotions_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT promotions_redemption_shape_check CHECK (
-        (trigger = 'automatic' AND redemption_code IS NULL)
-        OR (trigger = 'code' AND redemption_code::text ~ '^[A-Z0-9-]{1,64}$')
-    ),
-    CONSTRAINT promotions_value_shape_check CHECK (
-        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
-            AND amount_minor IS NULL
-            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
-        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
-            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
-    ),
-    CONSTRAINT promotions_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT promotions_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
-    CONSTRAINT promotions_priority_check CHECK (priority BETWEEN 0 AND 32767),
-    CONSTRAINT promotions_schedule_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
-    )
-);
-
 ALTER TABLE commerce.price_lists
     ADD UNIQUE (store_id, id, currency);
 
@@ -1149,28 +1072,9 @@ CREATE INDEX prices_variant_lookup_idx
         price_list_id
     );
 
-CREATE UNIQUE INDEX tax_rules_active_country_key
-    ON commerce.tax_rules (store_id, country_code)
-    WHERE status = 'active';
-
-CREATE INDEX tax_rules_store_status_idx
-    ON commerce.tax_rules (store_id, status, created_at, id);
-
-CREATE UNIQUE INDEX promotions_active_redemption_code_key
-    ON commerce.promotions (store_id, redemption_code)
-    WHERE status = 'active' AND redemption_code IS NOT NULL;
-
-CREATE INDEX promotions_checkout_lookup_idx
-    ON commerce.promotions (store_id, currency, status, trigger, priority, id
-    );
-
 ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.tax_rules ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.promotions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.price_lists
     USING (
@@ -1183,26 +1087,6 @@ CREATE POLICY store_isolation ON commerce.price_lists
     );
 
 CREATE POLICY store_isolation ON commerce.prices
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.tax_rules
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.promotions
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -1626,10 +1510,6 @@ GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
 
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'completed', 'abandoned');
 
-CREATE TYPE commerce.checkout_status AS ENUM ('pending', 'completed', 'expired');
-
-CREATE TYPE commerce.address_kind AS ENUM ('billing', 'shipping');
-
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 
 CREATE TYPE commerce.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
@@ -1675,9 +1555,9 @@ CREATE TYPE commerce.return_status AS ENUM (
 
 CREATE TYPE commerce.return_disposition AS ENUM ('restock', 'discard');
 
--- Shopper identity, Cart, Checkout, and Order form the Storefront sales flow.
--- Contact, address, pricing, tax, promotion, and line data are copied into
--- Checkout and Order snapshots so later catalog changes cannot rewrite history.
+-- Shopper identity, Cart, and Order form the Storefront sales flow.
+-- Stripe owns checkout UI, address collection, shipping, tax, and payment
+-- collection; Chaos stores the resulting business Order and immutable lines.
 CREATE TABLE commerce.shoppers (
     id             UUID        NOT NULL PRIMARY KEY,
     store_id       UUID        NOT NULL,
@@ -1732,7 +1612,6 @@ CREATE TABLE commerce.cart_lines (
     track_inventory         BOOLEAN     NOT NULL,
     quantity                INTEGER     NOT NULL,
     unit_price_amount_minor BIGINT      NOT NULL,
-    tax_inclusive           BOOLEAN     NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -1754,245 +1633,12 @@ CREATE TABLE commerce.cart_lines (
     CONSTRAINT cart_lines_unit_price_nonnegative_check CHECK (unit_price_amount_minor >= 0)
 );
 
-CREATE TABLE commerce.checkouts (
-    id                     UUID                    NOT NULL PRIMARY KEY,
-    store_id               UUID                    NOT NULL,
-    cart_id                UUID                    NOT NULL,
-    shopper_id             UUID                    NOT NULL,
-    sales_channel_id       UUID                    NOT NULL,
-    price_list_id          UUID                    NOT NULL,
-    inventory_reservation_id UUID,
-    currency               CHAR(3)                 NOT NULL,
-    locale                 VARCHAR(63)             NOT NULL DEFAULT 'en-US',
-    status                 commerce.checkout_status   NOT NULL DEFAULT 'pending',
-    subtotal_amount_minor  BIGINT                  NOT NULL,
-    discount_amount_minor  BIGINT                  NOT NULL,
-    tax_amount_minor       BIGINT                  NOT NULL,
-    tax_inclusive          BOOLEAN                 NOT NULL,
-    shipping_amount_minor  BIGINT                  NOT NULL,
-    total_amount_minor     BIGINT                  NOT NULL,
-    expires_at             TIMESTAMPTZ             NOT NULL,
-    closed_at              TIMESTAMPTZ,
-    expiry_locked_by       UUID,
-    expiry_locked_at       TIMESTAMPTZ,
-    created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, id, shopper_id),
-    UNIQUE (store_id, inventory_reservation_id),
-    FOREIGN KEY (store_id, cart_id, shopper_id)
-        REFERENCES commerce.carts(store_id, id, shopper_id),
-    FOREIGN KEY (store_id, shopper_id)
-        REFERENCES commerce.shoppers(store_id, id),
-    FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
-    FOREIGN KEY (store_id, price_list_id, currency)
-        REFERENCES commerce.price_lists(store_id, id, currency),
-    FOREIGN KEY (store_id, inventory_reservation_id)
-        REFERENCES commerce.inventory_reservations(store_id, id),
-    CONSTRAINT checkouts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT checkouts_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    ),
-    CONSTRAINT checkouts_amounts_check CHECK (
-        subtotal_amount_minor >= 0
-        AND discount_amount_minor >= 0
-        AND discount_amount_minor <= subtotal_amount_minor
-        AND tax_amount_minor >= 0
-        AND shipping_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
-            + shipping_amount_minor
-    ),
-    CONSTRAINT checkouts_expiration_check CHECK (expires_at > created_at),
-    CONSTRAINT checkouts_closure_check CHECK (
-        (status = 'pending' AND closed_at IS NULL)
-        OR (status <> 'pending' AND closed_at IS NOT NULL)
-    ),
-    CONSTRAINT checkouts_expiry_lease_shape_check CHECK (
-        (expiry_locked_by IS NULL) = (expiry_locked_at IS NULL)
-        AND (status = 'pending' OR expiry_locked_by IS NULL)
-    )
-);
-
-CREATE TABLE commerce.checkout_contacts (
-    store_id            UUID              NOT NULL,
-    checkout_id         UUID              NOT NULL,
-    email               extensions.citext NOT NULL,
-    phone               TEXT,
-
-    PRIMARY KEY (store_id, checkout_id),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT checkout_contacts_email_length_check CHECK (
-        length(trim(email::text)) BETWEEN 3 AND 320
-    ),
-    CONSTRAINT checkout_contacts_phone_format_check CHECK (
-        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
-    )
-);
-
-CREATE TABLE commerce.checkout_addresses (
-    store_id             UUID               NOT NULL,
-    checkout_id          UUID               NOT NULL,
-    kind                 commerce.address_kind NOT NULL,
-    full_name            TEXT               NOT NULL,
-    company              TEXT,
-    address_line1        TEXT               NOT NULL,
-    address_line2        TEXT,
-    locality             TEXT               NOT NULL,
-    administrative_area TEXT,
-    postal_code          TEXT,
-    country_code         CHAR(2)            NOT NULL,
-
-    PRIMARY KEY (store_id, checkout_id, kind),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT checkout_addresses_full_name_length_check CHECK (
-        length(trim(full_name)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT checkout_addresses_company_length_check CHECK (
-        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT checkout_addresses_line1_length_check CHECK (
-        length(trim(address_line1)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT checkout_addresses_line2_length_check CHECK (
-        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT checkout_addresses_locality_length_check CHECK (
-        length(trim(locality)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT checkout_addresses_area_length_check CHECK (
-        administrative_area IS NULL
-        OR length(trim(administrative_area)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT checkout_addresses_postal_code_length_check CHECK (
-        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
-    ),
-    CONSTRAINT checkout_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
-);
-
-CREATE TABLE commerce.checkout_tax_calculations (
-    store_id            UUID    NOT NULL,
-    checkout_id         UUID    NOT NULL,
-    tax_rule_id         UUID    NOT NULL,
-    rule_code           TEXT    NOT NULL,
-    rule_name           TEXT    NOT NULL,
-    country_code        CHAR(2) NOT NULL,
-    rate_basis_points   INTEGER NOT NULL,
-
-    PRIMARY KEY (store_id, checkout_id),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, tax_rule_id)
-        REFERENCES commerce.tax_rules(store_id, id),
-    CONSTRAINT checkout_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
-    CONSTRAINT checkout_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
-    CONSTRAINT checkout_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT checkout_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
-);
-
-CREATE TABLE commerce.checkout_promotion_calculations (
-    store_id                      UUID                      NOT NULL,
-    checkout_id                   UUID                      NOT NULL,
-    promotion_id                  UUID                      NOT NULL,
-    handle                        TEXT                      NOT NULL,
-    name                          TEXT                      NOT NULL,
-    trigger                       commerce.promotion_trigger NOT NULL,
-    redemption_code               TEXT,
-    value_kind                    commerce.promotion_value_kind NOT NULL,
-    rate_basis_points             INTEGER,
-    amount_minor                  BIGINT,
-    maximum_amount_minor          BIGINT,
-    currency                      CHAR(3)                   NOT NULL,
-    minimum_subtotal_amount_minor BIGINT                    NOT NULL,
-    priority                      SMALLINT                  NOT NULL,
-    starts_at                     TIMESTAMPTZ,
-    ends_at                       TIMESTAMPTZ,
-    discount_amount_minor         BIGINT                    NOT NULL,
-
-    PRIMARY KEY (store_id, checkout_id),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, promotion_id)
-        REFERENCES commerce.promotions(store_id, id),
-    CONSTRAINT checkout_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT checkout_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT checkout_promotion_trigger_check CHECK (
-        (trigger = 'automatic' AND redemption_code IS NULL)
-        OR (trigger = 'code' AND redemption_code ~ '^[A-Z0-9-]{1,64}$')
-    ),
-    CONSTRAINT checkout_promotion_value_check CHECK (
-        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
-            AND amount_minor IS NULL
-            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
-        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
-            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
-    ),
-    CONSTRAINT checkout_promotion_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
-    CONSTRAINT checkout_promotion_priority_check CHECK (priority BETWEEN 0 AND 32767),
-    CONSTRAINT checkout_promotion_schedule_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
-    ),
-    CONSTRAINT checkout_promotion_discount_check CHECK (discount_amount_minor > 0),
-    CONSTRAINT checkout_promotion_currency_check CHECK (currency ~ '^[A-Z]{3}$')
-);
-
-CREATE TABLE commerce.checkout_lines (
-    store_id                 UUID        NOT NULL,
-    checkout_id              UUID        NOT NULL,
-    position                 SMALLINT    NOT NULL,
-    product_id               UUID        NOT NULL,
-    product_variant_id       UUID        NOT NULL,
-    product_title            TEXT        NOT NULL,
-    variant_title            TEXT        NOT NULL,
-    sku                      TEXT,
-    requires_shipping        BOOLEAN     NOT NULL,
-    track_inventory          BOOLEAN     NOT NULL,
-    quantity                 INTEGER     NOT NULL,
-    unit_price_amount_minor  BIGINT      NOT NULL,
-    subtotal_amount_minor    BIGINT      NOT NULL,
-    discount_amount_minor    BIGINT      NOT NULL,
-    tax_amount_minor         BIGINT      NOT NULL,
-    total_amount_minor       BIGINT      NOT NULL,
-    tax_inclusive            BOOLEAN     NOT NULL,
-    created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (store_id, checkout_id, position),
-    UNIQUE (store_id, checkout_id, product_variant_id),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id),
-    CONSTRAINT checkout_lines_position_check CHECK (position BETWEEN 0 AND 998),
-    CONSTRAINT checkout_lines_product_title_length_check CHECK (
-        length(trim(product_title)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT checkout_lines_variant_title_length_check CHECK (
-        length(trim(variant_title)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT checkout_lines_sku_length_check CHECK (
-        sku IS NULL OR length(trim(sku)) BETWEEN 1 AND 64
-    ),
-    CONSTRAINT checkout_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999),
-    CONSTRAINT checkout_lines_amounts_check CHECK (
-        unit_price_amount_minor >= 0
-        AND subtotal_amount_minor = unit_price_amount_minor * quantity
-        AND discount_amount_minor >= 0
-        AND discount_amount_minor <= subtotal_amount_minor
-        AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
-        AND (NOT tax_inclusive OR tax_amount_minor <= subtotal_amount_minor - discount_amount_minor)
-    )
-);
-
 CREATE TABLE commerce.orders (
     id                       UUID                               NOT NULL PRIMARY KEY,
     store_id                 UUID                               NOT NULL,
     order_number             TEXT                               NOT NULL,
     sales_channel_id         UUID                               NOT NULL,
-    checkout_id              UUID                               NOT NULL,
+    cart_id                  UUID                               NOT NULL,
     shopper_id               UUID                               NOT NULL,
     inventory_reservation_id UUID,
     price_list_id            UUID                               NOT NULL,
@@ -2004,18 +1650,34 @@ CREATE TABLE commerce.orders (
     subtotal_amount_minor    BIGINT                             NOT NULL,
     discount_amount_minor    BIGINT                             NOT NULL,
     tax_amount_minor         BIGINT                             NOT NULL,
-    tax_inclusive            BOOLEAN                            NOT NULL,
     shipping_amount_minor    BIGINT                             NOT NULL,
     total_amount_minor       BIGINT                             NOT NULL,
+    contact_email            extensions.citext,
+    contact_phone            TEXT,
+    billing_full_name        TEXT,
+    billing_company          TEXT,
+    billing_address_line1    TEXT,
+    billing_address_line2    TEXT,
+    billing_locality         TEXT,
+    billing_administrative_area TEXT,
+    billing_postal_code      TEXT,
+    billing_country_code     CHAR(2),
+    shipping_full_name       TEXT,
+    shipping_company         TEXT,
+    shipping_address_line1   TEXT,
+    shipping_address_line2   TEXT,
+    shipping_locality        TEXT,
+    shipping_administrative_area TEXT,
+    shipping_postal_code     TEXT,
+    shipping_country_code    CHAR(2),
     created_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
     UNIQUE (store_id, order_number),
     UNIQUE (store_id, id, shopper_id),
-    UNIQUE (store_id, checkout_id),
-    FOREIGN KEY (store_id, checkout_id, shopper_id)
-        REFERENCES commerce.checkouts(store_id, id, shopper_id),
+    FOREIGN KEY (store_id, cart_id)
+        REFERENCES commerce.carts(store_id, id),
     FOREIGN KEY (store_id, shopper_id)
         REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (sales_channel_id)
@@ -2034,29 +1696,21 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_amounts_check CHECK (
         subtotal_amount_minor >= 0
         AND discount_amount_minor >= 0
-        AND discount_amount_minor <= subtotal_amount_minor
         AND tax_amount_minor >= 0
         AND shipping_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
-            + shipping_amount_minor
-    )
-);
-
-CREATE TABLE commerce.order_contacts (
-    store_id            UUID              NOT NULL,
-    order_id            UUID              NOT NULL,
-    email               extensions.citext NOT NULL,
-    phone               TEXT,
-
-    PRIMARY KEY (store_id, order_id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT order_contacts_email_length_check CHECK (
-        length(trim(email::text)) BETWEEN 3 AND 320
+        AND total_amount_minor >= 0
     ),
-    CONSTRAINT order_contacts_phone_format_check CHECK (
-        phone IS NULL OR phone ~ '^\+[1-9][0-9]{7,14}$'
+    CONSTRAINT orders_contact_email_length_check CHECK (
+        contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320
+    ),
+    CONSTRAINT orders_contact_phone_format_check CHECK (
+        contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'
+    ),
+    CONSTRAINT orders_billing_country_code_check CHECK (
+        billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'
+    ),
+    CONSTRAINT orders_shipping_country_code_check CHECK (
+        shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'
     )
 );
 
@@ -2099,113 +1753,6 @@ CREATE TABLE commerce.order_tracking_sessions (
     CONSTRAINT order_tracking_sessions_expiry_check CHECK (expires_at > created_at)
 );
 
-CREATE TABLE commerce.order_addresses (
-    store_id             UUID               NOT NULL,
-    order_id             UUID               NOT NULL,
-    kind                 commerce.address_kind NOT NULL,
-    full_name            TEXT               NOT NULL,
-    company              TEXT,
-    address_line1        TEXT               NOT NULL,
-    address_line2        TEXT,
-    locality             TEXT               NOT NULL,
-    administrative_area TEXT,
-    postal_code          TEXT,
-    country_code         CHAR(2)            NOT NULL,
-
-    PRIMARY KEY (store_id, order_id, kind),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT order_addresses_full_name_length_check CHECK (
-        length(trim(full_name)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT order_addresses_company_length_check CHECK (
-        company IS NULL OR length(trim(company)) BETWEEN 1 AND 200
-    ),
-    CONSTRAINT order_addresses_line1_length_check CHECK (
-        length(trim(address_line1)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT order_addresses_line2_length_check CHECK (
-        address_line2 IS NULL OR length(trim(address_line2)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT order_addresses_locality_length_check CHECK (
-        length(trim(locality)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT order_addresses_area_length_check CHECK (
-        administrative_area IS NULL
-        OR length(trim(administrative_area)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT order_addresses_postal_code_length_check CHECK (
-        postal_code IS NULL OR length(trim(postal_code)) BETWEEN 1 AND 32
-    ),
-    CONSTRAINT order_addresses_country_code_check CHECK (country_code ~ '^[A-Z]{2}$')
-);
-
-CREATE TABLE commerce.order_tax_calculations (
-    store_id            UUID    NOT NULL,
-    order_id            UUID    NOT NULL,
-    tax_rule_id         UUID    NOT NULL,
-    rule_code           TEXT    NOT NULL,
-    rule_name           TEXT    NOT NULL,
-    country_code        CHAR(2) NOT NULL,
-    rate_basis_points   INTEGER NOT NULL,
-
-    PRIMARY KEY (store_id, order_id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, tax_rule_id)
-        REFERENCES commerce.tax_rules(store_id, id),
-    CONSTRAINT order_tax_rule_code_length_check CHECK (length(trim(rule_code)) BETWEEN 1 AND 64),
-    CONSTRAINT order_tax_rule_name_length_check CHECK (length(trim(rule_name)) BETWEEN 1 AND 120),
-    CONSTRAINT order_tax_country_code_check CHECK (country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT order_tax_rate_range_check CHECK (rate_basis_points BETWEEN 0 AND 10000)
-);
-
-CREATE TABLE commerce.order_promotion_calculations (
-    store_id                      UUID                      NOT NULL,
-    order_id                      UUID                      NOT NULL,
-    promotion_id                  UUID                      NOT NULL,
-    handle                        TEXT                      NOT NULL,
-    name                          TEXT                      NOT NULL,
-    trigger                       commerce.promotion_trigger NOT NULL,
-    redemption_code               TEXT,
-    value_kind                    commerce.promotion_value_kind NOT NULL,
-    rate_basis_points             INTEGER,
-    amount_minor                  BIGINT,
-    maximum_amount_minor          BIGINT,
-    currency                      CHAR(3)                   NOT NULL,
-    minimum_subtotal_amount_minor BIGINT                    NOT NULL,
-    priority                      SMALLINT                  NOT NULL,
-    starts_at                     TIMESTAMPTZ,
-    ends_at                       TIMESTAMPTZ,
-    discount_amount_minor         BIGINT                    NOT NULL,
-
-    PRIMARY KEY (store_id, order_id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, promotion_id)
-        REFERENCES commerce.promotions(store_id, id),
-    CONSTRAINT order_promotion_handle_check CHECK (handle ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT order_promotion_name_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT order_promotion_trigger_check CHECK (
-        (trigger = 'automatic' AND redemption_code IS NULL)
-        OR (trigger = 'code' AND redemption_code ~ '^[A-Z0-9-]{1,64}$')
-    ),
-    CONSTRAINT order_promotion_value_check CHECK (
-        (value_kind = 'percentage' AND rate_basis_points BETWEEN 1 AND 10000
-            AND amount_minor IS NULL
-            AND (maximum_amount_minor IS NULL OR maximum_amount_minor > 0))
-        OR (value_kind = 'fixed_amount' AND rate_basis_points IS NULL
-            AND amount_minor > 0 AND maximum_amount_minor IS NULL)
-    ),
-    CONSTRAINT order_promotion_minimum_check CHECK (minimum_subtotal_amount_minor >= 0),
-    CONSTRAINT order_promotion_priority_check CHECK (priority BETWEEN 0 AND 32767),
-    CONSTRAINT order_promotion_schedule_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at
-    ),
-    CONSTRAINT order_promotion_discount_check CHECK (discount_amount_minor > 0),
-    CONSTRAINT order_promotion_currency_check CHECK (currency ~ '^[A-Z]{3}$')
-);
-
 CREATE TABLE commerce.order_lines (
     store_id                 UUID        NOT NULL,
     order_id                 UUID        NOT NULL,
@@ -2220,10 +1767,6 @@ CREATE TABLE commerce.order_lines (
     quantity                 INTEGER     NOT NULL,
     unit_price_amount_minor  BIGINT      NOT NULL,
     subtotal_amount_minor    BIGINT      NOT NULL,
-    discount_amount_minor    BIGINT      NOT NULL,
-    tax_amount_minor         BIGINT      NOT NULL,
-    total_amount_minor       BIGINT      NOT NULL,
-    tax_inclusive            BOOLEAN     NOT NULL,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (store_id, order_id, position),
@@ -2244,12 +1787,7 @@ CREATE TABLE commerce.order_lines (
     CONSTRAINT order_lines_amounts_check CHECK (
         unit_price_amount_minor >= 0
         AND subtotal_amount_minor = unit_price_amount_minor * quantity
-        AND discount_amount_minor >= 0
-        AND discount_amount_minor <= subtotal_amount_minor
-        AND tax_amount_minor >= 0
-        AND total_amount_minor = subtotal_amount_minor - discount_amount_minor
-            + CASE WHEN tax_inclusive THEN 0 ELSE tax_amount_minor END
-        AND (NOT tax_inclusive OR tax_amount_minor <= subtotal_amount_minor - discount_amount_minor)
+        AND subtotal_amount_minor >= 0
     )
 );
 
@@ -2419,32 +1957,6 @@ CREATE TABLE commerce.shipping_service_regions (
     CONSTRAINT shipping_service_regions_country_check CHECK (country_code ~ '^[A-Z]{2}$')
 );
 
-CREATE TABLE commerce.checkout_shipping_selections (
-    store_id            UUID        NOT NULL,
-    checkout_id         UUID        NOT NULL,
-    shipping_service_id UUID        NOT NULL,
-    service_code        TEXT        NOT NULL,
-    service_name        TEXT        NOT NULL,
-    amount_minor        BIGINT      NOT NULL,
-    currency            CHAR(3)     NOT NULL,
-    estimated_min_days  SMALLINT    NOT NULL,
-    estimated_max_days  SMALLINT    NOT NULL,
-
-    PRIMARY KEY (store_id, checkout_id),
-    FOREIGN KEY (store_id, checkout_id)
-        REFERENCES commerce.checkouts(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, shipping_service_id)
-        REFERENCES commerce.shipping_services(store_id, id),
-    CONSTRAINT checkout_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
-    CONSTRAINT checkout_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
-    CONSTRAINT checkout_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
-    CONSTRAINT checkout_shipping_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT checkout_shipping_estimate_check CHECK (
-        estimated_min_days BETWEEN 0 AND 365
-        AND estimated_max_days BETWEEN estimated_min_days AND 365
-    )
-);
-
 CREATE TABLE commerce.order_shipping_selections (
     store_id            UUID        NOT NULL,
     order_id            UUID        NOT NULL,
@@ -2506,6 +2018,9 @@ CREATE TABLE commerce.provider_accounts (
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
     CONSTRAINT provider_accounts_provider_length_check CHECK (
         provider ~ '^[a-z0-9_]{1,64}$'
+    ),
+    CONSTRAINT provider_accounts_stripe_only_check CHECK (
+        provider = 'stripe_checkout'
     ),
     CONSTRAINT provider_accounts_display_name_length_check CHECK (
         length(trim(display_name)) BETWEEN 1 AND 120
@@ -2601,23 +2116,25 @@ CREATE TABLE commerce.provider_accounts (
 );
 
 CREATE TABLE commerce.payment_attempts (
-    id                     UUID                            NOT NULL PRIMARY KEY,
-    store_id               UUID                            NOT NULL,
-    order_id               UUID                            NOT NULL,
-    shopper_id             UUID                            NOT NULL,
-    provider_account_id    UUID                            NOT NULL,
-    amount_minor           BIGINT                          NOT NULL,
-    currency               CHAR(3)                         NOT NULL,
-    status                 commerce.payment_attempt_status NOT NULL DEFAULT 'pending',
-    provider_reference     TEXT,
-    failure_code           TEXT,
-    created_at             TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                         UUID                            NOT NULL PRIMARY KEY,
+    store_id                   UUID                            NOT NULL,
+    order_id                   UUID                            NOT NULL,
+    shopper_id                 UUID                            NOT NULL,
+    provider_account_id       UUID                            NOT NULL,
+    amount_minor               BIGINT                          NOT NULL,
+    currency                   CHAR(3)                         NOT NULL,
+    status                     commerce.payment_attempt_status NOT NULL DEFAULT 'pending',
+    stripe_checkout_session_id TEXT,
+    stripe_payment_intent_id   TEXT,
+    stripe_charge_id           TEXT,
+    failure_code               TEXT,
+    created_at                 TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
     UNIQUE (store_id, id, shopper_id),
     UNIQUE (store_id, id, currency),
-    UNIQUE (provider_account_id, provider_reference),
+    UNIQUE (provider_account_id, stripe_checkout_session_id),
     FOREIGN KEY (store_id, order_id, shopper_id)
         REFERENCES commerce.orders(store_id, id, shopper_id),
     FOREIGN KEY (store_id, order_id, currency)
@@ -2626,9 +2143,17 @@ CREATE TABLE commerce.payment_attempts (
         REFERENCES commerce.provider_accounts(store_id, id),
     CONSTRAINT payment_attempts_amount_positive_check CHECK (amount_minor > 0),
     CONSTRAINT payment_attempts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT payment_attempts_provider_reference_length_check CHECK (
-        provider_reference IS NULL
-        OR length(trim(provider_reference)) BETWEEN 1 AND 255
+    CONSTRAINT payment_attempts_stripe_session_length_check CHECK (
+        stripe_checkout_session_id IS NULL
+        OR length(trim(stripe_checkout_session_id)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT payment_attempts_stripe_payment_intent_check CHECK (
+        stripe_payment_intent_id IS NULL
+        OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'
+    ),
+    CONSTRAINT payment_attempts_stripe_charge_check CHECK (
+        stripe_charge_id IS NULL
+        OR stripe_charge_id ~ '^ch_[A-Za-z0-9]+$'
     ),
     CONSTRAINT payment_attempts_failure_shape_check CHECK (
         (status = 'failed' AND failure_code IS NOT NULL)
@@ -2643,20 +2168,20 @@ CREATE TABLE commerce.refunds (
     amount_minor           BIGINT                  NOT NULL,
     currency               CHAR(3)                 NOT NULL,
     status                 commerce.refund_status  NOT NULL DEFAULT 'pending',
-    provider_reference     TEXT,
+    stripe_refund_id       TEXT,
     failure_code           TEXT,
     created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
-    UNIQUE (payment_attempt_id, provider_reference),
+    UNIQUE (payment_attempt_id, stripe_refund_id),
     FOREIGN KEY (store_id, payment_attempt_id, currency)
         REFERENCES commerce.payment_attempts(store_id, id, currency),
     CONSTRAINT refunds_amount_positive_check CHECK (amount_minor > 0),
     CONSTRAINT refunds_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_provider_reference_length_check CHECK (
-        provider_reference IS NULL
-        OR length(trim(provider_reference)) BETWEEN 1 AND 255
+    CONSTRAINT refunds_stripe_refund_length_check CHECK (
+        stripe_refund_id IS NULL
+        OR length(trim(stripe_refund_id)) BETWEEN 1 AND 255
     ),
     CONSTRAINT refunds_failure_shape_check CHECK (
         (status = 'failed' AND failure_code IS NOT NULL)
@@ -2984,10 +2509,6 @@ CREATE TABLE commerce.return_lines (
 CREATE INDEX shoppers_store_seen_idx
     ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 
-CREATE UNIQUE INDEX checkouts_one_pending_per_cart_idx
-    ON commerce.checkouts (store_id, cart_id)
-    WHERE status = 'pending';
-
 CREATE INDEX carts_channel_updated_idx
     ON commerce.carts (store_id,
         sales_channel_id,
@@ -2998,17 +2519,6 @@ CREATE INDEX carts_channel_updated_idx
 
 CREATE INDEX cart_lines_variant_lookup_idx
     ON commerce.cart_lines (store_id, product_variant_id, cart_id);
-
-CREATE INDEX checkouts_channel_created_idx
-    ON commerce.checkouts (store_id,
-        sales_channel_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX checkouts_expiry_claim_idx
-    ON commerce.checkouts (expires_at, id)
-    WHERE status = 'pending';
 
 CREATE INDEX orders_channel_created_idx
     ON commerce.orders (store_id,
@@ -3054,6 +2564,14 @@ CREATE INDEX refunds_attempt_created_idx
         created_at DESC,
         id DESC
     );
+
+CREATE UNIQUE INDEX payment_attempts_stripe_payment_intent_key
+    ON commerce.payment_attempts (stripe_payment_intent_id)
+    WHERE stripe_payment_intent_id IS NOT NULL;
+
+CREATE UNIQUE INDEX refunds_stripe_refund_key
+    ON commerce.refunds (stripe_refund_id)
+    WHERE stripe_refund_id IS NOT NULL;
 
 CREATE INDEX shipping_services_quote_idx
     ON commerce.shipping_services (store_id,
@@ -3123,44 +2641,6 @@ CREATE INDEX return_lines_variant_idx
     );
 
 -- === Sales and fulfillment workflows ===
-
-CREATE FUNCTION commerce.claim_expired_checkouts(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
-)
-RETURNS TABLE (
-    id UUID,
-    store_id UUID,
-    inventory_reservation_id UUID
-)
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    WITH claimable AS (
-        SELECT checkout.id
-        FROM commerce.checkouts AS checkout
-        WHERE checkout.status = 'pending'
-          AND checkout.expires_at <= claimed_at
-          AND (
-              checkout.expiry_locked_at IS NULL
-              OR checkout.expiry_locked_at <= stale_before
-          )
-        ORDER BY checkout.expires_at, checkout.id
-        FOR UPDATE SKIP LOCKED
-        LIMIT greatest(least(batch_size, 500), 1)
-    )
-    UPDATE commerce.checkouts AS checkout
-       SET expiry_locked_by = worker_id,
-           expiry_locked_at = claimed_at
-      FROM claimable
-     WHERE checkout.id = claimable.id
-    RETURNING checkout.id, checkout.store_id,
-              checkout.inventory_reservation_id;
-$$;
 
 CREATE FUNCTION commerce.resolve_provider_account(
     requested_provider             TEXT,
@@ -3443,39 +2923,17 @@ ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.checkouts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_contacts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_addresses ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_tax_calculations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_promotion_calculations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_lines ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_tracking_keys ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_tracking_sessions ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.order_contacts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_addresses ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_tax_calculations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_promotion_calculations ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_transitions ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_fulfillment_transitions ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.checkout_shipping_selections ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_shipping_selections ENABLE ROW LEVEL SECURITY;
 
@@ -3525,66 +2983,6 @@ CREATE POLICY store_isolation ON commerce.cart_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.checkouts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_contacts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_addresses
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_tax_calculations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_promotion_calculations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_lines
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
 CREATE POLICY store_isolation ON commerce.orders
     USING (
         store_id =
@@ -3602,46 +3000,6 @@ CREATE POLICY store_isolation ON commerce.order_tracking_keys
 CREATE POLICY store_isolation ON commerce.order_tracking_sessions
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-CREATE POLICY store_isolation ON commerce.order_contacts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.order_addresses
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.order_tax_calculations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.order_promotion_calculations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
 
 CREATE POLICY store_isolation ON commerce.order_lines
     USING (
@@ -3664,16 +3022,6 @@ CREATE POLICY store_isolation ON commerce.order_transitions
     );
 
 CREATE POLICY store_isolation ON commerce.order_fulfillment_transitions
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.checkout_shipping_selections
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -3823,34 +3171,11 @@ CREATE POLICY store_isolation ON commerce.return_lines
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-COMMENT ON INDEX commerce.checkouts_expiry_claim_idx IS
-    'Supports the cross-tenant SECURITY DEFINER expiry scheduler claim path';
-
-REVOKE ALL ON FUNCTION commerce.claim_expired_checkouts(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION commerce.claim_expired_checkouts(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-)
-    TO chaos_runtime;
-
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
-REVOKE UPDATE, DELETE
-    ON commerce.checkout_contacts, commerce.checkout_addresses, commerce.checkout_lines,
-       commerce.checkout_tax_calculations,
-       commerce.checkout_promotion_calculations FROM chaos_runtime;
 
-REVOKE UPDATE, DELETE
-    ON commerce.order_contacts, commerce.order_addresses, commerce.order_lines,
-       commerce.order_tax_calculations,
-       commerce.order_promotion_calculations, commerce.order_transitions,
-       commerce.order_fulfillment_transitions
-    FROM chaos_runtime;
-
-REVOKE DELETE ON commerce.checkouts, commerce.orders FROM chaos_runtime;
+REVOKE DELETE ON commerce.orders FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
@@ -3860,9 +3185,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-REVOKE UPDATE, DELETE
-    ON commerce.checkout_shipping_selections FROM chaos_runtime;
 
 REVOKE UPDATE, DELETE
     ON commerce.order_shipping_selections FROM chaos_runtime;

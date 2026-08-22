@@ -68,12 +68,11 @@ impl PostgresStorefrontCatalogRepository {
                 bool,
                 i64,
                 String,
-                bool,
                 Option<serde_json::Value>,
             ),
         >(
             "WITH selected_price_list AS ( \
-                 SELECT price_list.id, price_list.currency::text, price_list.tax_inclusive \
+                 SELECT price_list.id, price_list.currency::text \
                  FROM commerce.price_lists AS price_list \
                  INNER JOIN commerce.stores AS store \
                    ON store.id = price_list.store_id \
@@ -95,7 +94,7 @@ impl PostgresStorefrontCatalogRepository {
                  LIMIT 1 \
              ) \
              SELECT variant.id, variant.title, variant.sku::text, variant.requires_shipping, \
-                    price.amount_minor, selected.currency, selected.tax_inclusive, \
+                    price.amount_minor, selected.currency, \
                     variant.metadata \
              FROM commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
@@ -120,16 +119,7 @@ impl PostgresStorefrontCatalogRepository {
         let mut selections = variant_selected_options(transaction, actor, product_id).await?;
         rows.into_iter()
             .map(
-                |(
-                    id,
-                    title,
-                    sku,
-                    requires_shipping,
-                    amount_minor,
-                    currency,
-                    tax_inclusive,
-                    metadata,
-                )| {
+                |(id, title, sku, requires_shipping, amount_minor, currency, metadata)| {
                     Ok(StorefrontCatalogVariant {
                         id: ProductVariantId::from_uuid(id),
                         title: translations.get(&id).cloned().unwrap_or(title),
@@ -141,7 +131,6 @@ impl PostgresStorefrontCatalogRepository {
                                 "database contains an invalid currency"
                             ))
                         })?,
-                        tax_inclusive,
                         selected_options: selections.remove(&id).unwrap_or_default(),
                         metadata,
                     })

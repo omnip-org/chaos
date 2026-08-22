@@ -10,7 +10,6 @@ export type CurrencyCode = string;
 export interface Price {
   amount_minor: number;
   currency: CurrencyCode;
-  tax_inclusive: boolean;
 }
 
 export interface ProductOptionValue {
@@ -108,7 +107,6 @@ export interface CartLine {
   quantity: number;
   unit_price_amount_minor: number;
   subtotal_amount_minor: number;
-  tax_inclusive: boolean;
   /** Current ready catalog media for storefront presentation. */
   media: ProductMedia[];
 }
@@ -130,7 +128,7 @@ export interface SetCartLineRequest {
   quantity: number;
 }
 
-export interface CheckoutContact {
+export interface OrderContact {
   email: string;
   phone?: string;
 }
@@ -146,21 +144,6 @@ export interface PostalAddress {
   country_code: string;
 }
 
-export interface CreateCheckoutRequest {
-  contact: CheckoutContact;
-  billing_address: PostalAddress;
-  /** Required when any Cart line requires shipping. */
-  shipping_address?: PostalAddress;
-  /** Required for shippable Carts; revalidated when Checkout is created. */
-  shipping_service_id?: UUID;
-  /** Optional redemption code, revalidated when Checkout is created. */
-  promotion_code?: string;
-}
-
-export interface QuoteShippingRequest {
-  destination_country: string;
-}
-
 export interface ShippingOption {
   service_id: UUID;
   code: string;
@@ -171,74 +154,18 @@ export interface ShippingOption {
   estimated_max_days: number;
 }
 
-export interface TaxCalculation {
-  rule_id: UUID;
-  code: string;
-  name: string;
-  country_code: string;
-  rate_basis_points: number;
-}
-
-export interface PromotionCalculation {
-  promotion_id: UUID;
-  handle: string;
-  name: string;
-  trigger: "automatic" | "code";
-  redemption_code?: string;
-  value_kind: "percentage" | "fixed_amount";
-  rate_basis_points?: number;
-  amount_minor?: number;
-  maximum_amount_minor?: number;
-  currency: CurrencyCode;
-  minimum_subtotal_amount_minor: number;
-  priority: number;
-  starts_at?: string;
-  ends_at?: string;
-}
-
-export interface CheckoutLine {
+export interface OrderLine {
   product_id: UUID;
   product_variant_id: UUID;
   product_title: string;
   variant_title: string;
   sku?: string;
   requires_shipping: boolean;
-  track_inventory?: boolean;
+  track_inventory: boolean;
   quantity: number;
   unit_price_amount_minor: number;
   subtotal_amount_minor: number;
-  discount_amount_minor: number;
-  tax_amount_minor: number;
-  total_amount_minor: number;
-  tax_inclusive: boolean;
 }
-
-export interface Checkout {
-  id: UUID;
-  cart_id: UUID;
-  inventory_reservation_id?: UUID;
-  price_list_id: UUID;
-  currency: CurrencyCode;
-  locale: Locale;
-  status: "pending" | "completed" | "expired";
-  contact: CheckoutContact;
-  billing_address: PostalAddress;
-  shipping_address?: PostalAddress;
-  shipping?: ShippingOption;
-  subtotal_amount_minor: number;
-  discount_amount_minor: number;
-  tax_amount_minor: number;
-  tax_rule: TaxCalculation;
-  promotion?: PromotionCalculation;
-  tax_inclusive: boolean;
-  shipping_amount_minor: number;
-  total_amount_minor: number;
-  expires_at: string;
-  lines: CheckoutLine[];
-  created_at: string;
-}
-
-export type OrderLine = CheckoutLine & { track_inventory: boolean };
 
 export interface OrderTransition {
   id: UUID;
@@ -251,7 +178,6 @@ export interface OrderTransition {
 export interface Order {
   id: UUID;
   order_number: string;
-  checkout_id: UUID;
   inventory_reservation_id?: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
@@ -259,16 +185,13 @@ export interface Order {
   status: "pending" | "confirmed" | "cancelled";
   fulfillment_status: "unfulfilled" | "partially_fulfilled" | "fulfilled";
   delivery_status: "not_delivered" | "partially_delivered" | "delivered";
-  contact: CheckoutContact;
-  billing_address: PostalAddress;
+  contact: OrderContact;
+  billing_address?: PostalAddress;
   shipping_address?: PostalAddress;
   shipping?: ShippingOption;
   subtotal_amount_minor: number;
   discount_amount_minor: number;
   tax_amount_minor: number;
-  tax_rule: TaxCalculation;
-  promotion?: PromotionCalculation;
-  tax_inclusive: boolean;
   shipping_amount_minor: number;
   total_amount_minor: number;
   lines: OrderLine[];
@@ -295,7 +218,6 @@ export interface CreateEmbeddedCheckoutRequest {
 }
 
 export interface EmbeddedCheckoutSession {
-  checkout_id: UUID;
   order_id: UUID;
   payment_attempt_id: UUID;
 }

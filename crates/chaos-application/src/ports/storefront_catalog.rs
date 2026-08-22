@@ -35,7 +35,6 @@ pub struct StorefrontCatalogVariant {
     pub requires_shipping: bool,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
-    pub tax_inclusive: bool,
     pub selected_options: Vec<StorefrontSelectedOption>,
     pub metadata: Option<serde_json::Value>,
 }

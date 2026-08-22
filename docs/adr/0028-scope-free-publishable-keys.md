@@ -12,7 +12,7 @@ meaningful trust boundary, but they multiplied configuration, persistence,
 authentication, transport, and testing states.
 
 Sensitive operations already require stronger possession or authority: Shopper
-credentials bind carts, checkouts, and Orders; guest tracking capabilities bind
+credentials bind carts, Orders, and Payment Attempts; guest tracking capabilities bind
 Order tracking; verified Provider webhooks confirm payments; and User Access Keys
 plus current Store membership authorize MCP administration.
 

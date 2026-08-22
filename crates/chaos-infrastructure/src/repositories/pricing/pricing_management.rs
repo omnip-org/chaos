@@ -55,7 +55,6 @@ type PriceListRow = (
     String,
     String,
     String,
-    bool,
     String,
     Option<OffsetDateTime>,
     Option<OffsetDateTime>,
@@ -85,7 +84,7 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
         }
         let rows = sqlx::query_as::<_, PriceListRow>(
             "SELECT price_list.id, price_list.code::text, price_list.name, \
-                    price_list.currency::text, price_list.tax_inclusive, \
+                    price_list.currency::text, \
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM commerce.price_lists AS price_list \
@@ -119,7 +118,7 @@ impl PricingReadRepository for PostgresPricingManagementRepository {
         let mut transaction = self.begin_read(actor).await?;
         let row = sqlx::query_as::<_, PriceListRow>(
             "SELECT price_list.id, price_list.code::text, price_list.name, \
-                    price_list.currency::text, price_list.tax_inclusive, \
+                    price_list.currency::text, \
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM commerce.price_lists AS price_list \
@@ -279,8 +278,8 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
     async fn replace(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         let result = sqlx::query(
             "UPDATE commerce.price_lists SET code = $3, name = $4, currency = $5, \
-                    tax_inclusive = $6, status = $7::commerce.price_list_status, \
-                    starts_at = $8, ends_at = $9, updated_at = CURRENT_TIMESTAMP \
+                    status = $6::commerce.price_list_status, starts_at = $7, ends_at = $8, \
+                    updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -288,7 +287,6 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         .bind(price_list.code().as_str())
         .bind(price_list.name())
         .bind(price_list.currency().as_str())
-        .bind(price_list.tax_inclusive())
         .bind(price_list.status().as_str())
         .bind(price_list.starts_at())
         .bind(price_list.ends_at())
@@ -371,25 +369,13 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
 }
 
 fn read_item(row: PriceListRow) -> Result<PriceListReadItem, ApplicationError> {
-    let (
-        id,
-        code,
-        name,
-        currency,
-        tax_inclusive,
-        status,
-        starts_at,
-        ends_at,
-        price_count,
-        created_at,
-        updated_at,
-    ) = row;
+    let (id, code, name, currency, status, starts_at, ends_at, price_count, created_at, updated_at) =
+        row;
     Ok(PriceListReadItem {
         id: PriceListId::from_uuid(id),
         code,
         name,
         currency: CurrencyCode::parse(&currency).map_err(ApplicationError::from)?,
-        tax_inclusive,
         status: parse_status(&status)?,
         starts_at,
         ends_at,
@@ -628,7 +614,6 @@ mod tests {
             code: "retail-us".into(),
             name: "US Retail".into(),
             currency: "USD".into(),
-            tax_inclusive: true,
             starts_at: None,
             ends_at: None,
             prices: vec![CreatePriceInput {
@@ -647,7 +632,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.item.code, "retail-us");
-        assert!(updated.item.tax_inclusive);
         assert_eq!(updated.prices[0].amount_minor, 3000);
 
         service

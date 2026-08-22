@@ -108,13 +108,12 @@ async fn resolve_variant(
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
     locale: &Locale,
-) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64, bool)>, ApplicationError>
+) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64)>, ApplicationError>
 {
     let translations = translation_locales(transaction, actor, locale).await?;
     sqlx::query_as(
         "SELECT product.id, COALESCE((SELECT translation.title FROM commerce.product_translations AS translation WHERE translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$1 OR translation.locale=$2) ORDER BY CASE WHEN translation.locale=$3 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM commerce.product_variant_translations AS translation WHERE translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
-                variant.requires_shipping, variant.track_inventory, price.amount_minor, \
-                price_list.tax_inclusive \
+                variant.requires_shipping, variant.track_inventory, price.amount_minor \
          FROM commerce.product_variants AS variant \
          INNER JOIN commerce.products AS product \
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
@@ -157,15 +156,15 @@ async fn insert_or_replace_line(
         "INSERT INTO commerce.cart_lines \
          (store_id, cart_id, product_id, product_variant_id, \
           product_title, variant_title, sku, requires_shipping, track_inventory, quantity, \
-          unit_price_amount_minor, tax_inclusive) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+          unit_price_amount_minor) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
          ON CONFLICT (store_id, cart_id, product_variant_id) \
          DO UPDATE SET product_title = EXCLUDED.product_title, \
              variant_title = EXCLUDED.variant_title, sku = EXCLUDED.sku, \
              requires_shipping = EXCLUDED.requires_shipping, \
              track_inventory = EXCLUDED.track_inventory, quantity = EXCLUDED.quantity, \
              unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
-             tax_inclusive = EXCLUDED.tax_inclusive, updated_at = CURRENT_TIMESTAMP",
+             updated_at = CURRENT_TIMESTAMP",
     )
     .bind(actor.store_id.as_uuid())
     .bind(cart_id.as_uuid())
@@ -178,7 +177,6 @@ async fn insert_or_replace_line(
     .bind(line.track_inventory())
     .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
     .bind(line.unit_price().amount_minor())
-    .bind(line.tax_inclusive())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -339,8 +337,8 @@ async fn load_cart_line_rows(
 ) -> Result<Vec<CartLineRow>, ApplicationError> {
     sqlx::query_as(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
-                requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
-                tax_inclusive FROM commerce.cart_lines \
+                requires_shipping, track_inventory, quantity, unit_price_amount_minor \
+         FROM commerce.cart_lines \
          WHERE store_id = $1 AND cart_id = $2 \
          ORDER BY product_variant_id ASC",
     )
@@ -369,7 +367,6 @@ fn cart_line_item(
         quantity,
         unit_price_amount_minor: row.8,
         subtotal_amount_minor: subtotal.amount_minor(),
-        tax_inclusive: row.9,
         media: media.get(&row.0).cloned().unwrap_or_default(),
     })
 }
@@ -386,7 +383,7 @@ async fn refresh_cart_lines(
         "SELECT product.id, variant.id, cart_line.product_title, cart_line.variant_title, \
                 cart_line.sku::text, \
                 variant.requires_shipping, variant.track_inventory, cart_line.quantity, \
-                price.amount_minor, price_list.tax_inclusive \
+                price.amount_minor \
          FROM commerce.cart_lines AS cart_line \
          INNER JOIN commerce.product_variants AS variant \
            ON variant.store_id = cart_line.store_id \
@@ -424,7 +421,6 @@ async fn refresh_cart_lines(
                 row.6,
                 u32::try_from(row.7).map_err(unexpected_conversion)?,
                 Money::new(row.8, currency),
-                row.9,
             )
             .map_err(ApplicationError::from)
         })

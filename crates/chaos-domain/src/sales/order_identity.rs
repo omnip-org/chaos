@@ -5,12 +5,12 @@ use email_address::EmailAddress;
 use crate::{DomainError, FieldViolation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckoutContact {
+pub struct OrderContact {
     email: String,
     phone: Option<String>,
 }
 
-impl CheckoutContact {
+impl OrderContact {
     pub fn new(email: impl Into<String>, phone: Option<String>) -> Result<Self, DomainError> {
         let email = email.into().trim().to_lowercase();
         if email.len() > 320 || EmailAddress::from_str(&email).is_err() {
@@ -133,17 +133,22 @@ impl PostalAddress {
     }
 }
 
+/// Customer data captured on the business Order.
+///
+/// Addresses are optional while an embedded payment session is still
+/// collecting them from Stripe. The payment webhook completes this snapshot
+/// before the Order is confirmed.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckoutIdentity {
-    contact: CheckoutContact,
-    billing_address: PostalAddress,
+pub struct OrderIdentity {
+    contact: OrderContact,
+    billing_address: Option<PostalAddress>,
     shipping_address: Option<PostalAddress>,
 }
 
-impl CheckoutIdentity {
+impl OrderIdentity {
     pub fn new(
-        contact: CheckoutContact,
-        billing_address: PostalAddress,
+        contact: OrderContact,
+        billing_address: Option<PostalAddress>,
         shipping_address: Option<PostalAddress>,
     ) -> Self {
         Self {
@@ -153,12 +158,12 @@ impl CheckoutIdentity {
         }
     }
 
-    pub fn contact(&self) -> &CheckoutContact {
+    pub fn contact(&self) -> &OrderContact {
         &self.contact
     }
 
-    pub fn billing_address(&self) -> &PostalAddress {
-        &self.billing_address
+    pub fn billing_address(&self) -> Option<&PostalAddress> {
+        self.billing_address.as_ref()
     }
 
     pub fn shipping_address(&self) -> Option<&PostalAddress> {
@@ -199,7 +204,7 @@ mod tests {
     #[test]
     fn contact_and_address_are_canonical_validated_snapshots() {
         let contact =
-            CheckoutContact::new(" Guest@Example.COM ", Some("+14155552671".into())).unwrap();
+            OrderContact::new(" Guest@Example.COM ", Some("+14155552671".into())).unwrap();
         let address = PostalAddress::new(
             " Guest Buyer ",
             None,
@@ -219,8 +224,8 @@ mod tests {
 
     #[test]
     fn contact_and_address_reject_invalid_customer_data() {
-        assert!(CheckoutContact::new("invalid", None).is_err());
-        assert!(CheckoutContact::new("guest@example.com", Some("4155552671".into())).is_err());
+        assert!(OrderContact::new("invalid", None).is_err());
+        assert!(OrderContact::new("guest@example.com", Some("4155552671".into())).is_err());
         assert!(PostalAddress::new("", None, "1 Main", None, "City", None, None, "USA").is_err());
     }
 }

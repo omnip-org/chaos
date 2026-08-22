@@ -7,8 +7,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
-        CheckoutLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
+        CartDetail, CartLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
         OrderTrackingSession, OrderTransitionItem, ShopperActor, StorefrontMediaAsset,
         StorefrontSalesRepository, StripeCheckoutDraft,
     },
@@ -18,16 +17,13 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::{InventoryBalance, InventoryReservationId},
-    pricing::{
-        Money, PriceListId, Promotion, PromotionId, PromotionSnapshot, PromotionStatus,
-        PromotionTrigger, PromotionValue, TaxRule, TaxRuleId, TaxRuleSnapshot, TaxRuleStatus,
-    },
+    pricing::{Money, PriceListId},
     sales::{
-        Cart, CartId, CartLine, CartStatus, Checkout, CheckoutContact, CheckoutId,
-        CheckoutIdentity, CommercialAdjustments, Order, OrderDeliveryStatus,
+        Cart, CartId, CartLine, CartStatus, OrderContact, OrderDeliveryStatus,
         OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
+        OrderIdentity,
     },
-    store::{SalesChannelId, StoreId},
+    store::SalesChannelId,
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
@@ -40,7 +36,6 @@ use uuid::Uuid;
 
 use crate::repositories::{
     analytics::{AnalyticsEventToAppend, append_event},
-    inventory::{ReservationClosure, close_reservation},
     shared::idempotency::{self, IdempotencyScope},
 };
 
@@ -66,8 +61,6 @@ fn generate_order_number(now: OffsetDateTime) -> Result<OrderNumber, Application
 }
 const SET_CART_LINE_OPERATION: &str = "cart_lines.set.v1";
 const REMOVE_CART_LINE_OPERATION: &str = "cart_lines.remove.v1";
-const CREATE_CHECKOUT_OPERATION: &str = "checkouts.create.v1";
-const CREATE_ORDER_OPERATION: &str = "orders.create.v1";
 const CREATE_STRIPE_CHECKOUT_OPERATION: &str = "stripe_checkouts.create.v1";
 
 type CartHeaderRow = (
@@ -82,40 +75,6 @@ type CartHeaderRow = (
     OffsetDateTime,
 );
 
-#[derive(sqlx::FromRow)]
-struct PromotionCheckoutRow {
-    id: Uuid,
-    handle: String,
-    name: String,
-    trigger: String,
-    redemption_code: Option<String>,
-    value_kind: String,
-    rate_basis_points: Option<i32>,
-    amount_minor: Option<i64>,
-    maximum_amount_minor: Option<i64>,
-    minimum_subtotal_amount_minor: i64,
-    priority: i16,
-    starts_at: Option<OffsetDateTime>,
-    ends_at: Option<OffsetDateTime>,
-}
-
-#[derive(sqlx::FromRow)]
-struct PromotionSnapshotRow {
-    promotion_id: Uuid,
-    handle: String,
-    name: String,
-    trigger: String,
-    redemption_code: Option<String>,
-    value_kind: String,
-    rate_basis_points: Option<i32>,
-    amount_minor: Option<i64>,
-    maximum_amount_minor: Option<i64>,
-    currency: String,
-    minimum_subtotal_amount_minor: i64,
-    priority: i16,
-    starts_at: Option<OffsetDateTime>,
-    ends_at: Option<OffsetDateTime>,
-}
 type CartLineRow = (
     Uuid,
     Uuid,
@@ -126,7 +85,6 @@ type CartLineRow = (
     bool,
     i32,
     i64,
-    bool,
 );
 type CartMediaRow = (
     Uuid,
@@ -138,42 +96,9 @@ type CartMediaRow = (
     i16,
     String,
 );
-type CheckoutHeaderRow = (
-    Uuid,
-    Uuid,
-    Uuid,
-    Option<Uuid>,
-    Uuid,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    bool,
-    i64,
-    i64,
-    OffsetDateTime,
-    OffsetDateTime,
-);
-type CheckoutLineRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    bool,
-    i32,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    bool,
-);
 type OrderHeaderRow = (
     Uuid,
     Uuid,
-    Uuid,
     Option<Uuid>,
     Uuid,
     String,
@@ -181,7 +106,6 @@ type OrderHeaderRow = (
     i64,
     i64,
     i64,
-    bool,
     i64,
     i64,
     OffsetDateTime,
@@ -198,23 +122,7 @@ type OrderLineRow = (
     i32,
     i64,
     i64,
-    i64,
-    i64,
-    i64,
-    bool,
 );
-type AddressRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-);
-
 #[derive(Clone)]
 pub struct PostgresStorefrontSalesRepository {
     pool: PgPool,

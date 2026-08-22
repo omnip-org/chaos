@@ -154,7 +154,6 @@ pub struct PriceList {
     code: PriceListCode,
     name: String,
     currency: CurrencyCode,
-    tax_inclusive: bool,
     schedule: PriceListSchedule,
     status: PriceListStatus,
     prices: Vec<Price>,
@@ -166,7 +165,6 @@ impl PriceList {
         code: PriceListCode,
         name: impl Into<String>,
         currency: CurrencyCode,
-        tax_inclusive: bool,
         schedule: PriceListSchedule,
     ) -> Result<Self, DomainError> {
         let name = name.into();
@@ -179,7 +177,6 @@ impl PriceList {
             code,
             name,
             currency,
-            tax_inclusive,
             schedule,
             status: PriceListStatus::Draft,
             prices: Vec::new(),
@@ -268,9 +265,6 @@ impl PriceList {
     pub const fn currency(&self) -> CurrencyCode {
         self.currency
     }
-    pub const fn tax_inclusive(&self) -> bool {
-        self.tax_inclusive
-    }
     pub const fn starts_at(&self) -> Option<OffsetDateTime> {
         self.schedule.starts_at()
     }
@@ -302,7 +296,6 @@ mod tests {
             PriceListCode::parse("us-retail").unwrap(),
             "US Retail",
             CurrencyCode::USD,
-            false,
             PriceListSchedule::unbounded(),
         )
         .unwrap()

@@ -24,7 +24,7 @@ therefore cannot be used as the routing identity.
 
 The initial deployment supports only `stripe_checkout`:
 
-- creates Checkout Sessions with `mode=payment` and `ui_mode=embedded_page`;
+- creates Checkout Sessions with `mode=payment` and `ui_mode=embedded`;
 - requires a secure or loopback `return_url` from the storefront;
 - returns `PaymentClientAction { type: "mount_embedded_checkout" }`;
 - uses the direct Stripe account that owns the configured API key;
@@ -57,18 +57,22 @@ are:
 - `checkout.session.async_payment_succeeded` → `payment.captured`;
 - `checkout.session.async_payment_failed` → `payment.failed`;
 - `checkout.session.expired` → `payment.cancelled`.
+- `refund.created` and `refund.updated` → the corresponding local refund
+  status transition.
 
 An ordinary `checkout.session.completed` event with `payment_status=unpaid`
 does not transition the Payment Attempt; the asynchronous follow-up event is
-authoritative. Refund execution and refund webhook processing are not part of
-this initial `stripe_checkout` provider and will be designed separately.
+authoritative. Refunds are executed through Stripe and reconciled from
+verified `refund.created` and `refund.updated` events.
 
 Stripe webhook requests are verified against the exact raw request bytes,
 with the standard `Stripe-Signature` header and a five-minute timestamp
 tolerance. A Connect-style event envelope containing `account` is rejected.
 
-Checkout Session customer and address fields are sourced from the immutable
-Order snapshot rather than from payment-attempt request parameters:
+Checkout Session customer fields are sourced from the provisional Order rather
+than from payment-attempt request parameters. Stripe-collected address,
+shipping, tax, promotion discounts, and final totals are written back to that same Order only after
+a verified webhook:
 
 - `customer_email` and `payment_intent_data[receipt_email]` use the order
   contact email;
@@ -77,13 +81,15 @@ Order snapshot rather than from payment-attempt request parameters:
   data when the order has a shipping address;
 - `billing_address_collection=required` makes Stripe collect the billing
   country and address;
+- `allow_promotion_codes=true` lets Stripe Checkout validate configured Stripe
+  promotion codes;
 - an existing shipping snapshot is copied to
   `payment_intent_data[shipping]`, including its ISO 3166-1 alpha-2 country
   code and regional fields.
 
 Checkout has no standalone phone prefill parameter. Enabling phone collection
-is therefore required even when Chaos already has a phone number; the stored
-order snapshot remains authoritative for the order itself.
+is therefore required even when Chaos already has a phone number; the Order
+becomes the authoritative business snapshot after webhook reconciliation.
 
 ## Consequences
 
@@ -93,11 +99,15 @@ order snapshot remains authoritative for the order itself.
   signing secrets cannot cause cross-Store misrouting.
 - The Stripe API account identity is validated by `/v1/account` and recorded
   only in the readiness snapshot; it is not confused with Chaos routing.
+- Chaos owns one business Order per checkout attempt. It does not persist a
+  second local Checkout aggregate or duplicate contact/address/line snapshots.
+- Stripe Dashboard refunds and API-created refunds are reconciled through the
+  verified `refund.created` and `refund.updated` webhook events.
 - MCP configuration returns the exact Webhook URL, the `Stripe-Signature`
-  header, the four required event names, the signing-secret location, and the
+  header, the payment and refund event names, the signing-secret location, and the
   Test/Live mode guidance.
 - Existing Webhook endpoints using the removed unscoped URL must be replaced
   in Stripe Dashboard before the new deployment receives events.
-- Migration `0006_stripe_checkout_webhook_routing.sql` refuses to guess how any
-  legacy `stripe` PaymentIntent account should be converted. Such accounts must
-  be removed or archived deliberately before the migration is applied.
+- The fresh bootstrap keeps the Stripe-only provider constraint and unified
+  Order model in `migrations/0003_commerce.sql`; it does not carry a legacy
+  provider-account conversion path.

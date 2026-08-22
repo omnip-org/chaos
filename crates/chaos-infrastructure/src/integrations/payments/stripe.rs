@@ -288,6 +288,7 @@ impl StripePaymentGateway for StripeGateway {
             ),
             ("phone_number_collection[enabled]".into(), "true".into()),
             ("billing_address_collection".into(), "required".into()),
+            ("allow_promotion_codes".into(), "true".into()),
             (
                 "automatic_tax[enabled]".into(),
                 checkout_details.automatic_tax.to_string(),
@@ -1151,6 +1152,7 @@ mod tests {
             assert_eq!(checkout_form["customer_email"], "buyer@example.com");
             assert_eq!(checkout_form["phone_number_collection[enabled]"], "true");
             assert_eq!(checkout_form["billing_address_collection"], "required");
+            assert_eq!(checkout_form["allow_promotion_codes"], "true");
             assert_eq!(
                 checkout_form["payment_intent_data[receipt_email]"],
                 "buyer@example.com"
@@ -1281,6 +1283,7 @@ mod tests {
         assert_eq!(form["customer_email"], "buyer@example.com");
         assert_eq!(form["phone_number_collection[enabled]"], "true");
         assert_eq!(form["billing_address_collection"], "required");
+        assert_eq!(form["allow_promotion_codes"], "true");
         assert_eq!(
             form["payment_intent_data[shipping][address][country]"],
             "US"

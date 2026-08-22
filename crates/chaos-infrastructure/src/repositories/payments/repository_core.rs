@@ -28,7 +28,7 @@ use chaos_domain::{
         PaymentSecretReference, Refund, RefundId, RefundStatus,
     },
     pricing::Money,
-    sales::{CheckoutId, Order, OrderId, OrderStatus},
+    sales::{Order, OrderId, OrderStatus},
     store::{SalesChannelId, StoreId},
 };
 use rand::Rng;

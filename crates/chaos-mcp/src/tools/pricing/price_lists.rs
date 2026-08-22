@@ -50,8 +50,6 @@ pub struct CreatePriceListParams {
     pub name: String,
     /// Three-letter ISO 4217 currency code (e.g. USD).
     pub currency: String,
-    #[serde(default)]
-    pub tax_inclusive: bool,
     /// RFC 3339 timestamp; omit for no start boundary.
     #[serde(default)]
     pub starts_at: Option<String>,
@@ -75,8 +73,6 @@ pub struct UpdatePriceListParams {
     pub code: String,
     pub name: String,
     pub currency: String,
-    #[serde(default)]
-    pub tax_inclusive: bool,
     #[serde(default)]
     pub starts_at: Option<String>,
     #[serde(default)]
@@ -144,7 +140,6 @@ impl ChaosMcp {
                             "code": item.code,
                             "name": item.name,
                             "currency": item.currency.as_str(),
-                            "tax_inclusive": item.tax_inclusive,
                             "status": item.status.as_str(),
                             "starts_at": item.starts_at.map(format_time),
                             "ends_at": item.ends_at.map(format_time),
@@ -208,7 +203,6 @@ impl ChaosMcp {
                 "code": detail.item.code,
                 "name": detail.item.name,
                 "currency": detail.item.currency.as_str(),
-                "tax_inclusive": detail.item.tax_inclusive,
                 "status": detail.item.status.as_str(),
                 "starts_at": detail.item.starts_at.map(format_time),
                 "ends_at": detail.item.ends_at.map(format_time),
@@ -270,7 +264,6 @@ impl ChaosMcp {
                 code: params.code,
                 name: params.name,
                 currency: params.currency,
-                tax_inclusive: params.tax_inclusive,
                 starts_at,
                 ends_at,
                 activate: params.activate,
@@ -336,7 +329,6 @@ impl ChaosMcp {
                 code: params.code,
                 name: params.name,
                 currency: params.currency,
-                tax_inclusive: params.tax_inclusive,
                 starts_at,
                 ends_at,
                 prices,

@@ -28,7 +28,6 @@ pub struct UpdatePriceListInput {
     pub code: String,
     pub name: String,
     pub currency: String,
-    pub tax_inclusive: bool,
     pub starts_at: Option<OffsetDateTime>,
     pub ends_at: Option<OffsetDateTime>,
     pub prices: Vec<CreatePriceInput>,
@@ -105,7 +104,6 @@ impl PricingManagement {
             PriceListCode::parse(input.code)?,
             input.name,
             CurrencyCode::parse(&input.currency)?,
-            input.tax_inclusive,
             PriceListSchedule::new(input.starts_at, input.ends_at)?,
         )?;
         for price in input.prices {

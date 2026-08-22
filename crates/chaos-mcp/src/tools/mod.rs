@@ -17,7 +17,7 @@ use chaos_application::{
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
     ports::{AdminActor, Clock},
-    pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
+    pricing::{CreatePriceList, PricingManagement},
     sales::OrderManagement,
     store::{
         CreateStore, ProviderSecretManagement, PublishableKeyManagement, StoreAdministration,
@@ -41,8 +41,6 @@ pub struct McpState {
     pub collection_administration: Arc<CollectionAdministration>,
     pub pricing_management: Arc<PricingManagement>,
     pub create_price_list: Arc<CreatePriceList>,
-    pub promotion_management: Arc<PromotionManagement>,
-    pub tax_management: Arc<TaxManagement>,
     pub inventory_management: Arc<InventoryManagement>,
     pub order_management: Arc<OrderManagement>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
@@ -82,7 +80,7 @@ impl ChaosMcp {
         router
     }
 
-    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 18] {
+    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 16] {
         [
             Self::products_tool_router(),
             Self::stores_tool_router(),
@@ -90,8 +88,6 @@ impl ChaosMcp {
             Self::inventory_tool_router(),
             Self::orders_tool_router(),
             Self::collections_tool_router(),
-            Self::promotions_tool_router(),
-            Self::tax_rules_tool_router(),
             Self::fulfillment_tool_router(),
             Self::store_admin_tool_router(),
             Self::payments_tool_router(),

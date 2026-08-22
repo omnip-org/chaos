@@ -19,9 +19,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::http::shared::pagination::idempotency_key;
-use crate::http::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CheckoutShopper,
-};
+use crate::http::{ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, PaymentShopper};
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
@@ -84,7 +82,6 @@ struct CreateEmbeddedCheckoutBody {
 
 #[derive(Serialize)]
 struct EmbeddedCheckoutData {
-    checkout_id: Uuid,
     order_id: Uuid,
     payment_attempt_id: Uuid,
 }
@@ -119,7 +116,7 @@ struct WebhookReceiptData {
 async fn create_embedded_checkout(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CheckoutShopper(actor): CheckoutShopper,
+    PaymentShopper(actor): PaymentShopper,
     ApiPath(path): ApiPath<CartPath>,
     ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
 ) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
@@ -156,7 +153,6 @@ async fn create_embedded_checkout(
         })
         .await?;
     Ok(ApiResponse::created(EmbeddedCheckoutData {
-        checkout_id: draft.checkout_id.as_uuid(),
         order_id: draft.order_id.as_uuid(),
         payment_attempt_id: attempt.id.as_uuid(),
     }))
@@ -165,7 +161,7 @@ async fn create_embedded_checkout(
 async fn create_attempt(
     State(state): State<ApiState>,
     headers: HeaderMap,
-    CheckoutShopper(actor): CheckoutShopper,
+    PaymentShopper(actor): PaymentShopper,
     ApiPath(path): ApiPath<OrderPath>,
     ApiJson(body): ApiJson<CreateAttemptBody>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
@@ -213,7 +209,7 @@ fn validate_return_url(body: &CreateAttemptBody) -> Result<(), ApiError> {
 
 async fn get_attempt(
     State(state): State<ApiState>,
-    CheckoutShopper(actor): CheckoutShopper,
+    PaymentShopper(actor): PaymentShopper,
     ApiPath(path): ApiPath<AttemptPath>,
 ) -> Result<ApiResponse<PaymentAttemptData>, ApiError> {
     let attempt = state
@@ -225,7 +221,7 @@ async fn get_attempt(
 
 async fn get_client_action(
     State(state): State<ApiState>,
-    CheckoutShopper(actor): CheckoutShopper,
+    PaymentShopper(actor): PaymentShopper,
     ApiPath(path): ApiPath<AttemptPath>,
 ) -> Result<Response, ApiError> {
     let action = state

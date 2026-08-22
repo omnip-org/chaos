@@ -16,7 +16,7 @@ use chaos_application::{
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
-    pricing::{CreatePriceList, PricingManagement, PromotionManagement, TaxManagement},
+    pricing::{CreatePriceList, PricingManagement},
     sales::{OrderManagement, StorefrontSales},
     store::{
         CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
@@ -39,12 +39,11 @@ use chaos_infrastructure::{
         PostgresCollectionRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
         PostgresMediaAssetRepository, PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPromotionRepository, PostgresPublishableKeyRepository, PostgresReviewRepository,
+        PostgresPublishableKeyRepository, PostgresReviewRepository,
         PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
         PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
         PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresTaxRuleRepository,
-        SecurePublishableKeyMaterialGenerator,
+        PostgresStorefrontSalesRepository, SecurePublishableKeyMaterialGenerator,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::{
@@ -69,7 +68,7 @@ use crate::lifecycle::Lifecycle;
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
     AnalyticsShopper, ApiJson, ApiPath, ApiQuery, AuthenticatedUser, CartMachine, CartShopper,
-    CheckoutShopper, OrderLookupMachine, StoreContext, StorefrontMachine,
+    OrderLookupMachine, PaymentShopper, StoreContext, StorefrontMachine,
 };
 pub use shared::response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
@@ -96,8 +95,6 @@ pub struct ApiState {
     pub catalog_localization: Arc<CatalogLocalization>,
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
-    pub tax_management: Arc<TaxManagement>,
-    pub promotion_management: Arc<PromotionManagement>,
     pub store_queries: Arc<StoreQueries>,
     pub store_membership_management: Arc<StoreMembershipManagement>,
     pub publishable_key_management: Arc<PublishableKeyManagement>,
@@ -237,12 +234,6 @@ impl ApiState {
             pricing_management_repository.clone(),
             pricing_management_repository,
         );
-        let tax_management = TaxManagement::new(Arc::new(PostgresTaxRuleRepository::new(
-            infrastructure.runtime_pool(),
-        )));
-        let promotion_management = PromotionManagement::new(Arc::new(
-            PostgresPromotionRepository::new(infrastructure.runtime_pool()),
-        ));
         let store_queries = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -359,8 +350,6 @@ impl ApiState {
             catalog_localization: Arc::new(catalog_localization),
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
-            tax_management: Arc::new(tax_management),
-            promotion_management: Arc::new(promotion_management),
             store_queries: Arc::new(store_queries),
             store_membership_management: Arc::new(store_membership_management),
             publishable_key_management: Arc::new(publishable_key_management),
@@ -396,8 +385,6 @@ pub fn router(state: ApiState) -> Router {
             collection_administration: state.collection_administration.clone(),
             pricing_management: state.pricing_management.clone(),
             create_price_list: state.create_price_list.clone(),
-            promotion_management: state.promotion_management.clone(),
-            tax_management: state.tax_management.clone(),
             inventory_management: state.inventory_management.clone(),
             order_management: state.order_management.clone(),
             fulfillment_management: state.fulfillment_management.clone(),

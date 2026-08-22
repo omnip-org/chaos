@@ -12,13 +12,10 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{ShippingSelection, ShippingServiceId},
     inventory::InventoryReservationId,
-    pricing::{
-        Money, PriceListId, PromotionId, PromotionSnapshot, PromotionTrigger, PromotionValue,
-        TaxRuleId, TaxRuleSnapshot,
-    },
+    pricing::{Money, PriceListId},
     sales::{
-        CheckoutContact, CheckoutId, CheckoutIdentity, Order, OrderDeliveryStatus,
-        OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
+        Order, OrderContact, OrderDeliveryStatus, OrderFulfillmentStatus, OrderId, OrderIdentity,
+        OrderNumber, OrderStatus, PostalAddress, ShopperId,
     },
     store::StoreId,
 };
@@ -50,7 +47,6 @@ const CANCEL_OPERATION: &str = "orders.cancel.v1";
 type HeaderRow = (
     Uuid,
     Uuid,
-    Uuid,
     Option<Uuid>,
     Uuid,
     String,
@@ -58,7 +54,6 @@ type HeaderRow = (
     i64,
     i64,
     i64,
-    bool,
     i64,
     i64,
     OffsetDateTime,
@@ -75,22 +70,28 @@ type LineRow = (
     i32,
     i64,
     i64,
-    i64,
-    i64,
-    i64,
-    bool,
 );
-type AddressRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-);
+#[derive(sqlx::FromRow)]
+struct InlineOrderIdentity {
+    contact_email: Option<String>,
+    contact_phone: Option<String>,
+    billing_full_name: Option<String>,
+    billing_company: Option<String>,
+    billing_address_line1: Option<String>,
+    billing_address_line2: Option<String>,
+    billing_locality: Option<String>,
+    billing_administrative_area: Option<String>,
+    billing_postal_code: Option<String>,
+    billing_country_code: Option<String>,
+    shipping_full_name: Option<String>,
+    shipping_company: Option<String>,
+    shipping_address_line1: Option<String>,
+    shipping_address_line2: Option<String>,
+    shipping_locality: Option<String>,
+    shipping_administrative_area: Option<String>,
+    shipping_postal_code: Option<String>,
+    shipping_country_code: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct PostgresOrderManagementRepository {
@@ -134,12 +135,10 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT DISTINCT o.id FROM commerce.orders o \
-             JOIN commerce.order_contacts contact ON contact.store_id = o.store_id \
-               AND contact.order_id = o.id \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
                AND ($3::text IS NULL OR o.status::text = $3) \
-               AND ($4::text IS NULL OR contact.email = lower($4)) \
+               AND ($4::text IS NULL OR o.contact_email = lower($4)) \
                AND ($5::text IS NULL OR o.order_number = upper($5)) \
              ORDER BY o.id DESC LIMIT $6",
         )
@@ -211,8 +210,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                 .await?
                 .ok_or_else(|| order_not_found(replay_id));
         }
-        let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>)>(
-            "SELECT checkout_id, status::text, inventory_reservation_id FROM commerce.orders \
+        let row = sqlx::query_as::<_, (String, Option<Uuid>)>(
+            "SELECT status::text, inventory_reservation_id FROM commerce.orders \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -221,14 +220,14 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
-        let current_status = OrderStatus::parse(&row.1).ok_or_else(corrupt_state)?;
-        let mut order = Order::rehydrate(order_id, CheckoutId::from_uuid(row.0), current_status);
+        let current_status = OrderStatus::parse(&row.0).ok_or_else(corrupt_state)?;
+        let mut order = Order::rehydrate(order_id, current_status);
         let transition = match target_status {
             OrderStatus::Confirmed => order.confirm(now)?,
             OrderStatus::Cancelled => order.cancel(now)?,
             OrderStatus::Pending => return Err(invalid_target()),
         };
-        if let Some(reservation_id) = row.2.map(InventoryReservationId::from_uuid) {
+        if let Some(reservation_id) = row.1.map(InventoryReservationId::from_uuid) {
             close_reservation(
                 &mut transaction,
                 store_id,
@@ -312,9 +311,9 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, HeaderRow>(
-        "SELECT id, shopper_id, checkout_id, inventory_reservation_id, price_list_id, currency::text, \
+        "SELECT id, shopper_id, inventory_reservation_id, price_list_id, currency::text, \
                 status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                tax_inclusive, shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
+                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -345,13 +344,10 @@ async fn load_order(
     .map_err(database_error)?;
     let identity = load_order_identity(transaction, store_id, order_id).await?;
     let shipping = load_order_shipping(transaction, store_id, order_id).await?;
-    let tax_rule = load_order_tax(transaction, store_id, order_id).await?;
-    let promotion = load_order_promotion(transaction, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
-                subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                total_amount_minor, tax_inclusive FROM commerce.order_lines \
+                subtotal_amount_minor FROM commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
     .bind(store_id.as_uuid())
@@ -383,26 +379,22 @@ async fn load_order(
         id: OrderId::from_uuid(row.0),
         order_number: OrderNumber::parse(order_number)?,
         shopper_id: ShopperId::from_uuid(row.1),
-        checkout_id: CheckoutId::from_uuid(row.2),
-        inventory_reservation_id: row.3.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.4),
-        currency: CurrencyCode::parse(&row.5)?,
+        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
+        price_list_id: PriceListId::from_uuid(row.3),
+        currency: CurrencyCode::parse(&row.4)?,
         locale: Locale::parse(&locale)?,
-        status: OrderStatus::parse(&row.6).ok_or_else(corrupt_state)?,
+        status: OrderStatus::parse(&row.5).ok_or_else(corrupt_state)?,
         fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
             .ok_or_else(corrupt_state)?,
         delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
             .ok_or_else(corrupt_state)?,
         identity,
-        subtotal_amount_minor: row.7,
-        discount_amount_minor: row.8,
-        tax_amount_minor: row.9,
-        tax_rule,
-        promotion,
-        tax_inclusive: row.10,
+        subtotal_amount_minor: row.6,
+        discount_amount_minor: row.7,
+        tax_amount_minor: row.8,
         shipping,
-        shipping_amount_minor: row.11,
-        total_amount_minor: row.12,
+        shipping_amount_minor: row.9,
+        total_amount_minor: row.10,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -418,10 +410,6 @@ async fn load_order(
                         .map_err(|error| ApplicationError::Unexpected(error.into()))?,
                     unit_price_amount_minor: line.8,
                     subtotal_amount_minor: line.9,
-                    discount_amount_minor: line.10,
-                    tax_amount_minor: line.11,
-                    total_amount_minor: line.12,
-                    tax_inclusive: line.13,
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
@@ -442,8 +430,8 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.13,
-        updated_at: row.14,
+        created_at: row.11,
+        updated_at: row.12,
     }))
 }
 
@@ -477,105 +465,19 @@ async fn load_order_shipping(
     .transpose()
 }
 
-async fn load_order_tax(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-) -> Result<TaxRuleSnapshot, ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, String, i32)>(
-        "SELECT tax_rule_id, rule_code, rule_name, country_code::text, rate_basis_points \
-         FROM commerce.order_tax_calculations \
-         WHERE store_id = $1 AND order_id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(corrupt_state)?;
-    TaxRuleSnapshot::rehydrate(
-        TaxRuleId::from_uuid(row.0),
-        row.1,
-        row.2,
-        row.3,
-        u32::try_from(row.4).map_err(|error| ApplicationError::Unexpected(error.into()))?,
-    )
-    .map_err(ApplicationError::from)
-}
-
-async fn load_order_promotion(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-) -> Result<Option<PromotionSnapshot>, ApplicationError> {
-    let row = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<i32>,
-            Option<i64>,
-            Option<i64>,
-            String,
-            i64,
-            i16,
-            Option<OffsetDateTime>,
-            Option<OffsetDateTime>,
-        ),
-    >(
-        "SELECT promotion_id, handle, name, trigger::text, redemption_code, value_kind::text, \
-                rate_basis_points, amount_minor, maximum_amount_minor, currency::text, \
-                minimum_subtotal_amount_minor, priority, starts_at, ends_at \
-         FROM commerce.order_promotion_calculations \
-         WHERE store_id = $1 AND order_id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    row.map(|row| {
-        let value = match row.5.as_str() {
-            "percentage" => PromotionValue::Percentage {
-                rate_basis_points: u32::try_from(row.6.ok_or_else(corrupt_state)?)
-                    .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-                maximum_amount_minor: row.8,
-            },
-            "fixed_amount" => PromotionValue::FixedAmount {
-                amount_minor: row.7.ok_or_else(corrupt_state)?,
-            },
-            _ => return Err(corrupt_state()),
-        };
-        PromotionSnapshot::rehydrate(
-            PromotionId::from_uuid(row.0),
-            row.1,
-            row.2,
-            PromotionTrigger::parse(&row.3).ok_or_else(corrupt_state)?,
-            row.4,
-            value,
-            CurrencyCode::parse(&row.9)?,
-            row.10,
-            u16::try_from(row.11).map_err(|error| ApplicationError::Unexpected(error.into()))?,
-            row.12,
-            row.13,
-        )
-        .map_err(ApplicationError::from)
-    })
-    .transpose()
-}
-
 async fn load_order_identity(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
-) -> Result<CheckoutIdentity, ApplicationError> {
-    let contact = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT email::text, phone FROM commerce.order_contacts \
-         WHERE store_id = $1 AND order_id = $2",
+) -> Result<OrderIdentity, ApplicationError> {
+    let row = sqlx::query_as::<_, InlineOrderIdentity>(
+        "SELECT contact_email::text, contact_phone, billing_full_name, billing_company, \
+                billing_address_line1, billing_address_line2, billing_locality, \
+                billing_administrative_area, billing_postal_code, billing_country_code::text, \
+                shipping_full_name, shipping_company, shipping_address_line1, \
+                shipping_address_line2, shipping_locality, shipping_administrative_area, \
+                shipping_postal_code, shipping_country_code::text \
+         FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -583,33 +485,50 @@ async fn load_order_identity(
     .await
     .map_err(database_error)?
     .ok_or_else(corrupt_state)?;
-    let addresses = sqlx::query_as::<_, AddressRow>(
-        "SELECT kind::text, full_name, company, address_line1, address_line2, locality, \
-                administrative_area, postal_code, country_code::text \
-         FROM commerce.order_addresses \
-         WHERE store_id = $1 AND order_id = $2 ORDER BY kind",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    let contact = CheckoutContact::new(contact.0, contact.1)?;
-    let mut billing = None;
-    let mut shipping = None;
-    for row in addresses {
-        let kind = row.0.clone();
-        let address = PostalAddress::new(row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8)?;
-        match kind.as_str() {
-            "billing" if billing.is_none() => billing = Some(address),
-            "shipping" if shipping.is_none() => shipping = Some(address),
-            _ => return Err(corrupt_state()),
+    let address = |full_name: Option<String>,
+                   company: Option<String>,
+                   line1: Option<String>,
+                   line2: Option<String>,
+                   locality: Option<String>,
+                   area: Option<String>,
+                   postal: Option<String>,
+                   country: Option<String>|
+     -> Result<Option<PostalAddress>, ApplicationError> {
+        match (full_name, line1, locality, country) {
+            (None, None, None, None) => Ok(None),
+            (Some(full_name), Some(line1), Some(locality), Some(country)) => {
+                Ok(Some(PostalAddress::new(
+                    full_name, company, line1, line2, locality, area, postal, country,
+                )?))
+            }
+            _ => Err(corrupt_state()),
         }
-    }
-    Ok(CheckoutIdentity::new(
-        contact,
-        billing.ok_or_else(corrupt_state)?,
-        shipping,
+    };
+    Ok(OrderIdentity::new(
+        OrderContact::new(
+            row.contact_email.ok_or_else(corrupt_state)?,
+            row.contact_phone,
+        )?,
+        address(
+            row.billing_full_name,
+            row.billing_company,
+            row.billing_address_line1,
+            row.billing_address_line2,
+            row.billing_locality,
+            row.billing_administrative_area,
+            row.billing_postal_code,
+            row.billing_country_code,
+        )?,
+        address(
+            row.shipping_full_name,
+            row.shipping_company,
+            row.shipping_address_line1,
+            row.shipping_address_line2,
+            row.shipping_locality,
+            row.shipping_administrative_area,
+            row.shipping_postal_code,
+            row.shipping_country_code,
+        )?,
     ))
 }
 

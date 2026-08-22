@@ -180,16 +180,14 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
     async fn insert_price_list(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO commerce.price_lists \
-             (id, store_id, code, name, currency, tax_inclusive, status, \
-              starts_at, ends_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::commerce.price_list_status, $8, $9)",
+             (id, store_id, code, name, currency, status, starts_at, ends_at) \
+             VALUES ($1, $2, $3, $4, $5, $6::commerce.price_list_status, $7, $8)",
         )
         .bind(price_list.id().as_uuid())
         .bind(price_list.store_id().as_uuid())
         .bind(price_list.code().as_str())
         .bind(price_list.name())
         .bind(price_list.currency().as_str())
-        .bind(price_list.tax_inclusive())
         .bind(price_list.status().as_str())
         .bind(price_list.starts_at())
         .bind(price_list.ends_at())
@@ -409,7 +407,6 @@ mod tests {
             code: "us-retail".into(),
             name: "US Retail".into(),
             currency: currency.into(),
-            tax_inclusive: false,
             starts_at: None,
             ends_at: None,
             activate: true,

@@ -1397,26 +1397,23 @@ async fn load_quote_context(
                 account.origin_name, account.origin_company, account.origin_address_line_1, \
                 account.origin_address_line_2, account.origin_city, account.origin_region, \
                 account.origin_postal_code, account.origin_country_code::text, \
-                account.origin_phone, account.origin_email, address.full_name AS destination_name, \
-                address.company AS destination_company, \
-                address.address_line1 AS destination_address_line_1, \
-                address.address_line2 AS destination_address_line_2, \
-                address.locality AS destination_city, \
-                address.administrative_area AS destination_region, \
-                address.postal_code AS destination_postal_code, \
-                address.country_code::text AS destination_country_code, \
-                contact.phone AS destination_phone, contact.email::text AS destination_email \
+                account.origin_phone, account.origin_email, order_record.shipping_full_name AS destination_name, \
+                NULL::text AS destination_company, \
+                order_record.shipping_address_line1 AS destination_address_line_1, \
+                order_record.shipping_address_line2 AS destination_address_line_2, \
+                order_record.shipping_locality AS destination_city, \
+                order_record.shipping_administrative_area AS destination_region, \
+                order_record.shipping_postal_code AS destination_postal_code, \
+                order_record.shipping_country_code::text AS destination_country_code, \
+                order_record.contact_phone AS destination_phone, order_record.contact_email::text AS destination_email \
          FROM commerce.fulfillments AS fulfillment \
          INNER JOIN commerce.shipping_provider_accounts AS account \
-            ON account.store_id = commerce.store_id AND account.id = $1 \
-         INNER JOIN commerce.order_addresses AS address \
-            ON address.store_id = commerce.store_id AND address.order_id = commerce.order_id \
-           AND address.kind = 'shipping' \
-         INNER JOIN commerce.order_contacts AS contact \
-            ON contact.store_id = commerce.store_id AND contact.order_id = commerce.order_id \
-         WHERE commerce.store_id = $2 \
-           AND commerce.id = $3 AND commerce.status = 'pending' \
-           AND account.enabled AND address.postal_code IS NOT NULL",
+            ON account.store_id = fulfillment.store_id AND account.id = $1 \
+         INNER JOIN commerce.orders AS order_record \
+            ON order_record.store_id = fulfillment.store_id AND order_record.id = fulfillment.order_id \
+         WHERE fulfillment.store_id = $2 \
+           AND fulfillment.id = $3 AND fulfillment.status = 'pending' \
+           AND account.enabled AND order_record.shipping_postal_code IS NOT NULL",
     )
     .bind(provider_account_id.as_uuid())
     .bind(store_id.as_uuid())

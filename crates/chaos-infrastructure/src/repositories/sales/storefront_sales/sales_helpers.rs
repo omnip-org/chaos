@@ -25,31 +25,6 @@ async fn ensure_cart_owner(
     }
 }
 
-async fn ensure_checkout_owner(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    checkout_id: CheckoutId,
-    shopper_id: ShopperId,
-) -> Result<(), ApplicationError> {
-    let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.checkouts \
-         WHERE store_id = $1 AND sales_channel_id = $2 \
-           AND id = $3 AND shopper_id = $4)",
-    )
-    .bind(actor.store_id.as_uuid())
-    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
-    .bind(checkout_id.as_uuid())
-    .bind(shopper_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if owned {
-        Ok(())
-    } else {
-        Err(checkout_not_found(checkout_id))
-    }
-}
-
 async fn ensure_order_owner(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -141,79 +116,10 @@ fn cart_not_found(cart_id: CartId) -> ApplicationError {
     }
 }
 
-fn checkout_not_found(checkout_id: CheckoutId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "checkout",
-        id: checkout_id.as_uuid().to_string(),
-    }
-}
-
-fn invalid_shipping_selection() -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "shipping_service_id",
-            reason: "must reference an active service for the Cart currency and destination".into(),
-        }],
-    }
-}
-
-fn embedded_checkout_configuration_unavailable() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_configuration_unavailable",
-        message: "no destination has both an active shipping service and an active tax rule",
-    }
-}
-
-fn invalid_promotion_code() -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "promotion_code",
-            reason: "must reference an active and eligible code for the Cart".into(),
-        }],
-    }
-}
-
-fn tax_rule_unavailable(country_code: &str) -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "tax_rule",
-            reason: format!("no active Tax Rule is configured for destination {country_code}"),
-        }],
-    }
-}
-
 fn order_not_found(order_id: OrderId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "order",
         id: order_id.as_uuid().to_string(),
-    }
-}
-
-fn checkout_not_pending() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_not_pending",
-        message: "the Checkout is no longer pending",
-    }
-}
-
-fn checkout_already_pending() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_already_pending",
-        message: "the Cart already has a pending Checkout",
-    }
-}
-
-fn checkout_expired() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_expired",
-        message: "the Checkout has expired",
-    }
-}
-
-fn checkout_expiry_lease_lost() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_expiry_lease_lost",
-        message: "the Checkout expiry lease is no longer owned by this worker",
     }
 }
 

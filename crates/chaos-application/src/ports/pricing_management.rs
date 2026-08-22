@@ -16,7 +16,6 @@ pub struct PriceListReadItem {
     pub code: String,
     pub name: String,
     pub currency: CurrencyCode,
-    pub tax_inclusive: bool,
     pub status: PriceListStatus,
     pub starts_at: Option<OffsetDateTime>,
     pub ends_at: Option<OffsetDateTime>,

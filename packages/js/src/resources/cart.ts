@@ -1,5 +1,5 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { Cart, CreateCartRequest, DataEnvelope, SetCartLineRequest, ShippingOption } from "../types.js";
+import type { Cart, CreateCartRequest, DataEnvelope, SetCartLineRequest } from "../types.js";
 
 export class CartResource {
   private readonly mutationQueues = new Map<string, Promise<unknown>>();
@@ -67,14 +67,6 @@ export class CartResource {
         },
       ),
     );
-  }
-
-  quoteShippingOptions(cartId: string, destinationCountry: string): Promise<DataEnvelope<ShippingOption[]>> {
-    return this.client.request(`/carts/${encodeURIComponent(cartId)}/shipping-options`, {
-      method: "POST",
-      body: { destination_country: destinationCountry },
-      requiresShopperToken: true,
-    });
   }
 
   private setLineRequest(

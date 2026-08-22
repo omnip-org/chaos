@@ -153,13 +153,12 @@ async fn apply_payment_event(
             Option<Uuid>,
             String,
             Uuid,
-            Uuid,
         ),
     >(
         "SELECT attempt.order_id, attempt.amount_minor, attempt.currency::text, \
                 attempt.status::text, attempt.stripe_checkout_session_id, \
                 sales_order.inventory_reservation_id, sales_order.status::text, \
-                sales_order.checkout_id, sales_order.shopper_id \
+                sales_order.shopper_id \
          FROM commerce.payment_attempts AS attempt \
          INNER JOIN commerce.orders AS sales_order \
            ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
@@ -227,7 +226,6 @@ async fn apply_payment_event(
                 store_id,
                 attempt_id,
                 OrderId::from_uuid(row.0),
-                CheckoutId::from_uuid(row.7),
                 &snapshot,
                 now,
             )
@@ -237,7 +235,6 @@ async fn apply_payment_event(
             transaction,
             store_id,
             OrderId::from_uuid(row.0),
-            CheckoutId::from_uuid(row.7),
             row.5.map(InventoryReservationId::from_uuid),
             &row.6,
             now,
@@ -247,7 +244,7 @@ async fn apply_payment_event(
             transaction,
             AnalyticsEventToAppend {
                 store_id: store_id.as_uuid(),
-                shopper_id: row.8,
+                shopper_id: row.7,
                 event_id: row.0,
                 event_name: "purchase".into(),
                 properties: json!({
@@ -270,7 +267,6 @@ async fn apply_payment_event(
             transaction,
             store_id,
             OrderId::from_uuid(row.0),
-            CheckoutId::from_uuid(row.7),
             row.5.map(InventoryReservationId::from_uuid),
             &row.6,
             now,
@@ -282,6 +278,7 @@ async fn apply_payment_event(
 
 struct StripeCheckoutSnapshot {
     amount_subtotal: i64,
+    amount_discount: i64,
     amount_tax: i64,
     amount_shipping: i64,
     amount_total: i64,
@@ -325,6 +322,11 @@ impl StripeCheckoutSnapshot {
             .and_then(|details| details.get("amount_tax"))
             .and_then(Value::as_i64)
             .unwrap_or(0);
+        let amount_discount = object
+            .get("total_details")
+            .and_then(|details| details.get("amount_discount"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         let amount_shipping = object
             .get("shipping_cost")
             .and_then(|shipping| shipping.get("amount_total"))
@@ -345,7 +347,12 @@ impl StripeCheckoutSnapshot {
         {
             return Err(corrupt_webhook_payload());
         }
-        if amount_total <= 0 || amount_subtotal < 0 || amount_tax < 0 || amount_shipping < 0 {
+        if amount_total <= 0
+            || amount_subtotal < 0
+            || amount_discount < 0
+            || amount_tax < 0
+            || amount_shipping < 0
+        {
             return Err(corrupt_webhook_payload());
         }
         let customer_details = object.get("customer_details");
@@ -385,6 +392,7 @@ impl StripeCheckoutSnapshot {
             .transpose()?;
         Ok(Some(Self {
             amount_subtotal,
+            amount_discount,
             amount_tax,
             amount_shipping,
             amount_total,
@@ -451,7 +459,6 @@ async fn apply_stripe_checkout_snapshot(
     store_id: StoreId,
     attempt_id: PaymentAttemptId,
     order_id: OrderId,
-    checkout_id: CheckoutId,
     snapshot: &StripeCheckoutSnapshot,
     now: OffsetDateTime,
 ) -> Result<i64, ApplicationError> {
@@ -481,116 +488,52 @@ async fn apply_stripe_checkout_snapshot(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "UPDATE commerce.orders SET subtotal_amount_minor = $3, tax_amount_minor = $4, \
-                shipping_amount_minor = $5, total_amount_minor = $6, tax_inclusive = false, \
-                updated_at = $7 WHERE store_id = $1 AND id = $2",
+        "UPDATE commerce.orders SET subtotal_amount_minor = $3, discount_amount_minor = $4, \
+                tax_amount_minor = $5, shipping_amount_minor = $6, total_amount_minor = $7, \
+                updated_at = $8 WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .bind(snapshot.amount_subtotal)
+    .bind(snapshot.amount_discount)
     .bind(snapshot.amount_tax)
     .bind(snapshot.amount_shipping)
     .bind(snapshot.amount_total)
     .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "UPDATE commerce.checkouts SET subtotal_amount_minor = $3, tax_amount_minor = $4, \
-                shipping_amount_minor = $5, total_amount_minor = $6, tax_inclusive = false, \
-                updated_at = $7 WHERE store_id = $1 AND id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
-    .bind(snapshot.amount_subtotal)
-    .bind(snapshot.amount_tax)
-    .bind(snapshot.amount_shipping)
-    .bind(snapshot.amount_total)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "UPDATE commerce.order_lines SET tax_amount_minor = 0, total_amount_minor = subtotal_amount_minor, \
-                tax_inclusive = false WHERE store_id = $1 AND order_id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "UPDATE commerce.checkout_lines SET tax_amount_minor = 0, total_amount_minor = subtotal_amount_minor, \
-                tax_inclusive = false WHERE store_id = $1 AND checkout_id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     if let Some(email) = snapshot.email.as_deref() {
         sqlx::query(
-            "UPDATE commerce.order_contacts SET email = $3 WHERE store_id = $1 AND order_id = $2",
+            "UPDATE commerce.orders SET contact_email = $3, updated_at = $4 \
+             WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(email)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        sqlx::query(
-            "UPDATE commerce.checkout_contacts SET email = $3 WHERE store_id = $1 AND checkout_id = $2",
-        )
-        .bind(store_id.as_uuid())
-        .bind(checkout_id.as_uuid())
-        .bind(email)
+        .bind(now)
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
     }
     if let Some(phone) = snapshot.phone.as_deref() {
         sqlx::query(
-            "UPDATE commerce.order_contacts SET phone = $3 WHERE store_id = $1 AND order_id = $2",
+            "UPDATE commerce.orders SET contact_phone = $3, updated_at = $4 \
+             WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(phone)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        sqlx::query(
-            "UPDATE commerce.checkout_contacts SET phone = $3 WHERE store_id = $1 AND checkout_id = $2",
-        )
-        .bind(store_id.as_uuid())
-        .bind(checkout_id.as_uuid())
-        .bind(phone)
+        .bind(now)
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
     }
     if let Some(address) = snapshot.billing_address.as_ref() {
-        upsert_address(transaction, "order_addresses", store_id, order_id.as_uuid(), "billing", address).await?;
-        upsert_address(
-            transaction,
-            "checkout_addresses",
-            store_id,
-            checkout_id.as_uuid(),
-            "billing",
-            address,
-        )
-        .await?;
+        update_inline_address(transaction, store_id, order_id, "billing", address, now).await?;
     }
     if let Some(address) = snapshot.shipping_address.as_ref() {
-        upsert_address(transaction, "order_addresses", store_id, order_id.as_uuid(), "shipping", address).await?;
-        upsert_address(
-            transaction,
-            "checkout_addresses",
-            store_id,
-            checkout_id.as_uuid(),
-            "shipping",
-            address,
-        )
-        .await?;
+        update_inline_address(transaction, store_id, order_id, "shipping", address, now).await?;
     }
     let country = snapshot
         .shipping_address
@@ -598,87 +541,6 @@ async fn apply_stripe_checkout_snapshot(
         .or(snapshot.billing_address.as_ref())
         .map(|address| address.country.as_str())
         .ok_or_else(corrupt_webhook_payload)?;
-    let tax_rule = sqlx::query_as::<_, (Uuid, String, String)>(
-        "SELECT id, code, name FROM commerce.tax_rules WHERE store_id = $1 \
-         AND country_code = $2 ORDER BY status = 'active' DESC, id LIMIT 1",
-    )
-    .bind(store_id.as_uuid())
-    .bind(country)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    let rate_basis_points = if snapshot.amount_subtotal == 0 {
-        0
-    } else {
-        i32::try_from(
-            snapshot
-                .amount_tax
-                .saturating_mul(10_000)
-                .checked_div(snapshot.amount_subtotal)
-                .unwrap_or_default(),
-        )
-        .map_err(unexpected_conversion)?
-    };
-    let tax_rule = match tax_rule {
-        Some(rule) => rule,
-        None => {
-            let code = format!("stripe-tax-{}", country.to_ascii_lowercase());
-            sqlx::query_as::<_, (Uuid, String, String)>(
-                "INSERT INTO commerce.tax_rules \
-                 (id, store_id, code, name, country_code, rate_basis_points, status) \
-                 VALUES ($1, $2, $3, 'Stripe Tax', $4, $5, 'active') \
-                 ON CONFLICT (store_id, code) DO UPDATE SET \
-                   name = EXCLUDED.name, country_code = EXCLUDED.country_code, \
-                   rate_basis_points = EXCLUDED.rate_basis_points, status = 'active', \
-                   updated_at = CURRENT_TIMESTAMP \
-                 RETURNING id, code, name",
-            )
-            .bind(Uuid::now_v7())
-            .bind(store_id.as_uuid())
-            .bind(code)
-            .bind(country)
-            .bind(rate_basis_points)
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(database_error)?
-        }
-    };
-    sqlx::query(
-        "INSERT INTO commerce.order_tax_calculations \
-         (store_id, order_id, tax_rule_id, rule_code, rule_name, country_code, rate_basis_points) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) \
-         ON CONFLICT (store_id, order_id) DO UPDATE SET tax_rule_id=EXCLUDED.tax_rule_id, \
-           rule_code=EXCLUDED.rule_code, rule_name=EXCLUDED.rule_name, country_code=EXCLUDED.country_code, \
-           rate_basis_points=EXCLUDED.rate_basis_points",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(tax_rule.0)
-    .bind("stripe_tax")
-    .bind("Stripe Tax")
-    .bind(country)
-    .bind(rate_basis_points)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "INSERT INTO commerce.checkout_tax_calculations \
-         (store_id, checkout_id, tax_rule_id, rule_code, rule_name, country_code, rate_basis_points) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7) \
-         ON CONFLICT (store_id, checkout_id) DO UPDATE SET tax_rule_id=EXCLUDED.tax_rule_id, \
-           rule_code=EXCLUDED.rule_code, rule_name=EXCLUDED.rule_name, country_code=EXCLUDED.country_code, \
-           rate_basis_points=EXCLUDED.rate_basis_points",
-    )
-    .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
-    .bind(tax_rule.0)
-    .bind("stripe_tax")
-    .bind("Stripe Tax")
-    .bind(country)
-    .bind(rate_basis_points)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
     if snapshot.amount_shipping > 0
         && let Some(service) = sqlx::query_as::<_, (Uuid, String, String, String, i16, i16)>(
             "SELECT service.id, service.code, service.name, service.currency::text, \
@@ -717,83 +579,46 @@ async fn apply_stripe_checkout_snapshot(
             .execute(&mut **transaction)
             .await
         .map_err(database_error)?;
-        sqlx::query(
-                "INSERT INTO commerce.checkout_shipping_selections \
-                 (store_id, checkout_id, shipping_service_id, service_code, service_name, amount_minor, currency, estimated_min_days, estimated_max_days) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
-                 ON CONFLICT (store_id, checkout_id) DO UPDATE SET shipping_service_id=EXCLUDED.shipping_service_id, \
-                   service_code=EXCLUDED.service_code, service_name=EXCLUDED.service_name, amount_minor=EXCLUDED.amount_minor, \
-                   currency=EXCLUDED.currency, estimated_min_days=EXCLUDED.estimated_min_days, estimated_max_days=EXCLUDED.estimated_max_days",
-            )
-            .bind(store_id.as_uuid())
-            .bind(checkout_id.as_uuid())
-            .bind(service.0)
-            .bind(&service.1)
-            .bind(&service.2)
-            .bind(snapshot.amount_shipping)
-            .bind(&service.3)
-            .bind(service.4)
-            .bind(service.5)
-            .execute(&mut **transaction)
-            .await
-        .map_err(database_error)?;
     }
     Ok(snapshot.amount_total)
 }
 
-async fn upsert_address(
+async fn update_inline_address(
     transaction: &mut Transaction<'static, Postgres>,
-    table: &str,
     store_id: StoreId,
-    owner_id: Uuid,
+    order_id: OrderId,
     kind: &str,
     address: &StripeAddressSnapshot,
+    now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
-    if table == "order_addresses" {
-        sqlx::query(
-            "INSERT INTO commerce.order_addresses \
-             (store_id, order_id, kind, full_name, address_line1, address_line2, locality, administrative_area, postal_code, country_code) \
-             VALUES ($1,$2,$3::commerce.address_kind,$4,$5,$6,$7,$8,$9,$10) \
-             ON CONFLICT (store_id, order_id, kind) DO UPDATE SET full_name=EXCLUDED.full_name, \
-               address_line1=EXCLUDED.address_line1, address_line2=EXCLUDED.address_line2, locality=EXCLUDED.locality, \
-               administrative_area=EXCLUDED.administrative_area, postal_code=EXCLUDED.postal_code, country_code=EXCLUDED.country_code",
-        )
+    let (full_name, line1, line2, locality, area, postal_code, country) = (
+        &address.full_name,
+        &address.line1,
+        &address.line2,
+        &address.city,
+        &address.state,
+        &address.postal_code,
+        &address.country,
+    );
+    let query = match kind {
+        "billing" => "UPDATE commerce.orders SET billing_full_name=$3, billing_address_line1=$4, billing_address_line2=$5, billing_locality=$6, billing_administrative_area=$7, billing_postal_code=$8, billing_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2",
+        "shipping" => "UPDATE commerce.orders SET shipping_full_name=$3, shipping_address_line1=$4, shipping_address_line2=$5, shipping_locality=$6, shipping_administrative_area=$7, shipping_postal_code=$8, shipping_country_code=$9, updated_at=$10 WHERE store_id=$1 AND id=$2",
+        _ => return Err(corrupt_webhook_payload()),
+    };
+    sqlx::query(query)
         .bind(store_id.as_uuid())
-        .bind(owner_id)
-        .bind(kind)
-        .bind(&address.full_name)
-        .bind(&address.line1)
-        .bind(&address.line2)
-        .bind(&address.city)
-        .bind(&address.state)
-        .bind(&address.postal_code)
-        .bind(&address.country)
+        .bind(order_id.as_uuid())
+        .bind(full_name)
+        .bind(line1)
+        .bind(line2)
+        .bind(locality)
+        .bind(area)
+        .bind(postal_code)
+        .bind(country)
+        .bind(now)
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
-    } else {
-        sqlx::query(
-            "INSERT INTO commerce.checkout_addresses \
-             (store_id, checkout_id, kind, full_name, address_line1, address_line2, locality, administrative_area, postal_code, country_code) \
-             VALUES ($1,$2,$3::commerce.address_kind,$4,$5,$6,$7,$8,$9,$10) \
-             ON CONFLICT (store_id, checkout_id, kind) DO UPDATE SET full_name=EXCLUDED.full_name, \
-               address_line1=EXCLUDED.address_line1, address_line2=EXCLUDED.address_line2, locality=EXCLUDED.locality, \
-               administrative_area=EXCLUDED.administrative_area, postal_code=EXCLUDED.postal_code, country_code=EXCLUDED.country_code",
-        )
-        .bind(store_id.as_uuid())
-        .bind(owner_id)
-        .bind(kind)
-        .bind(&address.full_name)
-        .bind(&address.line1)
-        .bind(&address.line2)
-        .bind(&address.city)
-        .bind(&address.state)
-        .bind(&address.postal_code)
-        .bind(&address.country)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    }
     Ok(())
 }
 
@@ -801,7 +626,6 @@ async fn cancel_pending_order(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
-    checkout_id: CheckoutId,
     reservation_id: Option<InventoryReservationId>,
     status: &str,
     now: OffsetDateTime,
@@ -810,7 +634,7 @@ async fn cancel_pending_order(
     if status != OrderStatus::Pending {
         return Ok(());
     }
-    let mut order = Order::rehydrate(order_id, checkout_id, status);
+    let mut order = Order::rehydrate(order_id, status);
     let transition = order.cancel(now)?;
     if let Some(reservation_id) = reservation_id {
         let active: Option<bool> = sqlx::query_scalar(
@@ -844,17 +668,6 @@ async fn cancel_pending_order(
     .await
     .map_err(database_error)?;
     sqlx::query(
-        "UPDATE commerce.checkouts SET status = 'expired', closed_at = COALESCE(closed_at, $3), \
-                updated_at = $3, expiry_locked_by = NULL, expiry_locked_at = NULL \
-         WHERE store_id = $1 AND id = $2 AND status = 'pending'",
-    )
-    .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
         "INSERT INTO commerce.order_transitions \
          (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
          VALUES ($1, $2, $3, $4::commerce.order_status, 'cancelled', 'cancelled', $5)",
@@ -875,7 +688,6 @@ async fn confirm_paid_order(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
-    checkout_id: CheckoutId,
     reservation_id: Option<InventoryReservationId>,
     status: &str,
     now: OffsetDateTime,
@@ -884,7 +696,7 @@ async fn confirm_paid_order(
     if status == OrderStatus::Confirmed {
         return Ok(());
     }
-    let mut order = Order::rehydrate(order_id, checkout_id, status);
+    let mut order = Order::rehydrate(order_id, status);
     let transition = order.confirm(now)?;
     if let Some(reservation_id) = reservation_id {
         close_reservation(
@@ -907,22 +719,11 @@ async fn confirm_paid_order(
     .await
     .map_err(database_error)?;
     let cart_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT cart_id FROM commerce.checkouts WHERE store_id = $1 AND id = $2",
+        "SELECT cart_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
+    .bind(order_id.as_uuid())
     .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "UPDATE commerce.checkouts SET status = 'completed', closed_at = COALESCE(closed_at, $3), \
-                updated_at = $3, expiry_locked_by = NULL, expiry_locked_at = NULL \
-         WHERE store_id = $1 AND id = $2 AND status = 'pending'",
-    )
-    .bind(store_id.as_uuid())
-    .bind(checkout_id.as_uuid())
-    .bind(now)
-    .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
     if let Some(cart_id) = cart_id {

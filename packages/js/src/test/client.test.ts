@@ -325,7 +325,6 @@ test("browser SDK observations record only after successful responses", async ()
   mutable.request = async (path) => {
     if (path === "/products") return { data: [{ id: "product-1" }], meta: { page: { has_more: false } } };
     if (path.startsWith("/products/")) return { data: { id: "product-1" } };
-    if (path.endsWith("/checkout")) return { data: { id: "checkout-1" } };
     if (path === "/carts/cart-1") return { data: { id: "cart-1", lines: [] } };
     return { data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity: 2 }] } };
   };
@@ -333,15 +332,6 @@ test("browser SDK observations record only after successful responses", async ()
   await client.catalog.listProducts({ q: "shoes" });
   await client.catalog.getProduct("shoe");
   await client.cart.addLine("cart-1", "variant-1", 2);
-  await client.checkout.create("cart-1", {
-    contact: { email: "shopper@example.com" },
-    billing_address: {
-      full_name: "Shopper",
-      address_line1: "1 Main Street",
-      locality: "Singapore",
-      country_code: "SG",
-    },
-  });
 
   assert.deepEqual(recorded, [
     ["search", { query: "shoes", resultCount: 1 }],

@@ -2,12 +2,12 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{ShippingSelection, ShippingServiceId},
+    fulfillment::ShippingSelection,
     inventory::InventoryReservationId,
-    pricing::{PriceListId, PromotionSnapshot, TaxRuleSnapshot},
+    pricing::PriceListId,
     sales::{
-        CartId, CartStatus, CheckoutId, CheckoutIdentity, OrderDeliveryStatus,
-        OrderFulfillmentStatus, OrderId, OrderStatus, ShopperId,
+        CartId, CartStatus, OrderDeliveryStatus, OrderFulfillmentStatus, OrderId, OrderIdentity,
+        OrderStatus, ShopperId,
     },
 };
 use secrecy::SecretString;
@@ -29,7 +29,6 @@ pub struct CartLineItem {
     pub quantity: u32,
     pub unit_price_amount_minor: i64,
     pub subtotal_amount_minor: i64,
-    pub tax_inclusive: bool,
     /// Current ready catalog media for storefront presentation only.
     pub media: Vec<StorefrontMediaAsset>,
 }
@@ -49,51 +48,10 @@ pub struct CartDetail {
 }
 
 pub struct StripeCheckoutDraft {
-    pub checkout_id: CheckoutId,
     pub order_id: OrderId,
     pub currency: CurrencyCode,
     pub subtotal_amount_minor: i64,
     pub expires_at: OffsetDateTime,
-}
-
-pub struct CheckoutLineItem {
-    pub product_id: ProductId,
-    pub product_variant_id: ProductVariantId,
-    pub product_title: String,
-    pub variant_title: String,
-    pub sku: Option<String>,
-    pub requires_shipping: bool,
-    pub quantity: u32,
-    pub unit_price_amount_minor: i64,
-    pub subtotal_amount_minor: i64,
-    pub discount_amount_minor: i64,
-    pub tax_amount_minor: i64,
-    pub total_amount_minor: i64,
-    pub tax_inclusive: bool,
-}
-
-pub struct CheckoutDetail {
-    pub id: CheckoutId,
-    pub shopper_id: ShopperId,
-    pub cart_id: CartId,
-    pub inventory_reservation_id: Option<InventoryReservationId>,
-    pub price_list_id: PriceListId,
-    pub currency: CurrencyCode,
-    pub locale: Locale,
-    pub status: String,
-    pub identity: CheckoutIdentity,
-    pub subtotal_amount_minor: i64,
-    pub discount_amount_minor: i64,
-    pub tax_amount_minor: i64,
-    pub tax_rule: TaxRuleSnapshot,
-    pub promotion: Option<PromotionSnapshot>,
-    pub tax_inclusive: bool,
-    pub shipping: Option<ShippingSelection>,
-    pub shipping_amount_minor: i64,
-    pub total_amount_minor: i64,
-    pub expires_at: OffsetDateTime,
-    pub lines: Vec<CheckoutLineItem>,
-    pub created_at: OffsetDateTime,
 }
 
 pub struct OrderLineItem {
@@ -107,10 +65,6 @@ pub struct OrderLineItem {
     pub quantity: u32,
     pub unit_price_amount_minor: i64,
     pub subtotal_amount_minor: i64,
-    pub discount_amount_minor: i64,
-    pub tax_amount_minor: i64,
-    pub total_amount_minor: i64,
-    pub tax_inclusive: bool,
 }
 
 pub struct OrderTransitionItem {
@@ -126,7 +80,6 @@ pub struct OrderDetail {
     pub id: OrderId,
     pub order_number: chaos_domain::sales::OrderNumber,
     pub shopper_id: ShopperId,
-    pub checkout_id: CheckoutId,
     pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
@@ -134,13 +87,10 @@ pub struct OrderDetail {
     pub status: OrderStatus,
     pub fulfillment_status: OrderFulfillmentStatus,
     pub delivery_status: OrderDeliveryStatus,
-    pub identity: CheckoutIdentity,
+    pub identity: OrderIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
-    pub tax_rule: TaxRuleSnapshot,
-    pub promotion: Option<PromotionSnapshot>,
-    pub tax_inclusive: bool,
     pub shipping: Option<ShippingSelection>,
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
@@ -165,13 +115,6 @@ pub struct OrderListFilter {
 pub struct OrderPage {
     pub items: Vec<OrderDetail>,
     pub has_more: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CheckoutExpiryJob {
-    pub id: CheckoutId,
-    pub store_id: Uuid,
-    pub inventory_reservation_id: Option<InventoryReservationId>,
 }
 
 #[async_trait]
@@ -209,26 +152,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
-    async fn quote_shipping(
-        &self,
-        actor: &ShopperActor,
-        cart_id: CartId,
-        destination_country: &str,
-    ) -> Result<Vec<ShippingSelection>, ApplicationError>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn create_checkout(
-        &self,
-        actor: &ShopperActor,
-        cart_id: CartId,
-        now: OffsetDateTime,
-        expires_at: OffsetDateTime,
-        identity: CheckoutIdentity,
-        shipping_service_id: Option<ShippingServiceId>,
-        promotion_code: Option<&str>,
-        idempotency: &IdempotencyRequest,
-    ) -> Result<CheckoutDetail, ApplicationError>;
-
     async fn create_stripe_checkout(
         &self,
         actor: &ShopperActor,
@@ -238,20 +161,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         expires_at: OffsetDateTime,
         idempotency: &IdempotencyRequest,
     ) -> Result<StripeCheckoutDraft, ApplicationError>;
-
-    async fn get_checkout(
-        &self,
-        actor: &ShopperActor,
-        checkout_id: CheckoutId,
-    ) -> Result<Option<CheckoutDetail>, ApplicationError>;
-
-    async fn create_order(
-        &self,
-        actor: &ShopperActor,
-        checkout_id: CheckoutId,
-        now: OffsetDateTime,
-        idempotency: &IdempotencyRequest,
-    ) -> Result<OrderDetail, ApplicationError>;
 
     async fn get_order(
         &self,
@@ -272,24 +181,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         access_token: &SecretString,
         now: OffsetDateTime,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
-}
-
-#[async_trait]
-pub trait CheckoutExpiryQueue: Send + Sync {
-    async fn claim_due_checkouts(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<CheckoutExpiryJob>, ApplicationError>;
-
-    async fn expire_checkout(
-        &self,
-        worker_id: Uuid,
-        job: CheckoutExpiryJob,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
 }
 
 #[async_trait]

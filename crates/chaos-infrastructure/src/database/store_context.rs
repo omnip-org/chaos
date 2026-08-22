@@ -85,10 +85,6 @@ mod tests {
         let user_id = Uuid::now_v7();
         let key_a = Uuid::now_v7();
         let key_b = Uuid::now_v7();
-        let tax_rule_a = Uuid::now_v7();
-        let tax_rule_b = Uuid::now_v7();
-        let promotion_a = Uuid::now_v7();
-        let promotion_b = Uuid::now_v7();
         let shopper_a = Uuid::now_v7();
         let shopper_b = Uuid::now_v7();
         let provider_account_a = Uuid::now_v7();
@@ -140,39 +136,6 @@ mod tests {
             .bind(channel_id)
             .bind(store_id)
             .bind(code)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-        for (tax_rule_id, store_id, code) in [
-            (tax_rule_a, store_a, "tax-a"),
-            (tax_rule_b, store_b, "tax-b"),
-        ] {
-            sqlx::query(
-                "INSERT INTO commerce.tax_rules \
-                 (id, store_id, code, name, country_code, rate_basis_points) \
-                 VALUES ($1, $2, $3, $3, 'US', 0)",
-            )
-            .bind(tax_rule_id)
-            .bind(store_id)
-            .bind(code)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
-        for (promotion_id, store_id, handle) in [
-            (promotion_a, store_a, "promotion-a"),
-            (promotion_b, store_b, "promotion-b"),
-        ] {
-            sqlx::query(
-                "INSERT INTO commerce.promotions \
-                 (id, store_id, handle, name, trigger, value_kind, \
-                  rate_basis_points, currency) \
-                 VALUES ($1, $2, $3, $3, 'automatic', 'percentage', 1000, 'USD')",
-            )
-            .bind(promotion_id)
-            .bind(store_id)
-            .bind(handle)
             .execute(&pool)
             .await
             .unwrap();
@@ -259,16 +222,6 @@ mod tests {
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
-        let visible_tax_rule_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.tax_rules ORDER BY id")
-                .fetch_all(transaction.connection())
-                .await
-                .unwrap();
-        let visible_promotion_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.promotions ORDER BY id")
-                .fetch_all(transaction.connection())
-                .await
-                .unwrap();
         let visible_shopper_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.shoppers ORDER BY id")
                 .fetch_all(transaction.connection())
@@ -285,8 +238,6 @@ mod tests {
         assert_eq!(visible_key_ids, vec![key_a]);
         assert_eq!(visible_channel_ids, vec![channel_a]);
         assert_eq!(visible_product_ids, vec![product_a]);
-        assert_eq!(visible_tax_rule_ids, vec![tax_rule_a]);
-        assert_eq!(visible_promotion_ids, vec![promotion_a]);
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 

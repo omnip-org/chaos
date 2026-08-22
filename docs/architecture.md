@@ -95,7 +95,7 @@ The MCP operation chain is `request_id -> access_key_id -> user_id -> store_id -
 
 PostgreSQL is the source of truth for catalogs, inventory, orders, payments, refunds, fulfillment, idempotency records, and durable jobs. Redis is limited to rate limiting and disposable coordination; losing Redis must not violate commerce invariants.
 
-Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, tax, discount, address, and Provider evidence required to preserve history. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
+Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, address, and Provider evidence required to preserve history. Stripe owns checkout tax and promotion calculation; its verified webhook writes subtotal, discount, tax, shipping, and total as Order facts. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
 Orders use an internal UUID for joins and idempotency, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
@@ -107,11 +107,10 @@ The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
 website visit creates one Shopper through `/store/v1/shopper-sessions`, and the
 API returns a signed possession token for that row. The Shopper does not own a
 Sales Channel and does not hold contact information; channel is request context,
-while email, phone, and addresses remain immutable Checkout and Order snapshots.
-Carts, Checkouts, Orders, Payments, and Analytics events carry the same
-`shopper_id`; there is no Customer entity or visitor-to-Customer association
-table. An Order-bearing Shopper is the buyer for all commerce and analytics
-purposes.
+while contact and address data are captured directly on the business Order.
+Carts, Orders, Payments, and Analytics events carry the same `shopper_id`; there
+is no Customer entity or visitor-to-Customer association table. An Order-bearing
+Shopper is the buyer for all commerce and analytics purposes.
 
 The commerce database remains one physical `commerce` schema so Store-scoped
 foreign keys and RLS stay simple, but its migration is organized into logical
@@ -120,12 +119,14 @@ Sales, Fulfillment configuration, Payments, and Fulfillment execution. Provider
 calls and durable delivery state remain outside these business tables in the
 Integration workflow.
 
-Cart and Checkout have separate lifecycles. Creating a Checkout reserves
-inventory and freezes a Checkout snapshot, but leaves the Cart active. A Cart
-allows at most one pending Checkout at a time; expired Checkouts remain as
-history and the Cart can start a new Checkout. Only successful Order creation
-completes both the Checkout and the Cart. This allows payment or expiry retries
-without rewriting an existing Checkout snapshot.
+Cart and Order have separate responsibilities. Creating a Stripe Embedded
+Checkout Session atomically creates a pending Order and reserves tracked
+inventory while leaving the Cart active. Stripe owns the checkout UI, address,
+shipping, tax, and payment collection; Chaos stores the resulting provider
+snapshot on the Order after a verified webhook. A successful payment confirms
+the Order and completes the Cart; expiry or failure cancels the Order and
+releases the reservation. There is no local Checkout aggregate to expire or
+reconcile.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
 envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, and time;

@@ -10,7 +10,6 @@ use chaos_application::{
         AnalyticsEventDestination, Clock, IntegrationQueue, ShippingProvider,
         StripeAccountReadiness, StripePaymentGateway,
     },
-    sales::CheckoutExpiryWorkers,
 };
 use chaos_infrastructure::{
     integrations::{
@@ -20,7 +19,6 @@ use chaos_infrastructure::{
     repositories::{
         PostgresAnalyticsDeliveryStore, PostgresFulfillmentRepository, PostgresIntegrationQueue,
         PostgresPaymentRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
-        PostgresStorefrontSalesRepository,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::provider_secrets::DynamicSecretResolver,
@@ -34,7 +32,6 @@ pub struct WorkerRuntime {
     pub fulfillment_workers: Arc<FulfillmentWorkers>,
     pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
-    pub checkout_expiry_workers: Arc<CheckoutExpiryWorkers>,
     pub clock: Arc<dyn Clock>,
 }
 
@@ -92,19 +89,12 @@ impl WorkerRuntime {
             [shipping_provider],
         );
 
-        let storefront_sales_repository = Arc::new(PostgresStorefrontSalesRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-
         Ok(Self {
             infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
             fulfillment_workers: Arc::new(fulfillment_workers),
             analytics_delivery_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
-            checkout_expiry_workers: Arc::new(CheckoutExpiryWorkers::new(
-                storefront_sales_repository,
-            )),
             clock: Arc::new(SystemClock),
         })
     }

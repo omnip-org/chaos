@@ -28,7 +28,7 @@ A Product is Store-owned catalog content. Variants are purchasable combinations 
 
 ## Order
 
-An immutable commercial record after creation, with controlled state transitions. It freezes the selected products, variants, quantities, money, tax, discount, Shopper-linked contact, addresses, channel, and relevant provider evidence. A Shopper who creates an Order is the buyer; there is no separate Customer entity.
+An immutable commercial record after creation, with controlled state transitions. It freezes the selected products, variants, quantities, price snapshot, Shopper-linked contact, addresses, channel, and relevant provider evidence. Stripe owns Checkout tax, promotion, shipping, and final-total calculation; the resulting subtotal, discount, tax, shipping, and total are stored as provider-reported Order facts. A Shopper who creates an Order is the buyer; there is no separate Customer entity.
 
 ## Shopper
 
@@ -41,11 +41,11 @@ Order snapshots rather than as a separate Customer profile.
 ## Cart and Checkout
 
 A Cart is a mutable Storefront working set owned by a Shopper. It remains active
-while a Checkout is pending or expired. A Checkout freezes the current catalog,
-price, tax, promotion, shipping, inventory reservation, and contact snapshots.
-Only one pending Checkout may exist for a Cart, while expired Checkout attempts
-remain queryable history. Creating an Order completes the Checkout and Cart in
-the same transaction.
+while a Stripe Embedded Checkout session is pending. Chaos creates one Order and
+one Stripe Checkout Session per payment attempt; Stripe collects the checkout
+address and calculates tax, promotions, shipping, and the final total. Verified
+Stripe webhooks reconcile those facts onto the Order, while Chaos retains
+inventory and fulfillment state.
 
 ## Payment and Refund
 

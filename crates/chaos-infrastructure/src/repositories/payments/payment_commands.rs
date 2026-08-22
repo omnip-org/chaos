@@ -403,16 +403,11 @@ impl StripePaymentRepository for PostgresPaymentRepository {
                     Option<String>,
                 ),
             >(
-                "SELECT contact.email::text, contact.phone, shipping.full_name, \
-                        shipping.address_line1, shipping.address_line2, shipping.locality, \
-                        shipping.administrative_area, shipping.postal_code, \
-                        NULLIF(btrim(shipping.country_code::text), '') \
-                 FROM commerce.order_contacts AS contact \
-                 LEFT JOIN commerce.order_addresses AS shipping \
-                   ON shipping.store_id = contact.store_id \
-                  AND shipping.order_id = contact.order_id \
-                  AND shipping.kind = 'shipping' \
-                 WHERE contact.store_id = $1 AND contact.order_id = $2",
+                "SELECT contact_email::text, contact_phone, shipping_full_name, \
+                        shipping_address_line1, shipping_address_line2, shipping_locality, \
+                        shipping_administrative_area, shipping_postal_code, \
+                        NULLIF(btrim(shipping_country_code::text), '') \
+                 FROM commerce.orders WHERE store_id = $1 AND id = $2",
             )
             .bind(job.store_id)
             .bind(row.5)
@@ -623,9 +618,8 @@ impl StripePaymentRepository for PostgresPaymentRepository {
         }
         let attempt_id = PaymentAttemptId::from_uuid(outbox_aggregate_id(job)?);
         let mut transaction = self.begin_context(None, job.store_id).await?;
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, String)>(
-            "SELECT attempt.order_id, sales_order.checkout_id, \
-                    sales_order.inventory_reservation_id, sales_order.status::text \
+        let row = sqlx::query_as::<_, (Uuid, Option<Uuid>, String)>(
+            "SELECT attempt.order_id, sales_order.inventory_reservation_id, sales_order.status::text \
              FROM commerce.payment_attempts AS attempt \
              INNER JOIN commerce.orders AS sales_order \
                ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
@@ -659,9 +653,8 @@ impl StripePaymentRepository for PostgresPaymentRepository {
             &mut transaction,
             StoreId::from_uuid(job.store_id),
             OrderId::from_uuid(row.0),
-            CheckoutId::from_uuid(row.1),
-            row.2.map(InventoryReservationId::from_uuid),
-            &row.3,
+            row.1.map(InventoryReservationId::from_uuid),
+            &row.2,
             now,
         )
         .await?;

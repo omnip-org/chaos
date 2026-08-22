@@ -79,7 +79,7 @@ pub struct AnalyticsShopper(pub ShopperActor);
 pub struct CartMachine(pub MachineActor);
 pub struct OrderLookupMachine(pub MachineActor);
 pub struct CartShopper(pub ShopperActor);
-pub struct CheckoutShopper(pub ShopperActor);
+pub struct PaymentShopper(pub ShopperActor);
 
 impl FromRequestParts<ApiState> for StorefrontMachine {
     type Rejection = ApiError;
@@ -146,7 +146,7 @@ macro_rules! storefront_shopper_extractor {
 }
 
 storefront_shopper_extractor!(CartShopper);
-storefront_shopper_extractor!(CheckoutShopper);
+storefront_shopper_extractor!(PaymentShopper);
 storefront_shopper_extractor!(AnalyticsShopper);
 
 impl FromRequestParts<ApiState> for AuthenticatedUser {

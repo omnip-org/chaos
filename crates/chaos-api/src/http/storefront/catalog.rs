@@ -78,7 +78,6 @@ struct StorefrontProductOptionData {
 struct StorefrontPriceData {
     amount_minor: i64,
     currency: String,
-    tax_inclusive: bool,
 }
 
 #[derive(Serialize)]
@@ -240,7 +239,6 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
         price: StorefrontPriceData {
             amount_minor: variant.amount_minor,
             currency: variant.currency.as_str().to_owned(),
-            tax_inclusive: variant.tax_inclusive,
         },
         selected_options: variant
             .selected_options

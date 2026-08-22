@@ -14,7 +14,6 @@ mod media;
 mod payments;
 mod pricing;
 mod pricing_management;
-mod promotion;
 mod provider_secret;
 mod publishable_key;
 mod review;
@@ -25,7 +24,6 @@ mod store_administration;
 mod store_membership;
 mod store_read;
 mod storefront_catalog;
-mod tax;
 
 pub use actor::AdminActor;
 pub use analytics::{
@@ -95,7 +93,6 @@ pub use pricing_management::{
     PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
     PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
 };
-pub use promotion::{PromotionDetail, PromotionRepository};
 pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{
     GeneratedPublishableKeyMaterial, MachineActor, PublishableKeyCreationStatus,
@@ -103,10 +100,9 @@ pub use publishable_key::{
 };
 pub use review::{ReviewRepository, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
-    CartDetail, CartLineItem, CheckoutDetail, CheckoutExpiryJob, CheckoutExpiryQueue,
-    CheckoutLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
-    OrderPage, OrderTrackingSession, OrderTransitionItem, StorefrontSalesRepository,
-    StripeCheckoutDraft,
+    CartDetail, CartLineItem, OrderDetail, OrderLineItem, OrderListFilter,
+    OrderManagementRepository, OrderPage, OrderTrackingSession, OrderTransitionItem,
+    StorefrontSalesRepository, StripeCheckoutDraft,
 };
 pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
@@ -120,4 +116,3 @@ pub use storefront_catalog::{
     StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,
     StorefrontProductOptionValue, StorefrontSelectedOption,
 };
-pub use tax::{TaxRuleDetail, TaxRuleRepository};

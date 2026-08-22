@@ -23,6 +23,7 @@ CREATE TABLE integration.idempotency_keys (
     response_status      SMALLINT,
     response_body        JSONB,
     completed_at         TIMESTAMPTZ,
+    expires_at           TIMESTAMPTZ                      NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
     created_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -42,6 +43,29 @@ CREATE TABLE integration.idempotency_keys (
         (response_status BETWEEN 200 AND 599 AND response_body IS NOT NULL AND completed_at IS NOT NULL)
     )
 );
+
+CREATE INDEX idempotency_keys_expiry_idx
+    ON integration.idempotency_keys (expires_at)
+    WHERE completed_at IS NOT NULL;
+
+SELECT cron.schedule(
+    'chaos-idempotency-cleanup',
+    '17 * * * *',
+    $$
+    DELETE FROM integration.idempotency_keys
+     WHERE id IN (
+         SELECT id
+           FROM integration.idempotency_keys
+          WHERE completed_at IS NOT NULL
+            AND expires_at < CURRENT_TIMESTAMP
+          ORDER BY expires_at, id
+          LIMIT 10000
+     )
+    $$
+);
+
+COMMENT ON COLUMN integration.idempotency_keys.expires_at IS
+    'After this time the idempotency replay snapshot may be removed; default retention is seven days.';
 
 CREATE TABLE integration.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
@@ -94,7 +118,8 @@ CREATE TABLE integration.event_outbox (
     aggregate_id         UUID        NOT NULL,
     event_type           TEXT        NOT NULL,
     payload              JSONB       NOT NULL,
-    pgmq_message_id      BIGINT      NOT NULL UNIQUE,
+    queue_name           TEXT        NOT NULL,
+    pgmq_message_id      BIGINT      NOT NULL,
     processed_at         TIMESTAMPTZ,
     failed_at            TIMESTAMPTZ,
     last_error           TEXT,
@@ -104,7 +129,11 @@ CREATE TABLE integration.event_outbox (
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (event_type)
         REFERENCES integration.event_consumers(event_type),
+    UNIQUE (queue_name, pgmq_message_id),
     CONSTRAINT event_outbox_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT event_outbox_queue_name_check CHECK (
+        queue_name ~ '^chaos_[a-z][a-z0-9_]*$'
+    ),
     CONSTRAINT event_outbox_completion_check CHECK (
         processed_at IS NULL OR failed_at IS NULL
     )
@@ -144,6 +173,7 @@ BEGIN
         RAISE EXCEPTION 'event type % has no queue owner', NEW.event_type
             USING ERRCODE = '23514';
     END IF;
+    NEW.queue_name := queue_name;
     SELECT message_id
       INTO NEW.pgmq_message_id
       FROM pgmq.send(
@@ -219,7 +249,8 @@ BEGIN
                event.created_at
           INTO target
           FROM integration.event_outbox AS event
-         WHERE event.pgmq_message_id = message.msg_id
+         WHERE event.queue_name = $1
+           AND event.pgmq_message_id = message.msg_id
            AND event.processed_at IS NULL
            AND event.failed_at IS NULL;
         IF NOT FOUND THEN
@@ -355,7 +386,7 @@ DECLARE
     queue_name TEXT;
 BEGIN
     SELECT event.pgmq_message_id,
-           integration.event_queue_name(event.event_type)
+           event.queue_name
       INTO message_id, queue_name
       FROM integration.event_outbox AS event
      WHERE event.id = event_id
@@ -690,6 +721,93 @@ CREATE TABLE integration.analytics_destinations (
     )
 );
 
+-- Analytics destinations are mutable Store configuration, but the runtime
+-- role must not receive direct writes to the configuration table. Route the
+-- controlled upsert through a Store-scoped function.
+CREATE FUNCTION integration.configure_analytics_destination(
+    p_store_id UUID,
+    p_provider TEXT,
+    p_external_account_reference TEXT,
+    p_credential_secret_reference TEXT,
+    p_configuration JSONB,
+    p_enabled BOOLEAN,
+    p_created_by UUID,
+    p_now TIMESTAMPTZ
+)
+RETURNS TABLE (
+    destination_id UUID,
+    destination_provider TEXT,
+    destination_external_account_reference TEXT,
+    destination_configuration JSONB,
+    destination_enabled BOOLEAN,
+    destination_created_at TIMESTAMPTZ,
+    destination_updated_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF p_store_id IS DISTINCT FROM
+       nullif(current_setting('app.store_id', true), '')::uuid
+    THEN
+        RAISE EXCEPTION 'analytics destination store context does not match target store'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF p_created_by IS DISTINCT FROM
+       nullif(current_setting('app.user_id', true), '')::uuid
+    THEN
+        RAISE EXCEPTION 'analytics destination user context does not match creator'
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN QUERY
+    INSERT INTO integration.analytics_destinations (
+        id,
+        store_id,
+        provider,
+        external_account_reference,
+        credential_secret_reference,
+        configuration,
+        enabled,
+        created_by,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        uuidv7(),
+        p_store_id,
+        p_provider,
+        p_external_account_reference,
+        p_credential_secret_reference,
+        p_configuration,
+        p_enabled,
+        p_created_by,
+        p_now,
+        p_now
+    )
+    ON CONFLICT (store_id, provider) DO UPDATE SET
+        external_account_reference = EXCLUDED.external_account_reference,
+        credential_secret_reference = EXCLUDED.credential_secret_reference,
+        configuration = EXCLUDED.configuration,
+        enabled = EXCLUDED.enabled,
+        updated_at = EXCLUDED.updated_at
+    RETURNING
+        analytics_destinations.id,
+        analytics_destinations.provider,
+        analytics_destinations.external_account_reference,
+        analytics_destinations.configuration,
+        analytics_destinations.enabled,
+        analytics_destinations.created_at,
+        analytics_destinations.updated_at;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION integration.configure_analytics_destination(
+    UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, UUID, TIMESTAMPTZ
+) FROM PUBLIC;
+
 CREATE TABLE integration.analytics_deliveries (
     id                  UUID        NOT NULL PRIMARY KEY,
     store_id            UUID        NOT NULL,
@@ -859,6 +977,10 @@ REVOKE ALL ON FUNCTION integration.finish_analytics_event_delivery(
 ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_analytics_event_delivery() FROM PUBLIC;
 
+GRANT EXECUTE ON FUNCTION integration.configure_analytics_destination(
+    UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, UUID, TIMESTAMPTZ
+) TO chaos_runtime;
+
 GRANT EXECUTE ON FUNCTION integration.claim_analytics_deliveries(INTEGER)
     TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_analytics_event_delivery(
@@ -947,17 +1069,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 REVOKE UPDATE, DELETE
     ON commerce.inventory_transactions,
-       commerce.checkout_contacts,
-       commerce.checkout_addresses,
-       commerce.checkout_lines,
-       commerce.checkout_tax_calculations,
-       commerce.checkout_promotion_calculations,
-       commerce.checkout_shipping_selections,
-       commerce.order_contacts,
-       commerce.order_addresses,
        commerce.order_lines,
-       commerce.order_tax_calculations,
-       commerce.order_promotion_calculations,
        commerce.order_shipping_selections,
        commerce.order_transitions,
        commerce.order_fulfillment_transitions
@@ -967,7 +1079,6 @@ REVOKE DELETE
     ON commerce.collections,
        commerce.media_assets,
        commerce.reviews,
-       commerce.checkouts,
        commerce.orders
     FROM chaos_runtime;
 

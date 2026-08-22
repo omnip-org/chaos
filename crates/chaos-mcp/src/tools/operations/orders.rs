@@ -251,7 +251,7 @@ fn order_summary(detail: chaos_application::ports::OrderDetail) -> serde_json::V
             "track_inventory": line.track_inventory,
             "quantity": line.quantity,
             "unit_price_amount_minor": line.unit_price_amount_minor,
-            "total_amount_minor": line.total_amount_minor,
+            "subtotal_amount_minor": line.subtotal_amount_minor,
         })).collect::<Vec<_>>(),
         "created_at": format_time(detail.created_at),
         "updated_at": format_time(detail.updated_at),

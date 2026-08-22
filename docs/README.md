@@ -43,7 +43,7 @@ preserve the dependency direction in
 | Users, external identity, Access Keys | `identity` | HTTP auth and identity adapter | `identity` |
 | Stores, memberships, channels, Publishable Keys | `store` | MCP Store tools and Store repositories | `commerce` |
 | Products, variants, collections, media | `catalog` | MCP catalog tools and catalog repositories | `commerce` |
-| Prices, promotions, and tax | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
+| Price lists | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
 | Stock and reservations | `inventory` | MCP inventory tools and inventory repository | `commerce` |
 | Shopper, carts, checkout, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
