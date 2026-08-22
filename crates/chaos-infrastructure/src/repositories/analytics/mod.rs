@@ -354,31 +354,31 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsDestinationStore {
             tx.commit().await.map_err(db)?;
             return Ok(result);
         }
-        let row: (Uuid, String, String, Value, bool, OffsetDateTime, OffsetDateTime) =
-            sqlx::query_as(
-                "INSERT INTO integration.analytics_destinations
-                    (id,store_id,provider,external_account_reference,credential_secret_reference,
-                     configuration,enabled,created_by,created_at,updated_at)
-                 VALUES(uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$8)
-                 ON CONFLICT(store_id,provider) DO UPDATE SET
-                    external_account_reference=EXCLUDED.external_account_reference,
-                    credential_secret_reference=EXCLUDED.credential_secret_reference,
-                    configuration=EXCLUDED.configuration,
-                    enabled=EXCLUDED.enabled,
-                    updated_at=EXCLUDED.updated_at
-                 RETURNING id,provider,external_account_reference,configuration,enabled,created_at,updated_at",
-            )
-            .bind(store.as_uuid())
-            .bind(configuration.provider)
-            .bind(configuration.external_account_reference)
-            .bind(configuration.credential_secret_reference)
-            .bind(configuration.configuration)
-            .bind(configuration.enabled)
-            .bind(actor.user_id().as_uuid())
-            .bind(now)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
+        let row: (
+            Uuid,
+            String,
+            String,
+            Value,
+            bool,
+            OffsetDateTime,
+            OffsetDateTime,
+        ) = sqlx::query_as(
+            "SELECT destination_id,destination_provider,destination_external_account_reference,\
+                        destination_configuration,destination_enabled,destination_created_at,\
+                        destination_updated_at \
+                   FROM integration.configure_analytics_destination($1,$2,$3,$4,$5,$6,$7,$8)",
+        )
+        .bind(store.as_uuid())
+        .bind(configuration.provider)
+        .bind(configuration.external_account_reference)
+        .bind(configuration.credential_secret_reference)
+        .bind(configuration.configuration)
+        .bind(configuration.enabled)
+        .bind(actor.user_id().as_uuid())
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
         let result = AnalyticsDestination {
             id: row.0,
             store_id: store,
