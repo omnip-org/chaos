@@ -70,14 +70,14 @@ pub trait InventoryRepository: Send + Sync {
         limit: u16,
     ) -> Result<Option<Vec<InventoryLocationItem>>, ApplicationError>;
 
-    async fn adjust_stock(
+    async fn adjust_inventory_item(
         &self,
         actor: AdminActor,
         adjustment: &InventoryAdjustment,
         idempotency: &IdempotencyRequest,
     ) -> Result<InventoryItemView, ApplicationError>;
 
-    async fn list_stock(
+    async fn list_inventory_items(
         &self,
         actor: AdminActor,
         store_id: StoreId,

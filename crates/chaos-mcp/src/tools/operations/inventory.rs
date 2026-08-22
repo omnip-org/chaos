@@ -1,4 +1,4 @@
-use chaos_application::inventory::{AdjustStockInput, CreateInventoryLocationInput};
+use chaos_application::inventory::{AdjustInventoryInput, CreateInventoryLocationInput};
 use chaos_domain::{
     catalog::ProductVariantId,
     inventory::{InventoryItemId, InventoryLocationId},
@@ -21,7 +21,7 @@ use crate::{
 };
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListStockParams {
+pub struct ListInventoryItemsParams {
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -52,16 +52,16 @@ pub struct CreateInventoryLocationParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
-pub struct AdjustStockParams {
+pub struct AdjustInventoryParams {
     /// The inventory location's UUID.
     pub inventory_location_id: String,
     /// The product variant's UUID. The variant must have track_inventory enabled.
     pub product_variant_id: String,
-    /// Signed change to on-hand quantity (positive to receive stock, negative to remove it).
+    /// Signed change to on-hand quantity (positive to receive inventory, negative to remove it).
     /// Must not be zero.
     pub delta_quantity: i64,
     /// A short human-readable reason for this adjustment (1-500 characters), e.g.
-    /// "Initial stock receipt" or "Damaged in transit".
+    /// "Initial inventory receipt" or "Damaged in transit".
     pub note: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -72,13 +72,12 @@ pub struct AdjustStockParams {
 #[tool_router(router = inventory_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "List stock levels (on-hand, reserved, available quantity) per inventory \
-                        location and product variant in the selected Store."
+        description = "List inventory balances for product variants and inventory locations in the selected Store. Returns on-hand, reserved, and available quantities. Read-only; use product_variant_id or inventory_location_id from the result to identify a balance."
     )]
-    async fn list_inventory(
+    async fn list_inventory_items(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<ListStockParams>,
+        Parameters(params): Parameters<ListInventoryItemsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
@@ -91,7 +90,7 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let after = match params.cursor.as_deref().map(parse_stock_cursor) {
+        let after = match params.cursor.as_deref().map(parse_inventory_item_cursor) {
             Some(Ok(id)) => Some(id),
             Some(Err(result)) => return Ok(result),
             None => None,
@@ -101,7 +100,7 @@ impl ChaosMcp {
         match self
             .state
             .inventory_management
-            .list_stock(actor, store_id, after, limit)
+            .list_inventory_items(actor, store_id, after, limit)
             .await
         {
             Ok(page) => {
@@ -139,7 +138,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List inventory locations (warehouses, stores, etc.) in the selected Store."
+        description = "List inventory locations available in the selected Store. Use the returned location id when querying or adjusting an inventory balance. Read-only."
     )]
     async fn list_inventory_locations(
         &self,
@@ -204,7 +203,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create an inventory location (warehouse, store, etc.) in the selected Store. Requires confirm: true and an idempotency_key."
+        description = "Create an inventory location in the selected Store. Use this only when the Store needs an additional warehouse or inventory location. Requires confirm: true and an idempotency_key."
     )]
     async fn create_inventory_location(
         &self,
@@ -245,15 +244,12 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Adjust on-hand stock quantity for a product variant at an inventory \
-                        location, in the selected Store. Use a positive \
-                        delta_quantity to receive stock and a negative one to remove it. \
-                        Requires confirm: true and an idempotency_key."
+        description = "Adjust the on-hand quantity for one product variant at one inventory location in the selected Store. Positive delta_quantity receives inventory; negative delta_quantity removes inventory. This does not change reserved_quantity; reservations are managed by checkout and order payment workflows. Requires confirm: true and an idempotency_key."
     )]
-    async fn adjust_stock(
+    async fn adjust_inventory_item(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<AdjustStockParams>,
+        Parameters(params): Parameters<AdjustInventoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::auth::authenticate_mcp(
             &self.state.access_key_authentication,
@@ -284,7 +280,7 @@ impl ChaosMcp {
         match self
             .state
             .inventory_management
-            .adjust_stock(AdjustStockInput {
+            .adjust_inventory_item(AdjustInventoryInput {
                 actor,
                 store_id,
                 inventory_location_id,
@@ -309,7 +305,7 @@ impl ChaosMcp {
     }
 }
 
-fn parse_stock_cursor(value: &str) -> Result<InventoryItemId, CallToolResult> {
+fn parse_inventory_item_cursor(value: &str) -> Result<InventoryItemId, CallToolResult> {
     parse_uuid_field(value, "cursor").map(InventoryItemId::from_uuid)
 }
 

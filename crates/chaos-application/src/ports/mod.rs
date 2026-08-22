@@ -68,7 +68,7 @@ pub use identity::{
     AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityAuthentication,
     IdentityRepository, McpPrincipal, VerifiedExternalIdentity,
 };
-pub use integration::{IntegrationQueue, QueueJob};
+pub use integration::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, QueueJob};
 pub use inventory::{
     InventoryAdjustment, InventoryItemView, InventoryLocationItem, InventoryRepository,
     InventoryReservationDetail, InventoryReservationTransition,

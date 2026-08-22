@@ -29,7 +29,7 @@ pub struct CreateInventoryLocationInput {
     pub idempotency: IdempotencyRequest,
 }
 
-pub struct AdjustStockInput {
+pub struct AdjustInventoryInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub inventory_location_id: InventoryLocationId,
@@ -108,9 +108,9 @@ impl InventoryManagement {
         Ok(InventoryPage { items, has_more })
     }
 
-    pub async fn adjust_stock(
+    pub async fn adjust_inventory_item(
         &self,
-        input: AdjustStockInput,
+        input: AdjustInventoryInput,
     ) -> Result<InventoryItemView, ApplicationError> {
         require_inventory_writer(&input.actor)?;
         if input.delta_quantity == 0 {
@@ -120,7 +120,7 @@ impl InventoryManagement {
             return Err(validation("note", "must contain 1-500 characters"));
         }
         self.repository
-            .adjust_stock(
+            .adjust_inventory_item(
                 input.actor,
                 &InventoryAdjustment {
                     store_id: input.store_id,
@@ -134,7 +134,7 @@ impl InventoryManagement {
             .await
     }
 
-    pub async fn list_stock(
+    pub async fn list_inventory_items(
         &self,
         actor: AdminActor,
         store_id: StoreId,
@@ -144,7 +144,7 @@ impl InventoryManagement {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
-            .list_stock(actor, store_id, after, limit + 1)
+            .list_inventory_items(actor, store_id, after, limit + 1)
             .await?
             .ok_or_else(|| store_not_found(store_id))?;
         let has_more = items.len() > usize::from(limit);

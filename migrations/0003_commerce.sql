@@ -1,8 +1,3 @@
--- === Store foundation ===
-
--- Objects within every capability are ordered as types, tables, indexes,
--- routines, triggers, row-level security, policies, and privileges.
-
 CREATE SCHEMA commerce;
 
 COMMENT ON SCHEMA commerce IS
@@ -13,7 +8,6 @@ CREATE TYPE commerce.store_role AS ENUM ('owner', 'member');
 CREATE TYPE commerce.store_status AS ENUM ('active', 'inactive');
 
 CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
-
 
 CREATE TABLE commerce.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
@@ -71,7 +65,6 @@ CREATE TABLE commerce.store_locales (
         locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
     )
 );
-
 
 CREATE TABLE commerce.sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
@@ -239,7 +232,6 @@ ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.store_locales ENABLE ROW LEVEL SECURITY;
 
-
 ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.sales_channels ENABLE ROW LEVEL SECURITY;
@@ -288,7 +280,6 @@ CREATE POLICY store_isolation ON commerce.store_locales
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-
 CREATE POLICY store_isolation ON commerce.store_currencies
     USING (
         store_id =
@@ -330,7 +321,6 @@ GRANT EXECUTE
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
 
-
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 
@@ -341,6 +331,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
+
 -- === Catalog ===
 
 CREATE TYPE commerce.product_status AS ENUM ('draft', 'active', 'archived');
@@ -349,15 +340,11 @@ CREATE TYPE commerce.variant_status AS ENUM ('active', 'archived');
 
 CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
 
-
 CREATE TYPE commerce.media_kind AS ENUM ('image', 'video');
 
 CREATE TYPE commerce.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
 
-
-
 CREATE TYPE commerce.review_status AS ENUM ('pending', 'approved', 'rejected');
-
 
 CREATE TABLE commerce.products (
     id                   UUID                       NOT NULL PRIMARY KEY,
@@ -516,7 +503,6 @@ CREATE TABLE commerce.product_variant_translations (
     )
 );
 
-
 CREATE TABLE commerce.variant_selected_options (
     store_id             UUID    NOT NULL,
     product_id           UUID    NOT NULL,
@@ -605,7 +591,6 @@ CREATE TABLE commerce.collection_translations (
     )
 );
 
-
 CREATE TABLE commerce.collection_products (
     store_id             UUID        NOT NULL,
     collection_id        UUID        NOT NULL,
@@ -634,7 +619,6 @@ CREATE TABLE commerce.collection_publications (
     FOREIGN KEY (sales_channel_id)
         REFERENCES commerce.sales_channels(id) ON DELETE CASCADE
 );
-
 
 CREATE TABLE commerce.media_assets (
     id                   UUID                        NOT NULL PRIMARY KEY,
@@ -728,8 +712,6 @@ CREATE TABLE commerce.media_asset_translations (
     )
 );
 
-
-
 CREATE TABLE commerce.reviews (
     id                   UUID                     NOT NULL PRIMARY KEY,
     store_id             UUID                     NOT NULL,
@@ -740,7 +722,7 @@ CREATE TABLE commerce.reviews (
     content              TEXT                     NOT NULL,
     author_name          TEXT                     NOT NULL,
     author_email         extensions.citext,
-    status               commerce.review_status    NOT NULL DEFAULT 'pending',
+    status               commerce.review_status   NOT NULL DEFAULT 'pending',
     is_staff_reply       BOOLEAN                  NOT NULL DEFAULT false,
     verified_buyer       BOOLEAN                  NOT NULL DEFAULT false,
     approved_by_user_id  UUID,
@@ -775,7 +757,6 @@ CREATE TABLE commerce.reviews (
         NOT verified_buyer OR status = 'approved'
     )
 );
-
 
 CREATE INDEX products_store_status_created_idx
     ON commerce.products (store_id, status, created_at DESC, id DESC);
@@ -831,7 +812,6 @@ ALTER TABLE commerce.product_variants ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.product_variant_translations ENABLE ROW LEVEL SECURITY;
 
-
 ALTER TABLE commerce.variant_selected_options ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.product_publications ENABLE ROW LEVEL SECURITY;
@@ -840,20 +820,15 @@ ALTER TABLE commerce.collections ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_translations ENABLE ROW LEVEL SECURITY;
 
-
 ALTER TABLE commerce.collection_products ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_publications ENABLE ROW LEVEL SECURITY;
-
 
 ALTER TABLE commerce.media_assets ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.media_asset_translations ENABLE ROW LEVEL SECURITY;
 
-
-
 ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
-
 
 CREATE POLICY store_isolation ON commerce.products
     USING (
@@ -915,7 +890,6 @@ CREATE POLICY store_isolation ON commerce.product_variant_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-
 CREATE POLICY store_isolation ON commerce.variant_selected_options
     USING (
         store_id =
@@ -956,7 +930,6 @@ CREATE POLICY store_isolation ON commerce.collection_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-
 CREATE POLICY store_isolation ON commerce.collection_products
     USING (
         store_id =
@@ -976,7 +949,6 @@ CREATE POLICY store_isolation ON commerce.collection_publications
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
     );
-
 
 CREATE POLICY store_isolation ON commerce.media_assets
     USING (
@@ -998,8 +970,6 @@ CREATE POLICY store_isolation ON commerce.media_asset_translations
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-
-
 CREATE POLICY store_isolation ON commerce.reviews
     USING (
         store_id =
@@ -1010,21 +980,14 @@ CREATE POLICY store_isolation ON commerce.reviews
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-
 
 REVOKE DELETE ON commerce.collections FROM chaos_runtime;
 
 REVOKE DELETE ON commerce.media_assets FROM chaos_runtime;
 
-
-
-
 REVOKE DELETE ON commerce.reviews FROM chaos_runtime;
-
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
@@ -1036,6 +999,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
+
 -- === Pricing ===
 
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
@@ -1122,24 +1086,24 @@ CREATE TABLE commerce.tax_rules (
 );
 
 CREATE TABLE commerce.promotions (
-    id                            UUID                         NOT NULL PRIMARY KEY,
-    store_id                      UUID                         NOT NULL,
-    handle                        TEXT                         NOT NULL,
-    name                          TEXT                         NOT NULL,
+    id                            UUID                          NOT NULL PRIMARY KEY,
+    store_id                      UUID                          NOT NULL,
+    handle                        TEXT                          NOT NULL,
+    name                          TEXT                          NOT NULL,
     trigger                       commerce.promotion_trigger    NOT NULL,
     redemption_code               extensions.citext,
     value_kind                    commerce.promotion_value_kind NOT NULL,
     rate_basis_points             INTEGER,
     amount_minor                  BIGINT,
     maximum_amount_minor          BIGINT,
-    currency                      CHAR(3)                      NOT NULL,
-    minimum_subtotal_amount_minor BIGINT                       NOT NULL DEFAULT 0,
-    priority                      SMALLINT                     NOT NULL DEFAULT 100,
+    currency                      CHAR(3)                       NOT NULL,
+    minimum_subtotal_amount_minor BIGINT                        NOT NULL DEFAULT 0,
+    priority                      SMALLINT                      NOT NULL DEFAULT 100,
     starts_at                     TIMESTAMPTZ,
     ends_at                       TIMESTAMPTZ,
     status                        commerce.promotion_status     NOT NULL DEFAULT 'active',
-    created_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                    TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                    TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
     UNIQUE (store_id, handle),
@@ -1261,6 +1225,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
+
 -- === Inventory ===
 
 CREATE TYPE commerce.inventory_reservation_status AS ENUM (
@@ -1317,7 +1282,7 @@ CREATE TABLE commerce.inventory_reservations (
     id                   UUID                                      NOT NULL PRIMARY KEY,
     store_id             UUID                                      NOT NULL,
     sales_channel_id     UUID                                      NOT NULL,
-    status               commerce.inventory_reservation_status    NOT NULL DEFAULT 'active',
+    status               commerce.inventory_reservation_status     NOT NULL DEFAULT 'active',
     expires_at           TIMESTAMPTZ                               NOT NULL,
     closed_at            TIMESTAMPTZ,
     created_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,

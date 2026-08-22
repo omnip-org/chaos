@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 use crate::ApplicationError;
 
+pub const MAX_INTEGRATION_ATTEMPTS: u32 = 8;
+
 /// A durable outbound or inbound integration job projected from PostgreSQL.
 /// The business worker owns the payload semantics; Integration owns leasing
 /// and completion semantics.

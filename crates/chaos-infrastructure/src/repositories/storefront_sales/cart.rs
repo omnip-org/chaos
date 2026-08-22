@@ -1,0 +1,461 @@
+// Cart product resolution, pricing context, line management, and cart reads.
+
+async fn select_price_list(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    channel_id: SalesChannelId,
+    currency: Option<CurrencyCode>,
+) -> Result<Option<(Uuid, CurrencyCode)>, ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT price_list.id, price_list.currency::text \
+         FROM commerce.price_lists AS price_list \
+         INNER JOIN commerce.stores AS store \
+           ON store.id = price_list.store_id \
+         INNER JOIN commerce.sales_channels AS channel \
+           ON channel.store_id = store.id AND channel.id = $1 \
+         INNER JOIN commerce.store_currencies AS store_currency \
+           ON store_currency.store_id = store.id \
+          AND store_currency.currency = price_list.currency \
+         WHERE price_list.store_id = $2 \
+           AND store.status = 'active' AND channel.status = 'active' \
+           AND price_list.status = 'active' AND store_currency.enabled \
+           AND price_list.currency = COALESCE($3::char(3), store.default_currency) \
+           AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
+           AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
+         ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
+    )
+    .bind(channel_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(currency.map(|value| value.as_str().to_owned()))
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    row.map(|(id, currency)| Ok((id, parse_currency(&currency)?)))
+        .transpose()
+}
+
+async fn select_locale(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    requested: Option<Locale>,
+) -> Result<Locale, ApplicationError> {
+    let default: Option<String> =
+        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+    let default = default.ok_or_else(price_context_unavailable)?;
+    let selected = requested.unwrap_or(parse_locale(&default)?);
+    if selected.as_str() == default {
+        return Ok(selected);
+    }
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(selected.as_str())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if enabled {
+        Ok(selected)
+    } else {
+        Err(ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field: "locale",
+                reason: "must be enabled for the Store".into(),
+            }],
+        })
+    }
+}
+
+async fn translation_locales(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    locale: &Locale,
+) -> Result<(Option<String>, Option<String>), ApplicationError> {
+    let default: String =
+        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
+            .bind(actor.store_id.as_uuid())
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+    if locale.as_str() == default {
+        return Ok((None, None));
+    }
+    let language = locale.language();
+    let primary = if language != locale.as_str() && language != default {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(language)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .then(|| language.to_owned())
+    } else {
+        None
+    };
+    Ok((Some(locale.as_str().to_owned()), primary))
+}
+
+async fn resolve_variant(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    channel_id: SalesChannelId,
+    price_list_id: PriceListId,
+    variant_id: ProductVariantId,
+    locale: &Locale,
+) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64, bool)>, ApplicationError>
+{
+    let translations = translation_locales(transaction, actor, locale).await?;
+    sqlx::query_as(
+        "SELECT product.id, COALESCE((SELECT translation.title FROM commerce.product_translations AS translation WHERE translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$1 OR translation.locale=$2) ORDER BY CASE WHEN translation.locale=$3 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM commerce.product_variant_translations AS translation WHERE translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
+                variant.requires_shipping, variant.track_inventory, price.amount_minor, \
+                price_list.tax_inclusive \
+         FROM commerce.product_variants AS variant \
+         INNER JOIN commerce.products AS product \
+           ON product.store_id = variant.store_id AND product.id = variant.product_id \
+         INNER JOIN commerce.product_publications AS publication \
+           ON publication.store_id = product.store_id AND publication.product_id = product.id \
+          AND publication.sales_channel_id = $7 \
+         INNER JOIN commerce.price_lists AS price_list \
+           ON price_list.store_id = variant.store_id AND price_list.id = $8 \
+         INNER JOIN commerce.prices AS price \
+           ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
+          AND price.product_variant_id = variant.id \
+         WHERE variant.store_id = $9 AND variant.id = $10 \
+           AND variant.status = 'active' AND product.status = 'active' \
+           AND price_list.status = 'active' \
+           AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
+           AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP)",
+    )
+    .bind(translations.0.as_deref())
+    .bind(translations.1.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(translations.1.as_deref())
+    .bind(translations.0.as_deref())
+    .bind(channel_id.as_uuid())
+    .bind(price_list_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(variant_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+async fn insert_or_replace_line(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+    line: &CartLine,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO commerce.cart_lines \
+         (store_id, cart_id, product_id, product_variant_id, \
+          product_title, variant_title, sku, requires_shipping, track_inventory, quantity, \
+          unit_price_amount_minor, tax_inclusive) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         ON CONFLICT (store_id, cart_id, product_variant_id) \
+         DO UPDATE SET product_title = EXCLUDED.product_title, \
+             variant_title = EXCLUDED.variant_title, sku = EXCLUDED.sku, \
+             requires_shipping = EXCLUDED.requires_shipping, \
+             track_inventory = EXCLUDED.track_inventory, quantity = EXCLUDED.quantity, \
+             unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
+             tax_inclusive = EXCLUDED.tax_inclusive, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(cart_id.as_uuid())
+    .bind(line.product_id().as_uuid())
+    .bind(line.product_variant_id().as_uuid())
+    .bind(line.product_title())
+    .bind(line.variant_title())
+    .bind(line.sku())
+    .bind(line.requires_shipping())
+    .bind(line.track_inventory())
+    .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
+    .bind(line.unit_price().amount_minor())
+    .bind(line.tax_inclusive())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn bump_cart(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "UPDATE commerce.carts SET version = version + 1, updated_at = CURRENT_TIMESTAMP \
+         WHERE store_id = $1 AND id = $2",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(cart_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn lock_active_cart(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, String)>(
+        "SELECT sales_channel_id, price_list_id, currency::text, locale, status::text \
+         FROM commerce.carts WHERE store_id = $1 \
+           AND sales_channel_id = $2 AND id = $3 FOR UPDATE",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(cart_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| cart_not_found(cart_id))?;
+    if row.4 != "active" {
+        return Err(cart_not_active());
+    }
+    Ok((row.0, row.1, row.2, row.3))
+}
+
+async fn load_cart(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+) -> Result<Option<CartDetail>, ApplicationError> {
+    let row = sqlx::query_as::<_, CartHeaderRow>(
+        "SELECT id, shopper_id, price_list_id, currency::text, locale, status::text, version, created_at, updated_at \
+         FROM commerce.carts WHERE store_id = $1 \
+           AND sales_channel_id = $2 AND id = $3",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(cart_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let currency = parse_currency(&row.3)?;
+    let locale = parse_locale(&row.4)?;
+    let status = CartStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?;
+    let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
+    let media = load_cart_media(transaction, actor, &locale, &lines).await?;
+    let items = lines
+        .into_iter()
+        .map(|line| cart_line_item(line, currency, &media))
+        .collect::<Result<Vec<_>, _>>()?;
+    let subtotal = items
+        .iter()
+        .try_fold(Money::zero(currency), |total, line| {
+            total.checked_add(&Money::new(line.subtotal_amount_minor, currency))
+        })?;
+    Ok(Some(CartDetail {
+        id: CartId::from_uuid(row.0),
+        shopper_id: ShopperId::from_uuid(row.1),
+        price_list_id: PriceListId::from_uuid(row.2),
+        currency,
+        locale,
+        status,
+        version: u64::try_from(row.6).map_err(unexpected_conversion)?,
+        lines: items,
+        subtotal_amount_minor: subtotal.amount_minor(),
+        created_at: row.7,
+        updated_at: row.8,
+    }))
+}
+
+async fn load_cart_media(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    locale: &Locale,
+    lines: &[CartLineRow],
+) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
+    let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();
+    if product_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let (exact_locale, language_locale) = translation_locales(transaction, actor, locale).await?;
+    let rows = sqlx::query_as::<_, CartMediaRow>(
+        "SELECT media.product_id, media.id, media.product_variant_id, media.media_type, \
+                media.media_kind::text, \
+                COALESCE(\
+                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
+                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
+                       AND translation.media_asset_id = media.id AND translation.locale = $3 LIMIT 1), \
+                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
+                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
+                       AND translation.media_asset_id = media.id AND translation.locale = $4 LIMIT 1), \
+                    media.alt_text), \
+                media.position, media.public_url \
+         FROM commerce.media_assets AS media \
+         WHERE media.store_id = $1 AND media.product_id = ANY($2) AND media.status = 'ready' \
+         ORDER BY media.product_id, media.position, media.id",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(&product_ids)
+    .bind(exact_locale.as_deref())
+    .bind(language_locale.as_deref())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let mut media = HashMap::new();
+    for row in rows {
+        let kind = match row.4.as_str() {
+            "image" => chaos_domain::catalog::MediaKind::Image,
+            "video" => chaos_domain::catalog::MediaKind::Video,
+            _ => return Err(corrupt_sales_state()),
+        };
+        media
+            .entry(row.0)
+            .or_insert_with(Vec::new)
+            .push(StorefrontMediaAsset {
+                id: chaos_domain::catalog::MediaAssetId::from_uuid(row.1),
+                product_variant_id: row
+                    .2
+                    .map(chaos_domain::catalog::ProductVariantId::from_uuid),
+                media_type: row.3,
+                kind,
+                alt_text: row.5,
+                position: u16::try_from(row.6).map_err(unexpected_conversion)?,
+                url: row.7,
+            });
+    }
+    Ok(media)
+}
+
+async fn load_cart_line_rows(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+) -> Result<Vec<CartLineRow>, ApplicationError> {
+    sqlx::query_as(
+        "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
+                requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
+                tax_inclusive FROM commerce.cart_lines \
+         WHERE store_id = $1 AND cart_id = $2 \
+         ORDER BY product_variant_id ASC",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(cart_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+fn cart_line_item(
+    row: CartLineRow,
+    currency: CurrencyCode,
+    media: &HashMap<Uuid, Vec<StorefrontMediaAsset>>,
+) -> Result<CartLineItem, ApplicationError> {
+    let quantity = u32::try_from(row.7).map_err(unexpected_conversion)?;
+    let subtotal = Money::new(row.8, currency).checked_mul(u64::from(quantity))?;
+    Ok(CartLineItem {
+        product_id: ProductId::from_uuid(row.0),
+        product_variant_id: ProductVariantId::from_uuid(row.1),
+        product_title: row.2,
+        variant_title: row.3,
+        sku: row.4,
+        requires_shipping: row.5,
+        track_inventory: row.6,
+        quantity,
+        unit_price_amount_minor: row.8,
+        subtotal_amount_minor: subtotal.amount_minor(),
+        tax_inclusive: row.9,
+        media: media.get(&row.0).cloned().unwrap_or_default(),
+    })
+}
+
+async fn refresh_cart_lines(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+    channel_id: SalesChannelId,
+    price_list_id: PriceListId,
+    currency: CurrencyCode,
+) -> Result<Vec<CartLine>, ApplicationError> {
+    let rows = sqlx::query_as::<_, CartLineRow>(
+        "SELECT product.id, variant.id, cart_line.product_title, cart_line.variant_title, \
+                cart_line.sku::text, \
+                variant.requires_shipping, variant.track_inventory, cart_line.quantity, \
+                price.amount_minor, price_list.tax_inclusive \
+         FROM commerce.cart_lines AS cart_line \
+         INNER JOIN commerce.product_variants AS variant \
+           ON variant.store_id = cart_line.store_id \
+          AND variant.id = cart_line.product_variant_id AND variant.status = 'active' \
+         INNER JOIN commerce.products AS product \
+           ON product.store_id = variant.store_id AND product.id = variant.product_id \
+          AND product.status = 'active' \
+         INNER JOIN commerce.product_publications AS publication \
+           ON publication.store_id = product.store_id AND publication.product_id = product.id \
+          AND publication.sales_channel_id = $1 \
+         INNER JOIN commerce.price_lists AS price_list \
+           ON price_list.store_id = cart_line.store_id AND price_list.id = $2 \
+         INNER JOIN commerce.prices AS price \
+           ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
+          AND price.product_variant_id = variant.id \
+         WHERE cart_line.store_id = $3 \
+           AND cart_line.cart_id = $4 ORDER BY variant.id ASC",
+    )
+    .bind(channel_id.as_uuid())
+    .bind(price_list_id.as_uuid())
+    .bind(actor.store_id.as_uuid())
+    .bind(cart_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    rows.into_iter()
+        .map(|row| {
+            CartLine::new(
+                ProductId::from_uuid(row.0),
+                ProductVariantId::from_uuid(row.1),
+                row.2,
+                row.3,
+                row.4,
+                row.5,
+                row.6,
+                u32::try_from(row.7).map_err(unexpected_conversion)?,
+                Money::new(row.8, currency),
+                row.9,
+            )
+            .map_err(ApplicationError::from)
+        })
+        .collect()
+}
+
+async fn require_price_list_active(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    price_list_id: PriceListId,
+    currency: CurrencyCode,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM commerce.price_lists \
+         WHERE store_id = $1 AND id = $2 \
+           AND currency = $3 AND status = 'active' \
+           AND (starts_at IS NULL OR starts_at <= $4) \
+           AND (ends_at IS NULL OR ends_at > $5))",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(price_list_id.as_uuid())
+    .bind(currency.as_str())
+    .bind(now)
+    .bind(now)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if active {
+        Ok(())
+    } else {
+        Err(price_context_unavailable())
+    }
+}

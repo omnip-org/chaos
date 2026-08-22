@@ -1,12 +1,3 @@
--- === Integration bootstrap ===
---
--- This is the complete integration foundation for a fresh database. The
--- bootstrap owns durable outbox/webhook delivery and the Analytics workflow;
--- notification delivery is intentionally out of scope.
-
--- Objects within every capability are ordered as types, tables, indexes,
--- routines, row-level security, policies, and privileges.
-
 CREATE SCHEMA integration;
 
 COMMENT ON SCHEMA integration IS
@@ -590,7 +581,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration
 
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 
-
 CREATE INDEX provider_webhooks_provider_account_idx
     ON integration.provider_webhooks (provider_account_id, created_at, id)
     WHERE processed_at IS NULL AND failed_at IS NULL;
@@ -933,8 +923,6 @@ REVOKE ALL ON FUNCTION integration.schedule_analytics_deliveries(INTEGER)
 GRANT EXECUTE ON FUNCTION integration.schedule_analytics_deliveries(INTEGER)
     TO chaos_runtime;
 
--- A daily database-local job keeps the next set of partitions available.
--- It does not delete anything.
 SELECT cron.schedule(
     'chaos-analytics-partition-maintenance',
     '5 0 * * *',

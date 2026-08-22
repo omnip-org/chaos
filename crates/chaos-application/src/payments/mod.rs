@@ -15,11 +15,12 @@ const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentClientAction, PaymentProvider, PaymentProviderAccountConfiguration,
-        PaymentProviderAccountDetail, PaymentProviderAccountPage, PaymentProviderAccountRepository,
-        PaymentProviderOnboarding, PaymentProviderReadinessQueue, PaymentRepository,
-        PaymentWebhookVerifier, QueueJob, RefundDetail, ShopperActor,
+        AdminActor, IdempotencyRequest, IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, MachineActor,
+        PaymentAttemptDetail, PaymentClientAction, PaymentProvider,
+        PaymentProviderAccountConfiguration, PaymentProviderAccountDetail,
+        PaymentProviderAccountPage, PaymentProviderAccountRepository, PaymentProviderOnboarding,
+        PaymentProviderReadinessQueue, PaymentRepository, PaymentWebhookVerifier, QueueJob,
+        RefundDetail, ShopperActor,
     },
     store::StoreActor,
 };
@@ -394,6 +395,15 @@ impl PaymentWorkers {
                 .execute_provider_job(job, now)
                 .await
                 .map_err(|error| error.to_string());
+            if job.event_type == "payment.create_requested"
+                && result.is_err()
+                && job.attempts >= MAX_INTEGRATION_ATTEMPTS
+            {
+                let failure = result.as_ref().expect_err("result is an error");
+                self.repository
+                    .fail_provider_command(job, failure, now)
+                    .await?;
+            }
             self.queue
                 .finish_outbox(job.id, job.attempts, result, now)
                 .await?;

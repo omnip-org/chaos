@@ -277,6 +277,13 @@ pub trait PaymentRepository: Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
 
+    async fn fail_provider_command(
+        &self,
+        job: &QueueJob,
+        failure: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
+
     async fn client_action_command(
         &self,
         actor: &ShopperActor,
