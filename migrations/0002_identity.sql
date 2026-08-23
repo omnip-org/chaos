@@ -17,6 +17,7 @@ CREATE TABLE identity.users (
     )
 );
 
+-- TODO: add meta
 CREATE TABLE identity.credentials (
     provider    identity.identity_provider  NOT NULL,
     subject     TEXT                        NOT NULL,
@@ -71,11 +72,13 @@ CREATE TABLE identity.access_keys (
     )
 );
 
-CREATE INDEX credentials_user_idx ON identity.credentials (user_id, provider);
+CREATE INDEX credentials_user_id_idx ON identity.credentials (user_id, provider);
 CREATE INDEX access_keys_user_id_idx ON identity.access_keys (user_id, id);
+
+GRANT USAGE ON SCHEMA identity TO chaos_identity;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO chaos_identity;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity TO chaos_identity;
+
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_identity;
 ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT USAGE, SELECT ON SEQUENCES TO chaos_identity;
-GRANT USAGE ON SCHEMA identity TO chaos_identity;
