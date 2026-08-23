@@ -13,13 +13,10 @@ async fn select_price_list(
            ON store.id = price_list.store_id \
          INNER JOIN commerce.store_sales_channels AS channel \
            ON channel.store_id = store.id AND channel.id = $1 \
-         INNER JOIN commerce.store_currencies AS store_currency \
-           ON store_currency.store_id = store.id \
-          AND store_currency.currency = price_list.currency \
          WHERE price_list.store_id = $2 \
            AND store.status = 'active' AND channel.status = 'active' \
-           AND price_list.status = 'active' AND store_currency.enabled \
-           AND price_list.currency = COALESCE($3::char(3), store.default_currency) \
+           AND price_list.status = 'active' \
+           AND price_list.currency = COALESCE($3::char(3), store.currency) \
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
          ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
@@ -34,37 +31,12 @@ async fn select_price_list(
         .transpose()
 }
 
-async fn select_locale(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    requested: Option<Locale>,
-) -> Result<Locale, ApplicationError> {
-    let default: Option<String> =
-        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
-            .bind(actor.store_id.as_uuid())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(database_error)?;
-    let default = default.ok_or_else(price_context_unavailable)?;
-    let selected = requested.unwrap_or(parse_locale(&default)?);
-    if selected.as_str() == default {
-        return Ok(selected);
-    }
-    Err(ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "locale",
-            reason: "only the Store default English locale is supported".into(),
-        }],
-    })
-}
-
 async fn resolve_variant(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
-    _locale: &Locale,
 ) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64)>, ApplicationError>
 {
     sqlx::query_as(
@@ -155,8 +127,8 @@ async fn lock_active_cart(
     actor: &MachineActor,
     cart_id: CartId,
 ) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, String)>(
-        "SELECT sales_channel_id, price_list_id, currency::text, locale, status::text \
+    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+        "SELECT sales_channel_id, price_list_id, currency::text, status::text \
          FROM commerce.carts WHERE store_id = $1 \
            AND sales_channel_id = $2 AND id = $3 FOR UPDATE",
     )
@@ -167,7 +139,7 @@ async fn lock_active_cart(
     .await
     .map_err(database_error)?
     .ok_or_else(|| cart_not_found(cart_id))?;
-    if row.4 != "active" {
+    if row.3 != "active" {
         return Err(cart_not_active());
     }
     Ok((row.0, row.1, row.2, row.3))
@@ -179,7 +151,7 @@ async fn load_cart(
     cart_id: CartId,
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
-        "SELECT id, shopper_id, price_list_id, currency::text, locale, status::text, version, created_at, updated_at \
+        "SELECT id, shopper_id, price_list_id, currency::text, status::text, version, created_at, updated_at \
          FROM commerce.carts WHERE store_id = $1 \
            AND sales_channel_id = $2 AND id = $3",
     )
@@ -193,10 +165,9 @@ async fn load_cart(
         return Ok(None);
     };
     let currency = parse_currency(&row.3)?;
-    let locale = parse_locale(&row.4)?;
-    let status = CartStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?;
+    let status = CartStatus::parse(&row.4).ok_or_else(corrupt_sales_state)?;
     let lines = load_cart_line_rows(transaction, actor, cart_id).await?;
-    let media = load_cart_media(transaction, actor, &locale, &lines).await?;
+    let media = load_cart_media(transaction, actor, &lines).await?;
     let items = lines
         .into_iter()
         .map(|line| cart_line_item(line, currency, &media))
@@ -211,20 +182,18 @@ async fn load_cart(
         shopper_id: ShopperId::from_uuid(row.1),
         price_list_id: PriceListId::from_uuid(row.2),
         currency,
-        locale,
         status,
-        version: u64::try_from(row.6).map_err(unexpected_conversion)?,
+        version: u64::try_from(row.5).map_err(unexpected_conversion)?,
         lines: items,
         subtotal_amount_minor: subtotal.amount_minor(),
-        created_at: row.7,
-        updated_at: row.8,
+        created_at: row.6,
+        updated_at: row.7,
     }))
 }
 
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
-    _locale: &Locale,
     lines: &[CartLineRow],
 ) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
     let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();

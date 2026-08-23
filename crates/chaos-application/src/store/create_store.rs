@@ -15,8 +15,9 @@ pub struct CreateStoreInput {
     pub user_id: UserId,
     pub code: String,
     pub name: String,
-    pub default_region: Option<String>,
-    pub default_currency: Option<String>,
+    pub region: Option<String>,
+    pub currency: Option<String>,
+    pub meta: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -38,14 +39,14 @@ impl CreateStore {
         &self,
         input: CreateStoreInput,
     ) -> Result<CreateStoreOutput, ApplicationError> {
-        let default_region = input
-            .default_region
+        let region = input
+            .region
             .as_deref()
             .map(RegionCode::parse)
             .transpose()?
             .unwrap_or(RegionCode::US);
-        let default_currency = input
-            .default_currency
+        let currency = input
+            .currency
             .as_deref()
             .map(CurrencyCode::parse)
             .transpose()?
@@ -53,8 +54,9 @@ impl CreateStore {
         let store = Store::create(
             StoreCode::parse(input.code)?,
             input.name,
-            default_region,
-            default_currency,
+            region,
+            currency,
+            input.meta,
         )?;
         let default_sales_channel = SalesChannel::default_web(store.id());
         let owner_membership = StoreMembership::owner(store.id(), input.user_id);
@@ -71,7 +73,6 @@ impl CreateStore {
         transaction
             .insert_owner_membership(&owner_membership)
             .await?;
-        transaction.insert_default_currency(&store).await?;
         transaction
             .insert_default_sales_channel(&default_sales_channel)
             .await?;

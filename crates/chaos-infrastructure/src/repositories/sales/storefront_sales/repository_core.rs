@@ -12,7 +12,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode, Locale,
+    CurrencyCode,
     catalog::{ProductId, ProductVariantId},
     pricing::{Money, PriceListId},
     sales::{
@@ -63,7 +63,6 @@ type CartHeaderRow = (
     Uuid,
     Uuid,
     Uuid,
-    String,
     String,
     String,
     i64,
@@ -256,14 +255,6 @@ fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
     CurrencyCode::parse(value).map_err(ApplicationError::from)
 }
 
-fn parse_locale(value: &str) -> Result<Locale, ApplicationError> {
-    Locale::parse(value).map_err(Into::into)
-}
-
-fn default_locale_snapshot() -> String {
-    "en-US".into()
-}
-
 fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
     value
         .format(&time::format_description::well_known::Rfc3339)
@@ -387,8 +378,6 @@ struct CartSnapshot {
     shopper_id: Uuid,
     price_list_id: Uuid,
     currency: String,
-    #[serde(default = "default_locale_snapshot")]
-    locale: String,
     status: String,
     version: u64,
     lines: Vec<CartLineSnapshot>,
@@ -430,7 +419,6 @@ fn cart_snapshot(detail: &CartDetail) -> Result<Value, ApplicationError> {
         shopper_id: detail.shopper_id.as_uuid(),
         price_list_id: detail.price_list_id.as_uuid(),
         currency: detail.currency.as_str().into(),
-        locale: detail.locale.as_str().into(),
         status: detail.status.as_str().into(),
         version: detail.version,
         lines: detail.lines.iter().map(CartLineSnapshot::from).collect(),
@@ -448,7 +436,6 @@ fn replay_cart(value: Value) -> Result<CartDetail, ApplicationError> {
         shopper_id: ShopperId::from_uuid(snapshot.shopper_id),
         price_list_id: PriceListId::from_uuid(snapshot.price_list_id),
         currency: parse_currency(&snapshot.currency)?,
-        locale: parse_locale(&snapshot.locale)?,
         status: CartStatus::parse(&snapshot.status).ok_or_else(corrupt_sales_state)?,
         version: snapshot.version,
         lines: snapshot

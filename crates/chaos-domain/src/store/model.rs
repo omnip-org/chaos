@@ -80,8 +80,9 @@ pub struct Store {
     id: StoreId,
     code: StoreCode,
     name: String,
-    default_region: RegionCode,
-    default_currency: CurrencyCode,
+    region: RegionCode,
+    currency: CurrencyCode,
+    meta: Option<serde_json::Value>,
     status: StoreStatus,
 }
 
@@ -89,8 +90,9 @@ impl Store {
     pub fn create(
         code: StoreCode,
         name: impl Into<String>,
-        default_region: RegionCode,
-        default_currency: CurrencyCode,
+        region: RegionCode,
+        currency: CurrencyCode,
+        meta: Option<serde_json::Value>,
     ) -> Result<Self, DomainError> {
         let name = name.into();
         if name.trim().is_empty() || name.chars().count() > 120 {
@@ -103,8 +105,9 @@ impl Store {
             id: StoreId::new(),
             code,
             name,
-            default_region,
-            default_currency,
+            region,
+            currency,
+            meta,
             status: StoreStatus::Active,
         })
     }
@@ -121,29 +124,24 @@ impl Store {
         &self.name
     }
 
-    pub const fn default_currency(&self) -> CurrencyCode {
-        self.default_currency
+    pub const fn currency(&self) -> CurrencyCode {
+        self.currency
     }
 
-    pub const fn default_region(&self) -> RegionCode {
-        self.default_region
+    pub const fn region(&self) -> RegionCode {
+        self.region
     }
 
     pub const fn status(&self) -> StoreStatus {
         self.status
     }
 
-    pub fn validate_activation(
-        default_currency_enabled: bool,
-        active_default_channel_exists: bool,
-    ) -> Result<(), DomainError> {
+    pub fn meta(&self) -> Option<&serde_json::Value> {
+        self.meta.as_ref()
+    }
+
+    pub fn validate_activation(active_default_channel_exists: bool) -> Result<(), DomainError> {
         let mut violations = Vec::new();
-        if !default_currency_enabled {
-            violations.push(FieldViolation {
-                field: "default_currency",
-                reason: "must be enabled before Store activation".into(),
-            });
-        }
         if !active_default_channel_exists {
             violations.push(FieldViolation {
                 field: "sales_channels",
@@ -169,17 +167,18 @@ mod tests {
             "Main Store",
             RegionCode::US,
             CurrencyCode::USD,
+            None,
         )
         .unwrap();
         assert_eq!(store.status(), StoreStatus::Active);
-        assert_eq!(store.default_region(), RegionCode::US);
-        assert_eq!(store.default_currency(), CurrencyCode::USD);
+        assert_eq!(store.region(), RegionCode::US);
+        assert_eq!(store.currency(), CurrencyCode::USD);
     }
 
     #[test]
-    fn activation_requires_currency_and_default_channel_readiness() {
-        assert!(Store::validate_activation(true, true).is_ok());
-        let error = Store::validate_activation(false, false).unwrap_err();
-        assert!(matches!(error, DomainError::Validation(violations) if violations.len() == 2));
+    fn activation_requires_default_channel_readiness() {
+        assert!(Store::validate_activation(true).is_ok());
+        let error = Store::validate_activation(false).unwrap_err();
+        assert!(matches!(error, DomainError::Validation(violations) if violations.len() == 1));
     }
 }

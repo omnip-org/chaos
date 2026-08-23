@@ -178,7 +178,7 @@ impl ChaosMcp {
     #[tool(
         description = "List products in the selected Store, including draft and \
                         archived products. The returned title is the canonical Store catalog \
-                        title from commerce.products, not locale-resolved storefront content. \
+                        title from commerce.products, not translated storefront content. \
                         Paginated; use the returned next_cursor for more pages."
     )]
     async fn list_products(

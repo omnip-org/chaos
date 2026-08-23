@@ -51,9 +51,6 @@
           },
           {
             "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Locale"
           }
         ],
         "responses": {
@@ -110,9 +107,6 @@
           },
           {
             "$ref": "#/components/parameters/Currency"
-          },
-          {
-            "$ref": "#/components/parameters/Locale"
           }
         ],
         "responses": {
@@ -159,9 +153,6 @@
           },
           {
             "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "$ref": "#/components/parameters/Locale"
           }
         ],
         "responses": {
@@ -208,9 +199,6 @@
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
             }
-          },
-          {
-            "$ref": "#/components/parameters/Locale"
           }
         ],
         "responses": {
@@ -787,15 +775,6 @@
           "type": "string",
           "format": "uuid"
         }
-      },
-      "Locale": {
-        "name": "locale",
-        "in": "query",
-        "required": false,
-        "description": "Enabled Store Locale. Omit to use the Store default.",
-        "schema": {
-          "$ref": "#/components/schemas/Locale"
-        }
       }
     },
     "schemas": {
@@ -1044,7 +1023,6 @@
         "required": [
           "id",
           "handle",
-          "locale",
           "title",
           "description",
           "options",
@@ -1059,9 +1037,6 @@
           },
           "handle": {
             "type": "string"
-          },
-          "locale": {
-            "$ref": "#/components/schemas/Locale"
           },
           "title": {
             "type": "string"
@@ -1150,9 +1125,6 @@
           "currency": {
             "type": "string",
             "pattern": "^[A-Z]{3}$"
-          },
-          "locale": {
-            "$ref": "#/components/schemas/Locale"
           }
         }
       },
@@ -1266,7 +1238,6 @@
           "id",
           "price_list_id",
           "currency",
-          "locale",
           "status",
           "version",
           "lines",
@@ -1286,9 +1257,6 @@
           "currency": {
             "type": "string",
             "pattern": "^[A-Z]{3}$"
-          },
-          "locale": {
-            "$ref": "#/components/schemas/Locale"
           },
           "status": {
             "type": "string",
@@ -1569,7 +1537,6 @@
           "order_number",
           "price_list_id",
           "currency",
-          "locale",
           "status",
           "payment_status",
           "shipping_status",
@@ -1601,9 +1568,6 @@
           "currency": {
             "type": "string",
             "pattern": "^[A-Z]{3}$"
-          },
-          "locale": {
-            "$ref": "#/components/schemas/Locale"
           },
           "status": {
             "type": "string",
@@ -1850,7 +1814,6 @@
         "required": [
           "id",
           "handle",
-          "locale",
           "title",
           "description",
           "product_count"
@@ -1863,9 +1826,6 @@
           "handle": {
             "type": "string",
             "pattern": "^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$"
-          },
-          "locale": {
-            "$ref": "#/components/schemas/Locale"
           },
           "title": {
             "type": "string",
@@ -1913,12 +1873,6 @@
             "$ref": "#/components/schemas/Meta"
           }
         }
-      },
-      "Locale": {
-        "type": "string",
-        "description": "Canonical enabled Store Locale (BCP 47 without extensions or private use).",
-        "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$",
-        "maxLength": 63
       },
       "ErrorDetail": {
         "type": "object",

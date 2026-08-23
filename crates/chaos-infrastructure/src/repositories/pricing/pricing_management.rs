@@ -260,19 +260,16 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         variant_ids_with_status(&mut self.transaction, self.store_id, variant_ids, None).await
     }
 
-    async fn currency_is_enabled(
+    async fn currency_matches_store(
         &mut self,
         currency: CurrencyCode,
     ) -> Result<bool, ApplicationError> {
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM commerce.store_currencies \
-             WHERE store_id = $1 AND currency = $2 AND enabled)",
-        )
-        .bind(self.store_id.as_uuid())
-        .bind(currency.as_str())
-        .fetch_one(&mut *self.transaction)
-        .await
-        .map_err(database_error)
+        sqlx::query_scalar("SELECT currency = $2 FROM commerce.stores WHERE id = $1")
+            .bind(self.store_id.as_uuid())
+            .bind(currency.as_str())
+            .fetch_one(&mut *self.transaction)
+            .await
+            .map_err(database_error)
     }
 
     async fn replace(&mut self, price_list: &PriceList) -> Result<(), ApplicationError> {
@@ -518,14 +515,6 @@ mod tests {
             )
             .bind(id.as_uuid())
             .bind(format!("{code}-{suffix}"))
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.store_currencies \
-                 (store_id, currency) VALUES ($1, 'USD')",
-            )
-            .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();

@@ -8,18 +8,19 @@ CREATE TABLE commerce.stores (
     id                   UUID                     NOT NULL PRIMARY KEY,
     code                 extensions.citext        NOT NULL UNIQUE,
     name                 TEXT                     NOT NULL,
-    default_region       CHAR(2)                  NOT NULL DEFAULT 'US',
-    default_currency     CHAR(3)                  NOT NULL DEFAULT 'USD',
-    default_locale       VARCHAR(63)              NOT NULL DEFAULT 'en-US',
+    region               CHAR(2)                  NOT NULL DEFAULT 'US',
+    currency             CHAR(3)                  NOT NULL DEFAULT 'USD',
+    meta                 JSONB,
     status               commerce.store_status    NOT NULL DEFAULT 'active',
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT stores_code_format_check           CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
     CONSTRAINT stores_name_length_check           CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT stores_region_format_check         CHECK (default_region ~ '^[A-Z]{2}$'),
-    CONSTRAINT stores_currency_format_check       CHECK (default_currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT stores_default_locale_check        CHECK (default_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
+    CONSTRAINT stores_region_format_check         CHECK (region ~ '^[A-Z]{2}$'),
+    CONSTRAINT stores_currency_format_check       CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT stores_meta_size_check             CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT stores_meta_is_object_check        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.store_memberships (
@@ -32,27 +33,6 @@ CREATE TABLE commerce.store_memberships (
     CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
     CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
     CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE commerce.store_locales (
-    store_id            UUID        NOT NULL,
-    locale              VARCHAR(63) NOT NULL,
-    created_by_user_id  UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    CONSTRAINT store_locales_pkey                  PRIMARY KEY (store_id, locale),
-    CONSTRAINT store_locales_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT store_locales_created_by_user_fkey  FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT store_locales_locale_check          CHECK (locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
-);
-
-CREATE TABLE commerce.store_currencies (
-    store_id             UUID       NOT NULL,
-    currency             CHAR(3)    NOT NULL,
-    enabled              BOOLEAN    NOT NULL DEFAULT true,
-
-    CONSTRAINT store_currencies_pkey                   PRIMARY KEY (store_id, currency),
-    CONSTRAINT store_currencies_store_id_fkey          FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT store_currencies_currency_format_check  CHECK (currency ~ '^[A-Z]{3}$')
 );
 
 CREATE TABLE commerce.store_sales_channels (
@@ -99,24 +79,6 @@ CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.s
 CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
 CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
 
-CREATE FUNCTION commerce.prevent_default_locale_removal()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM commerce.stores
-        WHERE id = OLD.store_id
-          AND default_locale = OLD.locale
-    ) THEN
-        RAISE EXCEPTION 'the default Store Locale cannot be disabled'
-            USING ERRCODE = '23514';
-    END IF;
-    RETURN OLD;
-END
-$$;
-
 CREATE FUNCTION commerce.authenticate_publishable_key(presented_public_key TEXT)
 RETURNS TABLE (
     publishable_key_id   UUID,
@@ -154,15 +116,8 @@ AS $$
       AND store.status = 'active';
 $$;
 
-CREATE TRIGGER store_locales_protect_default
-    BEFORE DELETE ON commerce.store_locales
-    FOR EACH ROW
-    EXECUTE FUNCTION commerce.prevent_default_locale_removal();
-
 ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_locales ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
 
@@ -189,14 +144,6 @@ CREATE POLICY store_membership_directory ON commerce.store_memberships
     FOR SELECT
     USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.store_locales
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-CREATE POLICY store_isolation ON commerce.store_currencies
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
 CREATE POLICY store_isolation ON commerce.store_sales_channels
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
@@ -211,8 +158,6 @@ GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_r
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.stores,
        commerce.store_memberships,
-       commerce.store_locales,
-       commerce.store_currencies,
        commerce.store_sales_channels,
        commerce.store_publishable_keys
     TO chaos_runtime;

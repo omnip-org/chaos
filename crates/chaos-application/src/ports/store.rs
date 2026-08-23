@@ -35,8 +35,6 @@ pub trait StoreProvisioningTransaction: Send {
         membership: &StoreMembership,
     ) -> Result<(), ApplicationError>;
 
-    async fn insert_default_currency(&mut self, store: &Store) -> Result<(), ApplicationError>;
-
     async fn insert_default_sales_channel(
         &mut self,
         channel: &SalesChannel,
@@ -55,8 +53,8 @@ pub struct StoreListItem {
     pub id: StoreId,
     pub code: StoreCode,
     pub name: String,
-    pub default_region: RegionCode,
-    pub default_currency: CurrencyCode,
+    pub region: RegionCode,
+    pub currency: CurrencyCode,
     pub status: StoreStatus,
     pub role: StoreRole,
 }

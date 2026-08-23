@@ -88,14 +88,15 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
             .map_err(unexpected_database_error)?;
         sqlx::query(
             "INSERT INTO commerce.stores \
-             (id, code, name, default_region, default_currency, status) \
-             VALUES ($1, $2, $3, $4, $5, 'active')",
+             (id, code, name, region, currency, meta, status) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'active')",
         )
         .bind(store.id().as_uuid())
         .bind(store.code().as_str())
         .bind(store.name())
-        .bind(store.default_region().as_str())
-        .bind(store.default_currency().as_str())
+        .bind(store.region().as_str())
+        .bind(store.currency().as_str())
+        .bind(store.meta().cloned())
         .execute(&mut *self.transaction)
         .await
         .map_err(map_store_write_error)?;
@@ -113,20 +114,6 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         .bind(membership.store_id().as_uuid())
         .bind(membership.user_id().as_uuid())
         .bind(membership.role().as_str())
-        .execute(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-        Ok(())
-    }
-
-    async fn insert_default_currency(&mut self, store: &Store) -> Result<(), ApplicationError> {
-        sqlx::query(
-            "INSERT INTO commerce.store_currencies \
-             (store_id, currency, enabled) \
-             VALUES ($1, $2, true)",
-        )
-        .bind(store.id().as_uuid())
-        .bind(store.default_currency().as_str())
         .execute(&mut *self.transaction)
         .await
         .map_err(unexpected_database_error)?;
@@ -244,8 +231,9 @@ mod tests {
             user_id: owner_user_id,
             code: format!("primary-{unique_suffix}"),
             name: "Primary Store".into(),
-            default_region: None,
-            default_currency: None,
+            region: None,
+            currency: None,
+            meta: None,
             idempotency: IdempotencyRequest {
                 key: idempotency_key.clone(),
                 request_fingerprint: fingerprint,
@@ -265,13 +253,11 @@ mod tests {
             })
         ));
 
-        let stored: (String, String, String, bool, String, bool) = sqlx::query_as(
-            "SELECT store.status::text, store.default_region::text, \
-                    currency.currency::text, currency.enabled, \
+        let stored: (String, String, String, String, bool) = sqlx::query_as(
+            "SELECT store.status::text, store.region::text, \
+                    store.currency::text, \
                     channel.code::text, channel.is_default \
              FROM commerce.stores AS store \
-             INNER JOIN commerce.store_currencies AS currency \
-                 ON currency.store_id = store.id \
              INNER JOIN commerce.store_sales_channels AS channel \
                  ON channel.store_id = store.id \
              WHERE store.id = $1",
@@ -286,7 +272,6 @@ mod tests {
                 "active".into(),
                 "US".into(),
                 "USD".into(),
-                true,
                 "web".into(),
                 true,
             )

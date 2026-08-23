@@ -22,7 +22,6 @@ pub(crate) fn routes() -> Router<ApiState> {
 #[derive(Deserialize)]
 struct CatalogQuery {
     currency: Option<String>,
-    locale: Option<String>,
     q: Option<String>,
     collection: Option<String>,
     cursor: Option<String>,
@@ -32,7 +31,6 @@ struct CatalogQuery {
 #[derive(Deserialize)]
 struct ProductQuery {
     currency: Option<String>,
-    locale: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -88,7 +86,6 @@ struct StorefrontProductData {
     handle: String,
     title: String,
     description: String,
-    locale: String,
     options: Vec<StorefrontProductOptionData>,
     variants: Vec<StorefrontVariantData>,
     media: Vec<StorefrontMediaData>,
@@ -133,7 +130,6 @@ async fn list_products(
         .list_products(
             &actor,
             query.currency.as_deref(),
-            query.locale.as_deref(),
             query.q.as_deref(),
             query.collection.as_deref(),
             after,
@@ -159,12 +155,7 @@ async fn get_product(
 ) -> Result<ApiResponse<StorefrontProductData>, ApiError> {
     let product = state
         .storefront_catalog
-        .get_product_by_handle(
-            &actor,
-            query.currency.as_deref(),
-            query.locale.as_deref(),
-            &path.handle,
-        )
+        .get_product_by_handle(&actor, query.currency.as_deref(), &path.handle)
         .await?;
     Ok(ApiResponse::ok(product_data(product)))
 }
@@ -175,7 +166,6 @@ fn product_data(product: StorefrontCatalogProduct) -> StorefrontProductData {
         handle: product.handle,
         title: product.title,
         description: product.description,
-        locale: product.locale.as_str().into(),
         options: product.options.into_iter().map(option_data).collect(),
         variants: product.variants.into_iter().map(variant_data).collect(),
         media: product.media.into_iter().map(media_data).collect(),
@@ -345,14 +335,6 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.store_currencies (store_id, currency) \
-             VALUES ($1, 'USD')",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO commerce.products \
              (id, store_id, handle, title, description, status) \
              VALUES ($1, $2, 'public-shirt', 'Public Shirt', 'Public description', 'active')",
@@ -431,7 +413,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["data"][0]["handle"], "public-shirt");
-        assert_eq!(body["data"][0]["locale"], "en-US");
         assert_eq!(
             body["data"][0]["variants"][0]["price"]["amount_minor"],
             4200

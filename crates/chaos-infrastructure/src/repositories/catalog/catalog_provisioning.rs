@@ -300,7 +300,7 @@ mod tests {
         }
         sqlx::query(
             "INSERT INTO commerce.stores \
-            (id, code, name, default_region, default_currency, status) \
+            (id, code, name, region, currency, status) \
              VALUES ($1, $2, 'Catalog Store', 'US', 'USD', 'active')",
         )
         .bind(store_id.as_uuid())

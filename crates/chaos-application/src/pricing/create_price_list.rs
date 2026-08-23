@@ -64,7 +64,7 @@ impl CreatePriceList {
 
         let mut transaction = self.unit_of_work.begin(input.actor, input.store_id).await?;
         transaction.require_writable_store().await?;
-        transaction.require_enabled_currency(currency).await?;
+        transaction.require_store_currency(currency).await?;
         if let Some(price_list_id) = transaction
             .reserve_price_list_creation(&input.idempotency)
             .await?

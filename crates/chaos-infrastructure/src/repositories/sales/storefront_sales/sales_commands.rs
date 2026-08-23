@@ -43,7 +43,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         currency: Option<CurrencyCode>,
-        requested_locale: Option<Locale>,
         request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
         let shopper_id = shopper.shopper_id;
@@ -64,7 +63,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             select_price_list(&mut transaction, actor, channel_id, currency)
                 .await?
                 .ok_or_else(price_context_unavailable)?;
-        let locale = select_locale(&mut transaction, actor, requested_locale).await?;
         let cart = Cart::create(
             actor.store_id,
             channel_id,
@@ -73,8 +71,8 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO commerce.carts \
-             (id, store_id, shopper_id, sales_channel_id, price_list_id, currency, locale) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (id, store_id, shopper_id, sales_channel_id, price_list_id, currency) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(cart.id().as_uuid())
         .bind(actor.store_id.as_uuid())
@@ -82,7 +80,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
         .bind(currency.as_str())
-        .bind(locale.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -148,14 +145,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         let currency = parse_currency(&header.2)?;
-        let locale = parse_locale(&header.3)?;
         let row = resolve_variant(
             &mut transaction,
             actor,
             SalesChannelId::from_uuid(header.0),
             PriceListId::from_uuid(header.1),
             product_variant_id,
-            &locale,
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
@@ -303,7 +298,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             return Err(cart_not_found(cart_id));
         }
         let currency = parse_currency(&header.2)?;
-        let locale = parse_locale(&header.3)?;
         require_price_list_active(
             &mut transaction,
             actor,
@@ -351,10 +345,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         sqlx::query(
             "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, \
-              price_list_id, currency, locale, contact_email, \
+              price_list_id, currency, contact_email, \
               subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
               shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,0,$12,$12)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,0,0,0,0,$11,$11)",
         )
         .bind(order_id.as_uuid())
         .bind(actor.store_id.as_uuid())
@@ -364,7 +358,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .bind(shopper.shopper_id.as_uuid())
         .bind(header.1)
         .bind(currency.as_str())
-        .bind(locale.as_str())
         .bind(email)
         .bind(subtotal)
         .bind(now)

@@ -10,7 +10,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode, Locale,
+    CurrencyCode,
     catalog::{
         CollectionId, MediaAssetId, MediaKind, ProductId, ProductOptionId, ProductOptionValueId,
         ProductVariantId,
@@ -18,10 +18,6 @@ use chaos_domain::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
-
-struct ResolvedLocale {
-    selected: Locale,
-}
 
 #[derive(Clone)]
 pub struct PostgresStorefrontCatalogRepository {
@@ -78,15 +74,11 @@ impl PostgresStorefrontCatalogRepository {
                  INNER JOIN commerce.store_sales_channels AS channel \
                    ON channel.store_id = store.id \
                   AND channel.id = $2 \
-                 INNER JOIN commerce.store_currencies AS store_currency \
-                   ON store_currency.store_id = store.id \
-                  AND store_currency.currency = price_list.currency \
                  WHERE price_list.store_id = $1 \
                    AND price_list.status = 'active' \
                    AND store.status = 'active' \
                    AND channel.status = 'active' \
-                   AND store_currency.enabled \
-                   AND price_list.currency = COALESCE($4::char(3), store.default_currency) \
+                   AND price_list.currency = COALESCE($4::char(3), store.currency) \
                    AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
                    AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
                  ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
@@ -298,14 +290,12 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
-        requested_locale: Option<Locale>,
         query: Option<&str>,
         collection_handle: Option<&str>,
         after: Option<ProductId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
-        let locale = resolve_locale(&mut transaction, actor, requested_locale).await?;
         let mut scan_after = after;
         let mut products = Vec::with_capacity(usize::from(limit));
         while products.len() < usize::from(limit) {
@@ -402,7 +392,6 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                         handle,
                         title,
                         description,
-                        locale: locale.selected.clone(),
                         options,
                         variants,
                         media,
@@ -426,11 +415,9 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
-        requested_locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
-        let locale = resolve_locale(&mut transaction, actor, requested_locale).await?;
         let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
             "SELECT product.id, product.handle::text, product.title, product.description, \
                     product.metadata \
@@ -474,7 +461,6 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             handle,
             title,
             description,
-            locale: locale.selected,
             options,
             variants,
             media,
@@ -482,33 +468,6 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
             metadata,
         }))
     }
-}
-
-async fn resolve_locale(
-    transaction: &mut Transaction<'_, Postgres>,
-    actor: &MachineActor,
-    requested: Option<Locale>,
-) -> Result<ResolvedLocale, ApplicationError> {
-    let default: Option<String> =
-        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
-            .bind(actor.store_id.as_uuid())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(database_error)?;
-    let default = default.ok_or_else(|| ApplicationError::NotFound {
-        resource: "store",
-        id: actor.store_id.as_uuid().to_string(),
-    })?;
-    let selected = requested.unwrap_or(Locale::parse(&default)?);
-    if selected.as_str() != default {
-        return Err(ApplicationError::Validation {
-            violations: vec![chaos_domain::FieldViolation {
-                field: "locale",
-                reason: "only the Store default English locale is supported".into(),
-            }],
-        });
-    }
-    Ok(ResolvedLocale { selected })
 }
 
 async fn variant_selected_options(
@@ -608,14 +567,6 @@ mod tests {
             )
             .bind(id.as_uuid())
             .bind(&code)
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.store_currencies \
-                 (store_id, currency) VALUES ($1, 'USD')",
-            )
-            .bind(id.as_uuid())
             .execute(&owner_pool)
             .await
             .unwrap();
@@ -759,7 +710,7 @@ mod tests {
         );
         let repository = PostgresStorefrontCatalogRepository::new(runtime_pool);
         let products = repository
-            .list_products(&actor, None, None, None, None, None, 20)
+            .list_products(&actor, None, None, None, None, 20)
             .await
             .unwrap();
         assert_eq!(products.len(), 1);
@@ -767,14 +718,14 @@ mod tests {
         assert_eq!(products[0].variants.len(), 1);
         assert_eq!(products[0].variants[0].amount_minor, 2500);
         let searched = repository
-            .list_products(&actor, None, None, Some("visible"), None, None, 20)
+            .list_products(&actor, None, Some("visible"), None, None, 20)
             .await
             .unwrap();
         assert_eq!(searched.len(), 1);
         assert_eq!(searched[0].id, visible_product_id);
         assert!(
             repository
-                .list_products(&actor, None, None, Some("missing"), None, None, 20)
+                .list_products(&actor, None, Some("missing"), None, None, 20)
                 .await
                 .unwrap()
                 .is_empty()
@@ -796,14 +747,14 @@ mod tests {
         assert_eq!(indexed, 2);
         assert!(
             repository
-                .get_product_by_handle(&actor, None, None, "draft-shirt")
+                .get_product_by_handle(&actor, None, "draft-shirt")
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             repository
-                .get_product_by_handle(&actor, None, None, "other-shirt")
+                .get_product_by_handle(&actor, None, "other-shirt")
                 .await
                 .unwrap()
                 .is_none()

@@ -3,7 +3,6 @@
  * contract changes; field names stay snake_case to match the wire format.
  */
 
-export type Locale = string;
 export type UUID = string;
 export type CurrencyCode = string;
 
@@ -61,7 +60,6 @@ export interface ProductMedia {
 export interface Product {
   id: UUID;
   handle: string;
-  locale: Locale;
   title: string;
   description: string;
   media: ProductMedia[];
@@ -74,7 +72,6 @@ export interface Product {
 export interface Collection {
   id: UUID;
   handle: string;
-  locale: Locale;
   title: string;
   description: string;
   product_count: number;
@@ -95,7 +92,6 @@ export interface ShopperSession {
 
 export interface CreateCartRequest {
   currency?: CurrencyCode;
-  locale?: Locale;
 }
 
 export interface CartLine {
@@ -117,7 +113,6 @@ export interface Cart {
   id: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
-  locale: Locale;
   status: "active" | "completed" | "abandoned";
   version: number;
   lines: CartLine[];
@@ -172,7 +167,6 @@ export interface Order {
   order_number: string;
   price_list_id: UUID;
   currency: CurrencyCode;
-  locale: Locale;
   status: "pending" | "confirmed" | "cancelled";
   payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
   shipping_status: "pending" | "shipped" | "delivered" | "cancelled";

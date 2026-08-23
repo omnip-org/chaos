@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, FieldViolation, Locale,
+    CurrencyCode, FieldViolation,
     catalog::ProductVariantId,
     sales::{CartId, OrderContact, OrderId},
 };
@@ -21,7 +21,6 @@ pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 pub struct CreateCartInput {
     pub actor: ShopperActor,
     pub currency: Option<String>,
-    pub locale: Option<String>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -75,9 +74,8 @@ impl StorefrontSales {
             .as_deref()
             .map(CurrencyCode::parse)
             .transpose()?;
-        let locale = input.locale.as_deref().map(Locale::parse).transpose()?;
         self.repository
-            .create_cart(&input.actor, currency, locale, &input.idempotency)
+            .create_cart(&input.actor, currency, &input.idempotency)
             .await
     }
 

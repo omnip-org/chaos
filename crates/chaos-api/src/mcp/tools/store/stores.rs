@@ -26,10 +26,12 @@ use crate::mcp::{
 pub struct CreateStoreParams {
     pub code: String,
     pub name: String,
-    #[serde(default = "default_region")]
-    pub default_region: String,
-    #[serde(default = "default_currency")]
-    pub default_currency: String,
+    #[serde(default = "region")]
+    pub region: String,
+    #[serde(default = "currency")]
+    pub currency: String,
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
     pub confirm: bool,
     pub idempotency_key: String,
 }
@@ -98,8 +100,9 @@ impl ChaosMcp {
                 user_id: principal.user_id,
                 code: params.code,
                 name: params.name,
-                default_region: Some(params.default_region),
-                default_currency: Some(params.default_currency),
+                region: Some(params.region),
+                currency: Some(params.currency),
+                meta: params.meta,
                 idempotency,
             })
             .await
@@ -288,8 +291,8 @@ fn store_json(item: StoreListItem) -> serde_json::Value {
         "id": item.id.as_uuid(),
         "code": item.code.as_str(),
         "name": item.name,
-        "default_region": item.default_region.as_str(),
-        "default_currency": item.default_currency.as_str(),
+        "region": item.region.as_str(),
+        "currency": item.currency.as_str(),
         "status": item.status.as_str(),
         "role": item.role.as_str(),
     })
@@ -311,10 +314,10 @@ fn invalid_uuid(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn default_region() -> String {
+fn region() -> String {
     "US".into()
 }
 
-fn default_currency() -> String {
+fn currency() -> String {
     "USD".into()
 }

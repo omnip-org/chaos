@@ -29,9 +29,11 @@ pub struct UpdateStoreParams {
     pub code: String,
     pub name: String,
     /// Two-letter ISO 3166-1 region code.
-    pub default_region: String,
+    pub region: String,
     /// Three-letter ISO 4217 currency code.
-    pub default_currency: String,
+    pub currency: String,
+    #[serde(default)]
+    pub meta: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
     /// A client-chosen key identifying this exact attempt.
@@ -148,8 +150,9 @@ impl ChaosMcp {
                 store_id,
                 code: params.code,
                 name: params.name,
-                default_region: params.default_region,
-                default_currency: params.default_currency,
+                region: params.region,
+                currency: params.currency,
+                meta: params.meta,
                 idempotency,
             })
             .await
@@ -460,8 +463,9 @@ fn store_json(item: StoreAdminItem) -> serde_json::Value {
         "id": item.id.as_uuid(),
         "code": item.code.as_str(),
         "name": item.name,
-        "default_region": item.default_region.as_str(),
-        "default_currency": item.default_currency.as_str(),
+        "region": item.region.as_str(),
+        "currency": item.currency.as_str(),
+        "meta": item.meta,
         "status": item.status.as_str(),
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),

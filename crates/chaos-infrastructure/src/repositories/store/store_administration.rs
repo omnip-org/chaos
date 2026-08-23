@@ -63,6 +63,7 @@ type StoreRow = (
     String,
     String,
     String,
+    Option<serde_json::Value>,
     String,
     OffsetDateTime,
     OffsetDateTime,
@@ -87,7 +88,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
     ) -> Result<Option<StoreAdminItem>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, StoreRow>(
-            "SELECT id, code::text, name, default_region::text, default_currency::text, \
+            "SELECT id, code::text, name, region::text, currency::text, meta, \
                     status::text, created_at, updated_at \
              FROM commerce.stores WHERE id = $1",
         )
@@ -112,32 +113,22 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(StoreId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE commerce.stores SET code = $2, name = $3, default_region = $4, \
-                    default_currency = $5, updated_at = CURRENT_TIMESTAMP \
+            "UPDATE commerce.stores SET code = $2, name = $3, region = $4, \
+                    currency = $5, meta = $6, updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
         .bind(store_id.as_uuid())
         .bind(replacement.code().as_str())
         .bind(replacement.name())
-        .bind(replacement.default_region().as_str())
-        .bind(replacement.default_currency().as_str())
+        .bind(replacement.region().as_str())
+        .bind(replacement.currency().as_str())
+        .bind(replacement.meta().cloned())
         .execute(&mut *transaction)
         .await
         .map_err(map_store_error)?;
         if result.rows_affected() == 0 {
             return Err(store_not_found(store_id));
         }
-        sqlx::query(
-            "INSERT INTO commerce.store_currencies \
-             (store_id, currency, enabled) VALUES ($1, $2, true) \
-             ON CONFLICT (store_id, currency) \
-             DO UPDATE SET enabled = true",
-        )
-        .bind(store_id.as_uuid())
-        .bind(replacement.default_currency().as_str())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         complete(
             &mut transaction,
             &actor,
@@ -165,26 +156,13 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
             return Ok(StoreId::from_uuid(id));
         }
-        let default_currency = sqlx::query_scalar::<_, String>(
-            "SELECT default_currency::text FROM commerce.stores \
-             WHERE id = $1 FOR UPDATE",
-        )
-        .bind(store_id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| store_not_found(store_id))?;
-        if status == StoreStatus::Active {
-            let currency_enabled: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM commerce.store_currencies \
-                 WHERE store_id = $1 \
-                   AND currency = $2 AND enabled)",
-            )
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM commerce.stores WHERE id = $1 FOR UPDATE")
             .bind(store_id.as_uuid())
-            .bind(&default_currency)
-            .fetch_one(&mut *transaction)
+            .fetch_optional(&mut *transaction)
             .await
-            .map_err(database_error)?;
+            .map_err(database_error)?
+            .ok_or_else(|| store_not_found(store_id))?;
+        if status == StoreStatus::Active {
             let active_default_channel: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM commerce.store_sales_channels \
                  WHERE store_id = $1 \
@@ -194,7 +172,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
-            Store::validate_activation(currency_enabled, active_default_channel)?;
+            Store::validate_activation(active_default_channel)?;
         }
         sqlx::query(
             "UPDATE commerce.stores SET status = $2::commerce.store_status, \
@@ -473,13 +451,14 @@ async fn require_writable_store(
 }
 
 fn store_item(row: StoreRow) -> Result<StoreAdminItem, ApplicationError> {
-    let (id, code, name, region, currency, status, created_at, updated_at) = row;
+    let (id, code, name, region, currency, meta, status, created_at, updated_at) = row;
     Ok(StoreAdminItem {
         id: StoreId::from_uuid(id),
         code: StoreCode::parse(code)?,
         name,
-        default_region: RegionCode::parse(&region)?,
-        default_currency: CurrencyCode::parse(&currency)?,
+        region: RegionCode::parse(&region)?,
+        currency: CurrencyCode::parse(&currency)?,
+        meta,
         status: StoreStatus::parse(&status).ok_or_else(corrupt_status)?,
         created_at,
         updated_at,
@@ -617,14 +596,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.store_currencies \
-                 (store_id, currency) VALUES ($1, 'USD')",
-            )
-            .bind(id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
         }
         sqlx::query(
             "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
@@ -668,8 +639,9 @@ mod tests {
                 store_id,
                 code: format!("admin-store-updated-{suffix}"),
                 name: "Updated Admin Store".into(),
-                default_region: "SG".into(),
-                default_currency: "SGD".into(),
+                region: "SG".into(),
+                currency: "SGD".into(),
+                meta: None,
                 idempotency: request(format!("update-store-{suffix}"), 71),
             })
             .await
@@ -678,7 +650,7 @@ mod tests {
             .get_store(AdminActor::Store(owner), store_id)
             .await
             .unwrap();
-        assert_eq!(updated.default_currency.as_str(), "SGD");
+        assert_eq!(updated.currency.as_str(), "SGD");
         service
             .activate_store(ChangeStoreStatusInput {
                 actor: AdminActor::Store(owner),

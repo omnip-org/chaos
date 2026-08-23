@@ -124,13 +124,13 @@ impl PricingManagement {
             .await?
             .ok_or_else(|| price_list_not_found(input.price_list_id))?;
         if !transaction
-            .currency_is_enabled(replacement.currency())
+            .currency_matches_store(replacement.currency())
             .await?
         {
             return Err(ApplicationError::Validation {
                 violations: vec![chaos_domain::FieldViolation {
                     field: "currency",
-                    reason: "must be enabled for the Store".into(),
+                    reason: "must match the Store currency".into(),
                 }],
             });
         }

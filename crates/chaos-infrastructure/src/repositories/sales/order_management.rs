@@ -8,7 +8,7 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    CurrencyCode, Locale,
+    CurrencyCode,
     catalog::{ProductId, ProductVariantId},
     pricing::PriceListId,
     sales::{
@@ -319,8 +319,8 @@ async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
-    let (locale, order_number) = sqlx::query_as::<_, (String, String)>(
-        "SELECT locale, order_number FROM commerce.orders \
+    let order_number: String = sqlx::query_scalar(
+        "SELECT order_number FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -366,7 +366,6 @@ async fn load_order(
         shopper_id: ShopperId::from_uuid(row.shopper_id),
         price_list_id: PriceListId::from_uuid(row.price_list_id),
         currency: CurrencyCode::parse(&row.currency)?,
-        locale: Locale::parse(&locale)?,
         status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
         shipping_status: OrderShippingStatus::parse(&row.shipping_status)

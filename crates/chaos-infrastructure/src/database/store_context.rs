@@ -99,7 +99,7 @@ mod tests {
 
         for (store_id, code) in [(store_a, "store-a"), (store_b, "store-b")] {
             sqlx::query(
-                "INSERT INTO commerce.stores (id, code, name, default_currency, status) \
+                "INSERT INTO commerce.stores (id, code, name, currency, status) \
                  VALUES ($1, $2, $3, 'USD', 'active')",
             )
             .bind(store_id)
@@ -114,13 +114,6 @@ mod tests {
             )
             .bind(store_id)
             .bind(user_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.store_currencies (store_id, currency) VALUES ($1, 'USD')",
-            )
-            .bind(store_id)
             .execute(&pool)
             .await
             .unwrap();

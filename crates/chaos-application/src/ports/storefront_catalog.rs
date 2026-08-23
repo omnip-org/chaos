@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chaos_domain::{
-    CurrencyCode, Locale,
+    CurrencyCode,
     catalog::{CollectionId, ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
     store::{SalesChannelId, StoreId},
 };
@@ -58,7 +58,6 @@ pub struct StorefrontCatalogProduct {
     pub handle: String,
     pub title: String,
     pub description: String,
-    pub locale: Locale,
     pub options: Vec<StorefrontProductOption>,
     pub variants: Vec<StorefrontCatalogVariant>,
     pub media: Vec<StorefrontMediaAsset>,
@@ -84,7 +83,6 @@ pub trait StorefrontCatalogRepository: Send + Sync {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
-        locale: Option<Locale>,
         query: Option<&str>,
         collection_handle: Option<&str>,
         after: Option<ProductId>,
@@ -95,7 +93,6 @@ pub trait StorefrontCatalogRepository: Send + Sync {
         &self,
         actor: &MachineActor,
         currency: Option<CurrencyCode>,
-        locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError>;
 }

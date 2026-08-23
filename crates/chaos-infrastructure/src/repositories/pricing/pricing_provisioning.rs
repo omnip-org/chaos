@@ -81,29 +81,24 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
         }
     }
 
-    async fn require_enabled_currency(
+    async fn require_store_currency(
         &mut self,
         currency: CurrencyCode,
     ) -> Result<(), ApplicationError> {
-        let enabled: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-                SELECT 1 FROM commerce.store_currencies \
-                WHERE store_id = $1 \
-                  AND currency = $2 AND enabled\
-             )",
-        )
-        .bind(self.store_id.as_uuid())
-        .bind(currency.as_str())
-        .fetch_one(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-        if enabled {
+        let matches_store: bool =
+            sqlx::query_scalar("SELECT currency = $2 FROM commerce.stores WHERE id = $1")
+                .bind(self.store_id.as_uuid())
+                .bind(currency.as_str())
+                .fetch_one(&mut *self.transaction)
+                .await
+                .map_err(unexpected_database_error)?;
+        if matches_store {
             Ok(())
         } else {
             Err(ApplicationError::Validation {
                 violations: vec![chaos_domain::FieldViolation {
                     field: "currency",
-                    reason: "must be enabled for the Store".into(),
+                    reason: "must match the Store currency".into(),
                 }],
             })
         }
@@ -320,15 +315,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-            sqlx::query(
-                "INSERT INTO commerce.store_currencies \
-                 (store_id, currency, enabled) \
-                 VALUES ($1, 'USD', true)",
-            )
-            .bind(id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
         }
         sqlx::query(
             "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
@@ -336,15 +322,6 @@ mod tests {
         )
         .bind(store_id.as_uuid())
         .bind(owner_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO commerce.store_currencies \
-             (store_id, currency, enabled) \
-             VALUES ($1, 'EUR', false)",
-        )
-        .bind(store_id.as_uuid())
         .execute(&owner_pool)
         .await
         .unwrap();

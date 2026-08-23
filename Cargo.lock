@@ -705,6 +705,7 @@ version = "0.0.13"
 dependencies = [
  "email_address",
  "language-tags",
+ "serde_json",
  "thiserror",
  "time",
  "uuid",

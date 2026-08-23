@@ -11,11 +11,9 @@ pub mod store;
 pub mod stripe;
 
 mod currency;
-mod locale;
 mod region;
 
 pub use currency::CurrencyCode;
-pub use locale::Locale;
 pub use region::RegionCode;
 
 /// Upper bound for opaque secret-manager reference strings (`env://...`, `enc://...`),

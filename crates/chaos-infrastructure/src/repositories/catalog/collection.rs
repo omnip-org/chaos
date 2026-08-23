@@ -8,7 +8,6 @@ use chaos_application::{
     },
 };
 use chaos_domain::{
-    Locale,
     catalog::{CollectionContent, CollectionId, CollectionStatus, ProductId},
     store::{SalesChannelId, StoreId},
 };
@@ -352,67 +351,33 @@ impl CollectionRepository for PostgresCollectionRepository {
     async fn list_storefront(
         &self,
         actor: &MachineActor,
-        requested_locale: Option<Locale>,
         after: Option<CollectionId>,
         limit: u16,
     ) -> Result<Vec<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
         let rows=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.store_sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND ($3::uuid IS NULL OR collection.id>$3) GROUP BY collection.id ORDER BY collection.id LIMIT $4")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(after.map(CollectionId::as_uuid)).bind(i64::from(limit)).fetch_all(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
-        rows.into_iter()
-            .map(|row| storefront_item(row, locale.clone()))
-            .collect()
+        rows.into_iter().map(storefront_item).collect()
     }
 
     async fn get_storefront_by_handle(
         &self,
         actor: &MachineActor,
-        requested_locale: Option<Locale>,
         handle: &str,
     ) -> Result<Option<StorefrontCollectionItem>, ApplicationError> {
         let channel = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut tx = self.begin_storefront(actor).await?;
-        let locale = resolve_collection_locale(&mut tx, actor, requested_locale).await?;
         let row=sqlx::query_as::<_,(Uuid,String,String,String,Option<serde_json::Value>,i64)>("SELECT collection.id,collection.handle::text,collection.title,collection.description,collection.metadata,count(member.product_id) FILTER (WHERE product.status='active' AND product_publication.product_id IS NOT NULL) FROM commerce.collections AS collection INNER JOIN commerce.collection_publications AS publication ON publication.store_id=collection.store_id AND publication.collection_id=collection.id AND publication.sales_channel_id=$2 INNER JOIN commerce.stores AS store ON store.id=collection.store_id AND store.status='active' INNER JOIN commerce.store_sales_channels AS channel ON channel.store_id=collection.store_id AND channel.id=$2 AND channel.status='active' LEFT JOIN commerce.collection_products AS member ON member.store_id=collection.store_id AND member.collection_id=collection.id LEFT JOIN commerce.products AS product ON product.store_id=member.store_id AND product.id=member.product_id LEFT JOIN commerce.product_publications AS product_publication ON product_publication.store_id=product.store_id AND product_publication.product_id=product.id AND product_publication.sales_channel_id=$2 WHERE collection.store_id=$1 AND collection.status='active' AND collection.handle=$3 GROUP BY collection.id")
             .bind(actor.store_id.as_uuid()).bind(channel.as_uuid()).bind(handle).fetch_optional(&mut *tx).await.map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
-        row.map(|row| storefront_item(row, locale)).transpose()
+        row.map(storefront_item).transpose()
     }
-}
-
-async fn resolve_collection_locale(
-    transaction: &mut Transaction<'_, Postgres>,
-    actor: &MachineActor,
-    requested: Option<Locale>,
-) -> Result<Locale, ApplicationError> {
-    let default: Option<String> =
-        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
-            .bind(actor.store_id.as_uuid())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(database_error)?;
-    let default = default.ok_or_else(|| ApplicationError::NotFound {
-        resource: "store",
-        id: actor.store_id.as_uuid().to_string(),
-    })?;
-    let selected = requested.unwrap_or(Locale::parse(&default)?);
-    if selected.as_str() != default {
-        return Err(ApplicationError::Validation {
-            violations: vec![chaos_domain::FieldViolation {
-                field: "locale",
-                reason: "only the Store default English locale is supported".into(),
-            }],
-        });
-    }
-    Ok(selected)
 }
 
 fn storefront_item(
     row: (Uuid, String, String, String, Option<serde_json::Value>, i64),
-    locale: Locale,
 ) -> Result<StorefrontCollectionItem, ApplicationError> {
     Ok(StorefrontCollectionItem {
         id: CollectionId::from_uuid(row.0),
@@ -420,7 +385,6 @@ fn storefront_item(
         title: row.2,
         description: row.3,
         product_count: u32::try_from(row.5).map_err(|_| invalid_snapshot())?,
-        locale,
         metadata: row.4,
     })
 }

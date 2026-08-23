@@ -24,7 +24,6 @@ CREATE TABLE commerce.carts (
     shopper_id           UUID                    NOT NULL,
     price_list_id        UUID                    NOT NULL,
     currency             CHAR(3)                 NOT NULL,
-    locale               VARCHAR(63)             NOT NULL DEFAULT 'en-US',
     status               commerce.cart_status    NOT NULL DEFAULT 'active',
     version              BIGINT                  NOT NULL DEFAULT 0,
     created_at           TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -37,7 +36,6 @@ CREATE TABLE commerce.carts (
     CONSTRAINT carts_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers(store_id, id),
     CONSTRAINT carts_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists(store_id, id, currency),
     CONSTRAINT carts_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT carts_locale_check                      CHECK (locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'),
     CONSTRAINT carts_version_nonnegative_check         CHECK (version >= 0)
 );
 
@@ -75,7 +73,6 @@ CREATE TABLE commerce.orders (
     shopper_id                   UUID                               NOT NULL,
     price_list_id                UUID                               NOT NULL,
     currency                     CHAR(3)                            NOT NULL,
-    locale                       VARCHAR(63)                        NOT NULL DEFAULT 'en-US',
     status                       commerce.order_status              NOT NULL DEFAULT 'pending',
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
     shipping_status              commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
@@ -124,7 +121,6 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists(store_id, id, currency),
     CONSTRAINT orders_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_order_number_check                CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
-    CONSTRAINT orders_locale_check                      CHECK (locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'),
     CONSTRAINT orders_amounts_check                     CHECK (subtotal_amount_minor >= 0 AND discount_amount_minor >= 0 AND tax_amount_minor >= 0 AND shipping_amount_minor >= 0 AND total_amount_minor >= 0 AND refunded_amount_minor >= 0 AND refunded_amount_minor <= total_amount_minor),
     CONSTRAINT orders_contact_email_length_check        CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
     CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),

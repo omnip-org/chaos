@@ -61,8 +61,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
         set_user_context(&mut transaction, user_id).await?;
         let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String, String)>(
-            "SELECT store.id, store.code::text, store.name, store.default_region::text, \
-                    store.default_currency::text, store.status::text, membership.role::text \
+            "SELECT store.id, store.code::text, store.name, store.region::text, \
+                    store.currency::text, store.status::text, membership.role::text \
              FROM commerce.store_memberships AS membership \
              INNER JOIN commerce.stores AS store ON store.id = membership.store_id \
              WHERE membership.user_id = $1 \
@@ -87,9 +87,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
                     id: StoreId::from_uuid(id),
                     code: StoreCode::parse(code).map_err(corrupt_database_value)?,
                     name,
-                    default_region: RegionCode::parse(region.trim_end())
-                        .map_err(corrupt_database_value)?,
-                    default_currency: CurrencyCode::parse(currency.trim_end())
+                    region: RegionCode::parse(region.trim_end()).map_err(corrupt_database_value)?,
+                    currency: CurrencyCode::parse(currency.trim_end())
                         .map_err(corrupt_database_value)?,
                     status: StoreStatus::parse(&status)
                         .ok_or_else(|| corrupt_database_enum("store status", &status))?,

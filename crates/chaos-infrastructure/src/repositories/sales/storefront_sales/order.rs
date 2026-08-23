@@ -145,8 +145,8 @@ pub(super) async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
-    let (locale, order_number): (String, String) = sqlx::query_as(
-            "SELECT locale, order_number FROM commerce.orders WHERE store_id=$1 AND id=$2",
+    let order_number: String = sqlx::query_scalar(
+        "SELECT order_number FROM commerce.orders WHERE store_id=$1 AND id=$2",
         )
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -184,7 +184,6 @@ pub(super) async fn load_order(
         shopper_id: ShopperId::from_uuid(row.shopper_id),
         price_list_id: PriceListId::from_uuid(row.price_list_id),
         currency: parse_currency(&row.currency)?,
-        locale: parse_locale(&locale)?,
         status: OrderStatus::parse(&row.status).ok_or_else(corrupt_sales_state)?,
         payment_status: OrderPaymentStatus::parse(&row.payment_status)
             .ok_or_else(corrupt_sales_state)?,

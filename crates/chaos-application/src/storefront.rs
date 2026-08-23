@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, FieldViolation, Locale,
+    CurrencyCode, FieldViolation,
     catalog::{CollectionHandle, ProductId},
 };
 
@@ -38,7 +38,6 @@ impl StorefrontCatalog {
         &self,
         actor: &MachineActor,
         currency: Option<&str>,
-        locale: Option<&str>,
         query: Option<&str>,
         collection: Option<&str>,
         after: Option<ProductId>,
@@ -55,7 +54,6 @@ impl StorefrontCatalog {
             .list_products(
                 actor,
                 currency,
-                parse_locale(locale)?,
                 query,
                 collection.as_ref().map(CollectionHandle::as_str),
                 after,
@@ -73,7 +71,6 @@ impl StorefrontCatalog {
         &self,
         actor: &MachineActor,
         currency: Option<&str>,
-        locale: Option<&str>,
         handle: &str,
     ) -> Result<StorefrontCatalogProduct, ApplicationError> {
         Self::context(actor)?;
@@ -86,12 +83,7 @@ impl StorefrontCatalog {
             });
         }
         self.repository
-            .get_product_by_handle(
-                actor,
-                parse_currency(currency)?,
-                parse_locale(locale)?,
-                handle,
-            )
+            .get_product_by_handle(actor, parse_currency(currency)?, handle)
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "product",
@@ -113,10 +105,6 @@ fn parse_currency(value: Option<&str>) -> Result<Option<CurrencyCode>, Applicati
         .transpose()
 }
 
-fn parse_locale(value: Option<&str>) -> Result<Option<Locale>, ApplicationError> {
-    value.map(Locale::parse).transpose().map_err(Into::into)
-}
-
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -135,7 +123,6 @@ mod tests {
             &self,
             _actor: &MachineActor,
             _currency: Option<CurrencyCode>,
-            _locale: Option<Locale>,
             _query: Option<&str>,
             _collection_handle: Option<&str>,
             _after: Option<ProductId>,
@@ -148,7 +135,6 @@ mod tests {
             &self,
             _actor: &MachineActor,
             _currency: Option<CurrencyCode>,
-            _locale: Option<Locale>,
             _handle: &str,
         ) -> Result<Option<StorefrontCatalogProduct>, ApplicationError> {
             Ok(None)
@@ -178,7 +164,7 @@ mod tests {
         let mut key = actor();
         key.sales_channel_id = None;
         let result = catalog
-            .list_products(&key, None, None, None, None, None, 20)
+            .list_products(&key, None, None, None, None, 20)
             .await;
         assert!(matches!(result, Err(ApplicationError::Forbidden)));
     }

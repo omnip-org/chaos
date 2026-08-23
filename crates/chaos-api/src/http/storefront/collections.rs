@@ -24,12 +24,6 @@ struct HandlePath {
 struct ListQuery {
     cursor: Option<String>,
     limit: Option<u16>,
-    locale: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct LocaleQuery {
-    locale: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -39,7 +33,6 @@ struct StorefrontCollectionData {
     title: String,
     description: String,
     product_count: u32,
-    locale: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
 }
@@ -58,7 +51,7 @@ async fn list_storefront_collections(
         .map(CollectionId::from_uuid);
     let page = state
         .storefront_collections
-        .list(&actor, query.locale.as_deref(), after, limit)
+        .list(&actor, after, limit)
         .await?;
     let next_cursor = page
         .has_more
@@ -78,12 +71,11 @@ async fn get_storefront_collection(
     State(state): State<ApiState>,
     StorefrontMachine(actor): StorefrontMachine,
     ApiPath(path): ApiPath<HandlePath>,
-    ApiQuery(query): ApiQuery<LocaleQuery>,
 ) -> Result<ApiResponse<StorefrontCollectionData>, crate::http::ApiError> {
     Ok(ApiResponse::ok(storefront_data(
         state
             .storefront_collections
-            .get(&actor, query.locale.as_deref(), &path.handle)
+            .get(&actor, &path.handle)
             .await?,
     )))
 }
@@ -95,7 +87,6 @@ fn storefront_data(value: StorefrontCollectionItem) -> StorefrontCollectionData 
         title: value.title,
         description: value.description,
         product_count: value.product_count,
-        locale: value.locale.as_str().into(),
         metadata: value.metadata,
     }
 }

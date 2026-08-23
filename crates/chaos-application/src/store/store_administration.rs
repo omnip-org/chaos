@@ -23,8 +23,9 @@ pub struct UpdateStoreInput {
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
-    pub default_region: String,
-    pub default_currency: String,
+    pub region: String,
+    pub currency: String,
+    pub meta: Option<serde_json::Value>,
     pub idempotency: IdempotencyRequest,
 }
 
@@ -83,8 +84,9 @@ impl StoreAdministration {
         let replacement = Store::create(
             StoreCode::parse(input.code)?,
             input.name,
-            RegionCode::parse(&input.default_region)?,
-            CurrencyCode::parse(&input.default_currency)?,
+            RegionCode::parse(&input.region)?,
+            CurrencyCode::parse(&input.currency)?,
+            input.meta,
         )?;
         self.repository
             .update_store(

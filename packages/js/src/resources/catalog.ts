@@ -7,17 +7,13 @@ export interface ListProductsParams extends CursorPageParams {
   q?: string;
   /** Active Collection handle; results preserve manual Collection order. */
   collection?: string;
-  locale?: string;
 }
 
 export interface GetProductParams {
   currency?: string;
-  locale?: string;
 }
 
-export interface ListCollectionsParams extends CursorPageParams {
-  locale?: string;
-}
+export type ListCollectionsParams = CursorPageParams;
 
 export class CatalogResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
@@ -46,7 +42,7 @@ export class CatalogResource {
     return this.client.request("/collections", { method: "GET", query: params });
   }
 
-  getCollection(handle: string, params: { locale?: string } = {}): Promise<DataEnvelope<Collection>> {
+  getCollection(handle: string, params: Record<string, never> = {}): Promise<DataEnvelope<Collection>> {
     return this.client.request(`/collections/${encodeURIComponent(handle)}`, { method: "GET", query: params });
   }
 }

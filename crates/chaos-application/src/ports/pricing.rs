@@ -23,7 +23,7 @@ pub trait PricingProvisioningUnitOfWork: Send + Sync {
 pub trait PricingProvisioningTransaction: Send {
     async fn require_writable_store(&mut self) -> Result<(), ApplicationError>;
 
-    async fn require_enabled_currency(
+    async fn require_store_currency(
         &mut self,
         currency: CurrencyCode,
     ) -> Result<(), ApplicationError>;
@@ -132,7 +132,7 @@ pub trait PricingManagementTransaction: Send {
         variant_ids: &[ProductVariantId],
     ) -> Result<Vec<ProductVariantId>, ApplicationError>;
 
-    async fn currency_is_enabled(
+    async fn currency_matches_store(
         &mut self,
         currency: CurrencyCode,
     ) -> Result<bool, ApplicationError>;

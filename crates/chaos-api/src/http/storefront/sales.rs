@@ -45,7 +45,6 @@ pub(crate) fn routes() -> Router<ApiState> {
 #[serde(deny_unknown_fields)]
 struct CreateCartBody {
     currency: Option<String>,
-    locale: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +108,6 @@ struct CartData {
     id: Uuid,
     price_list_id: Uuid,
     currency: String,
-    locale: String,
     status: &'static str,
     version: u64,
     lines: Vec<CartLineData>,
@@ -154,7 +152,6 @@ pub(super) struct OrderData {
     order_number: String,
     price_list_id: Uuid,
     currency: String,
-    locale: String,
     status: &'static str,
     payment_status: &'static str,
     shipping_status: &'static str,
@@ -235,7 +232,6 @@ async fn create_cart(
         .create_cart(CreateCartInput {
             actor,
             currency: body.currency,
-            locale: body.locale,
             idempotency,
         })
         .await?;
@@ -370,7 +366,6 @@ fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
         id: cart.id.as_uuid(),
         price_list_id: cart.price_list_id.as_uuid(),
         currency: cart.currency.as_str().to_owned(),
-        locale: cart.locale.as_str().to_owned(),
         status: cart.status.as_str(),
         version: cart.version,
         lines: cart.lines.into_iter().map(cart_line_data).collect(),
@@ -414,7 +409,6 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
         order_number: order.order_number.as_str().into(),
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
-        locale: order.locale.as_str().to_owned(),
         status: order.status.as_str(),
         payment_status: order.payment_status.as_str(),
         shipping_status: order.shipping_status.as_str(),

@@ -15,7 +15,6 @@ CREATE TABLE commerce.price_lists (
     CONSTRAINT price_lists_store_id_code_key            UNIQUE (store_id, code),
     CONSTRAINT price_lists_store_id_id_key              UNIQUE (store_id, id),
     CONSTRAINT price_lists_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT price_lists_store_id_currency_fkey       FOREIGN KEY (store_id, currency) REFERENCES commerce.store_currencies(store_id, currency),
     CONSTRAINT price_lists_code_format_check            CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'),
     CONSTRAINT price_lists_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 120),
     CONSTRAINT price_lists_currency_format_check        CHECK (currency ~ '^[A-Z]{3}$'),
