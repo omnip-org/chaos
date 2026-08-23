@@ -1,10 +1,6 @@
 CREATE SCHEMA identity;
 
-COMMENT ON SCHEMA identity IS
-    'Users and external login identities';
-
 CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
-
 CREATE TYPE identity.identity_provider AS ENUM ('apple', 'google');
 
 CREATE TABLE identity.users (
@@ -75,22 +71,11 @@ CREATE TABLE identity.access_keys (
     )
 );
 
-CREATE INDEX credentials_user_idx
-    ON identity.credentials (user_id, provider);
+CREATE INDEX credentials_user_idx ON identity.credentials (user_id, provider);
+CREATE INDEX access_keys_user_id_idx ON identity.access_keys (user_id, id);
 
-CREATE INDEX access_keys_user_id_idx
-    ON identity.access_keys (user_id, id);
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA identity TO chaos_identity;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA identity TO chaos_identity;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_identity;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA identity
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_identity;
-
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity TO chaos_identity;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA identity TO chaos_identity;
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_identity;
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity GRANT USAGE, SELECT ON SEQUENCES TO chaos_identity;
 GRANT USAGE ON SCHEMA identity TO chaos_identity;
