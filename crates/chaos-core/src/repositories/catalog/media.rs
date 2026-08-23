@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, PendingMediaUpload,
     },
@@ -27,14 +28,7 @@ impl PostgresMediaAssetRepository {
         actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.user_id',$1,true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id',$1,true)")
-            .bind(actor.store_id().as_uuid().to_string())
-            .execute(&mut *tx)
+        crate::database::set_admin_context(&mut tx, actor.audit_user_id(), actor.store_id())
             .await
             .map_err(database_error)?;
         Ok(tx)
@@ -293,7 +287,4 @@ fn invalid_snapshot() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "the Media Asset persistence snapshot is invalid"
     ))
-}
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }

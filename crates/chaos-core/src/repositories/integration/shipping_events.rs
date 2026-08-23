@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{ShippingEventJob, ShippingEventQueue},
 };
 use async_trait::async_trait;
@@ -23,11 +24,12 @@ impl PostgresShippingEventRepository {
         store_id: Uuid,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store_id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        crate::database::set_store_context(
+            &mut transaction,
+            chaos_domain::store::StoreId::from_uuid(store_id),
+        )
+        .await
+        .map_err(database_error)?;
         Ok(transaction)
     }
 }
@@ -162,8 +164,4 @@ fn payload_string(payload: &Value, field: &str) -> Option<String> {
         .get(field)
         .and_then(Value::as_str)
         .map(str::to_owned)
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }

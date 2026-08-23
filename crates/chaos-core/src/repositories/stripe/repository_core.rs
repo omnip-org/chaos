@@ -7,6 +7,7 @@ use base64::{
 };
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         AdminActor, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
         PaymentLineItem, StripeAccountConfiguration,
@@ -338,17 +339,5 @@ fn queue_job_not_found() -> ApplicationError {
     ApplicationError::Conflict {
         code: "queue_lease_lost",
         message: "the queue job is no longer leased by this worker",
-    }
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    match &error {
-        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
-            ApplicationError::Unavailable {
-                service: "postgresql",
-                source: error.into(),
-            }
-        }
-        _ => ApplicationError::Unexpected(error.into()),
     }
 }

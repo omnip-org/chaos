@@ -55,7 +55,7 @@ impl StorefrontSales {
         &self,
         actor: &MachineActor,
     ) -> Result<chaos_domain::sales::ShopperId, ApplicationError> {
-        require_storefront_actor(actor)?;
+        actor.require_sales_channel()?;
         self.repository.create_shopper(actor).await
     }
 
@@ -63,7 +63,7 @@ impl StorefrontSales {
         &self,
         input: CreateCartInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_actor(&input.actor.machine)?;
+        input.actor.machine.require_sales_channel()?;
         let currency = input
             .currency
             .as_deref()
@@ -77,7 +77,7 @@ impl StorefrontSales {
         actor: &ShopperActor,
         cart_id: CartId,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_actor(&actor.machine)?;
+        actor.machine.require_sales_channel()?;
         self.repository
             .get_cart(actor, cart_id)
             .await?
@@ -88,7 +88,7 @@ impl StorefrontSales {
         &self,
         input: SetCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_actor(&input.actor.machine)?;
+        input.actor.machine.require_sales_channel()?;
         if !(1..=999).contains(&input.quantity) {
             return Err(validation("quantity", "must be between 1 and 999"));
         }
@@ -106,7 +106,7 @@ impl StorefrontSales {
         &self,
         input: RemoveCartLineInput,
     ) -> Result<CartDetail, ApplicationError> {
-        require_storefront_actor(&input.actor.machine)?;
+        input.actor.machine.require_sales_channel()?;
         self.repository
             .remove_cart_line(&input.actor, input.cart_id, input.product_variant_id)
             .await
@@ -116,7 +116,7 @@ impl StorefrontSales {
         &self,
         input: CreateStripeCheckoutInput,
     ) -> Result<StripeCheckoutDraft, ApplicationError> {
-        require_storefront_actor(&input.actor.machine)?;
+        input.actor.machine.require_sales_channel()?;
         let contact = OrderContact::new(input.email, None)?;
         self.repository
             .create_stripe_checkout(
@@ -135,7 +135,7 @@ impl StorefrontSales {
         actor: &ShopperActor,
         order_id: OrderId,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_actor(&actor.machine)?;
+        actor.machine.require_sales_channel()?;
         self.repository
             .get_order(actor, order_id)
             .await?
@@ -151,19 +151,11 @@ impl StorefrontSales {
         tracking_token: &secrecy::SecretString,
         now: OffsetDateTime,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
-        require_storefront_actor(actor)?;
+        actor.require_sales_channel()?;
         self.repository
             .get_tracked_order(actor, tracking_token, now)
             .await?
             .ok_or(ApplicationError::Forbidden)
-    }
-}
-
-fn require_storefront_actor(actor: &MachineActor) -> Result<(), ApplicationError> {
-    if actor.sales_channel_id.is_some() {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
     }
 }
 

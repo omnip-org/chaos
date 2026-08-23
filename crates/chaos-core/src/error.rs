@@ -34,3 +34,15 @@ impl From<DomainError> for ApplicationError {
         }
     }
 }
+
+pub(crate) fn database_error(error: sqlx::Error) -> ApplicationError {
+    match &error {
+        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
+            ApplicationError::Unavailable {
+                service: "postgresql",
+                source: error.into(),
+            }
+        }
+        _ => ApplicationError::Unexpected(error.into()),
+    }
+}

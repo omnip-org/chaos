@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{StoreListItem, StoreReadRepository},
 };
 use async_trait::async_trait;
@@ -29,7 +30,7 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         user_id: UserId,
         store_id: StoreId,
     ) -> Result<Option<StoreRole>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_user_context(&mut transaction, user_id).await?;
         let role = sqlx::query_scalar::<_, String>(
             "SELECT role::text \
@@ -40,11 +41,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         .bind(user_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
-        transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
 
         role.map(|value| {
             StoreRole::parse(&value).ok_or_else(|| corrupt_database_enum("store role", &value))
@@ -58,7 +56,7 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         after: Option<StoreId>,
         limit: u16,
     ) -> Result<Vec<StoreListItem>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_user_context(&mut transaction, user_id).await?;
         let rows = sqlx::query_as::<_, (Uuid, String, String, String, String, String, String)>(
             "SELECT store.id, store.code::text, store.name, store.region::text, \
@@ -75,11 +73,8 @@ impl StoreReadRepository for PostgresStoreReadRepository {
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
-        transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
 
         rows.into_iter()
             .map(|(id, code, name, region, currency, status, role)| {
@@ -104,12 +99,9 @@ async fn set_user_context(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.user_id', $1, true)")
-        .bind(user_id.as_uuid().to_string())
-        .execute(&mut **transaction)
+    crate::database::set_user_context(transaction, user_id)
         .await
-        .map_err(unexpected_database_error)?;
-    Ok(())
+        .map_err(database_error)
 }
 
 fn corrupt_database_value(error: chaos_domain::DomainError) -> ApplicationError {
@@ -118,10 +110,6 @@ fn corrupt_database_value(error: chaos_domain::DomainError) -> ApplicationError 
 
 fn corrupt_database_enum(name: &str, value: &str) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains unknown {name}: {value}"))
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

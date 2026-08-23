@@ -73,7 +73,7 @@ impl CollectionAdministration {
         &self,
         input: CreateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         let content = content(input.handle, input.title, input.description, input.metadata)?;
         self.repository
             .create(
@@ -124,7 +124,7 @@ impl CollectionAdministration {
         &self,
         input: UpdateCollectionInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         let content = content(input.handle, input.title, input.description, input.metadata)?;
         self.repository
             .update(
@@ -156,7 +156,7 @@ impl CollectionAdministration {
         input: ChangeCollectionStatusInput,
         status: CollectionStatus,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         self.repository
             .set_status(
                 input.actor,
@@ -172,7 +172,7 @@ impl CollectionAdministration {
         &self,
         input: ReplaceCollectionProductsInput,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         if input.product_ids.len() > 1_000 {
             return Err(validation(
                 "product_ids",
@@ -213,7 +213,7 @@ impl CollectionAdministration {
         input: CollectionPublicationInput,
         published: bool,
     ) -> Result<CollectionId, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         self.repository
             .set_publication(
                 input.actor,
@@ -284,13 +284,6 @@ fn content(
         description,
         crate::catalog::parse_metadata(metadata)?,
     )?)
-}
-
-fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
-    }
 }
 
 fn store_not_found(id: StoreId) -> ApplicationError {

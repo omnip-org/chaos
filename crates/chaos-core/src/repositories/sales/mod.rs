@@ -1,5 +1,6 @@
 //! Order management and public storefront sales repositories.
 
+mod order_detail;
 mod order_management;
 mod storefront_catalog;
 mod storefront_sales;

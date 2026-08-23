@@ -2,6 +2,8 @@ use anyhow::Context;
 use chaos_domain::store::StoreId;
 use sqlx::{PgPool, Postgres, Transaction};
 
+use super::set_store_context;
+
 #[cfg(test)]
 use sqlx::PgConnection;
 
@@ -16,9 +18,7 @@ impl<'a> StoreTransaction<'a> {
             .begin()
             .await
             .context("failed to begin store transaction")?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store_id.as_uuid().to_string())
-            .execute(&mut *inner)
+        set_store_context(&mut inner, store_id)
             .await
             .context("failed to establish PostgreSQL store context")?;
 

@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{AdminActor, GeneratedPublishableKey, MachineActor, PublishableKeyListItem},
 };
 use chaos_domain::{
@@ -177,27 +178,18 @@ async fn set_context(
     transaction: &mut Transaction<'_, Postgres>,
     actor: &AdminActor,
 ) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => {
-            sqlx::query("SELECT set_config('app.user_id', $1, true)")
-                .bind(actor.audit_user_id().as_uuid().to_string())
-                .execute(&mut **transaction)
-                .await
-                .map_err(database_error)?;
-        }
-        AdminActor::Machine(_) => {
-            sqlx::query("SELECT set_config('app.user_id', '', true)")
-                .execute(&mut **transaction)
-                .await
-                .map_err(database_error)?;
-        }
-    }
-    sqlx::query("SELECT set_config('app.store_id', $1, true)")
-        .bind(actor.store_id().as_uuid().to_string())
-        .execute(&mut **transaction)
+    crate::database::set_optional_user_context(
+        transaction,
+        match actor {
+            AdminActor::Store(_) => Some(actor.audit_user_id()),
+            AdminActor::Machine(_) => None,
+        },
+    )
+    .await
+    .map_err(database_error)?;
+    crate::database::set_store_context(transaction, actor.store_id())
         .await
-        .map_err(database_error)?;
-    Ok(())
+        .map_err(database_error)
 }
 
 async fn require_store(
@@ -223,10 +215,6 @@ fn valid_public_key(value: &str) -> bool {
         && value[PUBLIC_KEY_PREFIX.len()..]
             .bytes()
             .all(|byte| PUBLIC_KEY_ALPHABET.contains(&byte))
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

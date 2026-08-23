@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         AdminActor, PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
     },
@@ -336,17 +337,9 @@ async fn set_context(
     transaction: &mut Transaction<'_, Postgres>,
     actor: AdminActor,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.user_id', $1, true)")
-        .bind(actor.audit_user_id().as_uuid().to_string())
-        .execute(&mut **transaction)
+    crate::database::set_admin_context(transaction, actor.audit_user_id(), actor.store_id())
         .await
-        .map_err(database_error)?;
-    sqlx::query("SELECT set_config('app.store_id', $1, true)")
-        .bind(actor.store_id().as_uuid().to_string())
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    Ok(())
+        .map_err(database_error)
 }
 
 async fn variant_ids_with_status(
@@ -391,10 +384,6 @@ fn map_write_error(error: sqlx::Error) -> ApplicationError {
         };
     }
     database_error(error)
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

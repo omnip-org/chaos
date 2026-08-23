@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         MachineActor, StorefrontCatalogProduct, StorefrontCatalogRepository,
         StorefrontCatalogVariant, StorefrontMediaAsset, StorefrontProductCollection,
@@ -38,9 +39,7 @@ impl PostgresStorefrontCatalogRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id.as_uuid().to_string())
-            .execute(&mut *transaction)
+        crate::database::set_store_context(&mut transaction, actor.store_id)
             .await
             .map_err(database_error)?;
         Ok(transaction)
@@ -502,10 +501,6 @@ async fn variant_selected_options(
             });
     }
     Ok(by_variant)
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

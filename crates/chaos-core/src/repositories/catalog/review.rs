@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{AdminActor, MachineActor, ReviewSummary},
 };
 use chaos_domain::{
@@ -40,14 +41,7 @@ impl PostgresReviewRepository {
         actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id().as_uuid().to_string())
-            .execute(&mut *tx)
+        crate::database::set_admin_context(&mut tx, actor.audit_user_id(), actor.store_id())
             .await
             .map_err(database_error)?;
         Ok(tx)
@@ -58,9 +52,7 @@ impl PostgresReviewRepository {
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id.as_uuid().to_string())
-            .execute(&mut *tx)
+        crate::database::set_store_context(&mut tx, actor.store_id)
             .await
             .map_err(database_error)?;
         Ok(tx)
@@ -412,8 +404,4 @@ fn map_review_write_error(error: sqlx::Error) -> ApplicationError {
         };
     }
     database_error(error)
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }

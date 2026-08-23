@@ -66,7 +66,7 @@ impl MediaAdministration {
         &self,
         input: CreateMediaAssetInput,
     ) -> Result<CreatedMediaAsset, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         if input.position > 99 {
             return Err(validation("position", "must be between 0 and 99"));
         }
@@ -120,7 +120,7 @@ impl MediaAdministration {
         &self,
         input: RefreshMediaUploadInput,
     ) -> Result<MediaUploadRequest, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         let pending = self
             .repository
             .pending_upload(
@@ -142,7 +142,7 @@ impl MediaAdministration {
         &self,
         input: MediaAssetActionInput,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         let pending = self
             .repository
             .pending_upload(
@@ -190,7 +190,7 @@ impl MediaAdministration {
         &self,
         input: MediaAssetActionInput,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        require_writer(&input.actor)?;
+        input.actor.require_human()?;
         self.repository
             .archive(
                 input.actor,
@@ -226,12 +226,6 @@ impl MediaAdministration {
     }
 }
 
-fn require_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
-    }
-}
 fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
     ApplicationError::Validation {
         violations: vec![chaos_domain::FieldViolation {

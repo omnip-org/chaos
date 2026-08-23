@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{AdminActor, InventoryAdjustment, VariantInventoryView},
 };
 use chaos_domain::{catalog::ProductVariantId, inventory::InventoryBalance, store::StoreId};
@@ -24,16 +25,13 @@ impl PostgresInventoryRepository {
         actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id().as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?;
+        crate::database::set_admin_context(
+            &mut transaction,
+            actor.audit_user_id(),
+            actor.store_id(),
+        )
+        .await
+        .map_err(database_error)?;
         Ok(transaction)
     }
 }
@@ -107,18 +105,6 @@ impl PostgresInventoryRepository {
         .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(Some(rows.into_iter().map(variant_inventory).collect()))
-    }
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    match &error {
-        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
-            ApplicationError::Unavailable {
-                service: "postgresql",
-                source: error.into(),
-            }
-        }
-        _ => ApplicationError::Unexpected(error.into()),
     }
 }
 

@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         AccessKeyListItem, AccessKeyMaterialGenerator, AccessKeyRepository, AccessTokenCodec,
         AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityRepository,
@@ -555,10 +556,6 @@ impl AccessTokenCodec for JwtAccessTokenCodec {
         let user_id = Uuid::parse_str(&claims.sub).map_err(|_| ApplicationError::Unauthorized)?;
         Ok(UserId::from_uuid(user_id))
     }
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 fn identity_write_error(error: sqlx::Error) -> ApplicationError {

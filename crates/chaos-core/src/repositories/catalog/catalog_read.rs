@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
         AdminActor, CatalogProductDetail, CatalogProductListItem, CatalogProductOption,
         CatalogProductOptionValue, CatalogProductVariant, CatalogSelectedOption,
@@ -68,11 +69,8 @@ impl PostgresCatalogReadRepository {
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
-        transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
 
         rows.into_iter()
             .map(
@@ -123,7 +121,7 @@ impl PostgresCatalogReadRepository {
         .bind(product_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         let Some((id, handle, title, description, status, metadata, created_at, updated_at)) =
             product
         else {
@@ -140,7 +138,7 @@ impl PostgresCatalogReadRepository {
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
             "SELECT id, option_id, value::text, position \
              FROM commerce.product_option_values \
@@ -151,7 +149,7 @@ impl PostgresCatalogReadRepository {
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         let variant_rows = sqlx::query_as::<
             _,
             (
@@ -176,7 +174,7 @@ impl PostgresCatalogReadRepository {
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         let selection_rows = sqlx::query_as::<_, (Uuid, Uuid, String, Uuid, String)>(
             "SELECT selection.variant_id, selection.option_id, option.name::text, \
                     selection.option_value_id, value.value::text \
@@ -198,11 +196,8 @@ impl PostgresCatalogReadRepository {
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
-        .map_err(unexpected_database_error)?;
-        transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
 
         let mut options = option_rows
             .into_iter()
@@ -288,21 +283,18 @@ impl PostgresCatalogReadRepository {
         &self,
         actor: AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *transaction)
             .await
-            .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id().as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
+        crate::database::set_admin_context(
+            &mut transaction,
+            actor.audit_user_id(),
+            actor.store_id(),
+        )
+        .await
+        .map_err(database_error)?;
         Ok(transaction)
     }
 }
@@ -315,7 +307,7 @@ async fn store_exists(
         .bind(store_id.as_uuid())
         .fetch_one(&mut **transaction)
         .await
-        .map_err(unexpected_database_error)
+        .map_err(database_error)
 }
 
 fn parse_product_status(value: &str) -> Result<ProductStatus, ApplicationError> {
@@ -333,10 +325,6 @@ fn position_from_database(value: i16) -> Result<u16, ApplicationError> {
 
 fn corrupt_database_value(message: &'static str) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database invariant violation: {message}"))
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
 }
 
 #[cfg(test)]

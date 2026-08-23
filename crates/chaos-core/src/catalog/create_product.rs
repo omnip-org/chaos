@@ -59,7 +59,7 @@ impl CreateProduct {
         &self,
         input: CreateProductInput,
     ) -> Result<CreateProductOutput, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
 
         let product = build_product(&input)?;
         let mut transaction = self.repository.begin(input.actor, input.store_id).await?;
@@ -138,13 +138,6 @@ fn selection_violation(reason: &'static str) -> ApplicationError {
             field: "selected_options",
             reason: reason.into(),
         }],
-    }
-}
-
-fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

@@ -4,9 +4,10 @@ use std::collections::HashMap;
 
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{
-        CartDetail, CartLineItem, MachineActor, OrderDetail, OrderLineItem,
-        OrderTransitionItem, ShopperActor, StorefrontMediaAsset,
+        CartDetail, CartLineItem, MachineActor, OrderDetail,
+        ShopperActor, StorefrontMediaAsset,
         StripeCheckoutDraft,
     },
 };
@@ -15,9 +16,7 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     pricing::{Money, PriceListId},
     sales::{
-        Cart, CartId, CartLine, CartStatus, OrderContact, OrderId, OrderNumber,
-        OrderPaymentStatus, OrderShippingStatus, OrderStatus, PostalAddress, ShopperId,
-        OrderIdentity,
+        Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId,
     },
     store::SalesChannelId,
 };
@@ -83,43 +82,6 @@ type CartMediaRow = (
     i16,
     String,
 );
-#[derive(sqlx::FromRow)]
-struct OrderHeaderRow {
-    id: Uuid,
-    shopper_id: Uuid,
-    price_list_id: Uuid,
-    currency: String,
-    status: String,
-    payment_status: String,
-    shipping_status: String,
-    subtotal_amount_minor: i64,
-    discount_amount_minor: i64,
-    tax_amount_minor: i64,
-    shipping_amount_minor: i64,
-    total_amount_minor: i64,
-    refunded_amount_minor: i64,
-    stripe_checkout_session_id: Option<String>,
-    stripe_payment_intent_id: Option<String>,
-    stripe_charge_id: Option<String>,
-    shipping_provider: Option<String>,
-    shipping_provider_reference: Option<String>,
-    shipping_tracking_number: Option<String>,
-    shipping_tracking_url: Option<String>,
-    created_at: OffsetDateTime,
-    updated_at: OffsetDateTime,
-}
-type OrderLineRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    bool,
-    bool,
-    i32,
-    i64,
-    i64,
-);
 #[derive(Clone)]
 pub struct PostgresStorefrontSalesRepository {
     pool: PgPool,
@@ -135,9 +97,7 @@ impl PostgresStorefrontSalesRepository {
         actor: &MachineActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(actor.store_id.as_uuid().to_string())
-            .execute(&mut *transaction)
+        crate::database::set_store_context(&mut transaction, actor.store_id)
             .await
             .map_err(database_error)?;
         Ok(transaction)
@@ -148,9 +108,7 @@ impl PostgresStorefrontSalesRepository {
         shopper: &ShopperActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         let mut transaction = self.begin(&shopper.machine).await?;
-        sqlx::query("SELECT set_config('app.shopper_id', $1, true)")
-            .bind(shopper.shopper_id.as_uuid().to_string())
-            .execute(&mut *transaction)
+        crate::database::set_shopper_context(&mut transaction, shopper.shopper_id)
             .await
             .map_err(database_error)?;
         sqlx::query(
@@ -284,17 +242,4 @@ fn insufficient_inventory(_variant_id: ProductVariantId) -> ApplicationError {
 
 fn corrupt_sales_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown sales state"))
-}
-
-fn database_error(error: sqlx::Error) -> ApplicationError {
-    eprintln!("DEBUG SQL ERROR: {error}");
-    match &error {
-        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
-            ApplicationError::Unavailable {
-                service: "postgresql",
-                source: error.into(),
-            }
-        }
-        _ => ApplicationError::Unexpected(error.into()),
-    }
 }

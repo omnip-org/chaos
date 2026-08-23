@@ -71,13 +71,15 @@ async fn context(
     store: Uuid,
     user: Option<Uuid>,
 ) -> Result<(), ApplicationError> {
-    sqlx::query("SELECT set_config('app.store_id',$1,true),set_config('app.user_id',$2,true)")
-        .bind(store.to_string())
-        .bind(user.map_or_else(String::new, |id| id.to_string()))
-        .execute(&mut **tx)
+    crate::database::set_store_context(tx, chaos_domain::store::StoreId::from_uuid(store))
         .await
         .map_err(db)?;
-    Ok(())
+    crate::database::set_optional_user_context(
+        tx,
+        user.map(chaos_domain::identity::UserId::from_uuid),
+    )
+    .await
+    .map_err(db)
 }
 
 /// Append one behavior event. Commerce repositories use the same primitive so

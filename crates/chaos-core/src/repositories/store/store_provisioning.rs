@@ -1,4 +1,4 @@
-use crate::ApplicationError;
+use crate::{ApplicationError, error::database_error};
 use chaos_domain::{
     identity::UserId,
     store::{SalesChannel, Store, StoreMembership},
@@ -25,23 +25,19 @@ impl PostgresStoreProvisioningRepository {
         &self,
         user_id: UserId,
     ) -> Result<PostgresStoreProvisioningTransaction, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(user_id.as_uuid().to_string())
-            .execute(&mut *transaction)
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::database::set_user_context(&mut transaction, user_id)
             .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
         Ok(PostgresStoreProvisioningTransaction { transaction })
     }
 }
 
 impl PostgresStoreProvisioningTransaction {
     pub(crate) async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError> {
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store.id().as_uuid().to_string())
-            .execute(&mut *self.transaction)
+        crate::database::set_store_context(&mut self.transaction, store.id())
             .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO commerce.stores \
              (id, code, name, region, currency, meta, status) \
@@ -72,7 +68,7 @@ impl PostgresStoreProvisioningTransaction {
         .bind(membership.role().as_str())
         .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(())
     }
 
@@ -93,15 +89,12 @@ impl PostgresStoreProvisioningTransaction {
         .bind(channel.is_default())
         .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(())
     }
 
     pub(crate) async fn commit(self) -> Result<(), ApplicationError> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)
+        self.transaction.commit().await.map_err(database_error)
     }
 }
 
@@ -114,11 +107,7 @@ fn map_store_write_error(error: sqlx::Error) -> ApplicationError {
             message: "the store code is already in use",
         };
     }
-    unexpected_database_error(error)
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
+    database_error(error)
 }
 
 #[cfg(test)]

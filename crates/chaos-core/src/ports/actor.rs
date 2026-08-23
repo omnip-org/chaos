@@ -1,4 +1,8 @@
-use chaos_domain::{identity::UserId, sales::ShopperId, store::StoreId};
+use chaos_domain::{
+    identity::UserId,
+    sales::ShopperId,
+    store::{StoreId, StoreRole},
+};
 use secrecy::SecretString;
 
 use crate::ApplicationError;
@@ -38,6 +42,20 @@ impl AdminActor {
             Self::Machine(actor) => actor.created_by_user_id,
         }
     }
+
+    pub fn require_human(&self) -> Result<(), ApplicationError> {
+        match self {
+            Self::Store(_) => Ok(()),
+            Self::Machine(_) => Err(ApplicationError::Forbidden),
+        }
+    }
+
+    pub fn require_owner(&self) -> Result<(), ApplicationError> {
+        match self {
+            Self::Store(actor) if actor.role() == StoreRole::Owner => Ok(()),
+            _ => Err(ApplicationError::Forbidden),
+        }
+    }
 }
 
 impl From<StoreActor> for AdminActor {
@@ -56,6 +74,14 @@ impl From<MachineActor> for AdminActor {
 pub struct ShopperActor {
     pub machine: MachineActor,
     pub shopper_id: ShopperId,
+}
+
+impl MachineActor {
+    pub fn require_sales_channel(&self) -> Result<(), ApplicationError> {
+        self.sales_channel_id
+            .map(|_| ())
+            .ok_or(ApplicationError::Forbidden)
+    }
 }
 
 pub trait ShopperCredentialCodec: Send + Sync {

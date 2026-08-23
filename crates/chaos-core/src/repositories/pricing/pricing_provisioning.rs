@@ -1,4 +1,4 @@
-use crate::{ApplicationError, ports::AdminActor};
+use crate::{ApplicationError, error::database_error, ports::AdminActor};
 use chaos_domain::{CurrencyCode, catalog::ProductVariantId, pricing::PriceList, store::StoreId};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -25,17 +25,10 @@ impl PostgresPricingProvisioningRepository {
         actor: AdminActor,
         store_id: StoreId,
     ) -> Result<PostgresPricingProvisioningTransaction, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *transaction)
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::database::set_admin_context(&mut transaction, actor.audit_user_id(), store_id)
             .await
-            .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store_id.as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
         Ok(PostgresPricingProvisioningTransaction {
             transaction,
             store_id,
@@ -51,7 +44,7 @@ impl PostgresPricingProvisioningTransaction {
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         if exists {
             Ok(())
         } else {
@@ -72,7 +65,7 @@ impl PostgresPricingProvisioningTransaction {
                 .bind(currency.as_str())
                 .fetch_one(&mut *self.transaction)
                 .await
-                .map_err(unexpected_database_error)?;
+                .map_err(database_error)?;
         if matches_store {
             Ok(())
         } else {
@@ -102,7 +95,7 @@ impl PostgresPricingProvisioningTransaction {
         .bind(ids)
         .fetch_all(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(rows.into_iter().map(ProductVariantId::from_uuid).collect())
     }
 
@@ -122,7 +115,7 @@ impl PostgresPricingProvisioningTransaction {
         .bind(ids)
         .fetch_all(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(rows.into_iter().map(ProductVariantId::from_uuid).collect())
     }
 
@@ -166,10 +159,7 @@ impl PostgresPricingProvisioningTransaction {
     }
 
     pub(crate) async fn commit(self) -> Result<(), ApplicationError> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)
+        self.transaction.commit().await.map_err(database_error)
     }
 }
 
@@ -182,11 +172,7 @@ fn map_pricing_write_error(error: sqlx::Error) -> ApplicationError {
             message: "the price list code is already in use for this Store",
         };
     }
-    unexpected_database_error(error)
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
+    database_error(error)
 }
 
 #[cfg(test)]

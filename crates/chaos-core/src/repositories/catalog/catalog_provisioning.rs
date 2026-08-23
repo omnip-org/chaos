@@ -1,4 +1,4 @@
-use crate::{ApplicationError, ports::AdminActor};
+use crate::{ApplicationError, error::database_error, ports::AdminActor};
 use chaos_domain::{
     catalog::{CatalogMetadata, Product},
     store::StoreId,
@@ -22,17 +22,10 @@ impl PostgresCatalogProvisioningRepository {
         actor: AdminActor,
         store_id: StoreId,
     ) -> Result<PostgresCatalogProvisioningTransaction, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *transaction)
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::database::set_admin_context(&mut transaction, actor.audit_user_id(), store_id)
             .await
-            .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store_id.as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
         Ok(PostgresCatalogProvisioningTransaction {
             transaction,
             store_id,
@@ -53,7 +46,7 @@ impl PostgresCatalogProvisioningTransaction {
         .bind(self.store_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         if exists {
             Ok(())
         } else {
@@ -156,16 +149,13 @@ impl PostgresCatalogProvisioningTransaction {
     }
 
     pub(crate) async fn commit(self) -> Result<(), ApplicationError> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)
+        self.transaction.commit().await.map_err(database_error)
     }
 }
 
 fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(database_error) = &error {
-        return match database_error.constraint() {
+    if let sqlx::Error::Database(database) = &error {
+        return match database.constraint() {
             Some("products_store_id_handle_key") => ApplicationError::Conflict {
                 code: "product_handle_taken",
                 message: "the product handle is already in use for this store",
@@ -174,14 +164,10 @@ fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
                 code: "variant_sku_taken",
                 message: "the variant SKU is already in use for this store",
             },
-            _ => unexpected_database_error(error),
+            _ => database_error(error),
         };
     }
-    unexpected_database_error(error)
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
+    database_error(error)
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
         SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
-        StoreId, StoreRole, StoreStatus,
+        StoreId, StoreStatus,
     },
 };
 
@@ -73,7 +73,7 @@ impl StoreAdministration {
     }
 
     pub async fn update_store(&self, input: UpdateStoreInput) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         let replacement = Store::create(
             StoreCode::parse(input.code)?,
             input.name,
@@ -90,7 +90,7 @@ impl StoreAdministration {
         &self,
         input: ChangeStoreStatusInput,
     ) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         self.repository
             .change_store_status(input.actor, input.store_id, StoreStatus::Active)
             .await
@@ -100,7 +100,7 @@ impl StoreAdministration {
         &self,
         input: ChangeStoreStatusInput,
     ) -> Result<StoreId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         self.repository
             .change_store_status(input.actor, input.store_id, StoreStatus::Inactive)
             .await
@@ -142,7 +142,7 @@ impl StoreAdministration {
         &self,
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         let channel = channel(input.store_id, input.code, input.name)?;
         self.repository
             .create_sales_channel(input.actor, &channel)
@@ -153,7 +153,7 @@ impl StoreAdministration {
         &self,
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         let replacement = channel(input.store_id, input.code, input.name)?;
         self.repository
             .update_sales_channel(input.actor, input.sales_channel_id, &replacement)
@@ -181,7 +181,7 @@ impl StoreAdministration {
         input: ChangeSalesChannelStatusInput,
         status: SalesChannelStatus,
     ) -> Result<SalesChannelId, ApplicationError> {
-        require_store_administrator(&input.actor)?;
+        input.actor.require_owner()?;
         self.repository
             .change_sales_channel_status(
                 input.actor,
@@ -203,16 +203,6 @@ fn channel(
         SalesChannelCode::parse(code)?,
         name,
     )?)
-}
-
-fn require_store_administrator(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(store_actor) => match store_actor.role() {
-            StoreRole::Owner => Ok(()),
-            StoreRole::Member => Err(ApplicationError::Forbidden),
-        },
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
-    }
 }
 
 fn store_not_found(store_id: StoreId) -> ApplicationError {

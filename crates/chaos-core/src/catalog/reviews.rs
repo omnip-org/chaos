@@ -62,7 +62,7 @@ impl ReviewAdministration {
     /// always starts `pending` and is invisible until an
     /// administrator approves it.
     pub async fn submit(&self, input: SubmitReviewInput) -> Result<ReviewId, ApplicationError> {
-        require_storefront_actor(&input.actor)?;
+        input.actor.require_sales_channel()?;
         let rating = ReviewRating::parse(input.rating)?;
         let author_email = input.author_email.map(Email::parse).transpose()?;
         let content = ReviewContent::new(
@@ -94,7 +94,7 @@ impl ReviewAdministration {
         after: Option<ReviewId>,
         limit: u16,
     ) -> Result<Page<ReviewSummary>, ApplicationError> {
-        require_moderator(&actor)?;
+        actor.require_human()?;
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository
@@ -112,7 +112,7 @@ impl ReviewAdministration {
     }
 
     pub async fn approve(&self, input: ApproveReviewInput) -> Result<ReviewId, ApplicationError> {
-        require_moderator(&input.actor)?;
+        input.actor.require_human()?;
         self.repository
             .set_status(
                 input.actor,
@@ -126,7 +126,7 @@ impl ReviewAdministration {
     }
 
     pub async fn reject(&self, input: RejectReviewInput) -> Result<ReviewId, ApplicationError> {
-        require_moderator(&input.actor)?;
+        input.actor.require_human()?;
         self.repository
             .set_status(
                 input.actor,
@@ -143,7 +143,7 @@ impl ReviewAdministration {
         &self,
         input: AddReviewReplyInput,
     ) -> Result<ReviewId, ApplicationError> {
-        require_moderator(&input.actor)?;
+        input.actor.require_human()?;
         let content = StaffReplyContent::new(input.content)?;
         self.repository
             .add_reply(
@@ -178,7 +178,7 @@ impl StorefrontReviews {
         after: Option<ReviewId>,
         limit: u16,
     ) -> Result<Page<ReviewSummary>, ApplicationError> {
-        require_storefront_actor(actor)?;
+        actor.require_sales_channel()?;
         let limit = limit.clamp(1, 100);
         let items = self
             .repository
@@ -200,20 +200,5 @@ impl StorefrontReviews {
         let mut items = items;
         items.truncate(cutoff);
         Ok(Page { items, has_more })
-    }
-}
-
-fn require_moderator(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
-    }
-}
-
-fn require_storefront_actor(actor: &MachineActor) -> Result<(), ApplicationError> {
-    if actor.sales_channel_id.is_some() {
-        Ok(())
-    } else {
-        Err(ApplicationError::Forbidden)
     }
 }

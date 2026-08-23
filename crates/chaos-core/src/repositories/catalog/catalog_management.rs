@@ -1,5 +1,6 @@
 use crate::{
     ApplicationError,
+    error::database_error,
     ports::{AdminActor, ProductLifecycleSnapshot},
 };
 use chaos_domain::{
@@ -35,17 +36,10 @@ impl PostgresCatalogManagementRepository {
         store_id: StoreId,
         product_id: ProductId,
     ) -> Result<PostgresCatalogManagementTransaction, ApplicationError> {
-        let mut transaction = self.pool.begin().await.map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.user_id', $1, true)")
-            .bind(actor.audit_user_id().as_uuid().to_string())
-            .execute(&mut *transaction)
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::database::set_admin_context(&mut transaction, actor.audit_user_id(), store_id)
             .await
-            .map_err(unexpected_database_error)?;
-        sqlx::query("SELECT set_config('app.store_id', $1, true)")
-            .bind(store_id.as_uuid().to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(unexpected_database_error)?;
+            .map_err(database_error)?;
         Ok(PostgresCatalogManagementTransaction {
             transaction,
             store_id,
@@ -72,7 +66,7 @@ impl PostgresCatalogManagementTransaction {
         .bind(self.product_id.as_uuid())
         .fetch_optional(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         row.map(|(status, variant_count)| {
             Ok(ProductLifecycleSnapshot {
                 status: ProductStatus::parse(&status).ok_or_else(|| {
@@ -151,7 +145,7 @@ impl PostgresCatalogManagementTransaction {
         .bind(status.as_str())
         .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         if result.rows_affected() == 1 {
             Ok(())
         } else {
@@ -176,7 +170,7 @@ impl PostgresCatalogManagementTransaction {
         .bind(sales_channel_id.as_uuid())
         .fetch_one(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)
+        .map_err(database_error)
     }
 
     pub(crate) async fn publish(
@@ -193,7 +187,7 @@ impl PostgresCatalogManagementTransaction {
         .bind(sales_channel_id.as_uuid())
         .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(())
     }
 
@@ -211,15 +205,12 @@ impl PostgresCatalogManagementTransaction {
         .bind(sales_channel_id.as_uuid())
         .execute(&mut *self.transaction)
         .await
-        .map_err(unexpected_database_error)?;
+        .map_err(database_error)?;
         Ok(())
     }
 
     pub(crate) async fn commit(self) -> Result<(), ApplicationError> {
-        self.transaction
-            .commit()
-            .await
-            .map_err(unexpected_database_error)
+        self.transaction.commit().await.map_err(database_error)
     }
 }
 
@@ -240,11 +231,7 @@ fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
             message: "the product variant SKU is already in use for this Store",
         };
     }
-    unexpected_database_error(error)
-}
-
-fn unexpected_database_error(error: sqlx::Error) -> ApplicationError {
-    ApplicationError::Unexpected(error.into())
+    database_error(error)
 }
 
 #[cfg(test)]

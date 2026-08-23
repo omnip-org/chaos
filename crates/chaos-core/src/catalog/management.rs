@@ -58,7 +58,7 @@ impl CatalogManagement {
     }
 
     pub async fn update(&self, input: UpdateProductInput) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
         let content = ProductContent::new(
             ProductHandle::parse(input.handle)?,
             input.title,
@@ -79,7 +79,7 @@ impl CatalogManagement {
         &self,
         input: UpdateProductVariantInput,
     ) -> Result<ProductVariantId, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
         let content = ProductVariantContent::new(
             input.title,
             input.sku.map(Sku::parse).transpose()?,
@@ -121,7 +121,7 @@ impl CatalogManagement {
         &self,
         input: ProductPublicationInput,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
         let mut transaction = self
             .repository
             .begin(input.actor, input.store_id, input.product_id)
@@ -149,7 +149,7 @@ impl CatalogManagement {
         &self,
         input: ProductPublicationInput,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
         let mut transaction = self
             .repository
             .begin(input.actor, input.store_id, input.product_id)
@@ -166,7 +166,7 @@ impl CatalogManagement {
         input: ChangeProductStatusInput,
         activate: bool,
     ) -> Result<ProductId, ApplicationError> {
-        require_catalog_writer(&input.actor)?;
+        input.actor.require_human()?;
         let mut transaction = self
             .repository
             .begin(input.actor, input.store_id, input.product_id)
@@ -184,13 +184,6 @@ impl CatalogManagement {
         }
         transaction.set_status(lifecycle.status()).await?;
         transaction.commit().await.map(|()| input.product_id)
-    }
-}
-
-fn require_catalog_writer(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 

@@ -58,7 +58,7 @@ impl OrderManagement {
         &self,
         input: ChangeOrderStatusInput,
     ) -> Result<OrderDetail, ApplicationError> {
-        require_operator(&input.actor)?;
+        input.actor.require_human()?;
         if !matches!(
             input.target_status,
             OrderStatus::Confirmed | OrderStatus::Cancelled
@@ -79,13 +79,6 @@ impl OrderManagement {
                 input.now,
             )
             .await
-    }
-}
-
-fn require_operator(actor: &AdminActor) -> Result<(), ApplicationError> {
-    match actor {
-        AdminActor::Store(_) => Ok(()),
-        AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
     }
 }
 
