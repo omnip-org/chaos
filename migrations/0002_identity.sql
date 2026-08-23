@@ -24,9 +24,11 @@ CREATE TABLE identity.credentials (
     created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    CONSTRAINT credentials_provider_user_id_key      UNIQUE (provider, user_id),
     CONSTRAINT credentials_pkey                      PRIMARY KEY (provider, subject),
     CONSTRAINT credentials_user_id_fkey              FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE,
-    CONSTRAINT credentials_provider_user_id_key      UNIQUE (provider, user_id),
+    CONSTRAINT credentials_meta_size_check           CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT credentials_meta_is_object_check      CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
     CONSTRAINT credentials_subject_length_check      CHECK (octet_length(subject) BETWEEN 1 AND 255),
     CONSTRAINT credentials_email_length_check        CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
 );
