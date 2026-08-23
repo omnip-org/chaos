@@ -1,4 +1,4 @@
-use chaos_application::catalog::{AddReviewReplyInput, ApproveReviewInput, RejectReviewInput};
+use chaos_core::catalog::{AddReviewReplyInput, ApproveReviewInput, RejectReviewInput};
 use chaos_domain::catalog::{ReviewId, ReviewStatus};
 use rmcp::{
     ErrorData,
@@ -261,7 +261,7 @@ impl ChaosMcp {
     }
 }
 
-fn review_summary(item: chaos_application::ports::ReviewSummary) -> serde_json::Value {
+fn review_summary(item: chaos_core::ports::ReviewSummary) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
         "product_id": item.product_id.as_uuid(),

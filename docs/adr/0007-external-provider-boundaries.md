@@ -27,7 +27,7 @@ domain state machines and semantic events
 infrastructure provider adapters
 ```
 
-Provider SDK types, error types, event names, credentials, and payloads remain in `chaos-infrastructure`. Domain and application packages use provider-neutral commands, results, identifiers, and errors. Provider selection is resolved from Store-owned configuration before a command is dispatched.
+Provider SDK types, error types, event names, credentials, and payloads remain in `chaos-core`. Domain and application packages use provider-neutral commands, results, identifiers, and errors. Provider selection is resolved from Store-owned configuration before a command is dispatched.
 
 ### Payments
 

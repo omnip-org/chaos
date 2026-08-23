@@ -4,7 +4,7 @@ mod shared;
 mod storefront;
 
 use axum::Router;
-use chaos_application::{
+use chaos_core::{
     analytics::{AnalyticsAdministration, AnalyticsCollection},
     catalog::{
         CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
@@ -24,20 +24,20 @@ use chaos_application::{
 };
 use std::sync::Arc;
 
-use chaos_infrastructure::{
+use chaos_core::{
     integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
         stripe::{StripeGateway, StripeWebhookVerifier},
     },
     repositories::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
-        PostgresAnalyticsEventStore, PostgresCatalogManagementUnitOfWork,
-        PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
+        PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
+        PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
         PostgresCollectionRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningUnitOfWork, PostgresPublishableKeyRepository,
+        PostgresPricingProvisioningRepository, PostgresPublishableKeyRepository,
         PostgresReviewRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStoreMembershipRepository, PostgresStoreProvisioningRepository,
         PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
         PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
@@ -56,7 +56,7 @@ use chaos_infrastructure::{
 use secrecy::ExposeSecret as _;
 use tower_http::trace::TraceLayer;
 
-use chaos_infrastructure::runtime::lifecycle::Lifecycle;
+use chaos_core::runtime::lifecycle::Lifecycle;
 
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
@@ -159,7 +159,7 @@ impl ApiState {
             Arc::new(SecureAccessKeyMaterialGenerator),
         );
         let access_key_authentication = AccessKeyAuthentication::new(access_key_repository);
-        let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
+        let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningRepository::new(
             infrastructure.runtime_pool(),
         )));
         let store_administration_repository = Arc::new(PostgresStoreAdministrationRepository::new(
@@ -171,13 +171,13 @@ impl ApiState {
             PostgresInventoryRepository::new(infrastructure.runtime_pool()),
         ));
         let create_product = CreateProduct::new(Arc::new(
-            PostgresCatalogProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
+            PostgresCatalogProvisioningRepository::new(infrastructure.runtime_pool()),
         ));
         let catalog_queries = CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(
             infrastructure.runtime_pool(),
         )));
         let catalog_management = CatalogManagement::new(Arc::new(
-            PostgresCatalogManagementUnitOfWork::new(infrastructure.runtime_pool()),
+            PostgresCatalogManagementRepository::new(infrastructure.runtime_pool()),
         ));
         let collection_repository = Arc::new(PostgresCollectionRepository::new(
             infrastructure.runtime_pool(),
@@ -211,15 +211,12 @@ impl ApiState {
             media_storage,
         );
         let create_price_list = CreatePriceList::new(Arc::new(
-            PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
+            PostgresPricingProvisioningRepository::new(infrastructure.runtime_pool()),
         ));
         let pricing_management_repository = Arc::new(PostgresPricingManagementRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let pricing_management = PricingManagement::new(
-            pricing_management_repository.clone(),
-            pricing_management_repository,
-        );
+        let pricing_management = PricingManagement::new(pricing_management_repository);
         let store_queries = StoreQueries::new(Arc::new(PostgresStoreReadRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -271,14 +268,14 @@ impl ApiState {
             payment_secrets.clone(),
         )?);
         let payment_provider =
-            stripe_gateway.clone() as Arc<dyn chaos_application::ports::StripePaymentGateway>;
+            stripe_gateway.clone() as Arc<dyn chaos_core::ports::StripePaymentGateway>;
         let payment_onboarding =
-            stripe_gateway.clone() as Arc<dyn chaos_application::ports::StripeAccountReadiness>;
+            stripe_gateway.clone() as Arc<dyn chaos_core::ports::StripeAccountReadiness>;
         let webhook_verifier = Arc::new(StripeWebhookVerifier::new(
             payment_repository.clone(),
             payment_secrets,
         ))
-            as Arc<dyn chaos_application::ports::StripeWebhookSignatureVerifier>;
+            as Arc<dyn chaos_core::ports::StripeWebhookSignatureVerifier>;
         let payment_service = PaymentService::new(
             payment_repository.clone(),
             webhook_verifier,
@@ -352,7 +349,7 @@ mod tests {
         body::{Body, to_bytes},
         http::{Method, Request, StatusCode},
     };
-    use chaos_infrastructure::runtime::{config::Settings, state::AppState};
+    use chaos_core::runtime::{config::Settings, state::AppState};
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -385,7 +382,7 @@ mod tests {
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
             easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
-            provider_secret_key: chaos_infrastructure::runtime::config::SecretKey::from_base64(
+            provider_secret_key: chaos_core::runtime::config::SecretKey::from_base64(
                 "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
             )
             .unwrap(),

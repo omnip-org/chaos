@@ -1,4 +1,4 @@
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::json;
 

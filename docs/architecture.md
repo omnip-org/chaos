@@ -33,27 +33,20 @@ Commerce administration is exposed through MCP rather than an Admin HTTP API. HT
 Chaos remains a modular monolith with inward dependencies:
 
 ```text
-chaos-api -------------> chaos-application -> chaos-domain
-    |  ^                         ^
-    |  +-> mcp tools              |
-    +----> chaos-infrastructure -+
-
-chaos-worker ----------> chaos-application -> chaos-domain
-       +----------------> chaos-infrastructure
+chaos-api -------------> chaos-core -> chaos-domain
+chaos-worker ----------> chaos-core -> chaos-domain
 ```
 
 - `chaos-domain` contains business types and rules without HTTP, SQL, cache, or serialization dependencies.
-- `chaos-application` contains use cases and ports.
-- `chaos-infrastructure` implements database, JWT, OIDC, cache, storage, and Provider adapters.
+- `chaos-core` contains the use cases, PostgreSQL repositories, runtime code, security, storage, and Provider adapters for each bounded context.
 - `chaos-api` owns HTTP, MCP, DTOs, extractors, routing, and API dependency composition.
 - `chaos-worker` owns Worker dependency composition and durable background consumers independently of API replicas.
 
-External adapters live under `chaos-infrastructure::integrations`,
-`repositories`, `security`, and `storage`. The API and
+External boundaries that genuinely need replacement live in `chaos-core::ports`; their concrete adapters live beside the use cases under `integrations`, `repositories`, `security`, and `storage`. The API and
 Worker compose separate runtime dependency sets; starting a Worker does not
 construct HTTP routes, MCP state, OIDC verification, or JWT services.
 
-Bounded contexts may depend on another context only through an explicit application port. HTTP and MCP handlers do not execute SQL. Infrastructure records do not become domain entities.
+Bounded contexts may depend on another context only through a small core-level interface when there is a real external or test seam. HTTP and MCP handlers do not execute SQL. Database records do not become domain entities.
 
 ## Identity
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use chaos_application::{
+use chaos_core::{
     analytics::AnalyticsDeliveryWorker,
     ports::{
         AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
@@ -11,7 +11,7 @@ use chaos_application::{
     shipping_events::ShippingEventWorkers,
     stripe::PaymentWorkers,
 };
-use chaos_infrastructure::{
+use chaos_core::{
     integrations::{analytics::meta::MetaConversionsDestination, stripe::StripeGateway},
     repositories::{
         PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresSearchIndexer,

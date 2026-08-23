@@ -6,8 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-chaos-application = { path = "../chaos-application" }
-chaos-infrastructure = { path = "../chaos-infrastructure" }
+chaos-core = { path = "../chaos-core" }
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true

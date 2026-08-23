@@ -660,9 +660,8 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "chaos-application",
+ "chaos-core",
  "chaos-domain",
- "chaos-infrastructure",
  "hmac 0.13.0",
  "http 1.5.0",
  "redis",
@@ -685,17 +684,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "chaos-application"
+name = "chaos-core"
 version = "0.0.13"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
+ "aws-sdk-s3",
+ "axum",
+ "base64 0.23.1",
  "chaos-domain",
+ "hmac 0.13.0",
+ "http 1.5.0",
+ "jsonwebtoken",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rand 0.10.2",
+ "redis",
+ "reqwest",
+ "rustls 0.23.43",
  "secrecy",
+ "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
  "thiserror",
  "time",
  "tokio",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -712,46 +731,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "chaos-infrastructure"
-version = "0.0.13"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "async-trait",
- "aws-sdk-s3",
- "axum",
- "base64 0.23.1",
- "chaos-application",
- "chaos-domain",
- "hmac 0.13.0",
- "jsonwebtoken",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "rand 0.10.2",
- "redis",
- "reqwest",
- "rustls 0.23.43",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "time",
- "tokio",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "chaos-worker"
 version = "0.0.13"
 dependencies = [
  "anyhow",
- "chaos-application",
- "chaos-infrastructure",
+ "chaos-core",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

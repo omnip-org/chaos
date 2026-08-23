@@ -2,42 +2,40 @@
 
 This is the shortest path from a product capability to every layer that may
 participate in it. Start with the capability row, then follow the flow from
-delivery to application service, port, infrastructure adapter, and worker.
+delivery to core use case, concrete repository or external seam, and worker.
 
 ## Layer order
 
 ```text
 HTTP or MCP delivery
         |
-Application use case
+Core use case <---- Domain rules and value objects
         |
-Application port  <---- Domain rules and value objects
-        |
-Infrastructure adapter
+Concrete repository or external seam
         |
 PostgreSQL, Redis, object storage, or external Provider
 ```
 
-`chaos-api` is the HTTP and MCP composition root. It constructs Application
-services with Infrastructure implementations and passes the relevant services
-into HTTP and MCP delivery. `chaos-worker` is the separate background-worker
-composition root; neither delivery boundary accesses Infrastructure directly.
+`chaos-api` is the HTTP and MCP composition root. It constructs core services
+with concrete PostgreSQL repositories and the few external adapters that need
+replacement, then passes the relevant services into HTTP and MCP delivery.
+`chaos-worker` is the separate background-worker composition root.
 
 ## Capability index
 
-| Capability | HTTP delivery | MCP tools | Application | Ports | Infrastructure | Worker / queue |
+| Capability | HTTP delivery | MCP tools | Core use case | External seams | Repositories / adapters | Worker / queue |
 | --- | --- | --- | --- | --- | --- | --- |
-| Identity and Access Keys | `crates/chaos-api/src/http/identity/v1/` | — | `crates/chaos-application/src/identity.rs` | `crates/chaos-application/src/ports/identity.rs` | `crates/chaos-infrastructure/src/security/identity.rs` | — |
-| Stores and memberships | — | `crates/chaos-api/src/mcp/tools/store/` | `crates/chaos-application/src/store/` | `crates/chaos-application/src/ports/store*.rs` | `crates/chaos-infrastructure/src/repositories/store/` | — |
-| Catalog and media | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-application/src/catalog/` | `crates/chaos-application/src/ports/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-infrastructure/src/repositories/catalog/`, `storage/media.rs` | Search indexing in `crates/chaos-worker/src/workers.rs` |
-| Price lists | — | `crates/chaos-api/src/mcp/tools/pricing/` | `crates/chaos-application/src/pricing/` | `crates/chaos-application/src/ports/pricing*.rs` | `crates/chaos-infrastructure/src/repositories/pricing/` | — |
-| Storefront catalog | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | — | `crates/chaos-application/src/storefront.rs` | `crates/chaos-application/src/ports/storefront_catalog.rs` | `crates/chaos-infrastructure/src/repositories/sales/storefront_catalog.rs` | Search indexer in `crates/chaos-infrastructure/src/repositories/search/` |
-| Shopper, cart, checkout, and order | `crates/chaos-api/src/http/storefront/v1/shopper_sessions.rs`, `carts.rs`, `orders.rs` | `crates/chaos-api/src/mcp/tools/operations/orders.rs` | `crates/chaos-application/src/sales/` | `crates/chaos-application/src/ports/sales.rs` | `crates/chaos-infrastructure/src/repositories/sales/` | Checkout expiry in `crates/chaos-worker/src/workers.rs` |
-| Inventory and reservations | — | `crates/chaos-api/src/mcp/tools/operations/inventory.rs` | `crates/chaos-application/src/inventory/` | `crates/chaos-application/src/ports/inventory.rs` | `crates/chaos-infrastructure/src/repositories/inventory/` | Reservation transitions are called by sales and payment workflows |
-| Payments and refunds | `crates/chaos-api/src/http/storefront/v1/carts.rs`, `webhooks.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-application/src/stripe.rs` | `crates/chaos-application/src/ports/stripe.rs` | `crates/chaos-infrastructure/src/repositories/stripe/`, `integrations/stripe.rs` | Payment command and readiness workers in `crates/chaos-worker/src/workers.rs` |
-| Fulfillment and returns | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-application/src/fulfillment/` | `crates/chaos-application/src/ports/fulfillment.rs` | `crates/chaos-infrastructure/src/repositories/fulfillment/`, `integrations/shipping/easypost.rs` | Fulfillment event worker in `crates/chaos-worker/src/workers.rs` |
-| Analytics and Meta delivery | `crates/chaos-api/src/http/storefront/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-application/src/analytics.rs` | `crates/chaos-application/src/ports/analytics.rs` | `crates/chaos-infrastructure/src/repositories/analytics/`, `integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
-| Provider secrets | — | `crates/chaos-api/src/mcp/tools/integrations/provider_secrets.rs` | `crates/chaos-application/src/store/provider_secrets.rs` | `crates/chaos-application/src/ports/provider_secret.rs` | `crates/chaos-infrastructure/src/security/provider_secrets.rs` and Store repositories | — |
+| Identity and Access Keys | `crates/chaos-api/src/http/identity/v1/` | — | `crates/chaos-core/src/identity.rs` | `crates/chaos-core/src/ports/identity.rs` | `crates/chaos-core/src/security/identity.rs` | — |
+| Stores and memberships | — | `crates/chaos-api/src/mcp/tools/store/` | `crates/chaos-core/src/store/` | `crates/chaos-core/src/ports/store*.rs` | `crates/chaos-core/src/repositories/store/` | — |
+| Catalog and media | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-core/src/catalog/` | `crates/chaos-core/src/ports/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-core/src/repositories/catalog/`, `storage/media.rs` | Search indexing in `crates/chaos-worker/src/workers.rs` |
+| Price lists | — | `crates/chaos-api/src/mcp/tools/pricing/` | `crates/chaos-core/src/pricing/` | `crates/chaos-core/src/ports/pricing*.rs` | `crates/chaos-core/src/repositories/pricing/` | — |
+| Storefront catalog | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | — | `crates/chaos-core/src/storefront.rs` | `crates/chaos-core/src/ports/storefront_catalog.rs` | `crates/chaos-core/src/repositories/sales/storefront_catalog.rs` | Search indexer in `crates/chaos-core/src/repositories/search/` |
+| Shopper, cart, checkout, and order | `crates/chaos-api/src/http/storefront/v1/shopper_sessions.rs`, `carts.rs`, `orders.rs` | `crates/chaos-api/src/mcp/tools/operations/orders.rs` | `crates/chaos-core/src/sales/` | `crates/chaos-core/src/ports/sales.rs` | `crates/chaos-core/src/repositories/sales/` | Checkout expiry in `crates/chaos-worker/src/workers.rs` |
+| Inventory and reservations | — | `crates/chaos-api/src/mcp/tools/operations/inventory.rs` | `crates/chaos-core/src/inventory/` | `crates/chaos-core/src/ports/inventory.rs` | `crates/chaos-core/src/repositories/inventory/` | Reservation transitions are called by sales and payment workflows |
+| Payments and refunds | `crates/chaos-api/src/http/storefront/v1/carts.rs`, `webhooks.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/stripe.rs` | `crates/chaos-core/src/ports/stripe.rs` | `crates/chaos-core/src/repositories/stripe/`, `integrations/stripe.rs` | Payment command and readiness workers in `crates/chaos-worker/src/workers.rs` |
+| Fulfillment and returns | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-core/src/fulfillment/` | `crates/chaos-core/src/ports/fulfillment.rs` | `crates/chaos-core/src/repositories/fulfillment/`, `integrations/shipping/easypost.rs` | Fulfillment event worker in `crates/chaos-worker/src/workers.rs` |
+| Analytics and Meta delivery | `crates/chaos-api/src/http/storefront/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics.rs` | `crates/chaos-core/src/ports/analytics.rs` | `crates/chaos-core/src/repositories/analytics/`, `integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
+| Provider secrets | — | `crates/chaos-api/src/mcp/tools/integrations/provider_secrets.rs` | `crates/chaos-core/src/store/provider_secrets.rs` | `crates/chaos-core/src/ports/provider_secret.rs` | `crates/chaos-core/src/security/provider_secrets.rs` and Store repositories | — |
 
 ## Important cross-capability flows
 
@@ -110,7 +108,7 @@ when adding a route, tool, service, or worker:
 | Application service construction | `crates/chaos-api/src/http/mod.rs::ApiState::new` |
 | Worker dependency construction | `crates/chaos-worker/src/runtime.rs` |
 | Worker polling and dispatch | `crates/chaos-worker/src/workers.rs` |
-| Repository public exports | `crates/chaos-infrastructure/src/repositories/mod.rs` |
+| Repository public exports | `crates/chaos-core/src/repositories/mod.rs` |
 | Database ownership | `migrations/0001_platform.sql` through `0009_commerce_payments.sql`; Store, catalog, sales, and payment objects use `commerce` |
 
 If a new file is added but one of these registration points is not updated,
@@ -121,8 +119,8 @@ the code may compile while the route, MCP tool, or Worker remains unreachable.
 For a capability change, search and verify in this order:
 
 1. Find the delivery entry point in the capability index.
-2. Find the Application service and its port.
-3. Find the Infrastructure implementation of that port.
+2. Find the core use case and its concrete repository or external seam.
+3. Find the repository or adapter implementation in the same core module.
 4. Follow any referenced queue, outbox, integration, or Worker.
 5. Check the registration point listed above.
 6. Check the relevant migration, SDK contract, MCP tool description, and tests.

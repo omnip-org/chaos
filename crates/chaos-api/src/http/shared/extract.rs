@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Path, Query, Request},
     http::{HeaderMap, header::AUTHORIZATION, request::Parts},
 };
-use chaos_application::{
+use chaos_core::{
     ApplicationError,
     ports::{MachineActor, ShopperActor},
     store::StoreActor,

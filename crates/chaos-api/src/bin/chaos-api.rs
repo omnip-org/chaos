@@ -1,8 +1,6 @@
 use anyhow::Context;
 use chaos_api::http::{self, ApiState};
-use chaos_infrastructure::runtime::{
-    config::Settings, lifecycle::Lifecycle, state::AppState, telemetry,
-};
+use chaos_core::runtime::{config::Settings, lifecycle::Lifecycle, state::AppState, telemetry};
 use tokio::net::TcpListener;
 
 #[tokio::main]

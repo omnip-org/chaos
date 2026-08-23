@@ -1,4 +1,4 @@
-use chaos_infrastructure::runtime::lifecycle::Lifecycle;
+use chaos_core::runtime::lifecycle::Lifecycle;
 use uuid::Uuid;
 
 use crate::runtime::WorkerRuntime;
@@ -73,8 +73,8 @@ impl PollBackoff {
 }
 
 async fn analytics_worker_loop(
-    delivery: std::sync::Arc<chaos_application::analytics::AnalyticsDeliveryWorker>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    delivery: std::sync::Arc<chaos_core::analytics::AnalyticsDeliveryWorker>,
+    clock: std::sync::Arc<dyn chaos_core::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
@@ -117,8 +117,8 @@ async fn drain_worker(
 }
 
 async fn search_worker_loop(
-    indexer: std::sync::Arc<chaos_infrastructure::repositories::PostgresSearchIndexer>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    indexer: std::sync::Arc<chaos_core::repositories::PostgresSearchIndexer>,
+    clock: std::sync::Arc<dyn chaos_core::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let mut backoff = PollBackoff::new();
@@ -135,8 +135,8 @@ async fn search_worker_loop(
 }
 
 async fn payment_worker_loop(
-    workers: std::sync::Arc<chaos_application::stripe::PaymentWorkers>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    workers: std::sync::Arc<chaos_core::stripe::PaymentWorkers>,
+    clock: std::sync::Arc<dyn chaos_core::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();
@@ -167,8 +167,8 @@ async fn payment_worker_loop(
 }
 
 async fn shipping_event_worker_loop(
-    workers: std::sync::Arc<chaos_application::shipping_events::ShippingEventWorkers>,
-    clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
+    workers: std::sync::Arc<chaos_core::shipping_events::ShippingEventWorkers>,
+    clock: std::sync::Arc<dyn chaos_core::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
     let worker_id = Uuid::now_v7();

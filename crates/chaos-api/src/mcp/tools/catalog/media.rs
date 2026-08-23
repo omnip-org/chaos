@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use chaos_application::{
+use chaos_core::{
     catalog::{CreateMediaAssetInput, MediaAssetActionInput},
     ports::MediaAssetItem,
 };

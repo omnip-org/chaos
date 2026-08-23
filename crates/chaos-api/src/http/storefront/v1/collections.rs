@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, routing::get};
-use chaos_application::ports::StorefrontCollectionItem;
+use chaos_core::ports::StorefrontCollectionItem;
 use chaos_domain::catalog::CollectionId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

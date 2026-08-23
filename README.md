@@ -69,7 +69,7 @@ The PostgreSQL RLS integration test is ignored by default and can be run explici
 
 ```bash
 TEST_DATABASE_URL=postgres://chaos:chaos@localhost:55432/chaos \
-  cargo test -p chaos-infrastructure rls_hides_other_stores_rows -- --ignored
+  cargo test -p chaos-core rls_hides_other_stores_rows -- --ignored
 ```
 
 Start with the [Repository Guide](docs/README.md) to locate a product area, then

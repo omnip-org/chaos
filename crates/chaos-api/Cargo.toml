@@ -8,9 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
-chaos-application = { path = "../chaos-application" }
+chaos-core = { path = "../chaos-core" }
 chaos-domain = { path = "../chaos-domain" }
-chaos-infrastructure = { path = "../chaos-infrastructure" }
 http.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true

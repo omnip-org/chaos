@@ -2,9 +2,8 @@
 resolver = "3"
 members = [
     "crates/chaos-api",
-    "crates/chaos-application",
+    "crates/chaos-core",
     "crates/chaos-domain",
-    "crates/chaos-infrastructure",
     "crates/chaos-worker",
 ]
 

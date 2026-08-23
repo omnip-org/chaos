@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, routing::get};
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use serde::Serialize;
 
 use crate::http::{ApiError, ApiResponse, ApiState};

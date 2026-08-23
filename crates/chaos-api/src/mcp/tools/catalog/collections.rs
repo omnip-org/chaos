@@ -1,4 +1,4 @@
-use chaos_application::catalog::{
+use chaos_core::catalog::{
     ChangeCollectionStatusInput, CollectionPublicationInput, CreateCollectionInput,
     ReplaceCollectionProductsInput, UpdateCollectionInput,
 };

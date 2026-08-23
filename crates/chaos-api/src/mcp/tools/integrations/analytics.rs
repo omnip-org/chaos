@@ -1,4 +1,4 @@
-use chaos_application::ports::{AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery};
+use chaos_core::ports::{AnalyticsDestination, AnalyticsEventPage, AnalyticsEventQuery};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -128,7 +128,7 @@ impl ChaosMcp {
             ));
         }
         let store_id = actor.store_id();
-        let configuration = chaos_application::ports::AnalyticsDestinationConfiguration {
+        let configuration = chaos_core::ports::AnalyticsDestinationConfiguration {
             provider: "meta".into(),
             external_account_reference: params.dataset_id,
             credential_secret_reference: params.credential_secret_reference,

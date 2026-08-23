@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use chaos_application::ports::{OrderDetail, OrderLineItem};
+use chaos_core::ports::{OrderDetail, OrderLineItem};
 use chaos_domain::sales::OrderId;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ fn address_data(value: &chaos_domain::sales::PostalAddress) -> PostalAddressData
     }
 }
 
-fn order_data(order: OrderDetail) -> Result<OrderData, chaos_application::ApplicationError> {
+fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationError> {
     Ok(OrderData {
         id: order.id.as_uuid(),
         order_number: order.order_number.as_str().into(),

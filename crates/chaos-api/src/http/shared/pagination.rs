@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use chaos_domain::FieldViolation;
 use uuid::Uuid;
 

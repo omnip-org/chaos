@@ -1,4 +1,4 @@
-use chaos_application::store::CreatePublishableKeyInput;
+use chaos_core::store::CreatePublishableKeyInput;
 use chaos_domain::store::PublishableKeyId;
 use rmcp::{
     ErrorData,
@@ -186,9 +186,7 @@ impl ChaosMcp {
     }
 }
 
-fn publishable_key_summary(
-    item: chaos_application::ports::PublishableKeyListItem,
-) -> serde_json::Value {
+fn publishable_key_summary(item: chaos_core::ports::PublishableKeyListItem) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
         "name": item.name,

@@ -1,4 +1,4 @@
-use chaos_application::{
+use chaos_core::{
     ports::{StoreListItem, StoreMembershipItem},
     store::CreateStoreInput,
 };

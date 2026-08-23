@@ -1,4 +1,4 @@
-use chaos_application::{ports::OrderListFilter, sales::ChangeOrderStatusInput};
+use chaos_core::{ports::OrderListFilter, sales::ChangeOrderStatusInput};
 use chaos_domain::sales::{OrderId, OrderStatus};
 use rmcp::{
     ErrorData,
@@ -224,7 +224,7 @@ impl ChaosMcp {
     }
 }
 
-fn order_summary(detail: chaos_application::ports::OrderDetail) -> serde_json::Value {
+fn order_summary(detail: chaos_core::ports::OrderDetail) -> serde_json::Value {
     json!({
         "id": detail.id.as_uuid(),
         "order_number": detail.order_number.as_str(),

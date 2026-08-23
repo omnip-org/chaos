@@ -1,7 +1,5 @@
 use anyhow::Context;
-use chaos_infrastructure::runtime::{
-    config::Settings, lifecycle::Lifecycle, state::AppState, telemetry,
-};
+use chaos_core::runtime::{config::Settings, lifecycle::Lifecycle, state::AppState, telemetry};
 
 use chaos_worker::{runtime::WorkerRuntime, workers};
 

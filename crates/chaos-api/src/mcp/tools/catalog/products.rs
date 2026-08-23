@@ -1,4 +1,4 @@
-use chaos_application::catalog::{
+use chaos_core::catalog::{
     ChangeProductStatusInput, CreateProductInput, CreateProductOptionInput,
     CreateProductSelectedOptionInput, CreateProductVariantInput, ProductPublicationInput,
     UpdateProductInput, UpdateProductVariantInput,

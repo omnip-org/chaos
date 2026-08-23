@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::post,
 };
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use serde::Serialize;
 use uuid::Uuid;
 

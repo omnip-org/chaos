@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use chaos_application::{
+use chaos_core::{
     catalog::SubmitReviewInput,
     ports::{
         ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
@@ -400,13 +400,13 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use chaos_application::ports::{GeneratedPublishableKey, PublishableKeyGenerator};
+    use chaos_core::ports::GeneratedPublishableKey;
+    use chaos_core::repositories::DefaultPublishableKeyGenerator;
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
         store::{PublishableKeyId, SalesChannelId, StoreId},
     };
-    use chaos_infrastructure::repositories::DefaultPublishableKeyGenerator;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use tower::ServiceExt;
 
@@ -541,7 +541,7 @@ mod tests {
         let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
-            chaos_infrastructure::repositories::PostgresSearchIndexer::new(
+            chaos_core::repositories::PostgresSearchIndexer::new(
                 state.infrastructure.runtime_pool(),
             )
             .run_batch(100, state.clock.now())

@@ -1,4 +1,4 @@
-use chaos_application::{
+use chaos_core::{
     ApplicationError,
     identity::AccessKeyAuthentication,
     ports::{AdminActor, McpPrincipal},
@@ -96,7 +96,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use chaos_application::{
+    use chaos_core::{
         identity::AccessKeyAuthentication,
         ports::{
             AccessKeyListItem, AccessKeyRepository, GeneratedAccessKeyMaterial, McpPrincipal,

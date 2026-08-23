@@ -4,7 +4,7 @@ mod operations;
 mod pricing;
 mod store;
 
-use chaos_application::ports::AdminActor;
+use chaos_core::ports::AdminActor;
 use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
 
 use crate::http::ApiState;
@@ -53,7 +53,7 @@ impl ChaosMcp {
     async fn store_actor(
         &self,
         parts: &http::request::Parts,
-    ) -> Result<chaos_application::store::StoreActor, CallToolResult> {
+    ) -> Result<chaos_core::store::StoreActor, CallToolResult> {
         match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,

@@ -4,7 +4,7 @@ use axum::{
     http::HeaderMap,
     routing::{get, post, put},
 };
-use chaos_application::{
+use chaos_core::{
     ApplicationError,
     ports::{CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset},
     sales::CreateStripeCheckoutInput,
@@ -303,7 +303,7 @@ fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use chaos_application::ports::PaymentClientAction;
+    use chaos_core::ports::PaymentClientAction;
     use secrecy::SecretString;
     use serde_json::json;
 

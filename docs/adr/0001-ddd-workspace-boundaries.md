@@ -5,12 +5,12 @@
 
 ## Decision
 
-Use five Cargo packages: `chaos-domain`, `chaos-application`, `chaos-infrastructure`, `chaos-api`, and `chaos-worker`. Dependencies may point only from outer layers toward inner layers. The domain package must not depend on Axum, SQLx, Redis, or Serde. MCP is an API delivery boundary under `chaos-api/src/mcp`; the independently deployed Worker has its own composition package. Both delivery packages reach domain behavior only through application use cases and ports.
+Use four Cargo packages: `chaos-domain`, `chaos-core`, `chaos-api`, and `chaos-worker`. `chaos-core` is the modular-monolith business core: each capability keeps its use cases, PostgreSQL persistence, runtime adapters, and only its real external seams together. Dependencies may point from the delivery packages toward the core and from the core toward the domain. The domain package must not depend on Axum, SQLx, Redis, or Serde. MCP is an API delivery boundary under `chaos-api/src/mcp`; the independently deployed Worker has its own composition package.
 
 ## Rationale
 
-Directory conventions cannot prevent handlers from querying a database directly or domain objects from depending on transport DTOs. Cargo packages enforce dependency direction at compile time while preserving a single modular-monolith deployment unit.
+Keeping application and infrastructure in separate Cargo packages made every repository operation cross a port and encouraged transaction abstractions with only one implementation. The core package keeps the compile-time boundary at HTTP/Worker versus business core, while bounded-context modules keep use cases and persistence close enough to make direct, concrete database calls readable.
 
 ## Consequences
 
-Types must be mapped explicitly across boundaries, which adds a small amount of code. In return, business rules remain independently testable, adapters are replaceable, and future bounded-context extraction has a lower migration cost.
+The domain remains independently testable and free of infrastructure dependencies. External systems such as Stripe, object storage, identity providers, clocks, and rate limiters still use small interfaces; ordinary PostgreSQL repositories do not gain an interface merely for layering.

@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, State},
     routing::post,
 };
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use chaos_domain::identity::IdentityProvider;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::http::{Method, StatusCode};
-    use chaos_application::{
+    use chaos_core::{
         ApplicationError,
         ports::{AccessTokenGrant, IdentityAuthentication},
     };

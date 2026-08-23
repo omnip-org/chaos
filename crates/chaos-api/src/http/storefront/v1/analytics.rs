@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, routing::post};
-use chaos_application::{
+use chaos_core::{
     ApplicationError,
     analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput},
     ports::AnalyticsEventInput,

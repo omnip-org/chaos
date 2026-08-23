@@ -1,4 +1,4 @@
-use chaos_application::pricing::{
+use chaos_core::pricing::{
     ChangePriceListStatusInput, CreatePriceInput, CreatePriceListInput, UpdatePriceListInput,
 };
 use chaos_domain::{catalog::ProductVariantId, pricing::PriceListId};

@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use chaos_application::ApplicationError;
+use chaos_core::ApplicationError;
 use serde::Serialize;
 
 #[derive(Debug)]

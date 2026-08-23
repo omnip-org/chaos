@@ -1,4 +1,4 @@
-use chaos_application::inventory::AdjustInventoryInput;
+use chaos_core::inventory::AdjustInventoryInput;
 use chaos_domain::catalog::ProductVariantId;
 use rmcp::{
     ErrorData,

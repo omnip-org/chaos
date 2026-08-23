@@ -31,8 +31,7 @@ preserve the dependency direction in
 | Crate | Look here for | Must not own |
 | --- | --- | --- |
 | `chaos-domain` | Business types, validation, and state transitions | HTTP, SQL, serialization, Provider SDKs |
-| `chaos-application` | Use cases and ports | Axum handlers and SQL queries |
-| `chaos-infrastructure` | PostgreSQL repositories and external Provider adapters | Transport DTOs and new business rules |
+| `chaos-core` | Use cases, PostgreSQL repositories, runtime, security, storage, and external Provider adapters | Axum handlers, transport DTOs, and API routing |
 | `chaos-api` | HTTP routes, MCP tools, DTOs, runtime composition, and API delivery | Direct business persistence |
 | `chaos-worker` | Worker composition and durable polling loops | HTTP routes and MCP transport |
 
@@ -48,8 +47,8 @@ preserve the dependency direction in
 | Shopper, carts, checkout, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
 | Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
-| Payment webhooks and payment queues | application ports | Stripe adapters and Worker loops | `commerce` |
-| Generic outbox and event routing | application ports | Worker loops and integration repositories | `integration` |
+| Payment webhooks and payment queues | core payment workflows | Stripe adapters and Worker loops | `commerce` |
+| Generic outbox and event routing | core event workflows | Worker loops and integration repositories | `integration` |
 | Commerce events and external provider delivery | `analytics` | Storefront collection, MCP settings, and Worker delivery | `integration` |
 
 Rust business modules remain useful navigation boundaries; they do not require
