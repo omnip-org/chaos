@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "description": "Stripe callbacks authenticated before Store resolution and durably deduplicated. The stripe_account_id is the Chaos Store's configured account UUID, not a Stripe acct_ identifier."
   },
-  "servers": [{ "url": "/webhooks/v1" }],
+  "servers": [{ "url": "/store/v1" }],
   "paths": {
     "/stripe/{stripe_account_id}": {
       "post": {

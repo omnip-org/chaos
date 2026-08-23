@@ -6,7 +6,7 @@
 ## Context
 
 Chaos runs HTTP API replicas separately from an independently scalable Worker.
-Payment commands, fulfillment projections, search refreshes, Provider webhooks,
+Payment commands, fulfillment projections, search refreshes, Stripe webhooks,
 and external provider delivery all need crash recovery and safe
 concurrent consumption. Maintaining a separate status, attempt counter,
 availability timestamp, and lease implementation for each flow duplicated the
@@ -26,13 +26,15 @@ Use logged PGMQ queues for event delivery:
 - `chaos_webhooks`;
 - `chaos_analytics_deliveries`.
 
-The authoritative `integration` row keeps the business payload, stable event or
-delivery identifier, processing outcome, and bounded error. A `BEFORE INSERT`
-trigger sends a versioned message containing only that row identifier and stores
-the returned PGMQ message ID. Claim routines join the message back to the
-authoritative row. Finish routines update the row and delete the message in one
-database transaction, or change its visibility timeout for a bounded exponential
-retry. PGMQ `read_ct` is the attempt count.
+The authoritative delivery row remains in its owning schema: generic event
+delivery uses `integration.event_outbox`, while payment commands and Stripe
+webhooks use `commerce`. Each row keeps the business payload, stable
+event or delivery identifier, processing outcome, and bounded error. A `BEFORE
+INSERT` trigger sends a versioned message containing only that row identifier
+and stores the returned PGMQ message ID. Claim routines join the message back
+to the authoritative row. Finish routines update the row and delete the
+message in one database transaction, or change its visibility timeout for a
+bounded exponential retry. PGMQ `read_ct` is the attempt count.
 
 Claims also delete envelopes whose authoritative row no longer exists or is
 already terminal. This handles Store deletion and administrative cleanup without
@@ -41,7 +43,7 @@ authoritative integration rows; no second message archive is maintained.
 
 Application ports describe domain-specific jobs; PGMQ remains an infrastructure
 detail. The runtime role has no direct PGMQ privileges and calls only reviewed
-`integration` routines. API replicas do not consume queues.
+routines in the owning schema. API replicas do not consume queues.
 
 Business outbox routing is stored in `integration.event_consumers`: each event
 type points directly to its PGMQ queue. The database routine only resolves that
@@ -69,7 +71,7 @@ invariant.
 
 - Multiple Worker replicas can share queues without process-local coordination.
 - Queue visibility, attempt counting, and retry scheduling have one implementation.
-- Integration rows remain queryable business evidence rather than becoming an
+- Delivery rows remain queryable business evidence rather than becoming an
   opaque message log.
 - Database recreation must recreate the named queues; PGMQ extension upgrades
   require their own migration review.

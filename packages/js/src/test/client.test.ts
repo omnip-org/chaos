@@ -245,7 +245,7 @@ test("catalog.listProducts forwards query parameters", async () => {
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
 });
 
-test("payments use the shopper session and expose the direct Stripe Checkout action", async () => {
+test("payments create an embedded Checkout session in one request", async () => {
   const requests: Array<{ url: string; method: string; headers: Headers; body: string | undefined }> = [];
   let sequence = 0;
   const client = createStorefrontClient({
@@ -263,45 +263,39 @@ test("payments use the shopper session and expose the direct Stripe Checkout act
       if (url.endsWith("/shopper-sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
-      if (url.endsWith("/payment-attempts")) {
+      if (url.endsWith("/embedded-checkout")) {
         return jsonResponse(201, {
           data: {
-            id: "attempt-1",
             order_id: "order-1",
-            amount_minor: 1299,
-            currency: "USD",
-            status: "pending",
-            created_at: "2026-08-21T00:00:00Z",
-            updated_at: "2026-08-21T00:00:00Z",
+            payment_attempt_id: "attempt-1",
+            client_action: {
+              type: "mount_embedded_checkout",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
           },
         });
       }
-      return jsonResponse(200, {
-        data: {
-          type: "mount_embedded_checkout",
-          public_key: "pk_test_stripe",
-          client_token: "cs_test_secret",
-        },
-      });
+      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
     }) as unknown as typeof fetch,
   });
 
-  const attempt = await client.payments.createAttempt("order-1", {
+  const session = await client.payments.createEmbeddedCheckout("cart-1", {
+    email: "shopper@example.com",
     return_url: "https://shop.example.com/checkout/success",
   });
-  const action = await client.payments.getClientAction(attempt.data.id);
 
   assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
   assert.equal(requests[1]?.headers.get("idempotency-key"), "id-1");
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
+    email: "shopper@example.com",
     return_url: "https://shop.example.com/checkout/success",
   });
-  assert.deepEqual(action.data, {
+  assert.deepEqual(session.data.client_action, {
     type: "mount_embedded_checkout",
     public_key: "pk_test_stripe",
     client_token: "cs_test_secret",
   });
-  assert.equal(requests[2]?.headers.get("x-chaos-shopper-token"), "shopper-token");
 });
 
 test("browser SDK observations record only after successful responses", async () => {

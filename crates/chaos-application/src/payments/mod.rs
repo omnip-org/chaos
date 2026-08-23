@@ -13,11 +13,11 @@ const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, MachineActor,
-        PaymentAttemptDetail, PaymentClientAction, QueueJob, RefundDetail, ShopperActor,
-        StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
-        StripeAccountRepository, StripePaymentGateway, StripePaymentRepository,
-        StripeReadinessQueue, StripeWebhookSignatureVerifier,
+        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
+        PaymentClientAction, QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration,
+        StripeAccountDetail, StripeAccountPage, StripeAccountReadiness, StripeAccountRepository,
+        StripePaymentGateway, StripePaymentRepository, StripeReadinessQueue,
+        StripeWebhookSignatureVerifier,
     },
     store::StoreActor,
 };
@@ -26,7 +26,13 @@ pub struct CreatePaymentAttemptInput {
     pub actor: ShopperActor,
     pub order_id: OrderId,
     pub return_url: Option<String>,
+    pub now: OffsetDateTime,
     pub idempotency: IdempotencyRequest,
+}
+
+pub struct EmbeddedCheckoutResult {
+    pub attempt: PaymentAttemptDetail,
+    pub client_action: PaymentClientAction,
 }
 
 pub struct CreateRefundInput {
@@ -220,58 +226,51 @@ impl PaymentService {
         }
     }
 
-    pub async fn create_attempt(
+    pub async fn create_embedded_checkout(
         &self,
         input: CreatePaymentAttemptInput,
-    ) -> Result<PaymentAttemptDetail, ApplicationError> {
+    ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
         require_checkout_key(&input.actor.machine)?;
-        self.repository
-            .create_attempt(
-                &input.actor,
-                input.order_id,
-                input.return_url.as_deref(),
-                &input.idempotency,
-            )
-            .await
-    }
-
-    pub async fn get_attempt(
-        &self,
-        actor: &ShopperActor,
-        attempt_id: PaymentAttemptId,
-    ) -> Result<PaymentAttemptDetail, ApplicationError> {
-        require_checkout_key(&actor.machine)?;
-        self.repository
-            .get_attempt(actor, attempt_id)
-            .await?
-            .ok_or_else(|| ApplicationError::NotFound {
-                resource: "payment_attempt",
-                id: attempt_id.as_uuid().to_string(),
-            })
-    }
-
-    pub async fn get_client_action(
-        &self,
-        actor: &ShopperActor,
-        attempt_id: PaymentAttemptId,
-    ) -> Result<PaymentClientAction, ApplicationError> {
-        require_checkout_key(&actor.machine)?;
-        self.repository
-            .get_attempt(actor, attempt_id)
-            .await?
-            .ok_or_else(|| ApplicationError::NotFound {
-                resource: "payment_attempt",
-                id: attempt_id.as_uuid().to_string(),
-            })?;
+        let return_url =
+            input
+                .return_url
+                .as_deref()
+                .ok_or_else(|| ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "return_url",
+                        reason: "return_url is required for Stripe Embedded Checkout".into(),
+                    }],
+                })?;
+        let attempt = self
+            .repository
+            .create_attempt(&input.actor, input.order_id, &input.idempotency)
+            .await?;
         let command = self
             .repository
-            .client_action_command(actor, attempt_id)
-            .await?
-            .ok_or(ApplicationError::Conflict {
-                code: "payment_client_action_not_ready",
-                message: "the Payment Attempt client action is not available",
+            .prepare_checkout_command(&input.actor, attempt.id, return_url, &input.idempotency.key)
+            .await?;
+        let result = self.stripe_gateway.execute(command).await?;
+        self.repository
+            .record_checkout_result(&input.actor, attempt.id, &result, input.now)
+            .await?;
+        let client_action = result
+            .client_action
+            .ok_or_else(|| ApplicationError::Unavailable {
+                service: "stripe_checkout_client_secret",
+                source: anyhow::anyhow!("Stripe Checkout Session client secret is missing"),
             })?;
-        self.stripe_gateway.client_action(command).await
+        let attempt = self
+            .repository
+            .get_attempt(&input.actor, attempt.id)
+            .await?
+            .ok_or_else(|| ApplicationError::NotFound {
+                resource: "payment_attempt",
+                id: attempt.id.as_uuid().to_string(),
+            })?;
+        Ok(EmbeddedCheckoutResult {
+            attempt,
+            client_action,
+        })
     }
 
     pub async fn create_refund(
@@ -341,15 +340,6 @@ impl PaymentWorkers {
                 .execute_stripe_job(job, now)
                 .await
                 .map_err(|error| error.to_string());
-            if job.event_type == "payment.create_requested"
-                && result.is_err()
-                && job.attempts >= MAX_INTEGRATION_ATTEMPTS
-            {
-                let failure = result.as_ref().expect_err("result is an error");
-                self.repository
-                    .fail_stripe_command(job, failure, now)
-                    .await?;
-            }
             self.queue
                 .finish_outbox(job.id, job.attempts, result, now)
                 .await?;

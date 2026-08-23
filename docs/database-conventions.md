@@ -4,9 +4,9 @@
 
 PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-`commerce` owns Stores, Store memberships, Sales Channels, Store locales, and public Storefront Keys. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
+`commerce` owns Stores, Store memberships, Sales Channels, Store locales, public Storefront Keys, catalogs, pricing, inventory, sales, Stripe payment account configuration, payment readiness, payment commands, and the verified Stripe webhook inbox. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
 
-Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned transactional data and rebuildable Storefront read models. `integration` contains idempotency, inbox/outbox delivery, external provider delivery, and analytical processing state.
+Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned catalog, inventory, sales, payment, and rebuildable Storefront read models. `integration` contains generic idempotency, outbox/event routing, and analytical processing state.
 
 Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
 
@@ -77,9 +77,11 @@ The bootstrap uses one file for identity and multiple capability files for
 commerce: `0002_identity.sql`, `0003_commerce.sql`,
 `0004_commerce_catalog.sql`, `0005_commerce_pricing.sql`, and
 `0006_commerce_sales.sql`. Integration follows them as
-`0007_integration.sql` and `0008_integration_analytics.sql`.
-All commerce capability files use the existing `commerce` schema. Within each
-file, define objects in dependency order: types, tables, indexes, routines,
+`0007_integration.sql` and `0008_integration_analytics.sql`, with the Stripe
+payment capability in `0009_commerce_payments.sql`.
+Catalog, pricing, inventory, and sales capability files use the existing
+`commerce` schema. Within
+each file, define objects in dependency order: types, tables, indexes, routines,
 triggers, row-level security, policies, and grants.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.

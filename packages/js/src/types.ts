@@ -198,11 +198,6 @@ export interface Order {
   updated_at: string;
 }
 
-export interface CreatePaymentAttemptRequest {
-  /** Stripe returns the shopper here after Embedded Checkout completes. */
-  return_url: string;
-}
-
 export interface CreateEmbeddedCheckoutRequest {
   email: string;
   /** Stripe appends the order ID to this URL before redirecting the shopper. */
@@ -211,28 +206,16 @@ export interface CreateEmbeddedCheckoutRequest {
 
 export interface EmbeddedCheckoutSession {
   order_id: UUID;
-}
-
-export interface PaymentAttempt {
-  id: UUID;
-  order_id: UUID;
-  amount_minor: number;
-  currency: CurrencyCode;
-  status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
-  stripe_checkout_session_id?: string;
-  failure_code?: string;
-  created_at: string;
-  updated_at: string;
+  payment_attempt_id: UUID;
+  client_action: PaymentClientAction;
 }
 
 export interface PaymentClientAction {
   /**
-   * "confirm_payment": client_token is a PaymentIntent client secret for
-   * Stripe.js/Elements confirmation.
-   * "mount_embedded_checkout": client_token is an Embedded Checkout Session
-   * client secret. Pass it to Stripe's EmbeddedCheckoutProvider.
+   * client_token is an Embedded Checkout Session client secret. Pass it to
+   * Stripe's EmbeddedCheckoutProvider.
    */
-  type: "confirm_payment" | "mount_embedded_checkout";
+  type: "mount_embedded_checkout";
   public_key: string;
   client_token: string;
 }

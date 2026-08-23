@@ -28,7 +28,7 @@ impl IntegrationQueue for PostgresIntegrationQueue {
     async fn claim_outbox(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
             "SELECT id, store_id, event_type, payload, attempts \
-             FROM integration.claim_event_outbox($1)",
+             FROM commerce.claim_event_outbox($1)",
         )
         .bind(i32::from(limit.clamp(1, 100)))
         .fetch_all(&self.pool)
@@ -42,7 +42,7 @@ impl IntegrationQueue for PostgresIntegrationQueue {
     async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, Uuid, String, String, Value, i32)>(
             "SELECT id, store_id, provider, event_type, payload, attempts \
-             FROM integration.claim_webhook_events($1)",
+             FROM commerce.claim_webhook_events($1)",
         )
         .bind(i32::from(limit.clamp(1, 100)))
         .fetch_all(&self.pool)
@@ -83,7 +83,7 @@ async fn finish_webhook_job(
 ) -> Result<(), ApplicationError> {
     let (succeeded, failure) = finish_result(result);
     let finished: Option<bool> =
-        sqlx::query_scalar("SELECT integration.finish_webhook_event($1, $2, $3, $4, $5, $6)")
+        sqlx::query_scalar("SELECT commerce.finish_webhook_event($1, $2, $3, $4, $5, $6)")
             .bind(job_id)
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)

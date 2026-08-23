@@ -12,7 +12,7 @@ CREATE TABLE commerce.products (
     title                TEXT                       NOT NULL,
     description          TEXT                       NOT NULL DEFAULT '',
     status               commerce.product_status    NOT NULL DEFAULT 'draft',
-    metadata             JSONB,
+    meta                 JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -22,7 +22,8 @@ CREATE TABLE commerce.products (
     CONSTRAINT products_handle_format_check        CHECK (handle::text ~ '^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$'),
     CONSTRAINT products_title_length_check         CHECK (length(trim(title)) BETWEEN 1 AND 255),
     CONSTRAINT products_description_length_check   CHECK (length(description) <= 100000),
-    CONSTRAINT products_metadata_size_check        CHECK (metadata IS NULL OR octet_length(metadata::text) <= 32768)
+    CONSTRAINT products_meta_size_check            CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT products_meta_is_object_check       CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.product_options (
@@ -70,7 +71,7 @@ CREATE TABLE commerce.product_variants (
     requires_shipping    BOOLEAN                    NOT NULL DEFAULT true,
     track_inventory      BOOLEAN                    NOT NULL DEFAULT true,
     on_hand_quantity     BIGINT                     NOT NULL DEFAULT 0,
-    metadata             JSONB,
+    meta                 JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -81,7 +82,8 @@ CREATE TABLE commerce.product_variants (
     CONSTRAINT product_variants_sku_length_check              CHECK (sku IS NULL OR length(trim(sku::text)) BETWEEN 1 AND 64),
     CONSTRAINT product_variants_sku_characters_check          CHECK (sku IS NULL OR sku::text !~ '[[:cntrl:]]'),
     CONSTRAINT product_variants_on_hand_nonnegative_check     CHECK (on_hand_quantity >= 0),
-    CONSTRAINT product_variants_metadata_size_check           CHECK (metadata IS NULL OR octet_length(metadata::text) <= 32768)
+    CONSTRAINT product_variants_meta_size_check               CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT product_variants_meta_is_object_check          CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.variant_selected_options (
@@ -116,7 +118,7 @@ CREATE TABLE commerce.collections (
     title                TEXT                       NOT NULL,
     description          TEXT                       NOT NULL DEFAULT '',
     status               commerce.collection_status NOT NULL DEFAULT 'draft',
-    metadata             JSONB,
+    meta                 JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -126,7 +128,8 @@ CREATE TABLE commerce.collections (
     CONSTRAINT collections_handle_format_check        CHECK (handle::text ~ '^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$'),
     CONSTRAINT collections_title_length_check         CHECK (length(trim(title)) BETWEEN 1 AND 255),
     CONSTRAINT collections_description_length_check   CHECK (length(description) <= 100000),
-    CONSTRAINT collections_metadata_size_check        CHECK (metadata IS NULL OR octet_length(metadata::text) <= 32768)
+    CONSTRAINT collections_meta_size_check            CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT collections_meta_is_object_check       CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.collection_products (

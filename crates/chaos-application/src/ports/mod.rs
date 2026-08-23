@@ -61,10 +61,10 @@ pub use payments::{
     PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
     PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption, RefundDetail,
     StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
-    StripeAccountRepository, StripeClientActionCommand, StripeCommand, StripeCommandResult,
-    StripePaymentGateway, StripePaymentRepository, StripeReadiness, StripeReadinessJob,
-    StripeReadinessQueue, StripeReadinessStatus, StripeWebhookConfiguration,
-    StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
+    StripeAccountRepository, StripeCommand, StripeCommandResult, StripePaymentGateway,
+    StripePaymentRepository, StripeReadiness, StripeReadinessJob, StripeReadinessQueue,
+    StripeReadinessStatus, StripeWebhookConfiguration, StripeWebhookConfigurationRepository,
+    StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };
 pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
 pub use pricing_management::{

@@ -2,10 +2,8 @@ CREATE SCHEMA integration;
 
 CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 
-SELECT pgmq.create('chaos_payment_commands');
 SELECT pgmq.create('chaos_shipping_events');
 SELECT pgmq.create('chaos_search_events');
-SELECT pgmq.create('chaos_webhooks');
 
 CREATE TABLE integration.idempotency_keys (
     id                   UUID                             NOT NULL PRIMARY KEY,
@@ -46,27 +44,6 @@ SELECT cron.schedule(
     $$
 );
 
-CREATE TABLE integration.provider_webhooks (
-    id                   UUID        NOT NULL PRIMARY KEY,
-    store_id             UUID        NOT NULL,
-    provider             TEXT        NOT NULL,
-    provider_account_id  UUID        NOT NULL,
-    provider_event_id    TEXT        NOT NULL,
-    event_type           TEXT        NOT NULL,
-    payload              JSONB       NOT NULL,
-    pgmq_message_id      BIGINT      NOT NULL UNIQUE,
-    processed_at         TIMESTAMPTZ,
-    failed_at            TIMESTAMPTZ,
-    last_error           TEXT,
-    verified_at          TIMESTAMPTZ NOT NULL,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT provider_webhooks_provider_account_id_provider_event_id_key    UNIQUE (provider_account_id, provider_event_id),
-    CONSTRAINT provider_webhooks_store_id_fkey                                FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
-    CONSTRAINT provider_webhooks_store_id_provider_account_fkey               FOREIGN KEY (store_id, provider_account_id) REFERENCES commerce.payment_provider_accounts(store_id, id),
-    CONSTRAINT provider_webhooks_payload_object_check                         CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT provider_webhooks_completion_check                             CHECK (processed_at IS NULL OR failed_at IS NULL)
-);
-
 CREATE TABLE integration.event_consumers (
     event_type  TEXT PRIMARY KEY,
     queue_name  TEXT NOT NULL,
@@ -98,7 +75,6 @@ CREATE TABLE integration.event_outbox (
     CONSTRAINT event_outbox_completion_check                  CHECK (processed_at IS NULL OR failed_at IS NULL)
 );
 
-CREATE INDEX provider_webhooks_claim_idx ON integration.provider_webhooks (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 CREATE INDEX event_outbox_pending_idx ON integration.event_outbox (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 
 CREATE FUNCTION integration.event_queue_name(event_type TEXT)
@@ -133,23 +109,6 @@ BEGIN
       FROM pgmq.send(
           queue_name,
           jsonb_build_object('version', 1, 'event_id', NEW.id)
-      ) AS message_id;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION integration.enqueue_webhook_event()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-BEGIN
-    SELECT message_id
-      INTO NEW.pgmq_message_id
-      FROM pgmq.send(
-          'chaos_webhooks',
-          jsonb_build_object('version', 1, 'webhook_event_id', NEW.id)
       ) AS message_id;
     RETURN NEW;
 END;
@@ -224,27 +183,6 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.claim_event_outbox(
-    batch_size INTEGER
-)
-RETURNS TABLE (
-    id UUID,
-    store_id UUID,
-    event_type TEXT,
-    payload JSONB,
-    attempts INTEGER
-)
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
-      FROM integration.claim_routed_event_outbox(
-               'chaos_payment_commands', batch_size
-           ) AS event;
-$$;
-
 CREATE FUNCTION integration.claim_shipping_events(
     batch_size INTEGER
 )
@@ -264,61 +202,6 @@ AS $$
       FROM integration.claim_routed_event_outbox(
                'chaos_shipping_events', batch_size
            ) AS event;
-$$;
-
-CREATE FUNCTION integration.claim_webhook_events(
-    batch_size INTEGER
-)
-RETURNS TABLE (
-    id UUID,
-    store_id UUID,
-    provider TEXT,
-    event_type TEXT,
-    payload JSONB,
-    attempts INTEGER
-)
-LANGUAGE plpgsql
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    message RECORD;
-    target RECORD;
-BEGIN
-    FOR message IN
-        SELECT queued.msg_id, queued.read_ct
-          FROM pgmq.read(
-                   'chaos_webhooks',
-                   120,
-                   greatest(least(batch_size, 100), 1),
-                   '{}'::jsonb
-               ) AS queued
-    LOOP
-        SELECT event.id,
-               event.store_id,
-               event.provider,
-               event.event_type,
-               event.payload
-          INTO target
-          FROM integration.provider_webhooks AS event
-         WHERE event.pgmq_message_id = message.msg_id
-           AND event.processed_at IS NULL
-           AND event.failed_at IS NULL;
-        IF NOT FOUND THEN
-            PERFORM pgmq.delete('chaos_webhooks', message.msg_id);
-            CONTINUE;
-        END IF;
-
-        id := target.id;
-        store_id := target.store_id;
-        provider := target.provider;
-        event_type := target.event_type;
-        payload := target.payload;
-        attempts := message.read_ct;
-        RETURN NEXT;
-    END LOOP;
-END;
 $$;
 
 CREATE FUNCTION integration.finish_event_outbox(
@@ -372,65 +255,12 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.finish_webhook_event(
-    event_id UUID,
-    attempts INTEGER,
-    succeeded BOOLEAN,
-    failure TEXT,
-    max_attempts INTEGER,
-    finished_at TIMESTAMPTZ
-)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-    message_id BIGINT;
-BEGIN
-    SELECT event.pgmq_message_id
-      INTO message_id
-      FROM integration.provider_webhooks AS event
-     WHERE event.id = event_id
-       AND event.processed_at IS NULL
-       AND event.failed_at IS NULL
-     FOR UPDATE;
-    IF message_id IS NULL THEN
-        RETURN false;
-    END IF;
-    IF succeeded OR attempts >= greatest(max_attempts, 1) THEN
-        UPDATE integration.provider_webhooks AS event
-           SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
-               failed_at = CASE WHEN succeeded THEN NULL ELSE finished_at END,
-               last_error = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
-         WHERE event.id = event_id;
-        PERFORM pgmq.delete('chaos_webhooks', message_id);
-    ELSE
-        UPDATE integration.provider_webhooks AS event
-           SET last_error = left(failure, 2000)
-         WHERE event.id = event_id;
-        PERFORM pgmq.set_vt(
-            'chaos_webhooks',
-            message_id,
-            least(power(2, greatest(attempts - 1, 0))::integer, 300)
-        );
-    END IF;
-    RETURN true;
-END;
-$$;
-
 ALTER TABLE integration.idempotency_keys ENABLE ROW LEVEL SECURITY;
-ALTER TABLE integration.provider_webhooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.event_outbox ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY idempotency_scope_isolation ON integration.idempotency_keys
     USING ((scope = 'user' AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid) OR (scope = 'store' AND scope_id = nullif(current_setting('app.store_id', true), '')::uuid) OR (scope = 'shopper' AND scope_id = nullif(current_setting('app.shopper_id', true), '')::uuid))
     WITH CHECK ((scope = 'user' AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid) OR (scope = 'store' AND scope_id = nullif(current_setting('app.store_id', true), '')::uuid) OR (scope = 'shopper' AND scope_id = nullif(current_setting('app.shopper_id', true), '')::uuid));
-
-CREATE POLICY store_isolation ON integration.provider_webhooks
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON integration.event_outbox
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -438,8 +268,6 @@ CREATE POLICY store_isolation ON integration.event_outbox
 
 INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES
-    ('payment.create_requested', 'chaos_payment_commands', 'Creates a Stripe Checkout Session for the Order'),
-    ('refund.create_requested', 'chaos_payment_commands', 'Creates a Stripe Refund for the Order'),
     ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document'),
     ('shipping.shipped', 'chaos_shipping_events', 'Updates the Order shipping state from a provider callback'),
     ('shipping.delivered', 'chaos_shipping_events', 'Updates the Order shipping state from a provider callback'),
@@ -450,30 +278,18 @@ CREATE TRIGGER event_outbox_enqueue
     FOR EACH ROW
     EXECUTE FUNCTION integration.enqueue_event_outbox();
 
-CREATE TRIGGER provider_webhooks_enqueue
-    BEFORE INSERT ON integration.provider_webhooks
-    FOR EACH ROW
-    EXECUTE FUNCTION integration.enqueue_webhook_event();
-
 REVOKE ALL ON FUNCTION integration.event_queue_name(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_event_outbox() FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.enqueue_webhook_event() FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_routed_event_outbox(TEXT, INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_event_outbox(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_shipping_events(INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_webhook_events(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_event_outbox(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.claim_event_outbox(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_shipping_events(INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.claim_webhook_events(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_event_outbox(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON integration.event_consumers FROM chaos_runtime;
-REVOKE UPDATE, DELETE ON integration.provider_webhooks, integration.event_outbox FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON integration.event_outbox FROM chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA integration TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
@@ -481,6 +297,5 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES 
 
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 
-CREATE INDEX provider_webhooks_provider_account_idx ON integration.provider_webhooks (provider_account_id, created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

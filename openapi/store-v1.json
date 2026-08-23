@@ -587,7 +587,7 @@
         },
         "responses": {
           "201": {
-            "description": "Embedded Checkout Session prepared",
+            "description": "Embedded Checkout Session created and client handoff returned",
             "content": {
               "application/json": {
                 "schema": {
@@ -701,172 +701,6 @@
           }
         }
       }
-    },
-    "/orders/{order_id}/payment-attempts": {
-      "post": {
-        "operationId": "createPaymentAttempt",
-        "tags": [
-          "Payments"
-        ],
-        "summary": "Create a Stripe Payment Attempt and enqueue the Stripe command atomically",
-        "security": [
-          {
-            "publishableKey": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/OrderId"
-          },
-          {
-            "$ref": "#/components/parameters/ShopperToken"
-          },
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePaymentAttempt"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Payment Attempt created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentAttemptEnvelope"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "422": {
-            "$ref": "#/components/responses/ValidationFailed"
-          }
-        }
-      }
-    },
-    "/payment-attempts/{payment_attempt_id}": {
-      "get": {
-        "operationId": "getPaymentAttempt",
-        "tags": [
-          "Payments"
-        ],
-        "summary": "Get a Payment Attempt visible to this Store and Sales Channel",
-        "security": [
-          {
-            "publishableKey": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/PaymentAttemptId"
-          },
-          {
-            "$ref": "#/components/parameters/ShopperToken"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Payment Attempt",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentAttemptEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          }
-        }
-      }
-    },
-    "/payment-attempts/{payment_attempt_id}/client-action": {
-      "get": {
-        "operationId": "getPaymentClientAction",
-        "tags": [
-          "Payments"
-        ],
-        "summary": "Retrieve the short-lived client action for a pending Payment Attempt",
-        "description": "Returns Stripe Embedded Checkout handoff material only to the shopper that owns the Payment Attempt. The client token must never be logged, cached, or placed in a URL.",
-        "security": [
-          {
-            "publishableKey": []
-          }
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/PaymentAttemptId"
-          },
-          {
-            "$ref": "#/components/parameters/ShopperToken"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Payment client action. The response includes `Cache-Control: no-store`.",
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "const": "no-store"
-                }
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentClientActionEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "503": {
-            "$ref": "#/components/responses/Unavailable"
-          }
-        }
-      }
     }
   },
   "components": {
@@ -947,15 +781,6 @@
       },
       "OrderId": {
         "name": "order_id",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "string",
-          "format": "uuid"
-        }
-      },
-      "PaymentAttemptId": {
-        "name": "payment_attempt_id",
         "in": "path",
         "required": true,
         "schema": {
@@ -1650,12 +1475,21 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "order_id"
+          "order_id",
+          "payment_attempt_id",
+          "client_action"
         ],
         "properties": {
           "order_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "payment_attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_action": {
+            "$ref": "#/components/schemas/PaymentClientAction"
           }
         }
       },
@@ -1926,88 +1760,6 @@
           }
         }
       },
-      "CreatePaymentAttempt": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "return_url"
-        ],
-        "properties": {
-          "return_url": {
-            "type": "string",
-            "format": "uri",
-            "description": "Stripe returns the shopper here after Embedded Checkout completes. HTTPS is required except for local loopback development."
-          }
-        }
-      },
-      "PaymentAttempt": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "order_id",
-          "amount_minor",
-          "currency",
-          "status",
-          "created_at",
-          "updated_at"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "order_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "amount_minor": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 1
-          },
-          "currency": {
-            "type": "string",
-            "pattern": "^[A-Z]{3}$"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "authorized",
-              "captured",
-              "failed",
-              "cancelled"
-            ]
-          },
-          "stripe_checkout_session_id": {
-            "type": "string"
-          },
-          "failure_code": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "PaymentAttemptEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "data"
-        ],
-        "properties": {
-          "data": {
-            "$ref": "#/components/schemas/PaymentAttempt"
-          }
-        }
-      },
       "PaymentClientAction": {
         "type": "object",
         "additionalProperties": false,
@@ -2020,10 +1772,9 @@
           "type": {
             "type": "string",
             "enum": [
-              "confirm_payment",
               "mount_embedded_checkout"
             ],
-            "description": "confirm_payment: client_token is a PaymentIntent client secret for Stripe.js/Elements confirmation. mount_embedded_checkout: client_token is an Embedded Checkout Session client secret."
+            "description": "client_token is an Embedded Checkout Session client secret."
           },
           "public_key": {
             "type": "string",
@@ -2032,18 +1783,6 @@
           "client_token": {
             "type": "string",
             "minLength": 1
-          }
-        }
-      },
-      "PaymentClientActionEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "data"
-        ],
-        "properties": {
-          "data": {
-            "$ref": "#/components/schemas/PaymentClientAction"
           }
         }
       },

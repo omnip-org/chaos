@@ -154,27 +154,20 @@ pub struct StripeCommand {
     pub idempotency_key: String,
     pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
     pub stripe_payment_reference: Option<String>,
-    /// Required for `payment.create_requested` by the Stripe Checkout adapter;
-    /// absent for Stripe commands that do not create a Checkout Session.
+    /// Required when creating a Stripe Checkout Session; absent for Stripe
+    /// commands that do not create a Checkout Session.
     pub checkout_details: Option<PaymentCheckoutDetails>,
     pub return_url: Option<String>,
 }
 
 pub struct StripeCommandResult {
     pub stripe_object_id: String,
-}
-
-pub struct StripeClientActionCommand {
-    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
-    pub stripe_checkout_session_id: String,
-    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub client_action: Option<PaymentClientAction>,
 }
 
 pub struct PaymentClientAction {
-    /// One of `"confirm_payment"` (client_token is a PaymentIntent client
-    /// secret for Stripe.js/Elements confirmation) or
-    /// `"mount_embedded_checkout"` (client_token is an embedded Checkout
-    /// Session client secret).
+    /// The client handoff for Stripe Embedded Checkout. The client token is
+    /// the Checkout Session client secret.
     pub kind: &'static str,
     pub public_key: SecretString,
     pub client_token: SecretString,
@@ -188,11 +181,6 @@ pub trait StripePaymentGateway: Send + Sync {
         &self,
         command: StripeCommand,
     ) -> Result<StripeCommandResult, ApplicationError>;
-
-    async fn client_action(
-        &self,
-        command: StripeClientActionCommand,
-    ) -> Result<PaymentClientAction, ApplicationError>;
 }
 
 #[async_trait]
@@ -252,9 +240,24 @@ pub trait StripePaymentRepository: Send + Sync {
         &self,
         actor: &ShopperActor,
         order_id: OrderId,
-        return_url: Option<&str>,
         idempotency: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError>;
+
+    async fn prepare_checkout_command(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+        return_url: &str,
+        idempotency_key: &str,
+    ) -> Result<StripeCommand, ApplicationError>;
+
+    async fn record_checkout_result(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+        result: &StripeCommandResult,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError>;
 
     async fn get_attempt(
         &self,
@@ -290,19 +293,6 @@ pub trait StripePaymentRepository: Send + Sync {
         result: &StripeCommandResult,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
-
-    async fn fail_stripe_command(
-        &self,
-        job: &QueueJob,
-        failure: &str,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
-
-    async fn client_action_command(
-        &self,
-        actor: &ShopperActor,
-        attempt_id: PaymentAttemptId,
-    ) -> Result<Option<StripeClientActionCommand>, ApplicationError>;
 }
 
 #[async_trait]

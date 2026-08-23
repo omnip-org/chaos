@@ -6,7 +6,6 @@ impl StripePaymentRepository for PostgresPaymentRepository {
         &self,
         shopper: &ShopperActor,
         order_id: OrderId,
-        return_url: Option<&str>,
         request: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
         let actor = &shopper.machine;
@@ -77,17 +76,6 @@ impl StripePaymentRepository for PostgresPaymentRepository {
             },
         )
         .await?;
-        insert_outbox(
-            &mut transaction,
-            actor.store_id,
-            "order",
-            attempt.id().as_uuid(),
-            "payment.create_requested",
-            attempt.amount().amount_minor(),
-            currency,
-            return_url,
-        )
-        .await?;
         let detail = load_attempt(
             &mut transaction,
             actor.store_id,
@@ -108,6 +96,38 @@ impl StripePaymentRepository for PostgresPaymentRepository {
         .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
+    }
+
+    async fn prepare_checkout_command(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+        return_url: &str,
+        idempotency_key: &str,
+    ) -> Result<StripeCommand, ApplicationError> {
+        let attempt = self
+            .get_attempt(actor, attempt_id)
+            .await?
+            .ok_or_else(|| attempt_not_found(attempt_id))?;
+        let job = direct_checkout_job(actor, &attempt, return_url);
+        let mut command = self.prepare_stripe_command(&job).await?;
+        command.idempotency_key = idempotency_key.to_owned();
+        Ok(command)
+    }
+
+    async fn record_checkout_result(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: PaymentAttemptId,
+        result: &StripeCommandResult,
+        now: OffsetDateTime,
+    ) -> Result<(), ApplicationError> {
+        let attempt = self
+            .get_attempt(actor, attempt_id)
+            .await?
+            .ok_or_else(|| attempt_not_found(attempt_id))?;
+        let job = direct_checkout_job(actor, &attempt, "");
+        self.record_stripe_result(&job, result, now).await
     }
 
     async fn get_attempt(
@@ -252,7 +272,7 @@ impl StripePaymentRepository for PostgresPaymentRepository {
             payload["aggregate_id"] = json!(order_id);
         }
         let result = sqlx::query(
-            "INSERT INTO integration.provider_webhooks \
+            "INSERT INTO commerce.provider_webhooks \
              (id, store_id, provider, provider_account_id, provider_event_id, event_type, \
               payload, verified_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -535,96 +555,23 @@ impl StripePaymentRepository for PostgresPaymentRepository {
         Ok(())
     }
 
-    async fn fail_stripe_command(
-        &self,
-        job: &QueueJob,
-        failure: &str,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
-        if job.event_type != "payment.create_requested" {
-            return Ok(());
-        }
-        let order_id = outbox_aggregate_id(job)?;
-        let mut transaction = self.begin_context(None, job.store_id).await?;
-        let row = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, status::text \
-             FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
-        )
-        .bind(job.store_id)
-        .bind(order_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| order_not_found(OrderId::from_uuid(order_id)))?;
-        let failure_code = if failure.trim().is_empty() {
-            "provider_command_failed"
-        } else {
-            failure.trim()
-        };
-        sqlx::query(
-            "UPDATE commerce.orders \
-             SET payment_status = 'failed', payment_failure_code = left($3, 2000), updated_at = $4 \
-             WHERE store_id = $1 AND id = $2 AND payment_status = 'pending'",
-        )
-        .bind(job.store_id)
-        .bind(order_id)
-        .bind(failure_code)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        cancel_pending_order(
-            &mut transaction,
-            StoreId::from_uuid(job.store_id),
-            OrderId::from_uuid(row.0),
-            &row.1,
-            now,
-        )
-        .await?;
-        transaction.commit().await.map_err(database_error)?;
-        Ok(())
-    }
+}
 
-    async fn client_action_command(
-        &self,
-        shopper: &ShopperActor,
-        attempt_id: PaymentAttemptId,
-    ) -> Result<Option<StripeClientActionCommand>, ApplicationError> {
-        let actor = &shopper.machine;
-        let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
-        let mut transaction = self.begin_shopper(shopper).await?;
-        let row = sqlx::query_as::<_, (Uuid, String, String)>(
-            "SELECT account.id, sales_order.stripe_checkout_session_id, \
-                    account.credential_secret_reference \
-             FROM commerce.orders AS sales_order \
-             INNER JOIN commerce.payment_provider_accounts AS account \
-               ON account.store_id = sales_order.store_id AND account.provider = 'stripe_checkout' \
-              AND account.enabled AND account.readiness_status = 'ready' \
-              AND account.readiness_valid_until > CURRENT_TIMESTAMP \
-             WHERE sales_order.store_id = $1 \
-               AND sales_order.id = $2 AND sales_order.shopper_id = $3 \
-               AND sales_order.sales_channel_id = $4 AND sales_order.payment_status = 'pending' \
-               AND sales_order.stripe_checkout_session_id IS NOT NULL \
-               AND account.credential_secret_reference IS NOT NULL",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        transaction.commit().await.map_err(database_error)?;
-        row.map(|row| {
-            Ok(StripeClientActionCommand {
-                stripe_account_id: StripeAccountId::from_uuid(row.0),
-                stripe_checkout_session_id: row.1,
-                credential_secret_reference: PaymentSecretReference::new(
-                    "credential_secret_reference",
-                    row.2,
-                )?,
-            })
-        })
-        .transpose()
+fn direct_checkout_job(
+    actor: &ShopperActor,
+    attempt: &PaymentAttemptDetail,
+    return_url: &str,
+) -> QueueJob {
+    QueueJob {
+        id: attempt.id.as_uuid(),
+        store_id: actor.machine.store_id.as_uuid(),
+        event_type: "payment.create_requested".into(),
+        payload: json!({
+            "aggregate_id": attempt.order_id.as_uuid(),
+            "amount_minor": attempt.amount_minor,
+            "currency": attempt.currency.as_str(),
+            "return_url": return_url,
+        }),
+        attempts: 1,
     }
 }

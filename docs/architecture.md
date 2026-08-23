@@ -112,21 +112,23 @@ Carts, Orders, Payments, and Analytics events carry the same `shopper_id`; there
 is no Customer entity or visitor-to-Customer association table. An Order-bearing
 Shopper is the buyer for all commerce and analytics purposes.
 
-The commerce database remains one physical `commerce` schema so Store-scoped
-foreign keys and RLS stay simple, but its migration is organized into logical
-modules: Store foundation, Catalog, Pricing, Inventory, Search read model,
-Sales, Fulfillment configuration, Payments, and Fulfillment execution. Provider
-calls and durable delivery state remain outside these business tables in the
-Integration workflow.
+Store-owned data, including Stripe payment state, remains in the `commerce`
+schema so Store-scoped foreign keys and RLS stay simple. Payment credentials,
+readiness, payment queues, and verified webhook ingestion are logical modules,
+not separate PostgreSQL schemas. The `commerce` migration is organized into logical modules: Store foundation,
+Catalog, Pricing, Inventory, Search read model, Sales, Fulfillment configuration,
+and Fulfillment execution. Generic idempotency, event routing, and analytics
+delivery remain in the `integration` schema.
 
-Cart and Order have separate responsibilities. Creating a Stripe Embedded
-Checkout Session atomically creates a pending Order and reserves tracked
-inventory while leaving the Cart active. Stripe owns the checkout UI, address,
-shipping, tax, and payment collection; Chaos stores the resulting provider
-snapshot on the Order after a verified webhook. A successful payment confirms
-the Order and completes the Cart; expiry or failure cancels the Order and
-releases the reservation. There is no local Checkout aggregate to expire or
-reconcile.
+Cart and Order have separate responsibilities. The Checkout API transaction
+creates a pending Order and reserves tracked inventory while leaving the Cart
+active, then calls Stripe after the transaction commits and returns the
+Embedded Checkout client secret in the same request. Stripe owns the checkout
+UI, address, shipping, tax, and payment collection; Chaos stores the resulting
+provider snapshot on the Order after a verified webhook. A successful payment
+confirms the Order and completes the Cart; expiry or failure cancels the Order
+and releases the reservation. There is no local Checkout aggregate to expire
+or reconcile.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
 envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, and time;
@@ -136,10 +138,11 @@ lowercase snake-case identifier, not as a database enum, so new behaviors do
 not require a migration. Provider delivery is an optional retryable projection
 of stored events through destination and delivery records. See ADR 0026.
 
-The Integration schema keeps one concise name for each responsibility:
-`idempotency_keys`, `provider_webhooks`, `event_consumers`, `event_outbox`,
-`analytics_events`, `analytics_destinations`, and
-`analytics_deliveries`. The last three form one chain: an internal Analytics
+The `commerce` schema owns `payment_provider_accounts`, `provider_webhooks`,
+payment readiness routines, and payment queue routines.
+The Integration schema keeps one concise name for each generic responsibility:
+`idempotency_keys`, `event_consumers`, `event_outbox`, `analytics_events`,
+`analytics_destinations`, and `analytics_deliveries`. The last three form one chain: an internal Analytics
 event is scheduled for a configured destination, then its delivery observation
 is recorded by `destination_id` and `analytics_event_id`. Business outbox
 routing is data-driven: `event_consumers.queue_name` points directly to the

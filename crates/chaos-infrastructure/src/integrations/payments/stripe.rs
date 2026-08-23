@@ -5,9 +5,8 @@ use chaos_application::{
     ApplicationError,
     ports::{
         PaymentClientAction, PaymentSecretResolver, PaymentShippingAddress, StripeAccountReadiness,
-        StripeClientActionCommand, StripeCommand, StripeCommandResult, StripePaymentGateway,
-        StripeReadiness, StripeWebhookConfigurationRepository, StripeWebhookEvent,
-        StripeWebhookSignatureVerifier,
+        StripeCommand, StripeCommandResult, StripePaymentGateway, StripeReadiness,
+        StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
     },
 };
 use chaos_domain::payments::PaymentSecretReference;
@@ -265,6 +264,7 @@ impl StripePaymentGateway for StripeGateway {
             }
             return Ok(StripeCommandResult {
                 stripe_object_id: object.id,
+                client_action: None,
             });
         }
         if command.event_type != "payment.create_requested" {
@@ -388,33 +388,14 @@ impl StripePaymentGateway for StripeGateway {
         if !valid_stripe_identifier(&object.id, "cs_") {
             return Err(stripe_invalid_response());
         }
+        let client_secret = object.client_secret.ok_or_else(stripe_invalid_response)?;
         Ok(StripeCommandResult {
             stripe_object_id: object.id,
-        })
-    }
-
-    async fn client_action(
-        &self,
-        command: StripeClientActionCommand,
-    ) -> Result<PaymentClientAction, ApplicationError> {
-        let credentials = self
-            .http
-            .credentials(&command.credential_secret_reference)
-            .await?;
-        let object = self
-            .http
-            .retrieve_object(
-                "v1/checkout/sessions/",
-                &credentials,
-                &command.stripe_checkout_session_id,
-                "cs_",
-            )
-            .await?;
-        let client_secret = object.client_secret.ok_or_else(stripe_invalid_response)?;
-        Ok(PaymentClientAction {
-            kind: "mount_embedded_checkout",
-            public_key: credentials.publishable_key,
-            client_token: SecretString::from(client_secret),
+            client_action: Some(PaymentClientAction {
+                kind: "mount_embedded_checkout",
+                public_key: credentials.publishable_key,
+                client_token: SecretString::from(client_secret),
+            }),
         })
     }
 }
@@ -939,7 +920,7 @@ mod tests {
     };
     use chaos_application::ports::{
         PaymentCheckoutDetails, PaymentLineItem, PaymentShippingAddress, PaymentShippingOption,
-        StripeClientActionCommand, StripeWebhookConfiguration,
+        StripeWebhookConfiguration,
     };
     use chaos_domain::{CurrencyCode, payments::StripeAccountId};
 
@@ -1060,9 +1041,6 @@ mod tests {
             ("POST", "/v1/checkout/sessions") => {
                 r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
             }
-            ("GET", "/v1/checkout/sessions/cs_created") => {
-                r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
-            }
             _ => return Response::builder().status(404).body(Body::empty()).unwrap(),
         };
         Response::builder()
@@ -1113,14 +1091,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.stripe_object_id, "cs_created");
-        let action = provider
-            .client_action(StripeClientActionCommand {
-                stripe_checkout_session_id: created.stripe_object_id.clone(),
-                stripe_account_id: StripeAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
-                credential_secret_reference: reference.clone(),
-            })
-            .await
-            .unwrap();
+        let action = created.client_action.as_ref().unwrap();
         assert_eq!(action.public_key.expose_secret(), "pk_test_public");
         assert_eq!(
             action.client_token.expose_secret(),
@@ -1137,7 +1108,7 @@ mod tests {
 
         {
             let requests = state.0.lock().unwrap();
-            assert_eq!(requests.len(), 3);
+            assert_eq!(requests.len(), 2);
             assert_eq!(requests[0].method, "POST");
             assert_eq!(requests[0].path, "/v1/checkout/sessions");
             assert!(requests[0].headers.get("stripe-account").is_none());
@@ -1173,8 +1144,7 @@ mod tests {
                 checkout_form["metadata[chaos_order_id]"],
                 aggregate_id.to_string()
             );
-            assert_eq!(requests[1].path, "/v1/checkout/sessions/cs_created");
-            assert_eq!(requests[2].path, "/v1/account");
+            assert_eq!(requests[1].path, "/v1/account");
             drop(checkout_form);
         }
         let refund_id = Uuid::now_v7();
@@ -1254,14 +1224,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.stripe_object_id, "cs_created");
-        let action = provider
-            .client_action(StripeClientActionCommand {
-                stripe_checkout_session_id: created.stripe_object_id.clone(),
-                stripe_account_id: StripeAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
-                credential_secret_reference: reference.clone(),
-            })
-            .await
-            .unwrap();
+        let action = created.client_action.as_ref().unwrap();
         assert_eq!(action.kind, "mount_embedded_checkout");
         assert_eq!(
             action.client_token.expose_secret(),
@@ -1277,8 +1240,7 @@ mod tests {
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/v1/checkout/sessions");
         assert!(requests[0].headers.get("stripe-account").is_none());
-        assert!(requests[1].headers.get("stripe-account").is_none());
-        assert_eq!(requests[2].path, "/v1/account");
+        assert_eq!(requests[1].path, "/v1/account");
         let form: HashMap<_, _> =
             url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
         assert_eq!(form["mode"], "payment");

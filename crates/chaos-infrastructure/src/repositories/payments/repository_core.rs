@@ -15,7 +15,7 @@ use chaos_application::{
         StripePaymentRepository,
         PaymentShippingAddress,
         StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
-        StripeCommandResult, StripeClientActionCommand, QueueJob, RefundDetail, ShopperActor,
+        StripeCommandResult, QueueJob, RefundDetail, ShopperActor,
         StripeWebhookEvent,
     },
     store::StoreActor,

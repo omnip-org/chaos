@@ -474,7 +474,7 @@ mod tests {
             (Method::POST, "/store/v1/carts"),
             (
                 Method::POST,
-                "/webhooks/v1/stripe/00000000-0000-0000-0000-000000000000",
+                "/store/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
             ),
             (Method::GET, "/openapi/store-v1.json"),
         ];

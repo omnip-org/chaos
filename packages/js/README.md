@@ -54,7 +54,7 @@ const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
   email: "shopper@example.com",
   return_url: "https://shop.example.com/checkout/success",
 });
-const { data: action } = await chaos.payments.getClientAction(session.payment_attempt_id);
+const action = session.client_action;
 // Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
 // a Stripe-Account header or an account_reference field.

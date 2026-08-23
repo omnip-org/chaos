@@ -26,7 +26,7 @@ Storefront Payment Attempt creation continues to accept a provider choice, but s
 
 Updating a Provider account rotates its two secret references atomically and may enable or disable new payment creation. A changed outbound credential becomes active immediately; its previous reference is retained with a 24-hour rollback deadline. A changed webhook secret starts a 24-hour verification overlap in which the active reference is tried first and the immediately previous reference is also accepted. Supplying the same references does not extend either deadline, and another rotation replaces rather than chains the previous references. Only deadlines are exposed by MCP tools; active and previous references remain write-only. Operators retire old Provider credentials after the deadlines.
 
-Disabling blocks only new Payment Attempts. Existing Payment Attempts retain dispatch, client-action, refund, and signed-webhook access so in-flight money movement can converge. Existing Payment Attempts keep their Provider account relationship. Provider-specific onboarding state belongs to later provider-integration increments.
+Disabling blocks only new Payment Attempts. Existing Payment Attempts retain dispatch, the Checkout Session client-secret handoff, refund, and signed-webhook access so in-flight money movement can converge. Existing Payment Attempts keep their Provider account relationship. Provider-specific onboarding state belongs to later provider-integration increments.
 
 ## Consequences
 

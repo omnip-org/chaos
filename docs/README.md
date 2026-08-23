@@ -48,7 +48,8 @@ preserve the dependency direction in
 | Shopper, carts, checkout, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
 | Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
-| Webhooks, outbox, and idempotency | application ports | Worker loops and integration repositories | `integration` |
+| Payment webhooks and payment queues | application ports | Stripe adapters and Worker loops | `commerce` |
+| Generic outbox, event routing, and idempotency | application ports | Worker loops and integration repositories | `integration` |
 | Commerce events and external provider delivery | `analytics` | Storefront collection, MCP settings, and Worker delivery | `integration` |
 
 Rust business modules remain useful navigation boundaries; they do not require
@@ -59,7 +60,7 @@ HTTP delivery code is grouped by public responsibility under
 
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
-- `storefront/payments.rs` contains payment creation, client actions, and Provider callback endpoints;
+- `storefront/payments.rs` contains payment creation and Provider callback endpoints;
 - `operations/` contains health checks;
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 
@@ -84,8 +85,8 @@ not in application use cases.
 - `migrations/0001_platform.sql`, `0002_identity.sql`,
   `0003_commerce.sql`, `0004_commerce_catalog.sql`,
   `0005_commerce_pricing.sql`, `0006_commerce_sales.sql`,
-  `0007_integration.sql`, and `0008_integration_analytics.sql` are the fresh
-  bootstrap schema. The commerce
+  `0007_integration.sql`, `0008_integration_analytics.sql`, and
+  `0009_commerce_payments.sql` are the fresh bootstrap schema. The commerce
   schema persists one `commerce.shoppers` identity per website visit; cart,
   checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS
