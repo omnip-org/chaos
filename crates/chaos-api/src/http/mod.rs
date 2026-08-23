@@ -3,7 +3,7 @@ mod identity;
 mod shared;
 mod storefront;
 
-use axum::Router;
+use axum::{Router, http::Request};
 use chaos_core::runtime::lifecycle::Lifecycle;
 use chaos_core::{
     adapters::integrations::{
@@ -56,7 +56,9 @@ use chaos_core::{
 };
 use secrecy::ExposeSecret as _;
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    catch_panic::CatchPanicLayer, request_id::PropagateRequestIdLayer, trace::TraceLayer,
+};
 
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
@@ -338,7 +340,25 @@ pub fn router(state: ApiState) -> Router {
         .nest("/storefront/v1", storefront::v1::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
-        .layer(TraceLayer::new_for_http())
+        .fallback(shared::error::not_found)
+        .method_not_allowed_fallback(shared::error::method_not_allowed)
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(CatchPanicLayer::custom(shared::error::panic_response))
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                let request_id = request
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("none");
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    request_id = %request_id,
+                )
+            }),
+        )
 }
 
 #[cfg(test)]
@@ -405,20 +425,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn liveness_uses_the_success_envelope_without_synthetic_request_ids() {
+    async fn request_ids_are_propagated_without_becoming_an_idempotency_middleware() {
         let response = router(test_state())
-            .oneshot(Request::get("/health/live").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/health/live")
+                    .header("x-request-id", "request-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().get("x-request-id").is_none());
+        assert_eq!(response.headers()["x-request-id"], "request-123");
 
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&body).unwrap()["data"]["status"],
             "ok"
         );
+    }
+
+    #[tokio::test]
+    async fn missing_routes_use_the_error_envelope() {
+        let response = router(test_state())
+            .oneshot(Request::get("/does-not-exist").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn unsupported_methods_use_the_error_envelope() {
+        let response = router(test_state())
+            .oneshot(Request::post("/health/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["error"]["code"], "method_not_allowed");
+    }
+
+    #[tokio::test]
+    async fn panics_use_the_error_envelope() {
+        async fn panic_handler() -> &'static str {
+            panic!("test panic");
+        }
+
+        let app = Router::new()
+            .route("/panic", axum::routing::get(panic_handler))
+            .layer(CatchPanicLayer::custom(shared::error::panic_response));
+        let response = app
+            .oneshot(Request::get("/panic").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), 2048).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["error"]["code"], "internal_error");
     }
 
     #[tokio::test]

@@ -81,6 +81,41 @@ impl ApiError {
     }
 }
 
+pub(crate) async fn not_found() -> ApiError {
+    ApiError::Request {
+        status: StatusCode::NOT_FOUND,
+        code: "not_found",
+        message: "the requested resource was not found",
+    }
+}
+
+pub(crate) async fn method_not_allowed() -> ApiError {
+    ApiError::Request {
+        status: StatusCode::METHOD_NOT_ALLOWED,
+        code: "method_not_allowed",
+        message: "the HTTP method is not allowed for this resource",
+    }
+}
+
+pub(crate) fn panic_response(
+    panic: Box<dyn std::any::Any + Send + 'static>,
+) -> axum::response::Response {
+    if let Some(message) = panic.downcast_ref::<String>() {
+        tracing::error!(panic = %message, "HTTP handler panicked");
+    } else if let Some(message) = panic.downcast_ref::<&str>() {
+        tracing::error!(panic = %message, "HTTP handler panicked");
+    } else {
+        tracing::error!("HTTP handler panicked with an unknown payload");
+    }
+
+    ApiError::Request {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        code: "internal_error",
+        message: "an unexpected error occurred",
+    }
+    .into_response()
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let retry_after = match &self {

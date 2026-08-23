@@ -2,7 +2,13 @@
 
 ## Topology
 
-Cloudflare terminates public TLS and proxies to the host gateway. The gateway load-balances the blue and green API replicas. One independently restartable Worker service runs background consumers and has no public listener. Restrict origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL and Redis must not be publicly reachable.
+Cloudflare terminates public TLS and proxies to the host gateway. NGINX sends
+traffic to one active API color while the other color is started and checked
+for readiness. The gateway is reloaded to switch colors without restarting
+NGINX, then the old color is gracefully stopped. One independently restartable
+Worker service runs background consumers and has no public listener. Restrict
+origin access to Cloudflare or use Cloudflare Tunnel. PostgreSQL and Redis
+must not be publicly reachable.
 
 API and Worker capacity are independent. API replicas never poll durable queues. The default Compose topology starts one Worker for cost efficiency; production may scale it to multiple replicas because PGMQ visibility timeouts, retry counters, and idempotent consumers coordinate concurrent claims.
 
@@ -29,7 +35,7 @@ The repository includes the local self-signed origin certificate used behind Clo
 
 Set `AUTH_JWT_ISSUER` to the public HTTPS API origin, use a deployment-specific `AUTH_JWT_AUDIENCE`, generate `AUTH_JWT_SECRET` with at least 32 random bytes, and configure at least one of `GOOGLE_CLIENT_ID` or `APPLE_CLIENT_ID`.
 
-Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted by the MCP endpoint. The MCP transport is stateless so requests may be distributed across blue and green API replicas without sticky sessions.
+Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted by the MCP endpoint. The MCP transport is stateless, so a color switch does not require sticky sessions.
 
 ## Provider secret encryption
 
@@ -65,7 +71,7 @@ cd deploy
 
 If the NGINX `server_name` is not `chaos.omnip.org`, pass the matching value as `ORIGIN_HOST` when invoking the script so its final public gateway health probe uses the correct host.
 
-With no `CHAOS_IMAGE` set, this deploys `ghcr.io/omnip-org/chaos:latest` — whatever Release most recently published. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); starts PostgreSQL and Redis; applies migrations once; rolls blue and green independently; starts the gateway; and runs health probes. If a replica fails to become healthy the rollout aborts before touching the second replica, so the previous version keeps serving.
+With no `CHAOS_IMAGE` set, this deploys `ghcr.io/omnip-org/chaos:latest` — whatever Release most recently published. Pin a version for reproducible releases and rollbacks. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); applies migrations; starts the inactive API color; waits for its container readiness check; writes the active upstream fragment inside the mounted `nginx/conf.d` directory; validates and reloads NGINX to switch traffic; stops the old color; starts the Worker with a process health check; and probes public `/health/ready`. If the inactive color fails, the active color is left serving. Deployment-local state is stored in the ignored `deploy/.active-api` file and ignored `deploy/nginx/conf.d/active-upstream.conf` fragment.
 
 Rollback to a specific version:
 
@@ -80,7 +86,7 @@ Verify the Cloudflare gateway and configured public API paths:
 
 ```bash
 curl --fail https://chaos.omnip.org/health/live
-curl --fail https://api.example.com/health/ready
+curl --fail https://chaos.omnip.org/health/ready
 ```
 
 ## Identity and MCP bootstrap

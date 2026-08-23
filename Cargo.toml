@@ -42,7 +42,7 @@ thiserror = "2.0"
 time = { version = "0.3.44", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.7.0", features = ["request-id", "trace"] }
+tower-http = { version = "0.7.0", features = ["catch-panic", "request-id", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

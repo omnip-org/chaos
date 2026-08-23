@@ -22,16 +22,19 @@ cp deploy/.env.example deploy/.env
 # CHANGE_ME_* value (openssl rand -base64 32/48 as noted inline) before
 # the stack will boot. There is no weaker "just for local dev" shortcut.
 export CHAOS_IMAGE=chaos-api:local
-docker compose -f deploy/docker-compose.yaml up -d --wait
+cd deploy
+CHAOS_IMAGE=chaos-api:local ./deploy.sh
 ```
 
 The repository includes the local self-signed origin certificate used behind Cloudflare.
 
-After changing code, rebuild and roll both replicas (see [Production Deployment](docs/deployment.md) for the health-gated, one-at-a-time version — for local iteration a plain rebuild + `up -d` is usually enough):
+After changing code, rebuild the image. For a production-like color switch,
+use the health-gated procedure in [Production Deployment](docs/deployment.md):
 
 ```bash
 docker build -t chaos-api:local .
-docker compose -f deploy/docker-compose.yaml up -d --no-deps migrate api-blue api-green worker
+cd deploy
+CHAOS_IMAGE=chaos-api:local ./deploy.sh
 ```
 
 Verify the service:

@@ -36,6 +36,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 5
 
   migrate:
     image: ${CHAOS_IMAGE}
@@ -81,11 +87,6 @@ services:
   nginx:
     image: nginx:stable-alpine
     restart: unless-stopped
-    depends_on:
-      api-blue:
-        condition: service_healthy
-      api-green:
-        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"

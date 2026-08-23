@@ -16,3 +16,7 @@ node_modules/
 
 # AI
 .codex
+
+# Deployment runtime state
+/deploy/.active-api
+/deploy/nginx/conf.d/active-upstream.conf
