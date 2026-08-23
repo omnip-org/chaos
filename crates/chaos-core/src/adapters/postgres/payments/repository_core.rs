@@ -206,13 +206,6 @@ fn attempt_not_found(attempt_id: PaymentAttemptId) -> ApplicationError {
     }
 }
 
-fn refund_not_found(refund_id: RefundId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "refund",
-        id: refund_id.as_uuid().to_string(),
-    }
-}
-
 async fn load_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,

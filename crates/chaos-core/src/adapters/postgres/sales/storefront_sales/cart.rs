@@ -1,10 +1,13 @@
 // Cart product resolution, pricing context, line management, and cart reads.
 
+/// Resolves the Store's single active Price List for a Sales Channel. A
+/// Store trades in exactly one currency (`stores.currency`), so a Cart or
+/// Order never chooses a currency — it inherits whichever Price List is
+/// active, and every Price List row already carries the Store's currency.
 async fn select_price_list(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     channel_id: SalesChannelId,
-    currency: Option<CurrencyCode>,
 ) -> Result<Option<(Uuid, CurrencyCode)>, ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT price_list.id, price_list.currency::text \
@@ -16,14 +19,13 @@ async fn select_price_list(
          WHERE price_list.store_id = $2 \
            AND store.status = 'active' AND channel.status = 'active' \
            AND price_list.status = 'active' \
-           AND price_list.currency = COALESCE($3::char(3), store.currency) \
+           AND price_list.currency = store.currency \
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
          ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC LIMIT 1",
     )
     .bind(channel_id.as_uuid())
     .bind(actor.store_id.as_uuid())
-    .bind(currency.map(|value| value.as_str().to_owned()))
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -128,9 +130,13 @@ async fn lock_active_cart(
     cart_id: CartId,
 ) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-        "SELECT sales_channel_id, price_list_id, currency::text, status::text \
-         FROM commerce.carts WHERE store_id = $1 \
-           AND sales_channel_id = $2 AND id = $3 FOR UPDATE",
+        "SELECT cart.sales_channel_id, cart.price_list_id, price_list.currency::text, \
+                cart.status::text \
+         FROM commerce.carts AS cart \
+         INNER JOIN commerce.price_lists AS price_list \
+           ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
+         WHERE cart.store_id = $1 \
+           AND cart.sales_channel_id = $2 AND cart.id = $3 FOR UPDATE OF cart",
     )
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
@@ -151,9 +157,13 @@ async fn load_cart(
     cart_id: CartId,
 ) -> Result<Option<CartDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, CartHeaderRow>(
-        "SELECT id, shopper_id, price_list_id, currency::text, status::text, version, created_at, updated_at \
-         FROM commerce.carts WHERE store_id = $1 \
-           AND sales_channel_id = $2 AND id = $3",
+        "SELECT cart.id, cart.shopper_id, cart.price_list_id, price_list.currency::text, \
+                cart.status::text, cart.version, cart.created_at, cart.updated_at \
+         FROM commerce.carts AS cart \
+         INNER JOIN commerce.price_lists AS price_list \
+           ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
+         WHERE cart.store_id = $1 \
+           AND cart.sales_channel_id = $2 AND cart.id = $3",
     )
     .bind(actor.store_id.as_uuid())
     .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
@@ -191,11 +201,15 @@ async fn load_cart(
     }))
 }
 
+/// Media for the exact Product+Variant of each Cart line: a variant-specific
+/// asset (`media.product_variant_id` matching this line's variant) plus every
+/// product-level asset (`media.product_variant_id IS NULL`), so a line for
+/// one variant never shows another variant's exclusive photos.
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     lines: &[CartLineRow],
-) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
+) -> Result<HashMap<(Uuid, Uuid), Vec<StorefrontMediaAsset>>, ApplicationError> {
     let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();
     if product_ids.is_empty() {
         return Ok(HashMap::new());
@@ -213,16 +227,16 @@ async fn load_cart_media(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let mut media = HashMap::new();
+    let mut by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
     for row in rows {
         let kind = match row.4.as_str() {
             "image" => chaos_domain::catalog::MediaKind::Image,
             "video" => chaos_domain::catalog::MediaKind::Video,
             _ => return Err(corrupt_sales_state()),
         };
-        media
+        by_product
             .entry(row.0)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(StorefrontMediaAsset {
                 id: chaos_domain::catalog::MediaAssetId::from_uuid(row.1),
                 product_variant_id: row
@@ -235,7 +249,26 @@ async fn load_cart_media(
                 url: row.7,
             });
     }
-    Ok(media)
+    let mut by_line = HashMap::new();
+    for line in lines {
+        let (product_id, product_variant_id) = (line.0, line.1);
+        let scoped = by_product
+            .get(&product_id)
+            .map(|assets| {
+                assets
+                    .iter()
+                    .filter(|asset| {
+                        asset
+                            .product_variant_id
+                            .is_none_or(|id| id.as_uuid() == product_variant_id)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        by_line.insert((product_id, product_variant_id), scoped);
+    }
+    Ok(by_line)
 }
 
 async fn load_cart_line_rows(
@@ -260,7 +293,7 @@ async fn load_cart_line_rows(
 fn cart_line_item(
     row: CartLineRow,
     currency: CurrencyCode,
-    media: &HashMap<Uuid, Vec<StorefrontMediaAsset>>,
+    media: &HashMap<(Uuid, Uuid), Vec<StorefrontMediaAsset>>,
 ) -> Result<CartLineItem, ApplicationError> {
     let quantity = u32::try_from(row.7).map_err(unexpected_conversion)?;
     let subtotal = Money::new(row.8, currency).checked_mul(u64::from(quantity))?;
@@ -275,7 +308,7 @@ fn cart_line_item(
         quantity,
         unit_price_amount_minor: row.8,
         subtotal_amount_minor: subtotal.amount_minor(),
-        media: media.get(&row.0).cloned().unwrap_or_default(),
+        media: media.get(&(row.0, row.1)).cloned().unwrap_or_default(),
     })
 }
 

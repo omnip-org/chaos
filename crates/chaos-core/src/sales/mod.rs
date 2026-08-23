@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, FieldViolation,
+    FieldViolation,
     catalog::ProductVariantId,
     sales::{CartId, OrderContact, OrderId},
 };
@@ -20,7 +20,6 @@ pub use shipping_events::ShippingEventWorkers;
 
 pub struct CreateCartInput {
     pub actor: ShopperActor,
-    pub currency: Option<String>,
 }
 
 pub struct SetCartLineInput {
@@ -66,12 +65,7 @@ impl StorefrontSales {
         input: CreateCartInput,
     ) -> Result<CartDetail, ApplicationError> {
         input.actor.machine.require_sales_channel()?;
-        let currency = input
-            .currency
-            .as_deref()
-            .map(CurrencyCode::parse)
-            .transpose()?;
-        self.repository.create_cart(&input.actor, currency).await
+        self.repository.create_cart(&input.actor).await
     }
 
     pub async fn get_cart(

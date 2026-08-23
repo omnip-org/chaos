@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use chaos_core::contracts::{OrderDetail, OrderLineItem};
+use chaos_core::contracts::{OrderDetail, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem};
 use chaos_domain::sales::OrderId;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,37 @@ struct OrderTransitionData {
 }
 
 #[derive(Serialize)]
+struct PaymentAttemptData {
+    id: Uuid,
+    status: &'static str,
+    amount_minor: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_checkout_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_payment_intent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_charge_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
+struct RefundData {
+    id: Uuid,
+    payment_attempt_id: Uuid,
+    status: &'static str,
+    amount_minor: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_refund_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+#[derive(Serialize)]
 struct OrderData {
     id: Uuid,
     order_number: String,
@@ -76,15 +107,45 @@ struct OrderData {
     total_amount_minor: i64,
     refunded_amount_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_checkout_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_payment_intent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_charge_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     shipping_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shipping_provider_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_tracking_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_tracking_url: Option<String>,
+    lines: Vec<OrderLineData>,
+    transitions: Vec<OrderTransitionData>,
+    payment_attempts: Vec<PaymentAttemptData>,
+    refunds: Vec<RefundData>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+/// The order-tracking view served through the long-lived capability link.
+/// Contact details and the full billing/shipping address are deliberately
+/// left out — the shopper already has that in the confirmation email, and
+/// this URL is designed to be shareable without leaking it further.
+#[derive(Serialize)]
+struct TrackedOrderData {
+    id: Uuid,
+    order_number: String,
+    currency: String,
+    status: &'static str,
+    payment_status: &'static str,
+    shipping_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_locality: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_country_code: Option<String>,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    refunded_amount_minor: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shipping_tracking_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,7 +195,7 @@ async fn get_tracked_order(
     State(state): State<ApiState>,
     OrderLookupMachine(actor): OrderLookupMachine,
     ApiJson(body): ApiJson<TrackingTokenBody>,
-) -> Result<ApiResponse<OrderData>, crate::http::ApiError> {
+) -> Result<ApiResponse<TrackedOrderData>, crate::http::ApiError> {
     let order = state
         .storefront_sales
         .get_tracked_order(
@@ -143,7 +204,7 @@ async fn get_tracked_order(
             state.clock.now(),
         )
         .await?;
-    Ok(ApiResponse::ok(order_data(order)?))
+    Ok(ApiResponse::ok(tracked_order_data(order)))
 }
 
 fn contact_data(value: &chaos_domain::sales::OrderContact) -> OrderContactData {
@@ -184,9 +245,6 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
         refunded_amount_minor: order.refunded_amount_minor,
-        stripe_checkout_session_id: order.stripe_checkout_session_id,
-        stripe_payment_intent_id: order.stripe_payment_intent_id,
-        stripe_charge_id: order.stripe_charge_id,
         shipping_provider: order.shipping_provider,
         shipping_provider_reference: order.shipping_provider_reference,
         shipping_tracking_number: order.shipping_tracking_number,
@@ -195,17 +253,87 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
         transitions: order
             .transitions
             .into_iter()
-            .map(|transition| OrderTransitionData {
-                id: transition.id,
-                from_status: transition.from_status.map(|status| status.as_str()),
-                to_status: transition.to_status.as_str(),
-                kind: transition.kind,
-                occurred_at: transition.occurred_at.into(),
-            })
+            .map(order_transition_data)
             .collect(),
+        payment_attempts: order
+            .payment_attempts
+            .into_iter()
+            .map(payment_attempt_data)
+            .collect(),
+        refunds: order.refunds.into_iter().map(refund_data).collect(),
         created_at: order.created_at.into(),
         updated_at: order.updated_at.into(),
     })
+}
+
+fn tracked_order_data(order: OrderDetail) -> TrackedOrderData {
+    let shipping_address = order.identity.shipping_address();
+    TrackedOrderData {
+        id: order.id.as_uuid(),
+        order_number: order.order_number.as_str().into(),
+        currency: order.currency.as_str().to_owned(),
+        status: order.status.as_str(),
+        payment_status: order.payment_status.as_str(),
+        shipping_status: order.shipping_status.as_str(),
+        shipping_locality: shipping_address.map(|address| address.locality().to_owned()),
+        shipping_country_code: shipping_address.map(|address| address.country_code().to_owned()),
+        subtotal_amount_minor: order.subtotal_amount_minor,
+        discount_amount_minor: order.discount_amount_minor,
+        tax_amount_minor: order.tax_amount_minor,
+        shipping_amount_minor: order.shipping_amount_minor,
+        total_amount_minor: order.total_amount_minor,
+        refunded_amount_minor: order.refunded_amount_minor,
+        shipping_provider: order.shipping_provider,
+        shipping_tracking_number: order.shipping_tracking_number,
+        shipping_tracking_url: order.shipping_tracking_url,
+        lines: order.lines.into_iter().map(order_line_data).collect(),
+        transitions: order
+            .transitions
+            .into_iter()
+            .map(order_transition_data)
+            .collect(),
+        created_at: order.created_at.into(),
+        updated_at: order.updated_at.into(),
+    }
+}
+
+fn order_transition_data(
+    transition: chaos_core::contracts::OrderTransitionItem,
+) -> OrderTransitionData {
+    OrderTransitionData {
+        id: transition.id,
+        from_status: transition.from_status.map(|status| status.as_str()),
+        to_status: transition.to_status.as_str(),
+        kind: transition.kind,
+        occurred_at: transition.occurred_at.into(),
+    }
+}
+
+fn payment_attempt_data(item: OrderPaymentAttemptItem) -> PaymentAttemptData {
+    PaymentAttemptData {
+        id: item.id.as_uuid(),
+        status: item.status.as_str(),
+        amount_minor: item.amount_minor,
+        stripe_checkout_session_id: item.stripe_checkout_session_id,
+        stripe_payment_intent_id: item.stripe_payment_intent_id,
+        stripe_charge_id: item.stripe_charge_id,
+        failure_code: item.failure_code,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
+    }
+}
+
+fn refund_data(item: OrderRefundItem) -> RefundData {
+    RefundData {
+        id: item.id.as_uuid(),
+        payment_attempt_id: item.payment_attempt_id.as_uuid(),
+        status: item.status.as_str(),
+        amount_minor: item.amount_minor,
+        stripe_refund_id: item.stripe_refund_id,
+        failure_code: item.failure_code,
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
+    }
 }
 
 fn order_line_data(line: OrderLineItem) -> OrderLineData {

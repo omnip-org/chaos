@@ -67,7 +67,7 @@ impl PostgresCatalogProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO commerce.products \
-             (id, store_id, handle, title, description, status, metadata) \
+             (id, store_id, handle, title, description, status, meta) \
              VALUES ($1, $2, $3, $4, $5, $6::commerce.product_status, $7::jsonb)",
         )
         .bind(product.id().as_uuid())
@@ -117,7 +117,7 @@ impl PostgresCatalogProvisioningTransaction {
             sqlx::query(
                 "INSERT INTO commerce.product_variants \
                  (id, store_id, product_id, title, sku, status, \
-                  requires_shipping, track_inventory, metadata) \
+                  requires_shipping, track_inventory, meta) \
                  VALUES ($1, $2, $3, $4, $5, $6::commerce.variant_status, $7, $8, $9::jsonb)",
             )
             .bind(variant.id().as_uuid())

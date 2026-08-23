@@ -94,7 +94,7 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
             "UPDATE commerce.products \
-             SET handle = $3, title = $4, description = $5, metadata = $6::jsonb, \
+             SET handle = $3, title = $4, description = $5, meta = $6::jsonb, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -118,7 +118,7 @@ impl PostgresCatalogManagementTransaction {
         let result = sqlx::query(
             "UPDATE commerce.product_variants \
              SET title = $4, sku = $5, requires_shipping = $6, track_inventory = $7, \
-                 metadata = $8::jsonb, updated_at = CURRENT_TIMESTAMP \
+                 meta = $8::jsonb, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND product_id = $2 AND id = $3",
         )
         .bind(self.store_id.as_uuid())
@@ -446,7 +446,7 @@ mod tests {
             .unwrap();
         assert_eq!(updated_variant, replayed_variant);
         let stored_variant: (String, String, bool, bool, serde_json::Value) = sqlx::query_as(
-            "SELECT title, sku::text, requires_shipping, track_inventory, metadata \
+            "SELECT title, sku::text, requires_shipping, track_inventory, meta \
              FROM commerce.product_variants WHERE id = $1",
         )
         .bind(variant_id.as_uuid())

@@ -52,6 +52,17 @@ impl PostgresStoreProvisioningTransaction {
         .execute(&mut *self.transaction)
         .await
         .map_err(map_store_write_error)?;
+        // A new Store can otherwise ship nowhere: seed its home region as the
+        // first enabled shipping destination. Owners add more from there.
+        sqlx::query(
+            "INSERT INTO commerce.store_shipping_countries (store_id, country_code) \
+             VALUES ($1, $2)",
+        )
+        .bind(store.id().as_uuid())
+        .bind(store.region().as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(database_error)?;
         Ok(())
     }
 

@@ -1,11 +1,14 @@
 use crate::{
     ApplicationError,
-    contracts::{OrderDetail, OrderLineItem, OrderTransitionItem},
+    contracts::{
+        OrderDetail, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem, OrderTransitionItem,
+    },
     error::database_error,
 };
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
         OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus, OrderShippingStatus,
@@ -32,13 +35,35 @@ struct OrderHeaderRow {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    stripe_checkout_session_id: Option<String>,
-    stripe_payment_intent_id: Option<String>,
-    stripe_charge_id: Option<String>,
     shipping_provider: Option<String>,
     shipping_provider_reference: Option<String>,
     shipping_tracking_number: Option<String>,
     shipping_tracking_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct PaymentAttemptRow {
+    id: Uuid,
+    status: String,
+    amount_minor: i64,
+    stripe_checkout_session_id: Option<String>,
+    stripe_payment_intent_id: Option<String>,
+    stripe_charge_id: Option<String>,
+    failure_code: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefundRow {
+    id: Uuid,
+    payment_attempt_id: Uuid,
+    status: String,
+    amount_minor: i64,
+    stripe_refund_id: Option<String>,
+    failure_code: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -99,7 +124,6 @@ pub(crate) async fn load(
                 shipping_status::text AS shipping_status, subtotal_amount_minor, \
                 discount_amount_minor, tax_amount_minor, \
                 shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
-                stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id, \
                 shipping_provider, shipping_provider_reference, shipping_tracking_number, \
                 shipping_tracking_url, created_at, updated_at \
          FROM commerce.orders \
@@ -145,6 +169,29 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let payment_attempts = sqlx::query_as::<_, PaymentAttemptRow>(
+        "SELECT id, status::text, amount_minor, stripe_checkout_session_id, \
+                stripe_payment_intent_id, stripe_charge_id, failure_code, \
+                created_at, updated_at \
+         FROM commerce.payment_attempts WHERE store_id = $1 AND order_id = $2 \
+         ORDER BY created_at, id",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let refunds = sqlx::query_as::<_, RefundRow>(
+        "SELECT id, payment_attempt_id, status::text, amount_minor, stripe_refund_id, \
+                failure_code, created_at, updated_at \
+         FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
+         ORDER BY created_at, id",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
 
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.id),
@@ -163,9 +210,6 @@ pub(crate) async fn load(
         shipping_amount_minor: row.shipping_amount_minor,
         total_amount_minor: row.total_amount_minor,
         refunded_amount_minor: row.refunded_amount_minor,
-        stripe_checkout_session_id: row.stripe_checkout_session_id,
-        stripe_payment_intent_id: row.stripe_payment_intent_id,
-        stripe_charge_id: row.stripe_charge_id,
         shipping_provider: row.shipping_provider,
         shipping_provider_reference: row.shipping_provider_reference,
         shipping_tracking_number: row.shipping_tracking_number,
@@ -177,6 +221,14 @@ pub(crate) async fn load(
         transitions: transitions
             .into_iter()
             .map(order_transition)
+            .collect::<Result<_, _>>()?,
+        payment_attempts: payment_attempts
+            .into_iter()
+            .map(payment_attempt_item)
+            .collect::<Result<_, _>>()?,
+        refunds: refunds
+            .into_iter()
+            .map(refund_item)
             .collect::<Result<_, _>>()?,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -294,6 +346,35 @@ fn order_transition(row: OrderTransitionRow) -> Result<OrderTransitionItem, Appl
         kind: row.3,
         actor_user_id: row.4,
         occurred_at: row.5,
+    })
+}
+
+fn payment_attempt_item(
+    row: PaymentAttemptRow,
+) -> Result<OrderPaymentAttemptItem, ApplicationError> {
+    Ok(OrderPaymentAttemptItem {
+        id: PaymentAttemptId::from_uuid(row.id),
+        status: PaymentAttemptStatus::parse(&row.status).ok_or_else(corrupt_state)?,
+        amount_minor: row.amount_minor,
+        stripe_checkout_session_id: row.stripe_checkout_session_id,
+        stripe_payment_intent_id: row.stripe_payment_intent_id,
+        stripe_charge_id: row.stripe_charge_id,
+        failure_code: row.failure_code,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
+    Ok(OrderRefundItem {
+        id: RefundId::from_uuid(row.id),
+        payment_attempt_id: PaymentAttemptId::from_uuid(row.payment_attempt_id),
+        status: RefundStatus::parse(&row.status).ok_or_else(corrupt_state)?,
+        amount_minor: row.amount_minor,
+        stripe_refund_id: row.stripe_refund_id,
+        failure_code: row.failure_code,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     })
 }
 

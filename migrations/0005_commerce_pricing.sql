@@ -41,6 +41,27 @@ ALTER TABLE commerce.price_lists ADD UNIQUE (store_id, id, currency);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
 
+-- A Store trades in exactly one currency (`stores.currency`); every Price
+-- List it owns must match, so Cart/Order price resolution never has to
+-- choose between Price Lists in different currencies.
+CREATE FUNCTION commerce.check_price_list_currency()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    IF NEW.currency <> (SELECT store.currency FROM commerce.stores AS store WHERE store.id = NEW.store_id) THEN
+        RAISE EXCEPTION 'price list currency must match the store currency'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER price_lists_currency_matches_store
+    BEFORE INSERT OR UPDATE OF currency, store_id ON commerce.price_lists
+    FOR EACH ROW
+    EXECUTE FUNCTION commerce.check_price_list_currency();
+
+REVOKE ALL ON FUNCTION commerce.check_price_list_currency() FROM PUBLIC;
+
 ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
 

@@ -86,7 +86,7 @@ impl PostgresStorefrontCatalogRepository {
             SELECT variant.id, variant.title, variant.sku::text, variant.requires_shipping, \
                     variant.track_inventory, variant.on_hand_quantity, \
                     price.amount_minor, selected.currency, \
-                    variant.metadata \
+                    variant.meta \
              FROM commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
              INNER JOIN commerce.prices AS price \
@@ -303,7 +303,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 (Uuid, String, String, String, Option<serde_json::Value>),
             >(
                 "SELECT product.id, product.handle::text, product.title, product.description, \
-                        product.metadata \
+                        product.meta \
                  FROM commerce.products AS product \
                  INNER JOIN commerce.stores AS store \
                    ON store.id = product.store_id \
@@ -419,7 +419,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let mut transaction = self.begin(actor).await?;
         let row = sqlx::query_as::<_, (Uuid, String, String, String, Option<serde_json::Value>)>(
             "SELECT product.id, product.handle::text, product.title, product.description, \
-                    product.metadata \
+                    product.meta \
              FROM commerce.products AS product \
              INNER JOIN commerce.stores AS store \
                ON store.id = product.store_id \

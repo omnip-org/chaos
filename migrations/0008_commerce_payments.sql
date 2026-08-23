@@ -51,6 +51,81 @@ CREATE TABLE commerce.payment_provider_accounts (
 CREATE INDEX payment_provider_accounts_store_created_idx ON commerce.payment_provider_accounts (store_id, created_at DESC, id DESC);
 CREATE INDEX payment_provider_accounts_readiness_due_idx ON commerce.payment_provider_accounts (readiness_reconcile_at, id) WHERE enabled;
 
+CREATE TYPE commerce.payment_attempt_status AS ENUM ('pending', 'authorized', 'captured', 'failed', 'cancelled');
+CREATE TYPE commerce.refund_status AS ENUM ('pending', 'succeeded', 'failed');
+
+-- Each real attempt to pay an Order is its own row with its own identity, so
+-- a decline followed by a retry creates a second attempt with a fresh Stripe
+-- Checkout Session instead of colliding with the first attempt's reference.
+CREATE TABLE commerce.payment_attempts (
+    id                           UUID                              NOT NULL PRIMARY KEY,
+    store_id                     UUID                              NOT NULL,
+    order_id                     UUID                              NOT NULL,
+    currency                     CHAR(3)                           NOT NULL,
+    status                       commerce.payment_attempt_status   NOT NULL DEFAULT 'pending',
+    amount_minor                 BIGINT                            NOT NULL,
+    stripe_checkout_session_id   TEXT,
+    stripe_payment_intent_id     TEXT,
+    stripe_charge_id             TEXT,
+    failure_code                 TEXT,
+    provider_snapshot            JSONB,
+    created_at                   TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                   TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT payment_attempts_store_id_id_key               UNIQUE (store_id, id),
+    CONSTRAINT payment_attempts_store_id_order_currency_fkey  FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders(store_id, id, currency),
+    CONSTRAINT payment_attempts_store_id_checkout_session_key UNIQUE (store_id, stripe_checkout_session_id),
+    CONSTRAINT payment_attempts_store_id_payment_intent_key   UNIQUE (store_id, stripe_payment_intent_id),
+    CONSTRAINT payment_attempts_amount_positive_check         CHECK (amount_minor > 0),
+    CONSTRAINT payment_attempts_currency_format_check         CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT payment_attempts_checkout_session_check        CHECK (stripe_checkout_session_id IS NULL OR length(trim(stripe_checkout_session_id)) BETWEEN 1 AND 255),
+    CONSTRAINT payment_attempts_payment_intent_check          CHECK (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'),
+    CONSTRAINT payment_attempts_charge_check                  CHECK (stripe_charge_id IS NULL OR stripe_charge_id ~ '^ch_[A-Za-z0-9]+$'),
+    CONSTRAINT payment_attempts_failure_code_check            CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
+    CONSTRAINT payment_attempts_failure_code_shape_check      CHECK (status = 'failed' OR failure_code IS NULL),
+    CONSTRAINT payment_attempts_snapshot_size_check           CHECK (provider_snapshot IS NULL OR pg_column_size(provider_snapshot) <= 32768),
+    CONSTRAINT payment_attempts_snapshot_is_object_check      CHECK (provider_snapshot IS NULL OR jsonb_typeof(provider_snapshot) = 'object')
+);
+
+CREATE INDEX payment_attempts_order_created_idx ON commerce.payment_attempts (store_id, order_id, created_at DESC);
+
+-- Each Refund is its own row against the Payment Attempt it draws from, so a
+-- captured Payment Attempt can be partially refunded more than once with a
+-- full, queryable history instead of one column being overwritten per call.
+CREATE TABLE commerce.refunds (
+    id                     UUID                     NOT NULL PRIMARY KEY,
+    store_id               UUID                     NOT NULL,
+    payment_attempt_id     UUID                     NOT NULL,
+    order_id               UUID                     NOT NULL,
+    currency               CHAR(3)                  NOT NULL,
+    status                 commerce.refund_status   NOT NULL DEFAULT 'pending',
+    amount_minor           BIGINT                   NOT NULL,
+    stripe_refund_id       TEXT,
+    failure_code           TEXT,
+    reason                 TEXT,
+    created_by_user_id     UUID,
+    provider_snapshot      JSONB,
+    created_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT refunds_store_id_id_key                  UNIQUE (store_id, id),
+    CONSTRAINT refunds_store_id_payment_attempt_fkey     FOREIGN KEY (store_id, payment_attempt_id) REFERENCES commerce.payment_attempts(store_id, id),
+    CONSTRAINT refunds_store_id_order_currency_fkey      FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders(store_id, id, currency),
+    CONSTRAINT refunds_created_by_user_fkey              FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT refunds_store_id_stripe_refund_key        UNIQUE (store_id, stripe_refund_id),
+    CONSTRAINT refunds_amount_positive_check             CHECK (amount_minor > 0),
+    CONSTRAINT refunds_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT refunds_stripe_refund_check               CHECK (stripe_refund_id IS NULL OR stripe_refund_id ~ '^re_[A-Za-z0-9]+$'),
+    CONSTRAINT refunds_failure_code_check                CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
+    CONSTRAINT refunds_failure_code_shape_check          CHECK (status = 'failed' OR failure_code IS NULL),
+    CONSTRAINT refunds_reason_length_check               CHECK (reason IS NULL OR length(trim(reason)) BETWEEN 1 AND 2000),
+    CONSTRAINT refunds_snapshot_size_check               CHECK (provider_snapshot IS NULL OR pg_column_size(provider_snapshot) <= 32768),
+    CONSTRAINT refunds_snapshot_is_object_check          CHECK (provider_snapshot IS NULL OR jsonb_typeof(provider_snapshot) = 'object')
+);
+
+CREATE INDEX refunds_order_created_idx ON commerce.refunds (store_id, order_id, created_at DESC);
+CREATE INDEX refunds_payment_attempt_idx ON commerce.refunds (store_id, payment_attempt_id, created_at DESC);
+
 CREATE FUNCTION commerce.claim_event_outbox(
     batch_size INTEGER
 )
@@ -422,12 +497,22 @@ CREATE INDEX provider_webhooks_provider_account_idx ON commerce.provider_webhook
 
 ALTER TABLE commerce.payment_provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.provider_webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.payment_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.refunds ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.payment_provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.provider_webhooks
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.payment_attempts
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.refunds
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -461,10 +546,13 @@ GRANT EXECUTE ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, 
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.payment_provider_accounts,
-       commerce.provider_webhooks
+       commerce.provider_webhooks,
+       commerce.payment_attempts,
+       commerce.refunds
     TO chaos_runtime;
 
 REVOKE UPDATE, DELETE ON commerce.provider_webhooks FROM chaos_runtime;
+REVOKE DELETE ON commerce.payment_attempts, commerce.refunds FROM chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 

@@ -73,11 +73,26 @@ CREATE TABLE commerce.store_publishable_keys (
     CONSTRAINT store_publishable_keys_revocation_check      CHECK ((revoked_at IS NULL AND revoked_by_user_id IS NULL) OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL))
 );
 
+-- A Store's shipping range is an explicit set, independent of `stores.region`
+-- (which stays the Store's home/business region for tax and display context).
+CREATE TABLE commerce.store_shipping_countries (
+    store_id             UUID        NOT NULL,
+    country_code         CHAR(2)     NOT NULL,
+    enabled              BOOLEAN     NOT NULL DEFAULT true,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT store_shipping_countries_pkey                PRIMARY KEY (store_id, country_code),
+    CONSTRAINT store_shipping_countries_store_id_fkey       FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_shipping_countries_country_code_check  CHECK (country_code ~ '^[A-Z]{2}$')
+);
+
 CREATE INDEX stores_status_idx ON commerce.stores (status);
 CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
 CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
 CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
+CREATE INDEX store_shipping_countries_enabled_idx ON commerce.store_shipping_countries (store_id) WHERE enabled;
 
 CREATE FUNCTION commerce.authenticate_publishable_key(presented_public_key TEXT)
 RETURNS TABLE (
@@ -120,6 +135,7 @@ ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.store_shipping_countries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.stores
     USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -152,6 +168,10 @@ CREATE POLICY store_isolation ON commerce.store_publishable_keys
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
+CREATE POLICY store_isolation ON commerce.store_shipping_countries
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_runtime;
 
@@ -159,7 +179,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.stores,
        commerce.store_memberships,
        commerce.store_sales_channels,
-       commerce.store_publishable_keys
+       commerce.store_publishable_keys,
+       commerce.store_shipping_countries
     TO chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;

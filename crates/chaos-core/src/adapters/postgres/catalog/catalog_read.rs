@@ -112,7 +112,7 @@ impl PostgresCatalogReadRepository {
                 OffsetDateTime,
             ),
         >(
-            "SELECT id, handle::text, title, description, status::text, metadata, \
+            "SELECT id, handle::text, title, description, status::text, meta, \
                     created_at, updated_at \
              FROM commerce.products \
              WHERE store_id = $1 AND id = $2",
@@ -165,7 +165,7 @@ impl PostgresCatalogReadRepository {
             ),
         >(
             "SELECT id, title, sku::text, status::text, requires_shipping, track_inventory, \
-                    metadata, created_at, updated_at \
+                    meta, created_at, updated_at \
              FROM commerce.product_variants \
              WHERE store_id = $1 AND product_id = $2 \
              ORDER BY id ASC",

@@ -31,9 +31,7 @@ pub(crate) fn routes() -> Router<ApiState> {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CreateCartBody {
-    currency: Option<String>,
-}
+struct CreateCartBody {}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -96,14 +94,11 @@ struct CartData {
 async fn create_cart(
     State(state): State<ApiState>,
     CartShopper(actor): CartShopper,
-    ApiJson(body): ApiJson<CreateCartBody>,
+    ApiJson(CreateCartBody {}): ApiJson<CreateCartBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
     let cart = state
         .storefront_sales
-        .create_cart(CreateCartInput {
-            actor,
-            currency: body.currency,
-        })
+        .create_cart(CreateCartInput { actor })
         .await?;
     Ok(ApiResponse::created(cart_data(cart)?))
 }

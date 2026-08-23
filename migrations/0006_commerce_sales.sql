@@ -17,13 +17,16 @@ CREATE TABLE commerce.shoppers (
     CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
 );
 
+-- A Cart has no currency of its own: a Store trades in exactly one currency
+-- (`stores.currency`), and every Price List row a Cart can bind to already
+-- carries that same currency. Readers resolve display currency through
+-- `price_list_id`, not through a redundant column here.
 CREATE TABLE commerce.carts (
     id                   UUID                    NOT NULL PRIMARY KEY,
     store_id             UUID                    NOT NULL,
     sales_channel_id     UUID                    NOT NULL,
     shopper_id           UUID                    NOT NULL,
     price_list_id        UUID                    NOT NULL,
-    currency             CHAR(3)                 NOT NULL,
     status               commerce.cart_status    NOT NULL DEFAULT 'active',
     version              BIGINT                  NOT NULL DEFAULT 0,
     created_at           TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -34,8 +37,7 @@ CREATE TABLE commerce.carts (
     CONSTRAINT carts_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
     CONSTRAINT carts_sales_channel_fkey                FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels(id),
     CONSTRAINT carts_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers(store_id, id),
-    CONSTRAINT carts_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists(store_id, id, currency),
-    CONSTRAINT carts_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT carts_store_id_price_list_fkey          FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists(store_id, id),
     CONSTRAINT carts_version_nonnegative_check         CHECK (version >= 0)
 );
 
@@ -75,13 +77,14 @@ CREATE TABLE commerce.orders (
     price_list_id                UUID                               NOT NULL,
     currency                     CHAR(3)                            NOT NULL,
     status                       commerce.order_status              NOT NULL DEFAULT 'pending',
+    -- payment_status and refunded_amount_minor are projections derived from
+    -- commerce.payment_attempts and commerce.refunds; every real Stripe
+    -- reference (checkout session, payment intent, charge, refund id) and
+    -- failure detail lives on those tables, keyed by their own row, so a
+    -- retried attempt or a second partial refund gets its own identity
+    -- instead of overwriting the previous one in place.
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
     shipping_status              commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
-    stripe_checkout_session_id   TEXT,
-    stripe_payment_intent_id     TEXT,
-    stripe_charge_id             TEXT,
-    stripe_refund_id             TEXT,
-    payment_failure_code         TEXT,
     refunded_amount_minor        BIGINT                             NOT NULL DEFAULT 0,
     shipping_provider            TEXT,
     shipping_provider_reference  TEXT,
@@ -129,11 +132,6 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
     CONSTRAINT orders_billing_country_code_check        CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
     CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_stripe_checkout_session_check     CHECK (stripe_checkout_session_id IS NULL OR length(trim(stripe_checkout_session_id)) BETWEEN 1 AND 255),
-    CONSTRAINT orders_stripe_payment_intent_check       CHECK (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'),
-    CONSTRAINT orders_stripe_charge_check               CHECK (stripe_charge_id IS NULL OR stripe_charge_id ~ '^ch_[A-Za-z0-9]+$'),
-    CONSTRAINT orders_stripe_refund_check               CHECK (stripe_refund_id IS NULL OR stripe_refund_id ~ '^re_[A-Za-z0-9]+$'),
-    CONSTRAINT orders_payment_failure_code_check        CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000),
     CONSTRAINT orders_shipping_provider_check           CHECK (shipping_provider IS NULL OR length(trim(shipping_provider)) BETWEEN 1 AND 64),
     CONSTRAINT orders_shipping_reference_check          CHECK (shipping_provider_reference IS NULL OR length(trim(shipping_provider_reference)) BETWEEN 1 AND 255),
     CONSTRAINT orders_shipping_tracking_number_check    CHECK (shipping_tracking_number IS NULL OR length(trim(shipping_tracking_number)) BETWEEN 1 AND 255),

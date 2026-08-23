@@ -90,9 +90,10 @@ export interface ShopperSession {
   shopper_token: string;
 }
 
-export interface CreateCartRequest {
-  currency?: CurrencyCode;
-}
+// A Store trades in exactly one currency, so a Cart never chooses one — it
+// always inherits the Store's active Price List.
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface CreateCartRequest {}
 
 export interface CartLine {
   product_id: UUID;
@@ -162,6 +163,32 @@ export interface OrderTransition {
   occurred_at: string;
 }
 
+/** One attempt to pay an Order. A retry after a decline is a new attempt
+ * with its own id, not an overwrite of the previous one. */
+export interface OrderPaymentAttempt {
+  id: UUID;
+  status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
+  amount_minor: number;
+  stripe_checkout_session_id?: string;
+  stripe_payment_intent_id?: string;
+  stripe_charge_id?: string;
+  failure_code?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One Refund against one Payment Attempt. An Order may have more than one. */
+export interface OrderRefund {
+  id: UUID;
+  payment_attempt_id: UUID;
+  status: "pending" | "succeeded" | "failed";
+  amount_minor: number;
+  stripe_refund_id?: string;
+  failure_code?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Order {
   id: UUID;
   order_number: string;
@@ -179,11 +206,39 @@ export interface Order {
   shipping_amount_minor: number;
   total_amount_minor: number;
   refunded_amount_minor: number;
-  stripe_checkout_session_id?: string;
-  stripe_payment_intent_id?: string;
-  stripe_charge_id?: string;
   shipping_provider?: string;
   shipping_provider_reference?: string;
+  shipping_tracking_number?: string;
+  shipping_tracking_url?: string;
+  lines: OrderLine[];
+  transitions: OrderTransition[];
+  payment_attempts: OrderPaymentAttempt[];
+  refunds: OrderRefund[];
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * The order-tracking view served through the long-lived capability link.
+ * Contact details and the full billing/shipping address are intentionally
+ * absent — see `TrackedOrderData` on the API side.
+ */
+export interface TrackedOrder {
+  id: UUID;
+  order_number: string;
+  currency: CurrencyCode;
+  status: "pending" | "confirmed" | "cancelled";
+  payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+  shipping_status: "pending" | "shipped" | "delivered" | "cancelled";
+  shipping_locality?: string;
+  shipping_country_code?: string;
+  subtotal_amount_minor: number;
+  discount_amount_minor: number;
+  tax_amount_minor: number;
+  shipping_amount_minor: number;
+  total_amount_minor: number;
+  refunded_amount_minor: number;
+  shipping_provider?: string;
   shipping_tracking_number?: string;
   shipping_tracking_url?: string;
   lines: OrderLine[];

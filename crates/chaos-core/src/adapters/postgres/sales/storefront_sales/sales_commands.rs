@@ -41,16 +41,14 @@ impl PostgresStorefrontSalesRepository {
     pub(crate) async fn create_cart(
         &self,
         shopper: &ShopperActor,
-        currency: Option<CurrencyCode>,
     ) -> Result<CartDetail, ApplicationError> {
         let shopper_id = shopper.shopper_id;
         let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let (price_list_id, currency) =
-            select_price_list(&mut transaction, actor, channel_id, currency)
-                .await?
-                .ok_or_else(price_context_unavailable)?;
+        let (price_list_id, currency) = select_price_list(&mut transaction, actor, channel_id)
+            .await?
+            .ok_or_else(price_context_unavailable)?;
         let cart = Cart::create(
             actor.store_id,
             channel_id,
@@ -59,15 +57,14 @@ impl PostgresStorefrontSalesRepository {
         );
         sqlx::query(
             "INSERT INTO commerce.carts \
-             (id, store_id, shopper_id, sales_channel_id, price_list_id, currency) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, store_id, shopper_id, sales_channel_id, price_list_id) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(cart.id().as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(shopper_id.as_uuid())
         .bind(channel_id.as_uuid())
         .bind(price_list_id)
-        .bind(currency.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;

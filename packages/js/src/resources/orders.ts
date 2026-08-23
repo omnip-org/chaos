@@ -1,5 +1,5 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { DataEnvelope, Order } from "../types.js";
+import type { DataEnvelope, Order, TrackedOrder } from "../types.js";
 
 export class OrdersResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
@@ -25,7 +25,7 @@ export class OrdersResource {
     });
   }
 
-  getTrackedOrder(trackingToken: string): Promise<DataEnvelope<Order>> {
+  getTrackedOrder(trackingToken: string): Promise<DataEnvelope<TrackedOrder>> {
     return this.client.request("/order-tracking-orders", {
       method: "POST",
       body: { tracking_token: trackingToken },
