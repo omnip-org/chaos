@@ -4,7 +4,7 @@ mod operations;
 mod pricing;
 mod store;
 
-use chaos_core::ports::AdminActor;
+use chaos_core::contracts::AdminActor;
 use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
 
 use crate::http::ApiState;

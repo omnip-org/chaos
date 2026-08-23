@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, MachineActor, PublishableKeyListItem},
-    repositories::DefaultPublishableKeyGenerator,
-    repositories::PostgresPublishableKeyRepository,
+    adapters::postgres::DefaultPublishableKeyGenerator,
+    adapters::postgres::PostgresPublishableKeyRepository,
+    contracts::{AdminActor, MachineActor, PublishableKeyListItem},
 };
 use chaos_domain::store::{PublishableKey, PublishableKeyId, StoreId, StoreRole};
 

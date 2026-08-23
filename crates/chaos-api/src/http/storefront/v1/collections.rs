@@ -1,5 +1,5 @@
 use axum::{Router, extract::State, routing::get};
-use chaos_core::ports::StorefrontCollectionItem;
+use chaos_core::contracts::StorefrontCollectionItem;
 use chaos_domain::catalog::CollectionId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -9,6 +9,7 @@ use crate::http::shared::pagination::{
 };
 use crate::http::{ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine};
 
+#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/collections", get(list_collections))

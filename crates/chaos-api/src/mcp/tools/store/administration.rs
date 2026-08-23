@@ -1,5 +1,5 @@
 use chaos_core::{
-    ports::{SalesChannelAdminItem, StoreAdminItem},
+    contracts::{SalesChannelAdminItem, StoreAdminItem},
     store::{
         ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
         UpdateSalesChannelInput, UpdateStoreInput,

@@ -9,8 +9,8 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, MachineActor, ReviewSummary},
-    repositories::PostgresReviewRepository,
+    adapters::postgres::PostgresReviewRepository,
+    contracts::{AdminActor, MachineActor, ReviewSummary},
     store::Page,
 };
 
@@ -75,7 +75,7 @@ impl ReviewAdministration {
         self.repository
             .submit(
                 &input.actor,
-                crate::ports::SubmitReviewRecord {
+                crate::contracts::SubmitReviewRecord {
                     id: ReviewId::new(),
                     store_id: input.actor.store_id,
                     product_id: input.product_id,

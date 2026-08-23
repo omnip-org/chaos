@@ -3,22 +3,22 @@
 use std::sync::Arc;
 
 use chaos_core::{
-    analytics::AnalyticsDeliveryWorker,
-    ports::{
-        AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
-        StripePaymentGateway,
-    },
-    shipping_events::ShippingEventWorkers,
-    stripe::PaymentWorkers,
-};
-use chaos_core::{
-    integrations::{analytics::meta::MetaConversionsDestination, stripe::StripeGateway},
-    repositories::{
+    adapters::integrations::{analytics::meta::MetaConversionsDestination, stripe::StripeGateway},
+    adapters::postgres::{
         PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresSearchIndexer,
         PostgresShippingEventRepository, PostgresStripeRepository,
     },
+    adapters::security::provider_secrets::DynamicSecretResolver,
     runtime::{clock::SystemClock, config::Settings, state::AppState},
-    security::provider_secrets::DynamicSecretResolver,
+};
+use chaos_core::{
+    analytics::AnalyticsDeliveryWorker,
+    contracts::{
+        AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
+        StripePaymentGateway,
+    },
+    payments::PaymentWorkers,
+    sales::ShippingEventWorkers,
 };
 
 /// Dependencies used by durable polling loops, without HTTP or MCP state.

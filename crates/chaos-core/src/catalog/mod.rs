@@ -8,6 +8,7 @@ mod management;
 mod media;
 mod queries;
 mod reviews;
+mod storefront;
 
 pub(crate) fn parse_metadata(
     value: Option<serde_json::Value>,
@@ -43,3 +44,4 @@ pub use reviews::{
     AddReviewReplyInput, ApproveReviewInput, RejectReviewInput, ReviewAdministration,
     StorefrontReviews, SubmitReviewInput,
 };
+pub use storefront::{StorefrontCatalog, StorefrontProductPage};

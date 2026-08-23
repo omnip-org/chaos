@@ -4,32 +4,13 @@ mod shared;
 mod storefront;
 
 use axum::Router;
+use chaos_core::runtime::lifecycle::Lifecycle;
 use chaos_core::{
-    analytics::{AnalyticsAdministration, AnalyticsCollection},
-    catalog::{
-        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
-        MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
-    },
-    identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
-    inventory::InventoryManagement,
-    ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
-    pricing::{CreatePriceList, PricingManagement},
-    sales::{OrderManagement, StorefrontSales},
-    store::{
-        CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
-        PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
-    },
-    storefront::StorefrontCatalog,
-    stripe::{PaymentService, StripeAccountAdministration},
-};
-use std::sync::Arc;
-
-use chaos_core::{
-    integrations::{
+    adapters::integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
         stripe::{StripeGateway, StripeWebhookVerifier},
     },
-    repositories::{
+    adapters::postgres::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
         PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
         PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
@@ -41,8 +22,7 @@ use chaos_core::{
         PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
         PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
-    runtime::{clock::SystemClock, config::Settings, state::AppState},
-    security::{
+    adapters::security::{
         identity::{
             JwtAccessTokenCodec, OidcIdentityVerifier, OidcProviderConfiguration,
             PostgresAccessKeyRepository, PostgresIdentityRepository,
@@ -51,12 +31,32 @@ use chaos_core::{
         provider_secrets::DynamicSecretResolver,
         shopper::HmacShopperCredentialCodec,
     },
-    storage::media::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
+    adapters::storage::media::{
+        S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage,
+    },
+    runtime::{clock::SystemClock, config::Settings, state::AppState},
+};
+use chaos_core::{
+    analytics::{AnalyticsAdministration, AnalyticsCollection},
+    catalog::StorefrontCatalog,
+    catalog::{
+        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
+        MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
+    },
+    contracts::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
+    identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
+    inventory::InventoryManagement,
+    payments::{PaymentService, StripeAccountAdministration},
+    pricing::{CreatePriceList, PricingManagement},
+    sales::{OrderManagement, StorefrontSales},
+    store::{
+        CreateStore, ProviderSecretManagement, PublishableKeyAuthentication,
+        PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
+    },
 };
 use secrecy::ExposeSecret as _;
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
-
-use chaos_core::runtime::lifecycle::Lifecycle;
 
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
@@ -268,14 +268,14 @@ impl ApiState {
             payment_secrets.clone(),
         )?);
         let payment_provider =
-            stripe_gateway.clone() as Arc<dyn chaos_core::ports::StripePaymentGateway>;
+            stripe_gateway.clone() as Arc<dyn chaos_core::contracts::StripePaymentGateway>;
         let payment_onboarding =
-            stripe_gateway.clone() as Arc<dyn chaos_core::ports::StripeAccountReadiness>;
+            stripe_gateway.clone() as Arc<dyn chaos_core::contracts::StripeAccountReadiness>;
         let webhook_verifier = Arc::new(StripeWebhookVerifier::new(
             payment_repository.clone(),
             payment_secrets,
         ))
-            as Arc<dyn chaos_core::ports::StripeWebhookSignatureVerifier>;
+            as Arc<dyn chaos_core::contracts::StripeWebhookSignatureVerifier>;
         let payment_service = PaymentService::new(
             payment_repository.clone(),
             webhook_verifier,

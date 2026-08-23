@@ -5,7 +5,7 @@ use axum::{
 };
 use chaos_core::{
     catalog::SubmitReviewInput,
-    ports::{
+    contracts::{
         ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
         StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
         StorefrontSelectedOption,
@@ -400,8 +400,8 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use chaos_core::ports::GeneratedPublishableKey;
-    use chaos_core::repositories::DefaultPublishableKeyGenerator;
+    use chaos_core::adapters::postgres::DefaultPublishableKeyGenerator;
+    use chaos_core::contracts::GeneratedPublishableKey;
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
@@ -541,7 +541,7 @@ mod tests {
         let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
-            chaos_core::repositories::PostgresSearchIndexer::new(
+            chaos_core::adapters::postgres::PostgresSearchIndexer::new(
                 state.infrastructure.runtime_pool(),
             )
             .run_batch(100, state.clock.now())

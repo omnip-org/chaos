@@ -8,11 +8,11 @@ use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    ports::{
+    adapters::postgres::PostgresMediaAssetRepository,
+    contracts::{
         AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaStorage,
         MediaUploadRequest,
     },
-    repositories::PostgresMediaAssetRepository,
 };
 
 pub struct CreateMediaAssetInput {
@@ -205,7 +205,7 @@ impl MediaAdministration {
     }
     async fn upload(
         &self,
-        pending: &crate::ports::PendingMediaUpload,
+        pending: &crate::contracts::PendingMediaUpload,
         now: OffsetDateTime,
     ) -> Result<MediaUploadRequest, ApplicationError> {
         let descriptor = MediaDescriptor::new(

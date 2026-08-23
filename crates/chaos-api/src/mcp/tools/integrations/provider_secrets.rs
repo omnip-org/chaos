@@ -58,7 +58,7 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let kind = match chaos_core::ports::ProviderSecretKind::parse(&params.kind) {
+        let kind = match chaos_core::contracts::ProviderSecretKind::parse(&params.kind) {
             Some(kind) => kind,
             None => {
                 return Ok(CallToolResult::structured_error(json!({

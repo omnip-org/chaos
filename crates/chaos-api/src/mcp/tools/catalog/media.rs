@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use chaos_core::{
     catalog::{CreateMediaAssetInput, MediaAssetActionInput},
-    ports::MediaAssetItem,
+    contracts::MediaAssetItem,
 };
 use chaos_domain::catalog::{MediaAssetId, ProductId, ProductVariantId};
 use rmcp::{

@@ -10,8 +10,8 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, SalesChannelAdminItem, StoreAdminItem},
-    repositories::PostgresStoreAdministrationRepository,
+    adapters::postgres::PostgresStoreAdministrationRepository,
+    contracts::{AdminActor, SalesChannelAdminItem, StoreAdminItem},
 };
 
 use super::Page;

@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use chaos_core::ports::{OrderDetail, OrderLineItem};
+use chaos_core::contracts::{OrderDetail, OrderLineItem};
 use chaos_domain::sales::OrderId;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use crate::http::{
     ApiDateTime, ApiJson, ApiPath, ApiResponse, ApiState, CartShopper, OrderLookupMachine,
 };
 
+#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/orders/{order_id}", get(get_order))

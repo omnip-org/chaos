@@ -1,4 +1,4 @@
-use chaos_core::stripe::CreateRefundInput;
+use chaos_core::payments::CreateRefundInput;
 use chaos_domain::payments::PaymentAttemptId;
 use rmcp::{
     ErrorData,

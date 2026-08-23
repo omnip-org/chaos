@@ -9,8 +9,8 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError, catalog::parse_metadata, ports::AdminActor,
-    repositories::PostgresCatalogManagementRepository,
+    ApplicationError, adapters::postgres::PostgresCatalogManagementRepository,
+    catalog::parse_metadata, contracts::AdminActor,
 };
 
 pub struct UpdateProductInput {

@@ -261,7 +261,7 @@ impl ChaosMcp {
     }
 }
 
-fn review_summary(item: chaos_core::ports::ReviewSummary) -> serde_json::Value {
+fn review_summary(item: chaos_core::contracts::ReviewSummary) -> serde_json::Value {
     json!({
         "id": item.id.as_uuid(),
         "product_id": item.product_id.as_uuid(),

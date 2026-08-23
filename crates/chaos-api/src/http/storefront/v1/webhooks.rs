@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::http::{ApiPath, ApiResponse, ApiState};
 
+#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new().route("/webhooks/stripe/{store_id}", post(receive_webhook))
 }

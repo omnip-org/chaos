@@ -7,7 +7,7 @@ use axum::{
 use chaos_core::runtime::{config::Settings, state::AppState};
 use chaos_core::{
     ApplicationError,
-    ports::{AccessTokenGrant, IdentityAuthentication},
+    contracts::{AccessTokenGrant, IdentityAuthentication},
 };
 use chaos_domain::identity::{IdentityProvider, UserId};
 use secrecy::SecretString;

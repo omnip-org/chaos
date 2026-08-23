@@ -1,6 +1,6 @@
 use chaos_core::{
-    ports::StripeAccountDetail,
-    stripe::{CreateStripeAccountInput, UpdateStripeAccountInput},
+    contracts::StripeAccountDetail,
+    payments::{CreateStripeAccountInput, UpdateStripeAccountInput},
 };
 use chaos_domain::{store::StoreId, stripe::StripeAccountId};
 use rmcp::{

@@ -8,11 +8,11 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{
+    adapters::postgres::PostgresCollectionRepository,
+    contracts::{
         AdminActor, CollectionDetail, CollectionPublicationRecord, CreateCollectionRecord,
         MachineActor, StorefrontCollectionItem,
     },
-    repositories::PostgresCollectionRepository,
     store::Page,
 };
 
@@ -94,7 +94,7 @@ impl CollectionAdministration {
         store_id: StoreId,
         after: Option<CollectionId>,
         limit: u16,
-    ) -> Result<Page<crate::ports::CollectionListItem>, ApplicationError> {
+    ) -> Result<Page<crate::contracts::CollectionListItem>, ApplicationError> {
         let limit = limit.clamp(1, 100);
         let mut items = self
             .repository

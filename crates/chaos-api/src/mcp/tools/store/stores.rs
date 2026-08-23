@@ -1,5 +1,5 @@
 use chaos_core::{
-    ports::{StoreListItem, StoreMembershipItem},
+    contracts::{StoreListItem, StoreMembershipItem},
     store::CreateStoreInput,
 };
 use chaos_domain::{

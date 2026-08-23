@@ -4,8 +4,8 @@ use chaos_domain::{FieldViolation, catalog::ProductVariantId, store::StoreId};
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, InventoryAdjustment, VariantInventoryView},
-    repositories::PostgresInventoryRepository,
+    adapters::postgres::PostgresInventoryRepository,
+    contracts::{AdminActor, InventoryAdjustment, VariantInventoryView},
 };
 
 pub struct AdjustInventoryInput {

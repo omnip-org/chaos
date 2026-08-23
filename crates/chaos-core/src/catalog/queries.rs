@@ -4,8 +4,8 @@ use chaos_domain::{catalog::ProductId, store::StoreId};
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, CatalogProductDetail, CatalogProductListItem},
-    repositories::PostgresCatalogReadRepository,
+    adapters::postgres::PostgresCatalogReadRepository,
+    contracts::{AdminActor, CatalogProductDetail, CatalogProductListItem},
 };
 
 pub struct ProductPage {

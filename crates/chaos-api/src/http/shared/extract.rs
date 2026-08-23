@@ -7,7 +7,7 @@ use axum::{
 };
 use chaos_core::{
     ApplicationError,
-    ports::{MachineActor, ShopperActor},
+    contracts::{MachineActor, ShopperActor},
     store::StoreActor,
 };
 use chaos_domain::{FieldViolation, identity::UserId, store::StoreId};

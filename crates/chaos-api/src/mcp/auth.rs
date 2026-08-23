@@ -1,7 +1,7 @@
 use chaos_core::{
     ApplicationError,
+    contracts::{AdminActor, McpPrincipal},
     identity::AccessKeyAuthentication,
-    ports::{AdminActor, McpPrincipal},
     store::StoreQueries,
 };
 use chaos_domain::store::StoreId;
@@ -97,11 +97,11 @@ mod tests {
 
     use async_trait::async_trait;
     use chaos_core::{
-        identity::AccessKeyAuthentication,
-        ports::{
+        contracts::{
             AccessKeyListItem, AccessKeyRepository, GeneratedAccessKeyMaterial, McpPrincipal,
             StoreListItem, StoreReadRepository,
         },
+        identity::AccessKeyAuthentication,
         store::StoreQueries,
     };
     use chaos_domain::{

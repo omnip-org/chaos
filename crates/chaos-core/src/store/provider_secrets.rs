@@ -5,8 +5,8 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, ProviderSecretKind, ProviderSecretWriter},
-    repositories::PostgresStoreAdministrationRepository,
+    adapters::postgres::PostgresStoreAdministrationRepository,
+    contracts::{AdminActor, ProviderSecretKind, ProviderSecretWriter},
 };
 
 pub struct CreateProviderSecretInput {

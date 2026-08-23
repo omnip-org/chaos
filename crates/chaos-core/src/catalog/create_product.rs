@@ -7,8 +7,8 @@ use chaos_domain::{
 };
 
 use crate::{
-    ApplicationError, catalog::parse_metadata, ports::AdminActor,
-    repositories::PostgresCatalogProvisioningRepository,
+    ApplicationError, adapters::postgres::PostgresCatalogProvisioningRepository,
+    catalog::parse_metadata, contracts::AdminActor,
 };
 
 pub struct CreateProductOptionInput {

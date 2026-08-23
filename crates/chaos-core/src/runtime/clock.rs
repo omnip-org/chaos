@@ -1,4 +1,4 @@
-use crate::ports::Clock;
+use crate::contracts::Clock;
 use time::OffsetDateTime;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -14,7 +14,7 @@ impl Clock for SystemClock {
 
 #[cfg(test)]
 mod tests {
-    use crate::ports::Clock;
+    use crate::contracts::Clock;
 
     use super::SystemClock;
 

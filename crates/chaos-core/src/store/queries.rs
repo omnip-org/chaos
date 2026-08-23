@@ -7,7 +7,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
-    ports::{StoreListItem, StoreReadRepository},
+    contracts::{StoreListItem, StoreReadRepository},
 };
 
 pub struct Page<T> {

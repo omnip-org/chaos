@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::http::{ApiResponse, ApiState, CartMachine};
 
+#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new().route("/shopper-sessions", post(create_shopper_session))
 }

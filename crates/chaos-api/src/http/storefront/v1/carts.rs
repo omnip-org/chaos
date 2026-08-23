@@ -6,10 +6,10 @@ use axum::{
 };
 use chaos_core::{
     ApplicationError,
-    ports::{CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset},
+    contracts::{CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset},
+    payments::CreatePaymentAttemptInput,
     sales::CreateStripeCheckoutInput,
     sales::{CreateCartInput, RemoveCartLineInput, SetCartLineInput},
-    stripe::CreatePaymentAttemptInput,
 };
 use chaos_domain::{catalog::ProductVariantId, sales::CartId};
 use secrecy::ExposeSecret;
@@ -303,7 +303,7 @@ fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use chaos_core::ports::PaymentClientAction;
+    use chaos_core::contracts::PaymentClientAction;
     use secrecy::SecretString;
     use serde_json::json;
 

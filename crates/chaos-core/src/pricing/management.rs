@@ -9,8 +9,8 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, PriceListDetail},
-    repositories::PostgresPricingManagementRepository,
+    adapters::postgres::PostgresPricingManagementRepository,
+    contracts::{AdminActor, PriceListDetail},
 };
 
 use super::CreatePriceInput;
@@ -34,7 +34,7 @@ pub struct ChangePriceListStatusInput {
 }
 
 pub struct PriceListPage {
-    pub items: Vec<crate::ports::PriceListReadItem>,
+    pub items: Vec<crate::contracts::PriceListReadItem>,
     pub has_more: bool,
 }
 

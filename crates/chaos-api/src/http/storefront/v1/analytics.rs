@@ -2,7 +2,7 @@ use axum::{Router, extract::State, routing::post};
 use chaos_core::{
     ApplicationError,
     analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput},
-    ports::AnalyticsEventInput,
+    contracts::AnalyticsEventInput,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::http::shared::response::parse_api_time;
 use crate::http::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState};
 
+#[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new().route("/analytics/events", post(collect_events))
 }

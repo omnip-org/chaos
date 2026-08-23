@@ -8,8 +8,8 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
-    repositories::PostgresOrderManagementRepository,
+    adapters::postgres::PostgresOrderManagementRepository,
+    contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
 };
 
 pub struct ChangeOrderStatusInput {

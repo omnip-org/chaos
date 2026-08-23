@@ -9,12 +9,14 @@ use time::{Duration, OffsetDateTime};
 
 use crate::{
     ApplicationError,
-    ports::{CartDetail, MachineActor, ShopperActor, StripeCheckoutDraft},
-    repositories::PostgresStorefrontSalesRepository,
+    adapters::postgres::PostgresStorefrontSalesRepository,
+    contracts::{CartDetail, MachineActor, ShopperActor, StripeCheckoutDraft},
 };
 
 mod order_management;
+mod shipping_events;
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
+pub use shipping_events::ShippingEventWorkers;
 
 pub struct CreateCartInput {
     pub actor: ShopperActor,
@@ -134,7 +136,7 @@ impl StorefrontSales {
         &self,
         actor: &ShopperActor,
         order_id: OrderId,
-    ) -> Result<crate::ports::OrderDetail, ApplicationError> {
+    ) -> Result<crate::contracts::OrderDetail, ApplicationError> {
         actor.machine.require_sales_channel()?;
         self.repository
             .get_order(actor, order_id)
@@ -150,7 +152,7 @@ impl StorefrontSales {
         actor: &MachineActor,
         tracking_token: &secrecy::SecretString,
         now: OffsetDateTime,
-    ) -> Result<crate::ports::OrderDetail, ApplicationError> {
+    ) -> Result<crate::contracts::OrderDetail, ApplicationError> {
         actor.require_sales_channel()?;
         self.repository
             .get_tracked_order(actor, tracking_token, now)

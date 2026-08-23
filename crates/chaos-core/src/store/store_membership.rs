@@ -7,7 +7,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
-    ports::{StoreMembershipItem, StoreMembershipRepository},
+    contracts::{StoreMembershipItem, StoreMembershipRepository},
 };
 
 use super::StoreActor;

@@ -55,7 +55,7 @@ mod tests {
     use axum::http::{Method, StatusCode};
     use chaos_core::{
         ApplicationError,
-        ports::{AccessTokenGrant, IdentityAuthentication},
+        contracts::{AccessTokenGrant, IdentityAuthentication},
     };
     use chaos_domain::identity::UserId;
     use serde_json::json;

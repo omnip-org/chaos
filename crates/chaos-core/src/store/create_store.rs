@@ -6,7 +6,7 @@ use chaos_domain::{
     store::{SalesChannel, Store, StoreCode, StoreId, StoreMembership},
 };
 
-use crate::{ApplicationError, repositories::PostgresStoreProvisioningRepository};
+use crate::{ApplicationError, adapters::postgres::PostgresStoreProvisioningRepository};
 
 pub struct CreateStoreInput {
     pub user_id: UserId,
