@@ -4,17 +4,15 @@ CREATE TYPE identity.user_status AS ENUM ('active', 'disabled');
 CREATE TYPE identity.identity_provider AS ENUM ('apple', 'google');
 
 CREATE TABLE identity.users (
-    id          UUID                    NOT NULL,
-    email       extensions.citext       NOT NULL,
-    status      identity.user_status    NOT NULL DEFAULT 'active',
-    created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id          UUID                     NOT NULL,
+    email       extensions.citext        NOT NULL,
+    status      identity.user_status     NOT NULL DEFAULT 'active',
+    created_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT users_pkey PRIMARY KEY (id),
-    CONSTRAINT users_email_key UNIQUE (email),
-    CONSTRAINT users_email_length_check CHECK (
-        length(trim(email::text)) BETWEEN 3 AND 320
-    )
+    CONSTRAINT users_pkey                PRIMARY KEY (id),
+    CONSTRAINT users_email_key           UNIQUE (email),
+    CONSTRAINT users_email_length_check  CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
 );
 
 CREATE TABLE identity.credentials (
@@ -26,16 +24,12 @@ CREATE TABLE identity.credentials (
     created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT credentials_pkey PRIMARY KEY (provider, subject),
-    CONSTRAINT credentials_user_id_fkey FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT credentials_provider_user_id_key UNIQUE (provider, user_id),
-    CONSTRAINT credentials_subject_length_check CHECK (
-        octet_length(subject) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT credentials_email_length_check CHECK (
-        length(trim(email::text)) BETWEEN 3 AND 320
-    )
+    CONSTRAINT credentials_pkey                      PRIMARY KEY (provider, subject),
+    CONSTRAINT credentials_user_id_fkey              FOREIGN KEY (user_id)
+        REFERENCES identity.users (id) ON DELETE CASCADE,
+    CONSTRAINT credentials_provider_user_id_key      UNIQUE (provider, user_id),
+    CONSTRAINT credentials_subject_length_check      CHECK (octet_length(subject) BETWEEN 1 AND 255),
+    CONSTRAINT credentials_email_length_check        CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
 );
 
 CREATE TABLE identity.access_keys (
@@ -51,25 +45,15 @@ CREATE TABLE identity.access_keys (
     created_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT access_keys_pkey PRIMARY KEY (id),
-    CONSTRAINT access_keys_user_id_fkey FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT access_keys_key_identifier_key UNIQUE (key_identifier),
-    CONSTRAINT access_keys_key_identifier_format_check CHECK (
-        key_identifier ~ '^[A-Za-z0-9_-]{16}$'
-    ),
-    CONSTRAINT access_keys_secret_digest_length_check CHECK (
-        octet_length(secret_digest) = 32
-    ),
-    CONSTRAINT access_keys_display_suffix_format_check CHECK (
-        display_suffix ~ '^[A-Za-z0-9_-]{4}$'
-    ),
-    CONSTRAINT access_keys_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 80
-    ),
-    CONSTRAINT access_keys_expiration_check CHECK (
-        expires_at IS NULL OR expires_at > created_at
-    )
+    CONSTRAINT access_keys_pkey                         PRIMARY KEY (id),
+    CONSTRAINT access_keys_user_id_fkey                 FOREIGN KEY (user_id)
+        REFERENCES identity.users (id) ON DELETE CASCADE,
+    CONSTRAINT access_keys_key_identifier_key           UNIQUE (key_identifier),
+    CONSTRAINT access_keys_key_identifier_format_check  CHECK (key_identifier ~ '^[A-Za-z0-9_-]{16}$'),
+    CONSTRAINT access_keys_secret_digest_length_check   CHECK (octet_length(secret_digest) = 32),
+    CONSTRAINT access_keys_display_suffix_format_check  CHECK (display_suffix ~ '^[A-Za-z0-9_-]{4}$'),
+    CONSTRAINT access_keys_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 80),
+    CONSTRAINT access_keys_expiration_check             CHECK (expires_at IS NULL OR expires_at > created_at)
 );
 
 CREATE INDEX credentials_user_id_idx ON identity.credentials (user_id, provider);

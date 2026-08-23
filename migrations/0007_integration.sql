@@ -1,8 +1,5 @@
 CREATE SCHEMA integration;
 
-COMMENT ON SCHEMA integration IS
-    'Reliable integration delivery, notifications, and analytical processing';
-
 CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 
 CREATE TYPE integration.delivery_status AS ENUM ('pending', 'processed', 'dead_letter');
@@ -63,9 +60,6 @@ SELECT cron.schedule(
      )
     $$
 );
-
-COMMENT ON COLUMN integration.idempotency_keys.expires_at IS
-    'After this time the idempotency replay snapshot may be removed; default retention is seven days.';
 
 CREATE TABLE integration.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
@@ -990,11 +984,6 @@ REVOKE UPDATE, DELETE
        integration.analytics_deliveries
     FROM chaos_runtime;
 
-COMMENT ON TABLE integration.analytics_destinations IS
-    'Store-scoped configuration for an external analytics destination.';
-COMMENT ON TABLE integration.analytics_deliveries IS
-    'Durable delivery state for an Analytics event and external destination.';
-
 -- Cross-Store scheduling is kept behind one reviewed SECURITY DEFINER routine.
 CREATE FUNCTION integration.schedule_analytics_deliveries(
     batch_size INTEGER
@@ -1050,11 +1039,6 @@ SELECT cron.schedule(
     'SELECT partman.run_maintenance();'
 );
 
-COMMENT ON TABLE integration.analytics_events IS
-    'Append-only Store-scoped Analytics event log partitioned daily by received_at; retention is manual.';
-COMMENT ON TABLE integration.analytics_deliveries IS
-    'Provider delivery observations; remove rows before manually dropping event-log partitions.';
-
 -- === Runtime hardening ===
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -1080,9 +1064,3 @@ REVOKE UPDATE, DELETE
        integration.analytics_events,
        integration.analytics_deliveries
     FROM chaos_runtime;
-
-COMMENT ON ROLE chaos_runtime IS
-    'Non-owner application role. RLS applies; login roles must SET ROLE chaos_runtime.';
-
-COMMENT ON ROLE chaos_identity IS
-    'Non-owner identity role. It cannot access Store-owned commerce tables.';

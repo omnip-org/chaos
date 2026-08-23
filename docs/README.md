@@ -81,8 +81,10 @@ not in application use cases.
 
 - `openapi/` contains the generated or reviewed HTTP contracts.
 - `packages/js/` is the Storefront JavaScript client.
-- `migrations/0001_platform.sql`, `0002_identity.sql`, `0003_commerce.sql`,
-  and `0004_integration.sql` are the fresh bootstrap schema. The commerce
+- `migrations/0001_platform.sql`, `0002_identity.sql`,
+  `0003_commerce.sql`, `0004_commerce_catalog.sql`,
+  `0005_commerce_pricing.sql`, `0006_commerce_sales.sql`, and
+  `0007_integration.sql` are the fresh bootstrap schema. The commerce
   schema persists one `commerce.shoppers` identity per website visit; cart,
   checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS

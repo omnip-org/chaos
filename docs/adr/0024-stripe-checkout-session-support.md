@@ -109,5 +109,5 @@ becomes the authoritative business snapshot after webhook reconciliation.
 - Existing Webhook endpoints using the removed unscoped URL must be replaced
   in Stripe Dashboard before the new deployment receives events.
 - The fresh bootstrap keeps the Stripe-only provider constraint and unified
-  Order model in `migrations/0003_commerce.sql`; it does not carry a legacy
+  Order model in `migrations/0006_commerce_sales.sql`; it does not carry a legacy
   provider-account conversion path.

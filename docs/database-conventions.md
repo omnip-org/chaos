@@ -73,14 +73,13 @@ Identity access uses the non-owner `chaos_identity` role. It can access only the
 
 Migration files use zero-padded sequence numbers and concise English names. Before `1.0`, bootstrap migrations may be rewritten only when every environment using them contains disposable data and the release includes a coordinated database recreation or migration-history reset. Otherwise, applied migrations are immutable and changes fix forward.
 
-The bootstrap uses one file per business schema: `0002_identity.sql`,
-`0003_commerce.sql`, and `0004_integration.sql`. Large schema files use
-`-- === Capability ===` section markers so humans and tools can jump directly
-to a capability without inferring schema ownership from multiple files.
-Within each capability, define objects in dependency order: types, tables,
-indexes, routines, triggers, row-level security, policies, and grants. Keep a
-routine beside the tables it operates on instead of grouping every routine at
-the end of a large schema file.
+The bootstrap uses one file for identity and multiple capability files for
+commerce: `0002_identity.sql`, `0003_commerce.sql`,
+`0004_commerce_catalog.sql`, `0005_commerce_pricing.sql`, and
+`0006_commerce_sales.sql`. Integration follows them as `0007_integration.sql`.
+All commerce capability files use the existing `commerce` schema. Within each
+file, define objects in dependency order: types, tables, indexes, routines,
+triggers, row-level security, policies, and grants.
 
 Production startup never runs migrations. Releases use a separate migration job and expand/migrate/contract changes when adjacent application versions may overlap. Destructive operations, table rewrites, large backfills, and blocking indexes require an explicit rollout plan.
 

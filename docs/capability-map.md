@@ -109,7 +109,7 @@ when adding a route, tool, service, or worker:
 | Worker dependency construction | `crates/chaos-api/src/runtime.rs` |
 | Worker polling and dispatch | `crates/chaos-api/src/workers.rs` |
 | Repository public exports | `crates/chaos-infrastructure/src/repositories/mod.rs` |
-| Database ownership | `migrations/0001_platform.sql` through `0004_integration.sql` |
+| Database ownership | `migrations/0001_platform.sql` through `0007_integration.sql` |
 
 If a new file is added but one of these registration points is not updated,
 the code may compile while the route, MCP tool, or Worker remains unreachable.
