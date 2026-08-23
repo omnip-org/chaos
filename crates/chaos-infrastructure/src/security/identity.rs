@@ -222,7 +222,7 @@ impl IdentityRepository for PostgresIdentityRepository {
             .map_err(database_error)?;
         let existing: Option<(Uuid, String)> = sqlx::query_as(
             "SELECT external_identity.user_id, identity_user.status::TEXT \
-             FROM identity.external_identities AS external_identity \
+             FROM identity.credentials AS external_identity \
              INNER JOIN identity.users AS identity_user \
                 ON identity_user.id = external_identity.user_id \
              WHERE external_identity.provider = $1::identity.identity_provider \
@@ -249,7 +249,7 @@ impl IdentityRepository for PostgresIdentityRepository {
             .await
             .map_err(identity_write_error)?;
         sqlx::query(
-            "INSERT INTO identity.external_identities \
+            "INSERT INTO identity.credentials \
              (provider, subject, user_id, email) \
              VALUES ($1::identity.identity_provider, $2, $3, $4)",
         )

@@ -53,7 +53,7 @@ only for explicit Store-local rules.
 
 ## Identity
 
-`identity.users` owns the internal user identifier and current verified email. `identity.external_identities` maps a provider subject to a User. Provider subjects are opaque, case-sensitive strings and form a composite key with provider.
+`identity.users` owns the internal user identifier and current verified email. `identity.credentials` maps a provider subject to a User. Provider subjects are opaque, case-sensitive strings and form a composite key with provider.
 
 Identity access uses the non-owner `chaos_identity` role. It can access only the `identity` schema. It must not gain access to Store-owned tables merely to simplify a query.
 

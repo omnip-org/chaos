@@ -21,7 +21,7 @@ CREATE TABLE identity.users (
     )
 );
 
-CREATE TABLE identity.external_identities (
+CREATE TABLE identity.credentials (
     provider    identity.identity_provider  NOT NULL,
     subject     TEXT                        NOT NULL,
     user_id     UUID                        NOT NULL,
@@ -29,14 +29,14 @@ CREATE TABLE identity.external_identities (
     created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT external_identities_pkey PRIMARY KEY (provider, subject),
-    CONSTRAINT external_identities_user_id_fkey FOREIGN KEY (user_id)
+    CONSTRAINT credentials_pkey PRIMARY KEY (provider, subject),
+    CONSTRAINT credentials_user_id_fkey FOREIGN KEY (user_id)
         REFERENCES identity.users(id) ON DELETE CASCADE,
-    CONSTRAINT external_identities_provider_user_id_key UNIQUE (provider, user_id),
-    CONSTRAINT external_identities_subject_length_check CHECK (
+    CONSTRAINT credentials_provider_user_id_key UNIQUE (provider, user_id),
+    CONSTRAINT credentials_subject_length_check CHECK (
         octet_length(subject) BETWEEN 1 AND 255
     ),
-    CONSTRAINT external_identities_email_length_check CHECK (
+    CONSTRAINT credentials_email_length_check CHECK (
         length(trim(email::text)) BETWEEN 3 AND 320
     )
 );
@@ -75,8 +75,8 @@ CREATE TABLE identity.access_keys (
     )
 );
 
-CREATE INDEX external_identities_user_idx
-    ON identity.external_identities (user_id, provider);
+CREATE INDEX credentials_user_idx
+    ON identity.credentials (user_id, provider);
 
 CREATE INDEX access_keys_user_id_idx
     ON identity.access_keys (user_id, id);
