@@ -66,6 +66,19 @@ CREATE TABLE commerce.store_locales (
     )
 );
 
+CREATE TABLE commerce.store_currencies (
+    store_id             UUID       NOT NULL,
+    currency             CHAR(3)    NOT NULL,
+    enabled              BOOLEAN    NOT NULL DEFAULT true,
+
+    PRIMARY KEY (store_id, currency),
+    FOREIGN KEY (store_id)
+        REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_currencies_currency_format_check CHECK (
+        currency ~ '^[A-Z]{3}$'
+    )
+);
+
 CREATE TABLE commerce.store_sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
     store_id             UUID                              NOT NULL,
@@ -85,19 +98,6 @@ CREATE TABLE commerce.store_sales_channels (
     ),
     CONSTRAINT store_sales_channels_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 120
-    )
-);
-
-CREATE TABLE commerce.store_currencies (
-    store_id             UUID       NOT NULL,
-    currency             CHAR(3)    NOT NULL,
-    enabled              BOOLEAN    NOT NULL DEFAULT true,
-
-    PRIMARY KEY (store_id, currency),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT store_currencies_currency_format_check CHECK (
-        currency ~ '^[A-Z]{3}$'
     )
 );
 
