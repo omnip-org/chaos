@@ -9,8 +9,12 @@ impl PostgresStripeRepository {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
+        // total_amount_minor is not yet known here: it is a Stripe-reported
+        // fact filled in by the checkout webhook once Stripe applies tax and
+        // shipping. subtotal_amount_minor is the pre-tax reference amount
+        // Chaos already knows at checkout start.
         let order = sqlx::query_as::<_, (i64, String, String, String)>(
-            "SELECT total_amount_minor, currency::text, status::text, payment_status::text \
+            "SELECT subtotal_amount_minor, currency::text, status::text, payment_status::text \
                     FROM commerce.orders \
              WHERE store_id = $1 AND sales_channel_id = $2 \
                AND id = $3 AND shopper_id = $4 FOR UPDATE",
