@@ -274,7 +274,7 @@ impl PostgresStorefrontSalesRepository {
               price_list_id, currency, contact_email, \
               subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
               shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,0,$12,$12) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,$12,$12) \
              ON CONFLICT (store_id, sales_channel_id, shopper_id, request_id) DO NOTHING \
              RETURNING id",
         )
