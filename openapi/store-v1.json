@@ -704,7 +704,7 @@
         "name": "currency",
         "in": "query",
         "required": false,
-        "description": "Enabled Store currency. Defaults to the Store default currency.",
+        "description": "The Store currency used when no currency is specified.",
         "schema": {
           "type": "string",
           "pattern": "^[A-Z]{3}$"

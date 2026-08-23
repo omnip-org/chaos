@@ -356,11 +356,13 @@ impl StripePaymentRepository for PostgresStripeRepository {
         if !matches!(job.event_type.as_str(), "payment.create_requested" | "refund.create_requested") {
             return Err(invalid_outbox_payload());
         }
-        let row = sqlx::query_as::<_, (i64, String, Uuid, String, Option<String>, Uuid)>(
+        let row = sqlx::query_as::<_, (i64, String, String, Uuid, String, Option<String>, Uuid)>(
             "SELECT sales_order.total_amount_minor, sales_order.currency::text, \
-                    account.id, account.credential_secret_reference, \
+                    btrim(store.region::text), account.id, account.credential_secret_reference, \
                     sales_order.stripe_payment_intent_id, sales_order.id \
              FROM commerce.orders AS sales_order \
+             INNER JOIN commerce.stores AS store \
+               ON store.id = sales_order.store_id \
              INNER JOIN commerce.payment_provider_accounts AS account \
                ON account.store_id = sales_order.store_id \
               AND account.provider = 'stripe_checkout' AND account.enabled \
@@ -384,7 +386,7 @@ impl StripePaymentRepository for PostgresStripeRepository {
         if command_amount != outbox_amount(job)? || row.1 != outbox_currency(job)? {
             return Err(invalid_outbox_payload());
         }
-        if job.event_type == "refund.create_requested" && row.4.is_none() {
+        if job.event_type == "refund.create_requested" && row.5.is_none() {
             return Err(ApplicationError::Conflict {
                 code: "stripe_payment_reference_missing",
                 message: "the captured Payment Attempt has no Stripe payment reference",
@@ -412,7 +414,7 @@ impl StripePaymentRepository for PostgresStripeRepository {
                  FROM commerce.orders WHERE store_id = $1 AND id = $2",
             )
             .bind(job.store_id)
-            .bind(row.5)
+            .bind(row.6)
             .fetch_optional(&mut *transaction)
             .await
             .map_err(database_error)?
@@ -447,10 +449,11 @@ impl StripePaymentRepository for PostgresStripeRepository {
                  ORDER BY position",
             )
             .bind(job.store_id)
-            .bind(row.5)
+            .bind(row.6)
             .fetch_all(&mut *transaction)
             .await
             .map_err(database_error)?;
+            let has_shippable_items = line_rows.iter().any(|line| line.5);
             let line_items = line_rows
                 .into_iter()
                 .map(|line| {
@@ -466,9 +469,16 @@ impl StripePaymentRepository for PostgresStripeRepository {
                     })
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
+            // The current Store region is the only allowed shipping destination.
+            // Stripe collects the destination in Checkout and uses it for tax.
+            let shipping_countries = if has_shippable_items {
+                vec![row.2.clone()]
+            } else {
+                Vec::new()
+            };
             // Shipping rates and destination rules belong to Stripe Checkout.
             // Chaos only stores the address and the provider's final shipping amount.
-            let (shipping_countries, shipping_options) = (Vec::new(), Vec::new());
+            let shipping_options = Vec::new();
             Some(PaymentCheckoutDetails {
                 customer_email: contact.0,
                 customer_phone: contact.1,
@@ -484,7 +494,7 @@ impl StripePaymentRepository for PostgresStripeRepository {
         transaction.commit().await.map_err(database_error)?;
         let return_url = outbox_return_url(job);
         Ok(StripeCommand {
-            stripe_account_id: StripeAccountId::from_uuid(row.2),
+            stripe_account_id: StripeAccountId::from_uuid(row.3),
             event_type: job.event_type.clone(),
             aggregate_id,
             amount_minor: command_amount,
@@ -492,9 +502,9 @@ impl StripePaymentRepository for PostgresStripeRepository {
             idempotency_key: job.id.to_string(),
             credential_secret_reference: PaymentSecretReference::new(
                 "credential_secret_reference",
-                row.3,
+                row.4,
             )?,
-            stripe_payment_reference: row.4,
+            stripe_payment_reference: row.5,
             checkout_details,
             return_url,
         })

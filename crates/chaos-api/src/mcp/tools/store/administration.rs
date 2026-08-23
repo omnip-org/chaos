@@ -117,10 +117,8 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(
-        description = "Update the selected Store's code, name, default region, \
-                        and default currency. Requires confirm: true and an idempotency_key."
-    )]
+    #[tool(description = "Update the selected Store's code, name, region, \
+                        and currency. Requires confirm: true and an idempotency_key.")]
     async fn update_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
