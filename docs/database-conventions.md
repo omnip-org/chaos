@@ -76,7 +76,8 @@ Migration files use zero-padded sequence numbers and concise English names. Befo
 The bootstrap uses one file for identity and multiple capability files for
 commerce: `0002_identity.sql`, `0003_commerce.sql`,
 `0004_commerce_catalog.sql`, `0005_commerce_pricing.sql`, and
-`0006_commerce_sales.sql`. Integration follows them as `0007_integration.sql`.
+`0006_commerce_sales.sql`. Integration follows them as
+`0007_integration.sql` and `0008_integration_analytics.sql`.
 All commerce capability files use the existing `commerce` schema. Within each
 file, define objects in dependency order: types, tables, indexes, routines,
 triggers, row-level security, policies, and grants.

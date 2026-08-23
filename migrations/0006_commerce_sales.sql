@@ -5,12 +5,12 @@ CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.shoppers (
-    id             UUID        NOT NULL PRIMARY KEY,
-    store_id       UUID        NOT NULL,
-    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id               UUID                  NOT NULL PRIMARY KEY,
+    store_id         UUID                  NOT NULL,
+    first_seen_at    TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at     TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT shoppers_store_id_id_key    UNIQUE (store_id, id),
     CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
@@ -183,14 +183,14 @@ CREATE TABLE commerce.order_lines (
 );
 
 CREATE TABLE commerce.order_transitions (
-    id                   UUID                            NOT NULL PRIMARY KEY,
-    store_id             UUID                            NOT NULL,
-    order_id             UUID                            NOT NULL,
+    id                   UUID                             NOT NULL PRIMARY KEY,
+    store_id             UUID                             NOT NULL,
+    order_id             UUID                             NOT NULL,
     from_status          commerce.order_status,
-    to_status            commerce.order_status           NOT NULL,
-    kind                 commerce.order_transition_kind  NOT NULL,
+    to_status            commerce.order_status            NOT NULL,
+    kind                 commerce.order_transition_kind   NOT NULL,
     actor_user_id        UUID,
-    occurred_at          TIMESTAMPTZ                     NOT NULL,
+    occurred_at          TIMESTAMPTZ                      NOT NULL,
 
     CONSTRAINT order_transitions_store_id_order_id_id_key UNIQUE (store_id, order_id, id),
     CONSTRAINT order_transitions_store_id_order_fkey      FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
