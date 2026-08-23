@@ -280,7 +280,7 @@ impl StripePaymentGateway for StripeGateway {
             .ok_or_else(stripe_invalid_response)?;
         let mut form = vec![
             ("mode".into(), "payment".into()),
-            ("ui_mode".into(), "embedded".into()),
+            ("ui_mode".into(), "embedded_page".into()),
             ("return_url".into(), return_url.into()),
             (
                 "customer_email".into(),
@@ -762,6 +762,11 @@ async fn parse_stripe_response(
             source: anyhow::anyhow!("Stripe returned HTTP {status}"),
         })
     } else {
+        // Stripe's error body carries the actionable detail (bad param,
+        // account misconfiguration); the client only ever sees a generic
+        // rejection, so this is the only place that detail is visible.
+        let body = response.text().await.unwrap_or_default();
+        tracing::warn!(status = %status, body = %body, "Stripe rejected the request");
         Err(ApplicationError::Conflict {
             code: "stripe_request_rejected",
             message: "Stripe rejected the payment operation",
@@ -1115,7 +1120,7 @@ mod tests {
                 url::form_urlencoded::parse(requests[0].body.as_bytes())
                     .map(|(key, value)| (key.into_owned(), value.into_owned()))
                     .collect();
-            assert_eq!(checkout_form["ui_mode"], "embedded");
+            assert_eq!(checkout_form["ui_mode"], "embedded_page");
             assert_eq!(
                 checkout_form["return_url"],
                 "https://shop.example.com/success"
@@ -1240,7 +1245,7 @@ mod tests {
         let form: HashMap<_, _> =
             url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
         assert_eq!(form["mode"], "payment");
-        assert_eq!(form["ui_mode"], "embedded");
+        assert_eq!(form["ui_mode"], "embedded_page");
         assert_eq!(form["return_url"], "https://shop.example.com/success");
         assert_eq!(form["customer_email"], "buyer@example.com");
         assert_eq!(form["phone_number_collection[enabled]"], "true");
