@@ -21,9 +21,9 @@ preserve the dependency direction in
 
 | Runtime | Entry point | Responsibility |
 | --- | --- | --- |
-| HTTP API | `crates/chaos-api/src/main.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, and health |
+| HTTP API | `crates/chaos-api/src/bin/chaos-api.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, and health |
 | MCP | `crates/chaos-api/src/mcp/router.rs` | AI-operated Store administration authenticated by User Access Keys |
-| Worker | `crates/chaos-worker/src/main.rs` | Durable polling and Provider reconciliation outside API replicas |
+| Worker | `crates/chaos-worker/src/bin/chaos-worker.rs` | Durable polling and Provider reconciliation outside API replicas |
 | Migration job | `crates/chaos-api/src/bin/chaos-migrate.rs` | Applies SQL migrations before an application rollout |
 
 ## Dependency layers
@@ -61,8 +61,8 @@ HTTP delivery code is grouped by public responsibility under
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
 - `storefront/v1/carts.rs` and `webhooks.rs` contain payment creation and Provider callback endpoints;
-- `operations/` contains health checks;
-- `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
+- `health.rs` contains health checks;
+- `shared/` contains transport extractors, envelopes, and test support.
 
 MCP delivery keeps protocol concerns separate from commerce capabilities under
 `crates/chaos-api/src/mcp/`:
@@ -80,8 +80,7 @@ not in application use cases.
 
 ## Contracts and operations
 
-- `openapi/` contains the generated or reviewed HTTP contracts.
-- `packages/js/` is the Storefront JavaScript client.
+- `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
 - `migrations/0001_platform.sql`, `0002_identity.sql`,
   `0003_commerce.sql`, `0004_commerce_catalog.sql`,
   `0005_commerce_pricing.sql`, `0006_commerce_sales.sql`,

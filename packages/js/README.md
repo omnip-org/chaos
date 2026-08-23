@@ -1,8 +1,8 @@
 # @omnip-org/chaos-js
 
 A typed client and first-party analytics collector for the Chaos Commerce
-[Storefront API](../../openapi/storefront-v1.json) — the public-key-authenticated
-surface meant to be called directly from storefront browsers. One SDK covers
+Storefront API — the public-key-authenticated surface meant to be called
+directly from storefront browsers. The SDK is the typed public contract. One SDK covers
 catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
 
 ## Install
@@ -142,6 +142,5 @@ npm run build --prefix packages/js
 npm test --prefix packages/js
 ```
 
-Types in `src/types.ts` are hand-written to mirror
-[`openapi/storefront-v1.json`](../../openapi/storefront-v1.json); keep both in sync
-when the Store API contract changes.
+Types in `src/types.ts` are the hand-written Storefront wire contract; keep them
+in sync with the public routes and response handlers when the Store API changes.

@@ -1,5 +1,5 @@
+mod health;
 mod identity;
-mod operations;
 mod shared;
 mod storefront;
 
@@ -339,10 +339,9 @@ impl ApiState {
 pub fn router(state: ApiState) -> Router {
     let mcp_router = crate::mcp::router(state.clone());
     Router::new()
-        .nest("/health", operations::health::routes())
-        .nest("/identity/v1", identity::auth::routes())
+        .nest("/health", health::routes())
+        .nest("/identity/v1", identity::v1::routes())
         .nest("/storefront/v1", storefront::v1::routes())
-        .nest("/openapi", shared::openapi::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -444,7 +443,6 @@ mod tests {
                 Method::POST,
                 "/storefront/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
             ),
-            (Method::GET, "/openapi/storefront-v1.json"),
         ];
 
         for (method, path) in requests {
@@ -497,49 +495,6 @@ mod tests {
         let body = to_bytes(response.into_body(), 2048).await.unwrap();
         let json = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(json["error"]["code"], "invalid_json");
-    }
-
-    #[tokio::test]
-    async fn identity_openapi_contract_is_publicly_available() {
-        let response = router(test_state())
-            .oneshot(
-                Request::get("/openapi/identity-v1.json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["content-type"],
-            "application/vnd.oai.openapi+json"
-        );
-
-        let body = to_bytes(response.into_body(), 2 * 1024 * 1024)
-            .await
-            .unwrap();
-        let contract = serde_json::from_slice::<Value>(&body).unwrap();
-        assert_eq!(contract["info"]["title"], "Chaos Identity API");
-        assert_eq!(contract["openapi"], "3.1.0");
-    }
-
-    #[tokio::test]
-    async fn store_openapi_contract_is_publicly_available() {
-        let response = router(test_state())
-            .oneshot(
-                Request::get("/openapi/storefront-v1.json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers()["content-type"],
-            "application/vnd.oai.openapi+json"
-        );
     }
 
     #[tokio::test]

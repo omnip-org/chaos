@@ -1,3 +1,3 @@
 //! Identity and access-key HTTP endpoints.
 
-pub(super) mod auth;
+pub(super) mod v1;

@@ -3,10 +3,7 @@ use chaos_infrastructure::runtime::{
     config::Settings, lifecycle::Lifecycle, state::AppState, telemetry,
 };
 
-mod runtime;
-mod workers;
-
-use runtime::WorkerRuntime;
+use chaos_worker::{runtime::WorkerRuntime, workers};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

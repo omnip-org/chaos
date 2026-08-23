@@ -74,7 +74,7 @@ TEST_DATABASE_URL=postgres://chaos:chaos@localhost:55432/chaos \
 
 Start with the [Repository Guide](docs/README.md) to locate a product area, then
 see [Product Model](docs/product-model.md), [Architecture](docs/architecture.md),
-[Database Conventions](docs/database-conventions.md), the OpenAPI contracts in
-[`openapi/`](openapi), and [Contributing](CONTRIBUTING.md).
+[Database Conventions](docs/database-conventions.md), the typed Storefront SDK
+contract in [`packages/js/`](packages/js), and [Contributing](CONTRIBUTING.md).
 
 For the production topology, first-host bootstrap, encrypted dynamic Store Provider secrets, and release procedure, see [Production Deployment](docs/deployment.md).

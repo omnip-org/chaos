@@ -1,6 +1,6 @@
 /**
- * Types mirror openapi/storefront-v1.json exactly. Keep both in sync when the
- * contract changes; field names stay snake_case to match the wire format.
+ * Public Storefront SDK wire types. Field names stay snake_case to match the
+ * API response format.
  */
 
 export type UUID = string;

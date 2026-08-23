@@ -1,8 +1,7 @@
-//! Shared HTTP extractors, errors, pagination, responses, and contract support.
+//! Shared HTTP extractors, errors, pagination, responses, and test support.
 
 pub(crate) mod error;
 pub(crate) mod extract;
-pub(crate) mod openapi;
 pub(crate) mod pagination;
 pub(crate) mod response;
 

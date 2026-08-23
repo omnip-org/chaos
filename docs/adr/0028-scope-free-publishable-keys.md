@@ -24,7 +24,8 @@ enforce resource ownership, Shopper or tracking credentials, idempotency, busine
 state, validation, and rate limits where applicable.
 
 Publishable Keys have no scope enum, scope collection, or configurable scope input.
-OpenAPI uses the API-key security scheme without OAuth-style scope values.
+The Storefront SDK exposes the API-key authentication model without OAuth-style
+scope values.
 
 ## Consequences
 

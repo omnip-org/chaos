@@ -13,6 +13,8 @@ mod shopper_sessions;
 mod webhooks;
 
 pub(crate) fn routes() -> Router<ApiState> {
+    // Keep these public resource routes synchronized with the Storefront SDK
+    // resources and wire types under packages/js/.
     Router::new()
         .merge(products::routes())
         .merge(collections::routes())

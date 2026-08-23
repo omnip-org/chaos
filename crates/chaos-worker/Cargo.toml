@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "chaos-worker"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 chaos-application = { path = "../chaos-application" }

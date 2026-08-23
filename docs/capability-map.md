@@ -27,7 +27,7 @@ composition root; neither delivery boundary accesses Infrastructure directly.
 
 | Capability | HTTP delivery | MCP tools | Application | Ports | Infrastructure | Worker / queue |
 | --- | --- | --- | --- | --- | --- | --- |
-| Identity and Access Keys | `crates/chaos-api/src/http/identity/` | — | `crates/chaos-application/src/identity.rs` | `crates/chaos-application/src/ports/identity.rs` | `crates/chaos-infrastructure/src/security/identity.rs` | — |
+| Identity and Access Keys | `crates/chaos-api/src/http/identity/v1/` | — | `crates/chaos-application/src/identity.rs` | `crates/chaos-application/src/ports/identity.rs` | `crates/chaos-infrastructure/src/security/identity.rs` | — |
 | Stores and memberships | — | `crates/chaos-api/src/mcp/tools/store/` | `crates/chaos-application/src/store/` | `crates/chaos-application/src/ports/store*.rs` | `crates/chaos-infrastructure/src/repositories/store/` | — |
 | Catalog and media | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-application/src/catalog/` | `crates/chaos-application/src/ports/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-infrastructure/src/repositories/catalog/`, `storage/media.rs` | Search indexing in `crates/chaos-worker/src/workers.rs` |
 | Price lists | — | `crates/chaos-api/src/mcp/tools/pricing/` | `crates/chaos-application/src/pricing/` | `crates/chaos-application/src/ports/pricing*.rs` | `crates/chaos-infrastructure/src/repositories/pricing/` | — |
@@ -125,7 +125,7 @@ For a capability change, search and verify in this order:
 3. Find the Infrastructure implementation of that port.
 4. Follow any referenced queue, outbox, integration, or Worker.
 5. Check the registration point listed above.
-6. Check the relevant migration, OpenAPI contract, MCP tool description, and tests.
+6. Check the relevant migration, SDK contract, MCP tool description, and tests.
 
 Use the capability name and the domain term together when searching. For
 example, checkout work should search for `checkout`, `reservation`, and
