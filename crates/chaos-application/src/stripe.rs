@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    payments::{PaymentAttemptId, PaymentSecretReference, StripeAccount, StripeAccountId},
+    payments::PaymentAttemptId,
     sales::OrderId,
     store::{StoreId, StoreRole},
+    stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;

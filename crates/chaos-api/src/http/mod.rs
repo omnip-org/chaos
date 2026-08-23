@@ -12,7 +12,6 @@ use chaos_application::{
     },
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
-    payments::{PaymentService, StripeAccountAdministration},
     ports::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
     pricing::{CreatePriceList, PricingManagement},
     sales::{OrderManagement, StorefrontSales},
@@ -21,25 +20,26 @@ use chaos_application::{
         PublishableKeyManagement, StoreAdministration, StoreMembershipManagement, StoreQueries,
     },
     storefront::StorefrontCatalog,
+    stripe::{PaymentService, StripeAccountAdministration},
 };
 use std::sync::Arc;
 
 use chaos_infrastructure::{
     integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
-        payments::stripe::{StripeGateway, StripeWebhookVerifier},
+        stripe::{StripeGateway, StripeWebhookVerifier},
     },
     repositories::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
         PostgresAnalyticsEventStore, PostgresCatalogManagementUnitOfWork,
         PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
         PostgresCollectionRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresOrderManagementRepository, PostgresPaymentRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
-        PostgresPublishableKeyRepository, PostgresReviewRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
-        PostgresStoreProvisioningUnitOfWork, PostgresStoreReadRepository,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresOrderManagementRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningUnitOfWork, PostgresPublishableKeyRepository,
+        PostgresReviewRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
+        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::{
@@ -265,9 +265,8 @@ impl ApiState {
         let order_management = OrderManagement::new(Arc::new(
             PostgresOrderManagementRepository::new(infrastructure.runtime_pool()),
         ));
-        let payment_repository = Arc::new(PostgresPaymentRepository::new(
-            infrastructure.runtime_pool(),
-        ));
+        let payment_repository =
+            Arc::new(PostgresStripeRepository::new(infrastructure.runtime_pool()));
         let payment_secrets = dynamic_secrets.clone();
         let stripe_gateway = Arc::new(StripeGateway::new(
             settings.stripe_api_base_url.clone(),

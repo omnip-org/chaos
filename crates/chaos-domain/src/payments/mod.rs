@@ -1,8 +1,6 @@
 use uuid::Uuid;
 
-use crate::{
-    DomainError, FieldViolation, MAX_SECRET_REFERENCE_LEN, pricing::Money, sales::OrderId,
-};
+use crate::{DomainError, FieldViolation, pricing::Money, sales::OrderId};
 
 macro_rules! payment_id {
     ($name:ident) => {
@@ -33,92 +31,6 @@ macro_rules! payment_id {
 
 payment_id!(PaymentAttemptId);
 payment_id!(RefundId);
-payment_id!(StripeAccountId);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StripeAccount {
-    id: StripeAccountId,
-    display_name: String,
-    enabled: bool,
-}
-
-impl StripeAccount {
-    pub fn create(display_name: impl Into<String>, enabled: bool) -> Result<Self, DomainError> {
-        Self::rehydrate(StripeAccountId::new(), display_name, enabled)
-    }
-
-    pub fn rehydrate(
-        id: StripeAccountId,
-        display_name: impl Into<String>,
-        enabled: bool,
-    ) -> Result<Self, DomainError> {
-        let display_name = display_name.into();
-        validate_printable("display_name", &display_name, 120)?;
-        Ok(Self {
-            id,
-            display_name,
-            enabled,
-        })
-    }
-
-    pub const fn id(&self) -> StripeAccountId {
-        self.id
-    }
-    pub fn display_name(&self) -> &str {
-        &self.display_name
-    }
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-    pub fn update_administration(
-        &mut self,
-        display_name: impl Into<String>,
-        enabled: bool,
-    ) -> Result<(), DomainError> {
-        let display_name = display_name.into();
-        validate_printable("display_name", &display_name, 120)?;
-        self.display_name = display_name;
-        self.enabled = enabled;
-        Ok(())
-    }
-}
-
-#[derive(Clone, Eq, PartialEq)]
-pub struct PaymentSecretReference(String);
-
-impl PaymentSecretReference {
-    pub fn new(field: &'static str, value: impl Into<String>) -> Result<Self, DomainError> {
-        let value = value.into();
-        if value.is_empty()
-            || value.len() > MAX_SECRET_REFERENCE_LEN
-            || !value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':')
-            })
-        {
-            return Err(validation(
-                field,
-                "must be a 1-32768 character secret-manager reference",
-            ));
-        }
-        Ok(Self(value))
-    }
-
-    pub fn expose_reference(&self) -> &str {
-        &self.0
-    }
-}
-
-fn validate_printable(field: &'static str, value: &str, maximum: usize) -> Result<(), DomainError> {
-    if value.trim().is_empty()
-        || value.chars().count() > maximum
-        || value.chars().any(char::is_control)
-    {
-        Err(validation(field, "must contain bounded printable text"))
-    } else {
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentAttemptStatus {
     Pending,
@@ -157,7 +69,7 @@ pub struct PaymentAttempt {
     order_id: OrderId,
     amount: Money,
     status: PaymentAttemptStatus,
-    stripe_checkout_session_id: Option<String>,
+    provider_reference: Option<String>,
 }
 
 impl PaymentAttempt {
@@ -170,7 +82,7 @@ impl PaymentAttempt {
             order_id,
             amount,
             status: PaymentAttemptStatus::Pending,
-            stripe_checkout_session_id: None,
+            provider_reference: None,
         })
     }
 
@@ -179,14 +91,14 @@ impl PaymentAttempt {
         order_id: OrderId,
         amount: Money,
         status: PaymentAttemptStatus,
-        stripe_checkout_session_id: Option<String>,
+        provider_reference: Option<String>,
     ) -> Self {
         Self {
             id,
             order_id,
             amount,
             status,
-            stripe_checkout_session_id,
+            provider_reference,
         }
     }
 
@@ -206,12 +118,12 @@ impl PaymentAttempt {
         self.status
     }
 
-    pub fn stripe_checkout_session_id(&self) -> Option<&str> {
-        self.stripe_checkout_session_id.as_deref()
+    pub fn provider_reference(&self) -> Option<&str> {
+        self.provider_reference.as_deref()
     }
 
-    pub fn authorize(&mut self, stripe_checkout_session_id: String) -> Result<bool, DomainError> {
-        self.bind_stripe_checkout_session_id(stripe_checkout_session_id)?;
+    pub fn authorize(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.bind_provider_reference(provider_reference)?;
         self.advance(PaymentAttemptStatus::Authorized)
     }
 
@@ -219,41 +131,35 @@ impl PaymentAttempt {
         self.advance(PaymentAttemptStatus::Captured)
     }
 
-    pub fn fail(
-        &mut self,
-        stripe_checkout_session_id: Option<String>,
-    ) -> Result<bool, DomainError> {
-        if let Some(reference) = stripe_checkout_session_id {
-            self.bind_stripe_checkout_session_id(reference)?;
+    pub fn fail(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
+        if let Some(reference) = provider_reference {
+            self.bind_provider_reference(reference)?;
         }
         self.advance(PaymentAttemptStatus::Failed)
     }
 
-    pub fn cancel(
-        &mut self,
-        stripe_checkout_session_id: Option<String>,
-    ) -> Result<bool, DomainError> {
-        if let Some(reference) = stripe_checkout_session_id {
-            self.bind_stripe_checkout_session_id(reference)?;
+    pub fn cancel(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
+        if let Some(reference) = provider_reference {
+            self.bind_provider_reference(reference)?;
         }
         self.advance(PaymentAttemptStatus::Cancelled)
     }
 
-    fn bind_stripe_checkout_session_id(&mut self, value: String) -> Result<(), DomainError> {
+    fn bind_provider_reference(&mut self, value: String) -> Result<(), DomainError> {
         if value.trim().is_empty() || value.chars().count() > 255 {
             return Err(validation(
-                "stripe_checkout_session_id",
+                "provider_reference",
                 "must contain 1-255 characters",
             ));
         }
-        match &self.stripe_checkout_session_id {
+        match &self.provider_reference {
             Some(existing) if existing != &value => Err(validation(
-                "stripe_checkout_session_id",
+                "provider_reference",
                 "is immutable once assigned",
             )),
             Some(_) => Ok(()),
             None => {
-                self.stripe_checkout_session_id = Some(value);
+                self.provider_reference = Some(value);
                 Ok(())
             }
         }
@@ -326,7 +232,7 @@ pub struct Refund {
     payment_attempt_id: PaymentAttemptId,
     amount: Money,
     status: RefundStatus,
-    stripe_refund_id: Option<String>,
+    provider_reference: Option<String>,
 }
 
 impl Refund {
@@ -358,7 +264,7 @@ impl Refund {
             payment_attempt_id: payment_attempt.id,
             amount,
             status: RefundStatus::Pending,
-            stripe_refund_id: None,
+            provider_reference: None,
         })
     }
 
@@ -367,14 +273,14 @@ impl Refund {
         payment_attempt_id: PaymentAttemptId,
         amount: Money,
         status: RefundStatus,
-        stripe_refund_id: Option<String>,
+        provider_reference: Option<String>,
     ) -> Self {
         Self {
             id,
             payment_attempt_id,
             amount,
             status,
-            stripe_refund_id,
+            provider_reference,
         }
     }
 
@@ -394,36 +300,37 @@ impl Refund {
         self.status
     }
 
-    pub fn stripe_refund_id(&self) -> Option<&str> {
-        self.stripe_refund_id.as_deref()
+    pub fn provider_reference(&self) -> Option<&str> {
+        self.provider_reference.as_deref()
     }
 
-    pub fn succeed(&mut self, stripe_refund_id: String) -> Result<bool, DomainError> {
-        self.finish(RefundStatus::Succeeded, stripe_refund_id)
+    pub fn succeed(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.finish(RefundStatus::Succeeded, provider_reference)
     }
 
-    pub fn fail(&mut self, stripe_refund_id: String) -> Result<bool, DomainError> {
-        self.finish(RefundStatus::Failed, stripe_refund_id)
+    pub fn fail(&mut self, provider_reference: String) -> Result<bool, DomainError> {
+        self.finish(RefundStatus::Failed, provider_reference)
     }
 
     fn finish(
         &mut self,
         target: RefundStatus,
-        stripe_refund_id: String,
+        provider_reference: String,
     ) -> Result<bool, DomainError> {
-        if self.status == target && self.stripe_refund_id.as_deref() == Some(&stripe_refund_id) {
+        if self.status == target && self.provider_reference.as_deref() == Some(&provider_reference)
+        {
             return Ok(false);
         }
         if self.status != RefundStatus::Pending {
             return Err(invalid_transition(self.status.as_str(), target.as_str()));
         }
-        if stripe_refund_id.trim().is_empty() || stripe_refund_id.chars().count() > 255 {
+        if provider_reference.trim().is_empty() || provider_reference.chars().count() > 255 {
             return Err(validation(
-                "stripe_refund_id",
+                "provider_reference",
                 "must contain 1-255 characters",
             ));
         }
-        self.stripe_refund_id = Some(stripe_refund_id);
+        self.provider_reference = Some(provider_reference);
         self.status = target;
         Ok(true)
     }
@@ -467,10 +374,7 @@ mod tests {
                 .cancel(Some("provider-cancelled-1".into()))
                 .unwrap()
         );
-        assert_eq!(
-            cancelled.stripe_checkout_session_id(),
-            Some("provider-cancelled-1")
-        );
+        assert_eq!(cancelled.provider_reference(), Some("provider-cancelled-1"));
         assert!(
             cancelled
                 .cancel(Some("provider-cancelled-2".into()))
@@ -490,18 +394,5 @@ mod tests {
         assert!(refund.succeed("refund".into()).unwrap());
         assert!(!refund.succeed("refund".into()).unwrap());
         assert!(refund.fail("other".into()).is_err());
-    }
-
-    #[test]
-    fn stripe_accounts_validate_names_and_opaque_secret_references() {
-        assert!(StripeAccount::create("Stripe", false).is_ok());
-        assert!(
-            PaymentSecretReference::new("credential_secret_reference", "enc://c3RyaXBlLWxpdmU")
-                .is_ok()
-        );
-        assert!(
-            PaymentSecretReference::new("credential_secret_reference", "secret with spaces")
-                .is_err()
-        );
     }
 }

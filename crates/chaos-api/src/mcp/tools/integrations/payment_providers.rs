@@ -1,8 +1,8 @@
 use chaos_application::{
-    payments::{CreateStripeAccountInput, UpdateStripeAccountInput},
     ports::StripeAccountDetail,
+    stripe::{CreateStripeAccountInput, UpdateStripeAccountInput},
 };
-use chaos_domain::payments::StripeAccountId;
+use chaos_domain::stripe::StripeAccountId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},

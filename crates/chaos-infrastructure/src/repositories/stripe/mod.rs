@@ -9,5 +9,3 @@ include!("provider_accounts.rs");
 include!("readiness.rs");
 include!("payment_commands.rs");
 include!("events.rs");
-include!("snapshots.rs");
-include!("payment_helpers.rs");

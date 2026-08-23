@@ -1,7 +1,7 @@
 // Payment provider account configuration and onboarding persistence.
 
 #[async_trait]
-impl StripeAccountRepository for PostgresPaymentRepository {
+impl StripeAccountRepository for PostgresStripeRepository {
     async fn list(
         &self,
         actor: StoreActor,

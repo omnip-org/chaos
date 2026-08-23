@@ -1,4 +1,142 @@
-// Payment configuration helpers, outbox payload parsing, provider account lookup, and shared errors.
+// Payment repository core wiring, provider implementations, and shared imports.
+
+use async_trait::async_trait;
+use base64::{
+    Engine,
+    engine::general_purpose::URL_SAFE_NO_PAD,
+};
+use chaos_application::{
+    ApplicationError,
+    ports::{
+        AdminActor, IdempotencyRequest, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
+        PaymentLineItem, StripeAccountConfiguration,
+        StripeAccountDetail, StripeAccountPage, StripeAccountRepository,
+        StripeReadiness, StripeReadinessJob, StripeReadinessQueue, StripeReadinessStatus,
+        StripePaymentRepository,
+        PaymentShippingAddress,
+        StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
+        StripeCommandResult, QueueJob, RefundDetail, ShopperActor,
+        StripeWebhookEvent,
+    },
+    store::StoreActor,
+};
+use chaos_domain::{
+    CurrencyCode,
+    payments::{
+        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, Refund, RefundId, RefundStatus,
+    },
+    pricing::Money,
+    sales::{Order, OrderId, OrderStatus},
+    stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
+    store::{SalesChannelId, StoreId},
+};
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use sqlx::{PgPool, Postgres, Transaction};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use crate::repositories::{
+    analytics::{AnalyticsEventToAppend, append_event},
+    shared::idempotency::{self, IdempotencyScope},
+};
+
+const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";
+const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
+
+fn generate_order_tracking_token() -> (String, [u8; 32]) {
+    let mut secret = [0_u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
+    let digest = Sha256::digest(plaintext.as_bytes()).into();
+    (plaintext, digest)
+}
+const CREATE_REFUND_OPERATION: &str = "refunds.create.v1";
+const CREATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.create.v1";
+const UPDATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.update.v1";
+type ProviderAccountRow = (
+    Uuid,
+    String,
+    String,
+    bool,
+    bool,
+    String,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Value,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+
+#[derive(Clone)]
+pub struct PostgresStripeRepository {
+    pool: PgPool,
+}
+
+impl PostgresStripeRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    async fn begin_machine(
+        &self,
+        actor: &MachineActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        self.begin_context(None, actor.store_id.as_uuid()).await
+    }
+
+    async fn begin_shopper(
+        &self,
+        shopper: &ShopperActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.begin_machine(&shopper.machine).await?;
+        set_config(
+            &mut transaction,
+            "app.shopper_id",
+            shopper.shopper_id.as_uuid(),
+        )
+        .await?;
+        Ok(transaction)
+    }
+
+    async fn begin_human(
+        &self,
+        actor: StoreActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        self.begin_context(Some(actor.user_id().as_uuid()), actor.store_id().as_uuid())
+            .await
+    }
+
+    async fn begin_admin(
+        &self,
+        actor: &AdminActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        self.begin_context(
+            Some(actor.audit_user_id().as_uuid()),
+            actor.store_id().as_uuid(),
+        )
+        .await
+    }
+
+    async fn begin_context(
+        &self,
+        user_id: Option<Uuid>,
+        store_id: Uuid,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        if let Some(user_id) = user_id {
+            set_config(&mut transaction, "app.user_id", user_id).await?;
+        }
+        set_config(&mut transaction, "app.store_id", store_id).await?;
+        Ok(transaction)
+    }
+}
+
+// Shared transaction helpers, provider account reconstruction, and idempotency snapshots.
 
 async fn set_config(
     transaction: &mut Transaction<'static, Postgres>,
@@ -102,7 +240,7 @@ async fn load_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     id: StripeAccountId,
-    ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
+) -> Result<Option<StripeAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
@@ -278,4 +416,90 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
         }
         _ => ApplicationError::Unexpected(error.into()),
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttemptSnapshot {
+    id: Uuid,
+    order_id: Uuid,
+    amount_minor: i64,
+    currency: String,
+    status: String,
+    stripe_checkout_session_id: Option<String>,
+    failure_code: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RefundSnapshot {
+    id: Uuid,
+    payment_attempt_id: Uuid,
+    amount_minor: i64,
+    currency: String,
+    status: String,
+    stripe_refund_id: Option<String>,
+    failure_code: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn attempt_snapshot(detail: &PaymentAttemptDetail) -> Result<Value, ApplicationError> {
+    serde_json::to_value(AttemptSnapshot {
+        id: detail.id.as_uuid(),
+        order_id: detail.order_id.as_uuid(),
+        amount_minor: detail.amount_minor,
+        currency: detail.currency.as_str().into(),
+        status: detail.status.as_str().into(),
+        stripe_checkout_session_id: detail.stripe_checkout_session_id.clone(),
+        failure_code: detail.failure_code.clone(),
+        created_at: format_time(detail.created_at)?,
+        updated_at: format_time(detail.updated_at)?,
+    })
+    .map_err(|error| ApplicationError::Unexpected(error.into()))
+}
+
+fn replay_attempt(value: Value) -> Result<PaymentAttemptDetail, ApplicationError> {
+    let value: AttemptSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
+    Ok(PaymentAttemptDetail {
+        id: PaymentAttemptId::from_uuid(value.id),
+        order_id: OrderId::from_uuid(value.order_id),
+        amount_minor: value.amount_minor,
+        currency: CurrencyCode::parse(&value.currency)?,
+        status: PaymentAttemptStatus::parse(&value.status).ok_or_else(corrupt_payment_state)?,
+        stripe_checkout_session_id: value.stripe_checkout_session_id,
+        failure_code: value.failure_code,
+        created_at: parse_time(&value.created_at)?,
+        updated_at: parse_time(&value.updated_at)?,
+    })
+}
+
+fn refund_snapshot(detail: &RefundDetail) -> Result<Value, ApplicationError> {
+    serde_json::to_value(RefundSnapshot {
+        id: detail.id.as_uuid(),
+        payment_attempt_id: detail.payment_attempt_id.as_uuid(),
+        amount_minor: detail.amount_minor,
+        currency: detail.currency.as_str().into(),
+        status: detail.status.as_str().into(),
+        stripe_refund_id: detail.stripe_refund_id.clone(),
+        failure_code: detail.failure_code.clone(),
+        created_at: format_time(detail.created_at)?,
+        updated_at: format_time(detail.updated_at)?,
+    })
+    .map_err(|error| ApplicationError::Unexpected(error.into()))
+}
+
+fn replay_refund(value: Value) -> Result<RefundDetail, ApplicationError> {
+    let value: RefundSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
+    Ok(RefundDetail {
+        id: RefundId::from_uuid(value.id),
+        payment_attempt_id: PaymentAttemptId::from_uuid(value.payment_attempt_id),
+        amount_minor: value.amount_minor,
+        currency: CurrencyCode::parse(&value.currency)?,
+        status: RefundStatus::parse(&value.status).ok_or_else(corrupt_payment_state)?,
+        stripe_refund_id: value.stripe_refund_id,
+        failure_code: value.failure_code,
+        created_at: parse_time(&value.created_at)?,
+        updated_at: parse_time(&value.updated_at)?,
+    })
 }

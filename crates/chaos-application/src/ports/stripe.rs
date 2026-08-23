@@ -4,6 +4,7 @@ use chaos_domain::{
     payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     sales::OrderId,
     store::StoreId,
+    stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
 use secrecy::SecretString;
 use serde_json::Value;
@@ -39,13 +40,13 @@ pub struct StripeReadiness {
 }
 
 pub struct StripeAccountConfiguration {
-    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
-    pub webhook_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub credential_secret_reference: PaymentSecretReference,
+    pub webhook_secret_reference: PaymentSecretReference,
     pub readiness: Option<StripeReadiness>,
 }
 
 pub struct StripeAccountDetail {
-    pub account: chaos_domain::payments::StripeAccount,
+    pub account: StripeAccount,
     pub credentials_configured: bool,
     pub readiness_status: StripeReadinessStatus,
     pub readiness_checked_at: Option<OffsetDateTime>,
@@ -98,13 +99,13 @@ pub struct StripeWebhookEvent {
 
 pub struct StripeWebhookConfiguration {
     pub stripe_account_id: Uuid,
-    pub secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub secret_reference: PaymentSecretReference,
 }
 
 pub struct StripeReadinessJob {
-    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
+    pub stripe_account_id: StripeAccountId,
     pub store_id: StoreId,
-    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub credential_secret_reference: PaymentSecretReference,
     pub attempts: u32,
 }
 
@@ -146,13 +147,13 @@ pub struct PaymentShippingAddress {
 }
 
 pub struct StripeCommand {
-    pub stripe_account_id: chaos_domain::payments::StripeAccountId,
+    pub stripe_account_id: StripeAccountId,
     pub event_type: String,
     pub aggregate_id: Uuid,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
-    pub credential_secret_reference: chaos_domain::payments::PaymentSecretReference,
+    pub credential_secret_reference: PaymentSecretReference,
     pub stripe_payment_reference: Option<String>,
     /// Required when creating a Stripe Checkout Session; absent for Stripe
     /// commands that do not create a Checkout Session.
@@ -189,7 +190,7 @@ pub trait StripeAccountReadiness: Send + Sync {
 
     async fn check_readiness(
         &self,
-        credential_secret_reference: &chaos_domain::payments::PaymentSecretReference,
+        credential_secret_reference: &PaymentSecretReference,
         checked_at: OffsetDateTime,
     ) -> Result<StripeReadiness, ApplicationError>;
 }
@@ -207,7 +208,7 @@ pub trait StripeReadinessQueue: Send + Sync {
     async fn finish_stripe_readiness(
         &self,
         worker_id: Uuid,
-        stripe_account_id: chaos_domain::payments::StripeAccountId,
+        stripe_account_id: StripeAccountId,
         result: Result<StripeReadiness, String>,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError>;
@@ -299,7 +300,7 @@ pub trait StripePaymentRepository: Send + Sync {
 pub trait PaymentSecretResolver: Send + Sync {
     async fn resolve(
         &self,
-        reference: &chaos_domain::payments::PaymentSecretReference,
+        reference: &PaymentSecretReference,
     ) -> Result<SecretString, ApplicationError>;
 }
 
@@ -317,14 +318,14 @@ pub trait StripeAccountRepository: Send + Sync {
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        id: chaos_domain::payments::StripeAccountId,
+        id: StripeAccountId,
     ) -> Result<Option<StripeAccountDetail>, ApplicationError>;
 
     async fn create(
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &chaos_domain::payments::StripeAccount,
+        account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError>;
@@ -333,7 +334,7 @@ pub trait StripeAccountRepository: Send + Sync {
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        account: &chaos_domain::payments::StripeAccount,
+        account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
         idempotency: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError>;

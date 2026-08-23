@@ -1,7 +1,7 @@
 // Payment attempt creation, retrieval, provider command handling, and payment state updates.
 
 #[async_trait]
-impl StripePaymentRepository for PostgresPaymentRepository {
+impl StripePaymentRepository for PostgresStripeRepository {
     async fn create_attempt(
         &self,
         shopper: &ShopperActor,

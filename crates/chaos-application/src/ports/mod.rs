@@ -1,7 +1,7 @@
 mod actor;
 mod analytics;
-mod catalog;
 mod catalog_management;
+mod catalog_provisioning;
 mod catalog_read;
 mod clock;
 mod collection;
@@ -9,22 +9,18 @@ mod identity;
 mod integration;
 mod inventory;
 mod media;
-mod payments;
 mod pricing;
-mod pricing_management;
 mod provider_secret;
 mod publishable_key;
 mod review;
 mod sales;
 mod shipping_events;
-mod shopper;
 mod store;
 mod store_administration;
-mod store_membership;
-mod store_read;
 mod storefront_catalog;
+mod stripe;
 
-pub use actor::AdminActor;
+pub use actor::{AdminActor, ShopperActor, ShopperCredentialCodec};
 pub use analytics::{
     AnalyticsCollectionRateLimiter, AnalyticsDeliveryCommand, AnalyticsDeliveryError,
     AnalyticsDeliveryJob, AnalyticsDeliveryReceipt, AnalyticsDeliveryRepository,
@@ -33,10 +29,10 @@ pub use analytics::{
     AnalyticsEventQuery, AnalyticsEventQueryRepository, AnalyticsEventRecord,
     AnalyticsEventRepository, AnalyticsRateLimitDecision,
 };
-pub use catalog::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use catalog_management::{
     CatalogManagementTransaction, CatalogManagementUnitOfWork, ProductLifecycleSnapshot,
 };
+pub use catalog_provisioning::{CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork};
 pub use catalog_read::{
     CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
     CatalogProductVariant, CatalogReadRepository, CatalogSelectedOption,
@@ -57,19 +53,10 @@ pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
 };
-pub use payments::{
-    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
-    PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption, RefundDetail,
-    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
-    StripeAccountRepository, StripeCommand, StripeCommandResult, StripePaymentGateway,
-    StripePaymentRepository, StripeReadiness, StripeReadinessJob, StripeReadinessQueue,
-    StripeReadinessStatus, StripeWebhookConfiguration, StripeWebhookConfigurationRepository,
-    StripeWebhookEvent, StripeWebhookSignatureVerifier,
-};
-pub use pricing::{PricingProvisioningTransaction, PricingProvisioningUnitOfWork};
-pub use pricing_management::{
+pub use pricing::{
     PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
-    PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
+    PricingManagementTransaction, PricingManagementUnitOfWork, PricingProvisioningTransaction,
+    PricingProvisioningUnitOfWork, PricingReadRepository,
 };
 pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{
@@ -83,15 +70,24 @@ pub use sales::{
     StripeCheckoutDraft,
 };
 pub use shipping_events::{ShippingEventJob, ShippingEventQueue};
-pub use shopper::{ShopperActor, ShopperCredentialCodec};
-pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
+pub use store::{
+    IdempotencyRequest, StoreListItem, StoreMembershipItem, StoreMembershipRepository,
+    StoreProvisioningTransaction, StoreProvisioningUnitOfWork, StoreReadRepository,
+};
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,
 };
-pub use store_membership::{StoreMembershipItem, StoreMembershipRepository};
-pub use store_read::{StoreListItem, StoreReadRepository};
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,
     StorefrontProductOptionValue, StorefrontSelectedOption,
+};
+pub use stripe::{
+    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
+    PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption, RefundDetail,
+    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
+    StripeAccountRepository, StripeCommand, StripeCommandResult, StripePaymentGateway,
+    StripePaymentRepository, StripeReadiness, StripeReadinessJob, StripeReadinessQueue,
+    StripeReadinessStatus, StripeWebhookConfiguration, StripeWebhookConfigurationRepository,
+    StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };

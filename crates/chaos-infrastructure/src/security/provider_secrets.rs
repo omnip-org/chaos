@@ -12,7 +12,7 @@ use chaos_application::{
         AnalyticsDeliveryError, PaymentSecretResolver, ProviderSecretKind, ProviderSecretWriter,
     },
 };
-use chaos_domain::{identity::UserId, payments::PaymentSecretReference, store::StoreId};
+use chaos_domain::{identity::UserId, store::StoreId, stripe::PaymentSecretReference};
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 

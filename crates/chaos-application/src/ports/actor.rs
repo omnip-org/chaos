@@ -1,5 +1,7 @@
-use chaos_domain::{identity::UserId, store::StoreId};
+use chaos_domain::{identity::UserId, sales::ShopperId, store::StoreId};
+use secrecy::SecretString;
 
+use crate::ApplicationError;
 use crate::store::StoreActor;
 
 use super::MachineActor;
@@ -48,4 +50,24 @@ impl From<MachineActor> for AdminActor {
     fn from(actor: MachineActor) -> Self {
         Self::Machine(actor)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShopperActor {
+    pub machine: MachineActor,
+    pub shopper_id: ShopperId,
+}
+
+pub trait ShopperCredentialCodec: Send + Sync {
+    fn issue(
+        &self,
+        actor: &MachineActor,
+        shopper_id: ShopperId,
+    ) -> Result<SecretString, ApplicationError>;
+
+    fn verify(
+        &self,
+        actor: &MachineActor,
+        credential: &SecretString,
+    ) -> Result<ShopperId, ApplicationError>;
 }

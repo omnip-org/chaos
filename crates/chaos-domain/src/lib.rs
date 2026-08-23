@@ -8,6 +8,7 @@ pub mod payments;
 pub mod pricing;
 pub mod sales;
 pub mod store;
+pub mod stripe;
 
 mod currency;
 mod locale;

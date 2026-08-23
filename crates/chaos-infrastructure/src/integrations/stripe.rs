@@ -9,7 +9,7 @@ use chaos_application::{
         StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
     },
 };
-use chaos_domain::payments::PaymentSecretReference;
+use chaos_domain::stripe::PaymentSecretReference;
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{
     Client, StatusCode,
@@ -922,7 +922,7 @@ mod tests {
         PaymentCheckoutDetails, PaymentLineItem, PaymentShippingAddress, PaymentShippingOption,
         StripeWebhookConfiguration,
     };
-    use chaos_domain::{CurrencyCode, payments::StripeAccountId};
+    use chaos_domain::{CurrencyCode, stripe::StripeAccountId};
 
     use super::*;
 

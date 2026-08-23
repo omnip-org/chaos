@@ -135,7 +135,7 @@ async fn search_worker_loop(
 }
 
 async fn payment_worker_loop(
-    workers: std::sync::Arc<chaos_application::payments::PaymentWorkers>,
+    workers: std::sync::Arc<chaos_application::stripe::PaymentWorkers>,
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {

@@ -1,3 +1,7 @@
+mod shipping_events;
+
+pub use shipping_events::PostgresShippingEventRepository;
+
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,

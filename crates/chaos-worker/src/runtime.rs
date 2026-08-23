@@ -4,18 +4,18 @@ use std::sync::Arc;
 
 use chaos_application::{
     analytics::AnalyticsDeliveryWorker,
-    payments::PaymentWorkers,
     ports::{
         AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
         StripePaymentGateway,
     },
     shipping_events::ShippingEventWorkers,
+    stripe::PaymentWorkers,
 };
 use chaos_infrastructure::{
-    integrations::{analytics::meta::MetaConversionsDestination, payments::stripe::StripeGateway},
+    integrations::{analytics::meta::MetaConversionsDestination, stripe::StripeGateway},
     repositories::{
-        PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresPaymentRepository,
-        PostgresSearchIndexer, PostgresShippingEventRepository,
+        PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresSearchIndexer,
+        PostgresShippingEventRepository, PostgresStripeRepository,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::provider_secrets::DynamicSecretResolver,
@@ -48,9 +48,8 @@ impl WorkerRuntime {
             [meta_destination as Arc<dyn AnalyticsEventDestination>],
         ));
 
-        let payment_repository = Arc::new(PostgresPaymentRepository::new(
-            infrastructure.runtime_pool(),
-        ));
+        let payment_repository =
+            Arc::new(PostgresStripeRepository::new(infrastructure.runtime_pool()));
         let integration_queue: Arc<dyn IntegrationQueue> =
             Arc::new(PostgresIntegrationQueue::new(infrastructure.runtime_pool()));
         let stripe_gateway = Arc::new(StripeGateway::new(

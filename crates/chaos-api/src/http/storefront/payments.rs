@@ -7,9 +7,9 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    payments::CreatePaymentAttemptInput,
     ports::{IdempotencyRequest, PaymentClientAction},
     sales::CreateStripeCheckoutInput,
+    stripe::CreatePaymentAttemptInput,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};

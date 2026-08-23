@@ -1,7 +1,7 @@
 // Provider webhook configuration and readiness queue persistence.
 
 #[async_trait]
-impl StripeWebhookConfigurationRepository for PostgresPaymentRepository {
+impl StripeWebhookConfigurationRepository for PostgresStripeRepository {
     async fn webhook_configurations(
         &self,
         stripe_account_id: Uuid,
@@ -30,7 +30,7 @@ impl StripeWebhookConfigurationRepository for PostgresPaymentRepository {
 }
 
 #[async_trait]
-impl StripeReadinessQueue for PostgresPaymentRepository {
+impl StripeReadinessQueue for PostgresStripeRepository {
     async fn claim_stripe_readiness(
         &self,
         worker_id: Uuid,
