@@ -1,19 +1,9 @@
 CREATE SCHEMA extensions;
-
-COMMENT ON SCHEMA extensions IS
-    'PostgreSQL extension-owned objects';
-
 CREATE SCHEMA partman;
 
-COMMENT ON SCHEMA partman IS
-    'Objects owned by the pg_partman extension';
-
 CREATE EXTENSION citext WITH SCHEMA extensions;
-
 CREATE EXTENSION IF NOT EXISTS pg_partman WITH SCHEMA partman;
-
 CREATE EXTENSION IF NOT EXISTS pg_cron;
-
 CREATE EXTENSION IF NOT EXISTS pgmq;
 
 DO $$
@@ -40,5 +30,4 @@ END
 $$;
 
 GRANT USAGE ON SCHEMA extensions TO chaos_runtime;
-
 GRANT USAGE ON SCHEMA extensions TO chaos_identity;
