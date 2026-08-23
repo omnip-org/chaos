@@ -25,8 +25,7 @@ CREATE TABLE identity.credentials (
     updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT credentials_pkey                      PRIMARY KEY (provider, subject),
-    CONSTRAINT credentials_user_id_fkey              FOREIGN KEY (user_id)
-        REFERENCES identity.users (id) ON DELETE CASCADE,
+    CONSTRAINT credentials_user_id_fkey              FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE,
     CONSTRAINT credentials_provider_user_id_key      UNIQUE (provider, user_id),
     CONSTRAINT credentials_subject_length_check      CHECK (octet_length(subject) BETWEEN 1 AND 255),
     CONSTRAINT credentials_email_length_check        CHECK (length(trim(email::text)) BETWEEN 3 AND 320)
@@ -46,8 +45,7 @@ CREATE TABLE identity.access_keys (
     updated_at      TIMESTAMPTZ         NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT access_keys_pkey                         PRIMARY KEY (id),
-    CONSTRAINT access_keys_user_id_fkey                 FOREIGN KEY (user_id)
-        REFERENCES identity.users (id) ON DELETE CASCADE,
+    CONSTRAINT access_keys_user_id_fkey                 FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE,
     CONSTRAINT access_keys_key_identifier_key           UNIQUE (key_identifier),
     CONSTRAINT access_keys_key_identifier_format_check  CHECK (key_identifier ~ '^[A-Za-z0-9_-]{16}$'),
     CONSTRAINT access_keys_secret_digest_length_check   CHECK (octet_length(secret_digest) = 32),

@@ -1,3 +1,5 @@
+CREATE SCHEMA commerce;
+
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE commerce.price_lists (
@@ -12,24 +14,14 @@ CREATE TABLE commerce.price_lists (
     created_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (store_id, code),
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, currency)
-        REFERENCES commerce.store_currencies(store_id, currency),
-    CONSTRAINT price_lists_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
-    ),
-    CONSTRAINT price_lists_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT price_lists_currency_format_check CHECK (
-        currency ~ '^[A-Z]{3}$'
-    ),
-    CONSTRAINT price_lists_validity_window_check CHECK (
-        starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at
-    )
+    CONSTRAINT price_lists_store_id_code_key            UNIQUE (store_id, code),
+    CONSTRAINT price_lists_store_id_id_key              UNIQUE (store_id, id),
+    CONSTRAINT price_lists_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT price_lists_store_id_currency_fkey       FOREIGN KEY (store_id, currency) REFERENCES commerce.store_currencies(store_id, currency),
+    CONSTRAINT price_lists_code_format_check            CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'),
+    CONSTRAINT price_lists_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT price_lists_currency_format_check        CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT price_lists_validity_window_check        CHECK (starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at)
 );
 
 CREATE TABLE commerce.prices (
@@ -41,52 +33,24 @@ CREATE TABLE commerce.prices (
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (store_id, price_list_id, product_variant_id),
-    FOREIGN KEY (store_id, price_list_id)
-        REFERENCES commerce.price_lists(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, product_variant_id)
-        REFERENCES commerce.product_variants(store_id, id),
-    CONSTRAINT prices_amount_nonnegative_check CHECK (
-        amount_minor >= 0
-    )
+    CONSTRAINT prices_store_id_price_list_id_product_variant_id_key    UNIQUE (store_id, price_list_id, product_variant_id),
+    CONSTRAINT prices_store_id_price_list_fkey                         FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists(store_id, id) ON DELETE CASCADE,
+    CONSTRAINT prices_store_id_product_variant_fkey                    FOREIGN KEY (store_id, product_variant_id) REFERENCES commerce.product_variants(store_id, id),
+    CONSTRAINT prices_amount_nonnegative_check                         CHECK (amount_minor >= 0)
 );
 
-ALTER TABLE commerce.price_lists
-    ADD UNIQUE (store_id, id, currency);
+ALTER TABLE commerce.price_lists ADD UNIQUE (store_id, id, currency);
 
-CREATE INDEX price_lists_store_activation_idx
-    ON commerce.price_lists (store_id,
-        status,
-        currency,
-        starts_at,
-        ends_at
-    );
-
-CREATE INDEX prices_variant_lookup_idx
-    ON commerce.prices (store_id,
-        product_variant_id,
-        price_list_id
-    );
+CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
+CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
 
 ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.price_lists
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 CREATE POLICY store_isolation ON commerce.prices
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);

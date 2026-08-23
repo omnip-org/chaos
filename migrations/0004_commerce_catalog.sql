@@ -121,6 +121,7 @@ CREATE TABLE commerce.collections (
     metadata             JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     CONSTRAINT collections_store_id_handle_key        UNIQUE (store_id, handle),
     CONSTRAINT collections_store_id_id_key            UNIQUE (store_id, id),
     CONSTRAINT collections_store_id_fkey              FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
