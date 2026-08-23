@@ -16,8 +16,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -65,7 +65,7 @@ pub struct ArchiveProductMediaParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = media_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = media_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Upload an image for a product in the selected Store, in \
@@ -79,7 +79,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UploadProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -215,7 +215,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -253,7 +253,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ArchiveProductMediaParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,

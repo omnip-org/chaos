@@ -34,21 +34,19 @@ Chaos remains a modular monolith with inward dependencies:
 
 ```text
 chaos-api -------------> chaos-application -> chaos-domain
-    |                            ^
-    +-> chaos-infrastructure ----+
+    |  ^                         ^
+    |  +-> mcp tools              |
+    +----> chaos-infrastructure -+
 
-chaos-mcp -------------> chaos-application -> chaos-domain
-
-chaos-api (Worker) ----> chaos-application
-       +---------------> chaos-infrastructure
+chaos-worker ----------> chaos-application -> chaos-domain
+       +----------------> chaos-infrastructure
 ```
 
 - `chaos-domain` contains business types and rules without HTTP, SQL, cache, or serialization dependencies.
 - `chaos-application` contains use cases and ports.
 - `chaos-infrastructure` implements database, JWT, OIDC, cache, storage, and Provider adapters.
-- `chaos-api` owns HTTP DTOs, extractors, routing, and dependency composition.
-- `chaos-mcp` exposes commerce tools authenticated by User-owned Access Keys.
-- the `chaos-worker` binary runs durable background consumers independently of API replicas.
+- `chaos-api` owns HTTP, MCP, DTOs, extractors, routing, and API dependency composition.
+- `chaos-worker` owns Worker dependency composition and durable background consumers independently of API replicas.
 
 External adapters live under `chaos-infrastructure::integrations`,
 `repositories`, `security`, and `storage`. The API and

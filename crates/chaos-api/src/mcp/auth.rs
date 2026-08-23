@@ -8,7 +8,7 @@ use chaos_domain::store::StoreId;
 use rmcp::model::CallToolResult;
 use secrecy::SecretString;
 
-use crate::error::tool_error;
+use crate::mcp::error::tool_error;
 
 /// Every MCP tool call authenticates a user-owned key and authorizes the user
 /// against the Store selected by `X-Chaos-Store-Id`. Membership is checked on

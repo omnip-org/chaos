@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -106,7 +106,7 @@ pub struct CollectionPublicationParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = collections_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = collections_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "List collections in the selected Store, including draft \
@@ -118,7 +118,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListCollectionsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -185,7 +185,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -236,7 +236,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -280,7 +280,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -354,7 +354,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AddProductsToCollectionParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -432,7 +432,7 @@ impl ChaosMcp {
         params: ChangeCollectionStatusParams,
         activate: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -476,7 +476,7 @@ impl ChaosMcp {
         params: CollectionPublicationParams,
         publish: bool,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,

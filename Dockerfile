@@ -14,7 +14,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY migrations ./migrations
 COPY openapi ./openapi
-RUN cargo build --locked --release -p chaos-api --bins
+RUN cargo build --locked --release -p chaos-api --bins -p chaos-worker
 
 FROM debian:bookworm-slim AS runtime
 

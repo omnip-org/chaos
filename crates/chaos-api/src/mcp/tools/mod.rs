@@ -4,63 +4,19 @@ mod operations;
 mod pricing;
 mod store;
 
-use std::sync::Arc;
-
-use chaos_application::{
-    analytics::AnalyticsAdministration,
-    catalog::{
-        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
-        MediaAdministration, ReviewAdministration,
-    },
-    identity::AccessKeyAuthentication,
-    inventory::InventoryManagement,
-    payments::{PaymentService, StripeAccountAdministration},
-    ports::{AdminActor, Clock},
-    pricing::{CreatePriceList, PricingManagement},
-    sales::OrderManagement,
-    store::{
-        CreateStore, ProviderSecretManagement, PublishableKeyManagement, StoreAdministration,
-        StoreMembershipManagement, StoreQueries,
-    },
-};
+use chaos_application::ports::AdminActor;
 use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
 
-/// Shared handles to the application-layer use cases the MCP surface calls.
-/// Mirrors `ApiState` in `chaos-api`, but scoped to only what MCP tools need.
-#[derive(Clone)]
-pub struct McpState {
-    pub public_base_url: String,
-    pub access_key_authentication: Arc<AccessKeyAuthentication>,
-    pub store_queries: Arc<StoreQueries>,
-    pub store_membership_management: Arc<StoreMembershipManagement>,
-    pub create_store: Arc<CreateStore>,
-    pub catalog_queries: Arc<CatalogQueries>,
-    pub create_product: Arc<CreateProduct>,
-    pub catalog_management: Arc<CatalogManagement>,
-    pub collection_administration: Arc<CollectionAdministration>,
-    pub pricing_management: Arc<PricingManagement>,
-    pub create_price_list: Arc<CreatePriceList>,
-    pub inventory_management: Arc<InventoryManagement>,
-    pub order_management: Arc<OrderManagement>,
-    pub store_administration: Arc<StoreAdministration>,
-    pub payment_service: Arc<PaymentService>,
-    pub stripe_account_administration: Arc<StripeAccountAdministration>,
-    pub media_administration: Arc<MediaAdministration>,
-    pub review_administration: Arc<ReviewAdministration>,
-    pub publishable_key_management: Arc<PublishableKeyManagement>,
-    pub provider_secret_management: Arc<ProviderSecretManagement>,
-    pub analytics_administration: Arc<AnalyticsAdministration>,
-    pub clock: Arc<dyn Clock>,
-}
+use crate::http::ApiState;
 
 #[derive(Clone)]
 pub struct ChaosMcp {
-    pub(crate) state: McpState,
+    pub(crate) state: ApiState,
     tool_router: ToolRouter<ChaosMcp>,
 }
 
 impl ChaosMcp {
-    pub fn new(state: McpState) -> Self {
+    pub fn new(state: ApiState) -> Self {
         Self {
             state,
             tool_router: Self::tool_router(),
@@ -98,7 +54,7 @@ impl ChaosMcp {
         &self,
         parts: &http::request::Parts,
     ) -> Result<chaos_application::store::StoreActor, CallToolResult> {
-        match crate::auth::authenticate_mcp(
+        match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             parts,

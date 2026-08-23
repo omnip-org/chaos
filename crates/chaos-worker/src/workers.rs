@@ -1,5 +1,7 @@
-use crate::{lifecycle::Lifecycle, runtime::WorkerRuntime};
+use chaos_infrastructure::runtime::lifecycle::Lifecycle;
 use uuid::Uuid;
+
+use crate::runtime::WorkerRuntime;
 
 pub async fn run(
     runtime: WorkerRuntime,

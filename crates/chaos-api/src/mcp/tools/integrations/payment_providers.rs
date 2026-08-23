@@ -13,8 +13,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -60,7 +60,7 @@ pub struct UpdateStripeAccountParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = payment_providers_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = payment_providers_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(description = "List Stripe accounts in the selected Store.")]
     async fn list_stripe_accounts(

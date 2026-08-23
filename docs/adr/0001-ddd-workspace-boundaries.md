@@ -5,7 +5,7 @@
 
 ## Decision
 
-Use five Cargo packages: `chaos-domain`, `chaos-application`, `chaos-infrastructure`, `chaos-api`, and `chaos-mcp`. Dependencies may point only from outer layers toward inner layers. The domain package must not depend on Axum, SQLx, Redis, or Serde. The API package also builds the independently deployed `chaos-worker` composition binary; Worker execution still reaches domain behavior only through application use cases and ports.
+Use five Cargo packages: `chaos-domain`, `chaos-application`, `chaos-infrastructure`, `chaos-api`, and `chaos-worker`. Dependencies may point only from outer layers toward inner layers. The domain package must not depend on Axum, SQLx, Redis, or Serde. MCP is an API delivery boundary under `chaos-api/src/mcp`; the independently deployed Worker has its own composition package. Both delivery packages reach domain behavior only through application use cases and ports.
 
 ## Rationale
 

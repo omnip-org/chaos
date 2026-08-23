@@ -59,7 +59,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use crate::lifecycle::Lifecycle;
+use chaos_infrastructure::runtime::lifecycle::Lifecycle;
 
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
 pub use shared::extract::{
@@ -338,33 +338,7 @@ impl ApiState {
 }
 
 pub fn router(state: ApiState) -> Router {
-    let mcp_router = chaos_mcp::router(
-        chaos_mcp::McpState {
-            public_base_url: state.public_base_url.clone(),
-            access_key_authentication: state.access_key_authentication.clone(),
-            store_queries: state.store_queries.clone(),
-            store_membership_management: state.store_membership_management.clone(),
-            create_store: state.create_store.clone(),
-            catalog_queries: state.catalog_queries.clone(),
-            create_product: state.create_product.clone(),
-            catalog_management: state.catalog_management.clone(),
-            collection_administration: state.collection_administration.clone(),
-            pricing_management: state.pricing_management.clone(),
-            create_price_list: state.create_price_list.clone(),
-            inventory_management: state.inventory_management.clone(),
-            order_management: state.order_management.clone(),
-            store_administration: state.store_administration.clone(),
-            payment_service: state.payment_service.clone(),
-            stripe_account_administration: state.stripe_account_administration.clone(),
-            media_administration: state.media_administration.clone(),
-            review_administration: state.review_administration.clone(),
-            publishable_key_management: state.publishable_key_management.clone(),
-            provider_secret_management: state.provider_secret_management.clone(),
-            analytics_administration: state.analytics_administration.clone(),
-            clock: state.clock.clone(),
-        },
-        state.mcp_allowed_hosts.clone(),
-    );
+    let mcp_router = crate::mcp::router(state.clone());
     Router::new()
         .nest("/health", operations::health::routes())
         .nest("/identity/v1", identity::auth::routes())

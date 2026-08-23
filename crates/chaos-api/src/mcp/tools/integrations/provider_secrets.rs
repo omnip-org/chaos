@@ -10,8 +10,8 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::require_confirmation,
 };
@@ -27,7 +27,7 @@ pub struct CreateProviderSecretParams {
     pub confirm: bool,
 }
 
-#[tool_router(router = provider_secrets_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = provider_secrets_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Store a provider secret (payment/shipping/analytics credential) in the \
@@ -46,7 +46,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateProviderSecretParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,

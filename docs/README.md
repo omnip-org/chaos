@@ -22,8 +22,8 @@ preserve the dependency direction in
 | Runtime | Entry point | Responsibility |
 | --- | --- | --- |
 | HTTP API | `crates/chaos-api/src/main.rs` | Identity bootstrap, Storefront APIs, Provider webhooks, and health |
-| MCP | `crates/chaos-mcp/src/router.rs` | AI-operated Store administration authenticated by User Access Keys |
-| Worker | `crates/chaos-api/src/bin/chaos-worker.rs` | Durable polling and Provider reconciliation outside API replicas |
+| MCP | `crates/chaos-api/src/mcp/router.rs` | AI-operated Store administration authenticated by User Access Keys |
+| Worker | `crates/chaos-worker/src/main.rs` | Durable polling and Provider reconciliation outside API replicas |
 | Migration job | `crates/chaos-api/src/bin/chaos-migrate.rs` | Applies SQL migrations before an application rollout |
 
 ## Dependency layers
@@ -33,8 +33,8 @@ preserve the dependency direction in
 | `chaos-domain` | Business types, validation, and state transitions | HTTP, SQL, serialization, Provider SDKs |
 | `chaos-application` | Use cases and ports | Axum handlers and SQL queries |
 | `chaos-infrastructure` | PostgreSQL repositories and external Provider adapters | Transport DTOs and new business rules |
-| `chaos-api` | HTTP routes, DTOs, runtime composition, and Worker loops | Direct business persistence |
-| `chaos-mcp` | MCP tools and MCP transport | SQL queries |
+| `chaos-api` | HTTP routes, MCP tools, DTOs, runtime composition, and API delivery | Direct business persistence |
+| `chaos-worker` | Worker composition and durable polling loops | HTTP routes and MCP transport |
 
 ## Change routing
 
@@ -65,7 +65,7 @@ HTTP delivery code is grouped by public responsibility under
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 
 MCP delivery keeps protocol concerns separate from commerce capabilities under
-`crates/chaos-mcp/src/`:
+`crates/chaos-api/src/mcp/`:
 
 - `router.rs`, `auth.rs`, `error.rs`, and `mutation.rs` own MCP transport,
   authentication, error mapping, confirmation, and idempotency behavior;

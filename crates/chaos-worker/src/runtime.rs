@@ -24,7 +24,6 @@ use chaos_infrastructure::{
 /// Dependencies used by durable polling loops, without HTTP or MCP state.
 #[derive(Clone)]
 pub struct WorkerRuntime {
-    pub infrastructure: AppState,
     pub payment_workers: Arc<PaymentWorkers>,
     pub shipping_event_workers: Arc<ShippingEventWorkers>,
     pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
@@ -75,7 +74,6 @@ impl WorkerRuntime {
         let shipping_event_workers = ShippingEventWorkers::new(shipping_event_repository);
 
         Ok(Self {
-            infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
             shipping_event_workers: Arc::new(shipping_event_workers),
             analytics_delivery_worker,

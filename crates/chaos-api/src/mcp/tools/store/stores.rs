@@ -16,8 +16,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -66,7 +66,7 @@ pub struct LeaveStoreParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = stores_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = stores_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Create a Store owned by the authenticated User. This tool does not use \
@@ -78,7 +78,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal = match crate::auth::authenticate_principal(
+        let principal = match crate::mcp::auth::authenticate_principal(
             &self.state.access_key_authentication,
             &parts,
         )
@@ -118,7 +118,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListStoresParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let principal = match crate::auth::authenticate_principal(
+        let principal = match crate::mcp::auth::authenticate_principal(
             &self.state.access_key_authentication,
             &parts,
         )

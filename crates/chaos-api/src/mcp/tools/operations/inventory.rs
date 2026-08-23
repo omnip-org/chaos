@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -37,7 +37,7 @@ pub struct AdjustInventoryParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = inventory_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = inventory_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "List on-hand inventory quantities for tracked product variants in the selected Store."
@@ -47,7 +47,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListVariantInventoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -107,7 +107,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AdjustInventoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,

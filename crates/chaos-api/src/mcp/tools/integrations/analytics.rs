@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
     tools::ChaosMcp,
@@ -59,7 +59,7 @@ pub enum AnalyticsDeliveryStatusParam {
     DeadLetter,
 }
 
-#[tool_router(router = analytics_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = analytics_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Get the Meta Conversions API destination for the selected Store. The destination `enabled` switch controls whether stored behavior events are sent. Credentials are never returned."

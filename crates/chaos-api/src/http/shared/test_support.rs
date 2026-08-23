@@ -13,7 +13,7 @@ use chaos_infrastructure::runtime::{config::Settings, state::AppState};
 use secrecy::SecretString;
 use serde_json::Value;
 
-use crate::lifecycle::Lifecycle;
+use chaos_infrastructure::runtime::lifecycle::Lifecycle;
 
 use crate::http::ApiState;
 

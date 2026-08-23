@@ -4,4 +4,4 @@ mod mutation;
 mod router;
 mod tools;
 
-pub use router::{McpState, router};
+pub use router::router;

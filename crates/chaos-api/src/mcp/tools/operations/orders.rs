@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 
-use crate::tools::ChaosMcp;
-use crate::{
+use crate::mcp::tools::ChaosMcp;
+use crate::mcp::{
     error::{text_result, tool_error},
     mutation::{idempotency_request, require_confirmation},
 };
@@ -49,7 +49,7 @@ pub struct ChangeOrderStatusParams {
     pub idempotency_key: String,
 }
 
-#[tool_router(router = orders_tool_router, vis = "pub(in crate::tools)")]
+#[tool_router(router = orders_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(description = "List orders in the selected Store. Paginated; use the \
                         returned next_cursor for more pages.")]
@@ -58,7 +58,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListOrdersParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -127,7 +127,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetOrderParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
@@ -188,7 +188,7 @@ impl ChaosMcp {
         params: ChangeOrderStatusParams,
         target_status: OrderStatus,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match crate::auth::authenticate_mcp(
+        let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
