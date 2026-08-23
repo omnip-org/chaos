@@ -29,7 +29,7 @@ function jsonResponse(status: number, body: unknown): Response {
 test("does not construct browser analytics during SSR", () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/store/v1",
+    baseUrl: "https://shop.example.com/storefront/v1",
     storage: null,
     randomUUID: () => "idempotency-key",
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
@@ -228,7 +228,7 @@ test("catalog.listProducts forwards query parameters", async () => {
   const captured: { url: URL | null } = { url: null };
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/store/v1",
+    baseUrl: "https://shop.example.com/storefront/v1",
     storage: new MemoryStorage(),
     analytics: false,
     fetch: (async (url: string) => {
@@ -239,7 +239,7 @@ test("catalog.listProducts forwards query parameters", async () => {
 
   await client.catalog.listProducts({ q: "shoes", limit: 10, collection: "sale" });
 
-  assert.equal(captured.url?.pathname, "/store/v1/products");
+  assert.equal(captured.url?.pathname, "/storefront/v1/products");
   assert.equal(captured.url?.searchParams.get("q"), "shoes");
   assert.equal(captured.url?.searchParams.get("limit"), "10");
   assert.equal(captured.url?.searchParams.get("collection"), "sale");

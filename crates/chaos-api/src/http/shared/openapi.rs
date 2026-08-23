@@ -3,13 +3,13 @@ use axum::{Router, http::header::CONTENT_TYPE, response::IntoResponse, routing::
 use crate::http::ApiState;
 
 const IDENTITY_V1: &str = include_str!("../../../../../openapi/identity-v1.json");
-const STORE_V1: &str = include_str!("../../../../../openapi/store-v1.json");
+const STOREFRONT_V1: &str = include_str!("../../../../../openapi/storefront-v1.json");
 const WEBHOOKS_V1: &str = include_str!("../../../../../openapi/webhooks-v1.json");
 
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/identity-v1.json", get(identity_v1))
-        .route("/store-v1.json", get(store_v1))
+        .route("/storefront-v1.json", get(storefront_v1))
         .route("/webhooks-v1.json", get(webhooks_v1))
 }
 
@@ -17,8 +17,8 @@ async fn identity_v1() -> impl IntoResponse {
     contract(IDENTITY_V1)
 }
 
-async fn store_v1() -> impl IntoResponse {
-    contract(STORE_V1)
+async fn storefront_v1() -> impl IntoResponse {
+    contract(STOREFRONT_V1)
 }
 
 async fn webhooks_v1() -> impl IntoResponse {
@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn published_contracts_are_openapi_31_documents() {
-        for document in [IDENTITY_V1, STORE_V1, WEBHOOKS_V1] {
+        for document in [IDENTITY_V1, STOREFRONT_V1, WEBHOOKS_V1] {
             let specification: Value = serde_json::from_str(document).unwrap();
             assert_eq!(specification["openapi"], "3.1.0");
         }
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn analytics_contract_matches_dynamic_event_ingestion() {
-        let specification: Value = serde_json::from_str(STORE_V1).unwrap();
+        let specification: Value = serde_json::from_str(STOREFRONT_V1).unwrap();
         let operation = &specification["paths"]["/analytics/events"]["post"];
         assert_eq!(
             operation["summary"],
@@ -84,10 +84,10 @@ mod tests {
     }
 
     #[test]
-    fn webhook_contract_matches_the_stripe_account_route() {
+    fn webhook_contract_matches_the_store_route() {
         let specification: Value = serde_json::from_str(WEBHOOKS_V1).unwrap();
         let paths = specification["paths"].as_object().unwrap();
-        let path = "/stripe/{stripe_account_id}";
+        let path = "/webhooks/stripe/{store_id}";
         assert!(paths.contains_key(path));
 
         let operation = &paths[path]["post"];
@@ -95,7 +95,7 @@ mod tests {
             operation["security"],
             serde_json::json!([{ "stripeSignature": [] }])
         );
-        assert_eq!(operation["parameters"][0]["name"], "stripe_account_id");
+        assert_eq!(operation["parameters"][0]["name"], "store_id");
         assert_eq!(operation["parameters"][0]["schema"]["format"], "uuid");
         assert_eq!(
             operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],

@@ -3,11 +3,11 @@
   "info": {
     "title": "Chaos Stripe Webhooks API",
     "version": "1.0.0",
-    "description": "Stripe callbacks authenticated before Store resolution and durably deduplicated. The stripe_account_id is the Chaos Store's configured account UUID, not a Stripe acct_ identifier."
+    "description": "Stripe callbacks authenticated before Store resolution and durably deduplicated. The store_id identifies the Chaos Store; the Stripe signing secret authenticates the request."
   },
-  "servers": [{ "url": "/store/v1" }],
+  "servers": [{ "url": "/storefront/v1" }],
   "paths": {
-    "/stripe/{stripe_account_id}": {
+    "/webhooks/stripe/{store_id}": {
       "post": {
         "operationId": "receivePaymentWebhook",
         "tags": ["Payment webhooks"],
@@ -15,10 +15,10 @@
         "security": [{ "stripeSignature": [] }],
         "parameters": [
           {
-            "name": "stripe_account_id",
+            "name": "store_id",
             "in": "path",
             "required": true,
-            "description": "The Chaos UUID returned when the Store configures Stripe. This is not a Stripe account ID.",
+            "description": "The Chaos Store UUID whose single Stripe account should verify this webhook.",
             "schema": { "type": "string", "format": "uuid" }
           }
         ],
@@ -135,7 +135,7 @@
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "NotFound": {
-        "description": "Stripe account or enabled Stripe account configuration not found",
+        "description": "Store or enabled Stripe account configuration not found",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
       },
       "ValidationFailed": {

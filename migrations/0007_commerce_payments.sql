@@ -123,6 +123,37 @@ AS $$
      ORDER BY candidate.priority;
 $$;
 
+CREATE FUNCTION commerce.resolve_store_provider_webhook_secret_references(
+    requested_provider TEXT,
+    requested_store_id UUID
+)
+RETURNS TABLE (
+    provider_account_id UUID,
+    secret_reference    TEXT
+)
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    SELECT account.id, candidate.secret_reference
+      FROM commerce.payment_provider_accounts AS account
+      CROSS JOIN LATERAL (
+          VALUES
+              (account.webhook_secret_reference, 0),
+              (
+                  CASE WHEN account.webhook_rotation_expires_at > CURRENT_TIMESTAMP
+                       THEN account.previous_webhook_secret_reference END,
+                  1
+              )
+      ) AS candidate(secret_reference, priority)
+     WHERE account.provider = requested_provider
+       AND account.store_id = requested_store_id
+       AND account.enabled
+       AND candidate.secret_reference IS NOT NULL
+     ORDER BY account.id, candidate.priority;
+$$;
+
 CREATE FUNCTION commerce.claim_provider_readiness_checks(
     worker_id   UUID,
     batch_size  INTEGER,
@@ -412,6 +443,7 @@ VALUES
 REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_event_outbox(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.resolve_store_provider_webhook_secret_references(TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_provider_readiness_checks(UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.enqueue_webhook_event() FROM PUBLIC;
@@ -421,6 +453,7 @@ REVOKE ALL ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEX
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_event_outbox(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.resolve_store_provider_webhook_secret_references(TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_provider_readiness_checks(UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_webhook_events(INTEGER) TO chaos_runtime;

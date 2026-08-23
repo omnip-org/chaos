@@ -111,7 +111,7 @@ export class ChaosStorefrontAnalytics {
     if (!options?.publishableKey) {
       throw new TypeError("publishableKey is required");
     }
-    this.endpoint = options.endpoint ?? "/store/v1/analytics/events";
+    this.endpoint = options.endpoint ?? "/storefront/v1/analytics/events";
     this.publishableKey = options.publishableKey;
     this.getShopperToken = options.getShopperToken;
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);

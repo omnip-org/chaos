@@ -11,7 +11,7 @@ A guest "check my order status" page is a different shape of problem: it is read
 
 ## Decision
 
-`GET /store/v1/orders/{order_id}` accepts a Publishable Key holding the `orders:read` scope with no shopper credential. A Store must explicitly mint a key with this scope for the capability to exist at all; it is not implicitly enabled for every Publishable Key.
+`GET /storefront/v1/orders/{order_id}` accepts a Publishable Key holding the `orders:read` scope with no shopper credential. A Store must explicitly mint a key with this scope for the capability to exist at all; it is not implicitly enabled for every Publishable Key.
 
 This is a narrow, scoped carve-out, not a reversal of ADR 0009:
 

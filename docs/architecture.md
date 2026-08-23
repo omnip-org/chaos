@@ -102,7 +102,7 @@ one-time-looking long-lived capability for a short-lived, store-bound session; o
 digests are stored after a successful confirmation email delivery.
 
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
-website visit creates one Shopper through `/store/v1/shopper-sessions`, and the
+website visit creates one Shopper through `/storefront/v1/shopper-sessions`, and the
 API returns a signed possession token for that row. The Shopper does not own a
 Sales Channel and does not hold contact information; channel is request context,
 while contact and address data are captured directly on the business Order.

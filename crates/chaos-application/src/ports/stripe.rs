@@ -220,7 +220,7 @@ pub trait StripeWebhookSignatureVerifier: Send + Sync {
 
     async fn verify(
         &self,
-        stripe_account_id: Uuid,
+        store_id: StoreId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -231,7 +231,7 @@ pub trait StripeWebhookSignatureVerifier: Send + Sync {
 pub trait StripeWebhookConfigurationRepository: Send + Sync {
     async fn webhook_configurations(
         &self,
-        stripe_account_id: Uuid,
+        store_id: StoreId,
     ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError>;
 }
 

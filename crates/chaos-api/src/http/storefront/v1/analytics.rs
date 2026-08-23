@@ -1,8 +1,4 @@
-use axum::{
-    Router,
-    extract::{DefaultBodyLimit, State},
-    routing::post,
-};
+use axum::{Router, extract::State, routing::post};
 use chaos_application::{
     ApplicationError,
     analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput},
@@ -14,10 +10,8 @@ use uuid::Uuid;
 use crate::http::shared::response::parse_api_time;
 use crate::http::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState};
 
-pub(crate) fn storefront_routes() -> Router<ApiState> {
-    Router::new()
-        .route("/analytics/events", post(collect_events))
-        .layer(DefaultBodyLimit::max(32 * 1024))
+pub(crate) fn routes() -> Router<ApiState> {
+    Router::new().route("/analytics/events", post(collect_events))
 }
 
 #[derive(Deserialize)]

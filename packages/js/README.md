@@ -1,7 +1,7 @@
 # @omnip-org/chaos-js
 
 A typed client and first-party analytics collector for the Chaos Commerce
-[Store API](../../openapi/store-v1.json) — the public-key-authenticated
+[Storefront API](../../openapi/storefront-v1.json) — the public-key-authenticated
 surface meant to be called directly from storefront browsers. One SDK covers
 catalog browsing, cart, checkout, order, payment, and behavior analytics flows.
 
@@ -98,14 +98,14 @@ disabled; Chaos maps semantic events to GA4 ecommerce names.
 
 ### Server-side / SSR usage
 
-`createStorefrontClient` defaults to same-origin relative URLs (`/store/v1/...`),
+`createStorefrontClient` defaults to same-origin relative URLs (`/storefront/v1/...`),
 which relies on a browser `fetch` and `location`. From Node, an edge
 function, or any non-browser environment, pass an absolute `baseUrl`:
 
 ```ts
 const chaos = createStorefrontClient({
   publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
-  baseUrl: "https://shop.example.com/store/v1",
+  baseUrl: "https://shop.example.com/storefront/v1",
 });
 ```
 
@@ -143,5 +143,5 @@ npm test --prefix packages/js
 ```
 
 Types in `src/types.ts` are hand-written to mirror
-[`openapi/store-v1.json`](../../openapi/store-v1.json); keep both in sync
+[`openapi/storefront-v1.json`](../../openapi/storefront-v1.json); keep both in sync
 when the Store API contract changes.

@@ -1,13 +1,13 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Chaos Commerce Store API",
+    "title": "Chaos Commerce Storefront API",
     "version": "1.0.0",
     "description": "Public Storefront API authenticated by Store-scoped public keys."
   },
   "servers": [
     {
-      "url": "/store/v1"
+      "url": "/storefront/v1"
     }
   ],
   "paths": {

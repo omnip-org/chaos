@@ -341,12 +341,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", operations::health::routes())
         .nest("/identity/v1", identity::auth::routes())
-        .merge(storefront::payments::routes())
-        .nest("/store/v1", storefront::catalog::routes())
-        .nest("/store/v1", storefront::collections::storefront_routes())
-        .nest("/store/v1", storefront::reviews::storefront_routes())
-        .nest("/store/v1", storefront::analytics::storefront_routes())
-        .nest("/store/v1", storefront::sales::routes())
+        .nest("/storefront/v1", storefront::v1::routes())
         .nest("/openapi", shared::openapi::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
@@ -441,15 +436,15 @@ mod tests {
         let requests = [
             (Method::GET, "/health/live"),
             (Method::POST, "/identity/v1/auth/external"),
-            (Method::GET, "/store/v1/products"),
-            (Method::GET, "/store/v1/collections"),
-            (Method::POST, "/store/v1/analytics/events"),
-            (Method::POST, "/store/v1/carts"),
+            (Method::GET, "/storefront/v1/products"),
+            (Method::GET, "/storefront/v1/collections"),
+            (Method::POST, "/storefront/v1/analytics/events"),
+            (Method::POST, "/storefront/v1/carts"),
             (
                 Method::POST,
-                "/store/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
+                "/storefront/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
             ),
-            (Method::GET, "/openapi/store-v1.json"),
+            (Method::GET, "/openapi/storefront-v1.json"),
         ];
 
         for (method, path) in requests {
@@ -533,7 +528,7 @@ mod tests {
     async fn store_openapi_contract_is_publicly_available() {
         let response = router(test_state())
             .oneshot(
-                Request::get("/openapi/store-v1.json")
+                Request::get("/openapi/storefront-v1.json")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -551,7 +546,7 @@ mod tests {
     async fn storefront_catalog_rejects_requests_without_a_machine_credential() {
         let response = router(test_state())
             .oneshot(
-                Request::get("/store/v1/products")
+                Request::get("/storefront/v1/products")
                     .body(Body::empty())
                     .unwrap(),
             )

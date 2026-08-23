@@ -60,7 +60,7 @@ HTTP delivery code is grouped by public responsibility under
 
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
-- `storefront/payments.rs` contains payment creation and Provider callback endpoints;
+- `storefront/v1/carts.rs` and `webhooks.rs` contain payment creation and Provider callback endpoints;
 - `operations/` contains health checks;
 - `shared/` contains transport extractors, envelopes, OpenAPI, and test support.
 

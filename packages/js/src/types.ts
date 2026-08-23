@@ -1,5 +1,5 @@
 /**
- * Types mirror openapi/store-v1.json exactly. Keep both in sync when the
+ * Types mirror openapi/storefront-v1.json exactly. Keep both in sync when the
  * contract changes; field names stay snake_case to match the wire format.
  */
 

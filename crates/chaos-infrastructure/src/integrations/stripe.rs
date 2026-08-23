@@ -9,7 +9,7 @@ use chaos_application::{
         StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
     },
 };
-use chaos_domain::stripe::PaymentSecretReference;
+use chaos_domain::{store::StoreId, stripe::PaymentSecretReference};
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{
     Client, StatusCode,
@@ -487,7 +487,7 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
 
     async fn verify(
         &self,
-        stripe_account_id: Uuid,
+        store_id: StoreId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -501,14 +501,11 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
         if envelope.account.is_some() {
             return Err(invalid_webhook());
         }
-        let configurations = self
-            .configurations
-            .webhook_configurations(stripe_account_id)
-            .await?;
+        let configurations = self.configurations.webhook_configurations(store_id).await?;
         if configurations.is_empty() {
             return Err(ApplicationError::Unauthorized);
         }
-        let mut verified = false;
+        let mut verified_account_id = None;
         for configuration in configurations {
             let secret = self
                 .secrets
@@ -517,13 +514,11 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
             if verify_stripe_signature(signature, payload, secret.expose_secret(), received_at)
                 .is_ok()
             {
-                verified = true;
+                verified_account_id = Some(configuration.stripe_account_id);
                 break;
             }
         }
-        if !verified {
-            return Err(ApplicationError::Unauthorized);
-        }
+        let stripe_account_id = verified_account_id.ok_or(ApplicationError::Unauthorized)?;
         let (event_type, aggregate_id, failure_code) = map_stripe_event(&envelope)?;
         let object_reference = envelope.data.object.id.clone();
         Ok(StripeWebhookEvent {
@@ -927,6 +922,7 @@ mod tests {
     use super::*;
 
     const TEST_PROVIDER_ACCOUNT_ID: Uuid = Uuid::from_u128(1);
+    const TEST_STORE_ID: Uuid = Uuid::from_u128(2);
 
     fn checkout_details() -> PaymentCheckoutDetails {
         PaymentCheckoutDetails {
@@ -983,9 +979,9 @@ mod tests {
     impl StripeWebhookConfigurationRepository for StaticWebhookConfiguration {
         async fn webhook_configurations(
             &self,
-            stripe_account_id: Uuid,
+            store_id: StoreId,
         ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError> {
-            if stripe_account_id != TEST_PROVIDER_ACCOUNT_ID {
+            if store_id.as_uuid() != TEST_STORE_ID {
                 return Ok(Vec::new());
             }
             Ok(self
@@ -993,7 +989,7 @@ mod tests {
                 .iter()
                 .cloned()
                 .map(|secret_reference| StripeWebhookConfiguration {
-                    stripe_account_id,
+                    stripe_account_id: TEST_PROVIDER_ACCOUNT_ID,
                     secret_reference,
                 })
                 .collect())
@@ -1293,7 +1289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stripe_checkout_webhook_routes_by_account_id() {
+    async fn stripe_checkout_webhook_routes_by_store_id() {
         let active_reference =
             PaymentSecretReference::new("webhook", "test://webhook-active").unwrap();
         let previous_reference =
@@ -1338,7 +1334,7 @@ mod tests {
             .collect::<String>();
         let event = verifier
             .verify(
-                TEST_PROVIDER_ACCOUNT_ID,
+                StoreId::from_uuid(TEST_STORE_ID),
                 &format!("t={},v1={signature}", received_at.unix_timestamp()),
                 &payload,
                 received_at,
@@ -1353,7 +1349,7 @@ mod tests {
         assert!(
             verifier
                 .verify(
-                    Uuid::from_u128(2),
+                    StoreId::from_uuid(Uuid::from_u128(3)),
                     &format!("t={},v1={signature}", received_at.unix_timestamp()),
                     &payload,
                     received_at,
@@ -1364,7 +1360,7 @@ mod tests {
         assert!(
             verifier
                 .verify(
-                    TEST_PROVIDER_ACCOUNT_ID,
+                    StoreId::from_uuid(TEST_STORE_ID),
                     &format!("t={},v1={signature}", received_at.unix_timestamp()),
                     &payload,
                     received_at + time::Duration::minutes(6),
@@ -1400,7 +1396,7 @@ mod tests {
         assert!(
             verifier
                 .verify(
-                    TEST_PROVIDER_ACCOUNT_ID,
+                    StoreId::from_uuid(TEST_STORE_ID),
                     &format!("t={},v1={connect_signature}", received_at.unix_timestamp()),
                     &connect_payload,
                     received_at,

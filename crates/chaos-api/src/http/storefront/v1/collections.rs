@@ -9,25 +9,25 @@ use crate::http::shared::pagination::{
 };
 use crate::http::{ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine};
 
-pub fn storefront_routes() -> Router<ApiState> {
+pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
-        .route("/collections", get(list_storefront_collections))
-        .route("/collections/{handle}", get(get_storefront_collection))
+        .route("/collections", get(list_collections))
+        .route("/collections/{handle}", get(get_collection))
 }
 
 #[derive(Deserialize)]
-struct HandlePath {
+struct CollectionPath {
     handle: String,
 }
 
 #[derive(Deserialize)]
-struct ListQuery {
+struct ListCollectionsQuery {
     cursor: Option<String>,
     limit: Option<u16>,
 }
 
 #[derive(Serialize)]
-struct StorefrontCollectionData {
+struct CollectionData {
     id: Uuid,
     handle: String,
     title: String,
@@ -37,11 +37,11 @@ struct StorefrontCollectionData {
     metadata: Option<serde_json::Value>,
 }
 
-async fn list_storefront_collections(
+async fn list_collections(
     State(state): State<ApiState>,
     StorefrontMachine(actor): StorefrontMachine,
-    ApiQuery(query): ApiQuery<ListQuery>,
-) -> Result<ApiResponse<Vec<StorefrontCollectionData>>, crate::http::ApiError> {
+    ApiQuery(query): ApiQuery<ListCollectionsQuery>,
+) -> Result<ApiResponse<Vec<CollectionData>>, crate::http::ApiError> {
     let limit = page_limit(query.limit)?;
     let after = query
         .cursor
@@ -62,17 +62,17 @@ async fn list_storefront_collections(
         })
         .flatten();
     Ok(
-        ApiResponse::ok(page.items.into_iter().map(storefront_data).collect())
+        ApiResponse::ok(page.items.into_iter().map(collection_data).collect())
             .with_meta(page_meta(page.has_more, next_cursor)),
     )
 }
 
-async fn get_storefront_collection(
+async fn get_collection(
     State(state): State<ApiState>,
     StorefrontMachine(actor): StorefrontMachine,
-    ApiPath(path): ApiPath<HandlePath>,
-) -> Result<ApiResponse<StorefrontCollectionData>, crate::http::ApiError> {
-    Ok(ApiResponse::ok(storefront_data(
+    ApiPath(path): ApiPath<CollectionPath>,
+) -> Result<ApiResponse<CollectionData>, crate::http::ApiError> {
+    Ok(ApiResponse::ok(collection_data(
         state
             .storefront_collections
             .get(&actor, &path.handle)
@@ -80,8 +80,8 @@ async fn get_storefront_collection(
     )))
 }
 
-fn storefront_data(value: StorefrontCollectionItem) -> StorefrontCollectionData {
-    StorefrontCollectionData {
+fn collection_data(value: StorefrontCollectionItem) -> CollectionData {
+    CollectionData {
         id: value.id.as_uuid(),
         handle: value.handle,
         title: value.title,

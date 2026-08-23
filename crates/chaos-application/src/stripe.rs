@@ -292,14 +292,14 @@ impl PaymentService {
 
     pub async fn receive_webhook(
         &self,
-        stripe_account_id: Uuid,
+        store_id: StoreId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<bool, ApplicationError> {
         let event = self
             .verifier
-            .verify(stripe_account_id, signature, payload, received_at)
+            .verify(store_id, signature, payload, received_at)
             .await?;
         self.repository.ingest_webhook(&event).await
     }

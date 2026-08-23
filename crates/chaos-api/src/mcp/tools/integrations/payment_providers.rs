@@ -2,7 +2,7 @@ use chaos_application::{
     ports::StripeAccountDetail,
     stripe::{CreateStripeAccountInput, UpdateStripeAccountInput},
 };
-use chaos_domain::stripe::StripeAccountId;
+use chaos_domain::{store::StoreId, stripe::StripeAccountId};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -93,7 +93,7 @@ impl ChaosMcp {
                 let items = page
                     .items
                     .into_iter()
-                    .map(|value| stripe_account_json(value, &self.state.public_base_url))
+                    .map(|value| stripe_account_json(value, store_id, &self.state.public_base_url))
                     .collect::<Vec<_>>();
                 let next_cursor = page
                     .has_more
@@ -136,6 +136,7 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
+                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -143,7 +144,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create and readiness-check the selected Store's direct Stripe account for Embedded Checkout. Stripe Connect and Stripe-Account headers are not used. Store Stripe credentials with create_provider_secret first. The result includes the exact per-account Webhook Endpoint URL and the events to enable in Stripe Dashboard. If readiness fails, the account remains disabled. Requires confirmation."
+        description = "Create and readiness-check the selected Store's direct Stripe account for Embedded Checkout. Stripe Connect and Stripe-Account headers are not used. Store Stripe credentials with create_provider_secret first. The result includes the exact per-Store Webhook Endpoint URL and the events to enable in Stripe Dashboard. If readiness fails, the account remains disabled. Requires confirmation."
     )]
     async fn create_stripe_account(
         &self,
@@ -176,6 +177,7 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
+                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -183,7 +185,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update and re-check the selected Store's direct Stripe Embedded Checkout account. Stripe Connect, Stripe-Account headers, and platform labels are not supported. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. The exact per-account Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
+        description = "Update and re-check the selected Store's direct Stripe Embedded Checkout account. Stripe Connect, Stripe-Account headers, and platform labels are not supported. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. The exact per-Store Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
     )]
     async fn update_stripe_account(
         &self,
@@ -221,6 +223,7 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
+                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -235,9 +238,13 @@ fn invalid_id(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> serde_json::Value {
+fn stripe_account_json(
+    value: StripeAccountDetail,
+    store_id: StoreId,
+    public_base_url: &str,
+) -> serde_json::Value {
     let id = value.account.id().as_uuid();
-    let webhook_path = format!("/store/v1/webhooks/stripe/{}", id);
+    let webhook_path = format!("/storefront/v1/webhooks/stripe/{}", store_id.as_uuid());
     let webhook_url = format!(
         "{}/{}",
         public_base_url.trim_end_matches('/'),

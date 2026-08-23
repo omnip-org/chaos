@@ -11,7 +11,7 @@ const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
 
 export interface ClientOptions {
   publishableKey: string;
-  /** Store API origin + prefix, e.g. "https://shop.example.com/store/v1". Defaults to same-origin "/store/v1". */
+  /** Storefront API origin + prefix, e.g. "https://shop.example.com/storefront/v1". Defaults to same-origin "/storefront/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
   /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
@@ -56,7 +56,7 @@ export class ChaosStorefrontClient {
       throw new TypeError("publishableKey is required");
     }
     this.publishableKey = options.publishableKey;
-    this.baseUrl = (options.baseUrl ?? "/store/v1").replace(/\/+$/, "");
+    this.baseUrl = (options.baseUrl ?? "/storefront/v1").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.storage = options.storage !== undefined ? options.storage : (globalThis.localStorage ?? null);
     this.shopperTokenStorageKey = scopedShopperTokenKey(this.baseUrl, this.publishableKey);
