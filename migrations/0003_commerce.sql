@@ -1,9 +1,7 @@
 CREATE SCHEMA commerce;
 
 CREATE TYPE commerce.store_role AS ENUM ('owner', 'member');
-
 CREATE TYPE commerce.store_status AS ENUM ('active', 'inactive');
-
 CREATE TYPE commerce.sales_channel_status AS ENUM ('active', 'archived');
 
 CREATE TABLE commerce.stores (
@@ -17,21 +15,11 @@ CREATE TABLE commerce.stores (
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT stores_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
-    ),
-    CONSTRAINT stores_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT stores_region_format_check CHECK (
-        default_region ~ '^[A-Z]{2}$'
-    ),
-    CONSTRAINT stores_currency_format_check CHECK (
-        default_currency ~ '^[A-Z]{3}$'
-    ),
-    CONSTRAINT stores_default_locale_check CHECK (
-        default_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    )
+    CONSTRAINT stores_code_format_check           CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
+    CONSTRAINT stores_name_length_check           CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT stores_region_format_check         CHECK (default_region ~ '^[A-Z]{2}$'),
+    CONSTRAINT stores_currency_format_check       CHECK (default_currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT stores_default_locale_check        CHECK (default_locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
 );
 
 CREATE TABLE commerce.store_memberships (
@@ -41,11 +29,9 @@ CREATE TABLE commerce.store_memberships (
     created_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    PRIMARY KEY (store_id, user_id),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id)
-        REFERENCES identity.users(id) ON DELETE CASCADE
+    CONSTRAINT store_memberships_pkey               PRIMARY KEY (store_id, user_id),
+    CONSTRAINT store_memberships_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_memberships_user_id_fkey       FOREIGN KEY (user_id) REFERENCES identity.users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.store_locales (
@@ -53,14 +39,10 @@ CREATE TABLE commerce.store_locales (
     locale              VARCHAR(63) NOT NULL,
     created_by_user_id  UUID        NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (store_id, locale),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT store_locales_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    )
+    CONSTRAINT store_locales_pkey                  PRIMARY KEY (store_id, locale),
+    CONSTRAINT store_locales_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_locales_created_by_user_fkey  FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT store_locales_locale_check          CHECK (locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$')
 );
 
 CREATE TABLE commerce.store_currencies (
@@ -68,12 +50,9 @@ CREATE TABLE commerce.store_currencies (
     currency             CHAR(3)    NOT NULL,
     enabled              BOOLEAN    NOT NULL DEFAULT true,
 
-    PRIMARY KEY (store_id, currency),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT store_currencies_currency_format_check CHECK (
-        currency ~ '^[A-Z]{3}$'
-    )
+    CONSTRAINT store_currencies_pkey                   PRIMARY KEY (store_id, currency),
+    CONSTRAINT store_currencies_store_id_fkey          FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_currencies_currency_format_check  CHECK (currency ~ '^[A-Z]{3}$')
 );
 
 CREATE TABLE commerce.store_sales_channels (
@@ -86,16 +65,11 @@ CREATE TABLE commerce.store_sales_channels (
     created_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (store_id, code),
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT store_sales_channels_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
-    ),
-    CONSTRAINT store_sales_channels_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    )
+    CONSTRAINT store_sales_channels_store_id_code_key    UNIQUE (store_id, code),
+    CONSTRAINT store_sales_channels_store_id_id_key      UNIQUE (store_id, id),
+    CONSTRAINT store_sales_channels_store_id_fkey        FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_sales_channels_code_format_check    CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
+    CONSTRAINT store_sales_channels_name_length_check    CHECK (length(trim(name)) BETWEEN 1 AND 120)
 );
 
 CREATE TABLE commerce.store_publishable_keys (
@@ -110,41 +84,20 @@ CREATE TABLE commerce.store_publishable_keys (
     created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.store_sales_channels(id),
-    FOREIGN KEY (created_by_user_id)
-        REFERENCES identity.users(id),
-    FOREIGN KEY (revoked_by_user_id)
-        REFERENCES identity.users(id),
-    CONSTRAINT store_publishable_keys_public_key_format_check CHECK (
-        public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'
-    ),
-    CONSTRAINT store_publishable_keys_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 80
-    ),
-    CONSTRAINT store_publishable_keys_revocation_check CHECK (
-        (revoked_at IS NULL AND revoked_by_user_id IS NULL)
-        OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL)
-    )
+    CONSTRAINT store_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT store_publishable_keys_sales_channel_fkey    FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels(id),
+    CONSTRAINT store_publishable_keys_created_by_fkey       FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT store_publishable_keys_revoked_by_fkey       FOREIGN KEY (revoked_by_user_id) REFERENCES identity.users(id),
+    CONSTRAINT store_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
+    CONSTRAINT store_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80),
+    CONSTRAINT store_publishable_keys_revocation_check      CHECK ((revoked_at IS NULL AND revoked_by_user_id IS NULL) OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL))
 );
 
-CREATE INDEX store_memberships_user_idx
-    ON commerce.store_memberships (user_id, store_id);
-
-CREATE INDEX stores_status_idx
-    ON commerce.stores (status);
-
-CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx
-    ON commerce.store_sales_channels (store_id)
-    WHERE is_default;
-
-CREATE INDEX store_sales_channels_store_status_idx
-    ON commerce.store_sales_channels (store_id, status);
-
-CREATE INDEX store_publishable_keys_store_created_idx
-    ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
+CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
+CREATE INDEX stores_status_idx ON commerce.stores (status);
+CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
+CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
+CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
 
 CREATE FUNCTION commerce.prevent_default_locale_removal()
 RETURNS TRIGGER
@@ -202,19 +155,15 @@ AS $$
 $$;
 
 CREATE TRIGGER store_locales_protect_default
-BEFORE DELETE ON commerce.store_locales
-FOR EACH ROW EXECUTE FUNCTION commerce.prevent_default_locale_removal();
+    BEFORE DELETE ON commerce.store_locales
+    FOR EACH ROW
+    EXECUTE FUNCTION commerce.prevent_default_locale_removal();
 
 ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.store_locales ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.stores
@@ -228,62 +177,30 @@ CREATE POLICY store_directory ON commerce.stores
             SELECT 1
             FROM commerce.store_memberships AS membership
             WHERE membership.store_id = stores.id
-              AND membership.user_id =
-                    nullif(current_setting('app.user_id', true), '')::uuid
+              AND membership.user_id = nullif(current_setting('app.user_id', true), '')::uuid
         )
     );
 
 CREATE POLICY store_isolation ON commerce.store_memberships
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 CREATE POLICY store_membership_directory ON commerce.store_memberships
     FOR SELECT
-    USING (
-        user_id = nullif(current_setting('app.user_id', true), '')::uuid
-    );
+    USING (user_id = nullif(current_setting('app.user_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.store_locales
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.store_currencies
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.store_sales_channels
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.store_publishable_keys
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
