@@ -1,23 +1,16 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{IdempotencyRequest, StoreMembershipItem, StoreMembershipRepository},
+    ports::{StoreMembershipItem, StoreMembershipRepository},
     store::StoreActor,
 };
 use chaos_domain::{
     identity::UserId,
     store::{StoreId, StoreRole},
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const ADD_OPERATION: &str = "store_memberships.add.v1";
-const SET_ROLE_OPERATION: &str = "store_memberships.set_role.v1";
-const LEAVE_OPERATION: &str = "store_memberships.leave.v1";
 
 #[derive(Clone)]
 pub struct PostgresStoreMembershipRepository {
@@ -77,21 +70,9 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         actor: StoreActor,
         store_id: StoreId,
         user_id: UserId,
-        request: &IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError> {
         require_selected_store(actor, store_id)?;
         let mut transaction = self.begin(actor).await?;
-        if let Some(value) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            ADD_OPERATION,
-            request,
-        )
-        .await?
-        {
-            transaction.commit().await.map_err(database_error)?;
-            return membership_from_json(value);
-        }
         let row = sqlx::query_as::<_, MembershipRow>(
             "INSERT INTO commerce.store_memberships (store_id, user_id, role) \
              VALUES ($1, $2, 'member') \
@@ -105,16 +86,6 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         .await
         .map_err(|error| map_membership_error(error, user_id))?;
         let item = membership_item(row)?;
-        let response = membership_json(&item);
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            ADD_OPERATION,
-            request,
-            200,
-            response,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
     }
@@ -125,21 +96,9 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         store_id: StoreId,
         user_id: UserId,
         role: StoreRole,
-        request: &IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError> {
         require_selected_store(actor, store_id)?;
         let mut transaction = self.begin(actor).await?;
-        if let Some(value) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            SET_ROLE_OPERATION,
-            request,
-        )
-        .await?
-        {
-            transaction.commit().await.map_err(database_error)?;
-            return membership_from_json(value);
-        }
         lock_memberships(&mut transaction, actor.store_id()).await?;
         if role == StoreRole::Member {
             protect_last_owner(&mut transaction, actor.store_id(), user_id).await?;
@@ -158,40 +117,13 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
         .map_err(database_error)?
         .ok_or_else(|| member_not_found(user_id))?;
         let item = membership_item(row)?;
-        let response = membership_json(&item);
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            SET_ROLE_OPERATION,
-            request,
-            200,
-            response,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(item)
     }
 
-    async fn leave(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        request: &IdempotencyRequest,
-    ) -> Result<(), ApplicationError> {
+    async fn leave(&self, actor: StoreActor, store_id: StoreId) -> Result<(), ApplicationError> {
         require_selected_store(actor, store_id)?;
         let mut transaction = self.begin(actor).await?;
-        if idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            LEAVE_OPERATION,
-            request,
-        )
-        .await?
-        .is_some()
-        {
-            transaction.commit().await.map_err(database_error)?;
-            return Ok(());
-        }
         lock_memberships(&mut transaction, actor.store_id()).await?;
         if actor.role() == StoreRole::Owner {
             protect_last_owner(&mut transaction, actor.store_id(), actor.user_id()).await?;
@@ -202,15 +134,6 @@ impl StoreMembershipRepository for PostgresStoreMembershipRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Store(actor.store_id().as_uuid()),
-            LEAVE_OPERATION,
-            request,
-            204,
-            json!({ "left": true }),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
@@ -275,36 +198,6 @@ fn membership_item(row: MembershipRow) -> Result<StoreMembershipItem, Applicatio
     })
 }
 
-fn membership_json(item: &StoreMembershipItem) -> serde_json::Value {
-    json!({
-        "user_id": item.user_id.as_uuid(),
-        "role": item.role.as_str(),
-        "created_at": item.created_at,
-        "updated_at": item.updated_at,
-    })
-}
-
-fn membership_from_json(value: serde_json::Value) -> Result<StoreMembershipItem, ApplicationError> {
-    let parse = || -> anyhow::Result<StoreMembershipItem> {
-        let user_id = value["user_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing user_id"))?;
-        let role = value["role"]
-            .as_str()
-            .and_then(StoreRole::parse)
-            .ok_or_else(|| anyhow::anyhow!("invalid role"))?;
-        let created_at = serde_json::from_value(value["created_at"].clone())?;
-        let updated_at = serde_json::from_value(value["updated_at"].clone())?;
-        Ok(StoreMembershipItem {
-            user_id: UserId::from_uuid(Uuid::parse_str(user_id)?),
-            role,
-            created_at,
-            updated_at,
-        })
-    };
-    parse().map_err(ApplicationError::Unexpected)
-}
-
 fn member_not_found(user_id: UserId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "store_member",
@@ -349,13 +242,6 @@ mod tests {
     use crate::repositories::PostgresStoreReadRepository;
 
     use super::*;
-
-    fn request(key: &str, fingerprint: u8) -> IdempotencyRequest {
-        IdempotencyRequest {
-            key: key.into(),
-            request_fingerprint: [fingerprint; 32],
-        }
-    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
@@ -421,9 +307,7 @@ mod tests {
         let owner = directory.authorize(owner_id, store_id).await.unwrap();
 
         assert!(matches!(
-            service
-                .leave(owner, store_id, request("last-owner-leave", 1))
-                .await,
+            service.leave(owner, store_id).await,
             Err(ApplicationError::Conflict {
                 code: "last_store_owner",
                 ..
@@ -431,31 +315,17 @@ mod tests {
         ));
 
         let added = service
-            .add_member(owner, store_id, member_id, request("add-member", 2))
+            .add_member(owner, store_id, member_id)
             .await
             .unwrap();
-        let replay = service
-            .add_member(owner, store_id, member_id, request("add-member", 2))
-            .await
-            .unwrap();
-        assert_eq!(added, replay);
         assert_eq!(added.role, StoreRole::Member);
 
         let promoted = service
-            .set_role(
-                owner,
-                store_id,
-                member_id,
-                StoreRole::Owner,
-                request("promote-member", 3),
-            )
+            .set_role(owner, store_id, member_id, StoreRole::Owner)
             .await
             .unwrap();
         assert_eq!(promoted.role, StoreRole::Owner);
-        service
-            .leave(owner, store_id, request("owner-leave", 4))
-            .await
-            .unwrap();
+        service.leave(owner, store_id).await.unwrap();
         assert!(matches!(
             directory.authorize(owner_id, store_id).await,
             Err(ApplicationError::Forbidden)
@@ -464,13 +334,7 @@ mod tests {
         let new_owner = directory.authorize(member_id, store_id).await.unwrap();
         assert!(matches!(
             service
-                .set_role(
-                    new_owner,
-                    store_id,
-                    member_id,
-                    StoreRole::Member,
-                    request("demote-last-owner", 5),
-                )
+                .set_role(new_owner, store_id, member_id, StoreRole::Member,)
                 .await,
             Err(ApplicationError::Conflict {
                 code: "last_store_owner",

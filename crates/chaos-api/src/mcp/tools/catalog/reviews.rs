@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -39,8 +39,6 @@ pub struct ApproveReviewParams {
     pub verified_buyer: bool,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -49,8 +47,6 @@ pub struct RejectReviewParams {
     pub review_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -60,8 +56,6 @@ pub struct AddReviewReplyParams {
     pub content: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = reviews_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -132,7 +126,7 @@ impl ChaosMcp {
     #[tool(
         description = "Approve a pending review in the selected Store, making it \
                         visible on the product page. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn approve_review(
         &self,
@@ -157,7 +151,6 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
         match self
@@ -168,7 +161,6 @@ impl ChaosMcp {
                 store_id,
                 review_id,
                 verified_buyer: params.verified_buyer,
-                idempotency,
                 now,
             })
             .await
@@ -181,7 +173,7 @@ impl ChaosMcp {
     #[tool(
         description = "Reject a pending review in the selected Store, keeping it \
                         hidden from the product page. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn reject_review(
         &self,
@@ -206,7 +198,6 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
         match self
@@ -216,7 +207,6 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 review_id,
-                idempotency,
                 now,
             })
             .await
@@ -227,7 +217,7 @@ impl ChaosMcp {
     }
 
     #[tool(description = "Add a staff reply to a review in the selected Store. \
-                        Requires confirm: true and an idempotency_key.")]
+                        Requires confirm: true.")]
     async fn add_review_reply(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -251,7 +241,6 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
         match self
@@ -262,7 +251,6 @@ impl ChaosMcp {
                 store_id,
                 parent_review_id,
                 content: params.content,
-                idempotency,
                 now,
             })
             .await

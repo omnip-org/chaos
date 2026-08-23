@@ -9,7 +9,7 @@ use chaos_domain::{
 use crate::{
     ApplicationError,
     catalog::parse_metadata,
-    ports::{AdminActor, CatalogProvisioningUnitOfWork, IdempotencyRequest},
+    ports::{AdminActor, CatalogProvisioningUnitOfWork},
 };
 
 pub struct CreateProductOptionInput {
@@ -40,7 +40,6 @@ pub struct CreateProductInput {
     pub options: Vec<CreateProductOptionInput>,
     pub variants: Vec<CreateProductVariantInput>,
     pub metadata: Option<serde_json::Value>,
-    pub idempotency: IdempotencyRequest,
 }
 
 #[derive(Debug)]
@@ -66,16 +65,7 @@ impl CreateProduct {
         let product = build_product(&input)?;
         let mut transaction = self.unit_of_work.begin(input.actor, input.store_id).await?;
         transaction.require_writable_store().await?;
-        if let Some(product_id) = transaction
-            .reserve_product_creation(&input.idempotency)
-            .await?
-        {
-            return Ok(CreateProductOutput { product_id });
-        }
         transaction.insert_product(&product).await?;
-        transaction
-            .complete_product_creation(&input.idempotency, product.id())
-            .await?;
         transaction.commit().await?;
         Ok(CreateProductOutput {
             product_id: product.id(),
@@ -204,10 +194,6 @@ mod tests {
                 metadata: None,
             }],
             metadata: None,
-            idempotency: IdempotencyRequest {
-                key: "product-test".into(),
-                request_fingerprint: [1; 32],
-            },
         }
     }
 

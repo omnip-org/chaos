@@ -21,7 +21,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -97,8 +97,6 @@ pub struct CreateProductParams {
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -108,10 +106,6 @@ pub struct ChangeProductStatusParams {
     /// Must be explicitly set to true. This action is irreversible via this tool
     /// and affects live store data. Review the product with get_product before confirming.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt. Reusing the same key
-    /// with the same arguments replays the original result instead of repeating
-    /// the mutation; reusing it with different arguments is a conflict.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -132,8 +126,6 @@ pub struct UpdateProductParams {
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt (see change-status tools).
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -157,8 +149,6 @@ pub struct UpdateProductVariantParams {
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -169,8 +159,6 @@ pub struct ProductPublicationParams {
     pub sales_channel_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt (see change-status tools).
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = products_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -328,7 +316,7 @@ impl ChaosMcp {
                         bookkeeping). Product and variant titles are English catalog fields. The \
                         product starts as draft and is not visible anywhere until \
                         activate_product and publish_product are also called. Requires confirm: \
-                        true and an idempotency_key."
+                        true."
     )]
     async fn create_product(
         &self,
@@ -349,8 +337,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let options = params
             .options
             .into_iter()
@@ -391,7 +377,6 @@ impl ChaosMcp {
                 options,
                 variants,
                 metadata: params.metadata,
-                idempotency,
             })
             .await
         {
@@ -405,7 +390,7 @@ impl ChaosMcp {
                         selected Store. These are canonical product fields only: this does not \
                         update variant titles, option names or values. \
                         Every field is replaced wholesale, including metadata (omit it to clear \
-                        existing metadata). Requires confirm: true and an idempotency_key."
+                        existing metadata). Requires confirm: true."
     )]
     async fn update_product(
         &self,
@@ -430,8 +415,6 @@ impl ChaosMcp {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .catalog_management
@@ -443,7 +426,6 @@ impl ChaosMcp {
                 title: params.title,
                 description: params.description,
                 metadata: params.metadata,
-                idempotency,
             })
             .await
         {
@@ -457,7 +439,7 @@ impl ChaosMcp {
                         tracking flag, and metadata in the selected Store. This updates the \
                         canonical catalog fields; it does not change selected option values. \
                         Mutable fields are replaced wholesale, and omitting metadata clears it. \
-                        Requires confirm: true and an idempotency_key."
+                        Requires confirm: true."
     )]
     async fn update_product_variant(
         &self,
@@ -487,8 +469,6 @@ impl ChaosMcp {
                 Ok(id) => ProductVariantId::from_uuid(id),
                 Err(result) => return Ok(result),
             };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .catalog_management
@@ -502,7 +482,6 @@ impl ChaosMcp {
                 requires_shipping: params.requires_shipping,
                 track_inventory: params.track_inventory,
                 metadata: params.metadata,
-                idempotency,
             })
             .await
         {
@@ -517,7 +496,7 @@ impl ChaosMcp {
     #[tool(
         description = "Activate a draft product in the selected Store, making it \
                         eligible for publication. Requires at least one variant. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn activate_product(
         &self,
@@ -529,7 +508,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Archive a product in the selected Store, removing it from \
-                        sale without deleting it. Requires confirm: true and an idempotency_key."
+                        sale without deleting it. Requires confirm: true."
     )]
     async fn archive_product(
         &self,
@@ -541,7 +520,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Publish an active product to a sales channel in the selected Store, making it visible on that channel. Requires confirm: true and \
-                        an idempotency_key."
+                        true."
     )]
     async fn publish_product(
         &self,
@@ -553,7 +532,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Unpublish a product from a sales channel in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn unpublish_product(
         &self,
@@ -589,13 +568,10 @@ impl ChaosMcp {
             Ok(id) => ProductId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = ChangeProductStatusInput {
             actor,
             store_id,
             product_id,
-            idempotency,
         };
         let result = if activate {
             self.state.catalog_management.activate(input).await
@@ -637,14 +613,11 @@ impl ChaosMcp {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = ProductPublicationInput {
             actor,
             store_id,
             product_id,
             sales_channel_id,
-            idempotency,
         };
         let result = if publish {
             self.state.catalog_management.publish(input).await

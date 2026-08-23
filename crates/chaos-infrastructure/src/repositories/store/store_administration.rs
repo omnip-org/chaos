@@ -1,10 +1,7 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem,
-        StoreAdministrationRepository,
-    },
+    ports::{AdminActor, SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository},
 };
 use chaos_domain::{
     CurrencyCode, RegionCode,
@@ -13,20 +10,9 @@ use chaos_domain::{
         StoreId, StoreStatus,
     },
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const UPDATE_STORE_OPERATION: &str = "stores.update.v1";
-const ACTIVATE_STORE_OPERATION: &str = "stores.activate.v1";
-const ARCHIVE_STORE_OPERATION: &str = "stores.archive.v1";
-const CREATE_CHANNEL_OPERATION: &str = "sales_channels.create.v1";
-const UPDATE_CHANNEL_OPERATION: &str = "sales_channels.update.v1";
-const ACTIVATE_CHANNEL_OPERATION: &str = "sales_channels.activate.v1";
-const ARCHIVE_CHANNEL_OPERATION: &str = "sales_channels.archive.v1";
 
 #[derive(Clone)]
 pub struct PostgresStoreAdministrationRepository {
@@ -105,13 +91,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         actor: AdminActor,
         store_id: StoreId,
         replacement: &Store,
-        request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut transaction, &actor, UPDATE_STORE_OPERATION, request).await?
-        {
-            return Ok(StoreId::from_uuid(id));
-        }
         let result = sqlx::query(
             "UPDATE commerce.stores SET code = $2, name = $3, region = $4, \
                     currency = $5, meta = $6, updated_at = CURRENT_TIMESTAMP \
@@ -129,14 +110,6 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         if result.rows_affected() == 0 {
             return Err(store_not_found(store_id));
         }
-        complete(
-            &mut transaction,
-            &actor,
-            UPDATE_STORE_OPERATION,
-            request,
-            store_id.as_uuid(),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(store_id)
     }
@@ -146,16 +119,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         actor: AdminActor,
         store_id: StoreId,
         status: StoreStatus,
-        request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError> {
-        let operation = match status {
-            StoreStatus::Active => ACTIVATE_STORE_OPERATION,
-            StoreStatus::Inactive => ARCHIVE_STORE_OPERATION,
-        };
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
-            return Ok(StoreId::from_uuid(id));
-        }
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM commerce.stores WHERE id = $1 FOR UPDATE")
             .bind(store_id.as_uuid())
             .fetch_optional(&mut *transaction)
@@ -184,14 +149,6 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        complete(
-            &mut transaction,
-            &actor,
-            operation,
-            request,
-            store_id.as_uuid(),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(store_id)
     }
@@ -251,14 +208,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         &self,
         actor: AdminActor,
         channel: &SalesChannel,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) =
-            reserve(&mut transaction, &actor, CREATE_CHANNEL_OPERATION, request).await?
-        {
-            return Ok(SalesChannelId::from_uuid(id));
-        }
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
@@ -272,14 +223,6 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
-        complete(
-            &mut transaction,
-            &actor,
-            CREATE_CHANNEL_OPERATION,
-            request,
-            channel.id().as_uuid(),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(channel.id())
     }
@@ -289,14 +232,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         actor: AdminActor,
         sales_channel_id: SalesChannelId,
         replacement: &SalesChannel,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) =
-            reserve(&mut transaction, &actor, UPDATE_CHANNEL_OPERATION, request).await?
-        {
-            return Ok(SalesChannelId::from_uuid(id));
-        }
         let result = sqlx::query(
             "UPDATE commerce.store_sales_channels SET code = $3, name = $4, \
                     updated_at = CURRENT_TIMESTAMP \
@@ -312,14 +249,6 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         if result.rows_affected() == 0 {
             return Err(channel_not_found(sales_channel_id));
         }
-        complete(
-            &mut transaction,
-            &actor,
-            UPDATE_CHANNEL_OPERATION,
-            request,
-            sales_channel_id.as_uuid(),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(sales_channel_id)
     }
@@ -330,16 +259,8 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         status: SalesChannelStatus,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError> {
-        let operation = match status {
-            SalesChannelStatus::Active => ACTIVATE_CHANNEL_OPERATION,
-            SalesChannelStatus::Archived => ARCHIVE_CHANNEL_OPERATION,
-        };
         let mut transaction = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut transaction, &actor, operation, request).await? {
-            return Ok(SalesChannelId::from_uuid(id));
-        }
         let is_default = sqlx::query_scalar::<_, bool>(
             "SELECT is_default FROM commerce.store_sales_channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
@@ -364,62 +285,9 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        complete(
-            &mut transaction,
-            &actor,
-            operation,
-            request,
-            sales_channel_id.as_uuid(),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(sales_channel_id)
     }
-}
-
-async fn reserve(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    let Some(body) = idempotency::reserve(
-        transaction,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    body.pointer("/data/id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|id| Uuid::parse_str(id).ok())
-        .map(Some)
-        .ok_or_else(|| {
-            ApplicationError::Unexpected(anyhow::anyhow!(
-                "completed idempotency record has no administration response"
-            ))
-        })
-}
-
-async fn complete(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: Uuid,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        transaction,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-        200,
-        json!({ "data": { "id": id } }),
-    )
-    .await
 }
 
 async fn store_exists(
@@ -530,7 +398,6 @@ mod tests {
 
     use chaos_application::{
         ports::AdminActor,
-        ports::IdempotencyRequest,
         store::{
             ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
             StoreAdministration, StoreQueries, UpdateSalesChannelInput, UpdateStoreInput,
@@ -540,13 +407,6 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
-
-    fn request(key: String, fingerprint: u8) -> IdempotencyRequest {
-        IdempotencyRequest {
-            key,
-            request_fingerprint: [fingerprint; 32],
-        }
-    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
@@ -642,7 +502,6 @@ mod tests {
                 region: "SG".into(),
                 currency: "SGD".into(),
                 meta: None,
-                idempotency: request(format!("update-store-{suffix}"), 71),
             })
             .await
             .unwrap();
@@ -655,7 +514,6 @@ mod tests {
             .activate_store(ChangeStoreStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                idempotency: request(format!("activate-store-{suffix}"), 72),
             })
             .await
             .unwrap();
@@ -674,7 +532,6 @@ mod tests {
                 store_id,
                 code: "mobile".into(),
                 name: "Mobile App".into(),
-                idempotency: request(format!("create-channel-{suffix}"), 73),
             })
             .await
             .unwrap();
@@ -690,7 +547,6 @@ mod tests {
                 sales_channel_id: channel_id,
                 code: "mobile-app".into(),
                 name: "Updated Mobile App".into(),
-                idempotency: request(format!("update-channel-{suffix}"), 74),
             })
             .await
             .unwrap();
@@ -699,7 +555,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: channel_id,
-                idempotency: request(format!("archive-channel-{suffix}"), 75),
             })
             .await
             .unwrap();
@@ -716,7 +571,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: channel_id,
-                idempotency: request(format!("activate-channel-{suffix}"), 76),
             })
             .await
             .unwrap();
@@ -725,7 +579,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 sales_channel_id: default_channel_id,
-                idempotency: request(format!("archive-default-{suffix}"), 77),
             })
             .await;
         assert!(matches!(
@@ -742,7 +595,6 @@ mod tests {
             .archive_store(ChangeStoreStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
-                idempotency: request(format!("archive-store-{suffix}"), 79),
             })
             .await
             .unwrap();

@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 
 pub struct MediaAssetItem {
     pub id: MediaAssetId,
@@ -90,7 +90,6 @@ pub trait MediaAssetRepository: Send + Sync {
         &self,
         actor: AdminActor,
         record: CreateMediaAssetRecord,
-        request: &IdempotencyRequest,
     ) -> Result<PendingMediaUpload, ApplicationError>;
 
     async fn list(
@@ -113,13 +112,11 @@ pub trait MediaAssetRepository: Send + Sync {
         actor: AdminActor,
         mutation: MediaAssetMutation,
         public_url: &str,
-        request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError>;
 
     async fn archive(
         &self,
         actor: AdminActor,
         mutation: MediaAssetMutation,
-        request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError>;
 }

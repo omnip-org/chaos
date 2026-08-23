@@ -6,7 +6,7 @@ use crate::{
         AnalyticsCollectionRateLimiter, AnalyticsDeliveryError, AnalyticsDeliveryRepository,
         AnalyticsDestination, AnalyticsDestinationConfiguration, AnalyticsDestinationRepository,
         AnalyticsEventDestination, AnalyticsEventInput, AnalyticsEventPage, AnalyticsEventQuery,
-        AnalyticsEventQueryRepository, AnalyticsEventRepository, IdempotencyRequest, MachineActor,
+        AnalyticsEventQueryRepository, AnalyticsEventRepository, MachineActor,
     },
     store::StoreActor,
 };
@@ -163,14 +163,13 @@ impl AnalyticsAdministration {
         actor: StoreActor,
         store_id: chaos_domain::store::StoreId,
         configuration: AnalyticsDestinationConfiguration,
-        idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsDestination, ApplicationError> {
         if actor.role() != chaos_domain::store::StoreRole::Owner {
             return Err(ApplicationError::Forbidden);
         }
         self.destinations
-            .configure_destination(actor, store_id, configuration, idempotency, now)
+            .configure_destination(actor, store_id, configuration, now)
             .await
     }
 

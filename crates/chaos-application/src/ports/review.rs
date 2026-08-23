@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest, MachineActor};
+use super::{AdminActor, MachineActor};
 
 pub struct ReviewSummary {
     pub id: ReviewId,
@@ -39,7 +39,6 @@ pub trait ReviewRepository: Send + Sync {
         &self,
         actor: &MachineActor,
         record: SubmitReviewRecord,
-        request: &IdempotencyRequest,
     ) -> Result<ReviewId, ApplicationError>;
 
     async fn list_by_status(
@@ -59,7 +58,6 @@ pub trait ReviewRepository: Send + Sync {
         review_id: ReviewId,
         status: ReviewStatus,
         verified_buyer: bool,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<ReviewId, ApplicationError>;
 
@@ -69,7 +67,6 @@ pub trait ReviewRepository: Send + Sync {
         store_id: StoreId,
         parent_review_id: ReviewId,
         content: StaffReplyContent,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<ReviewId, ApplicationError>;
 

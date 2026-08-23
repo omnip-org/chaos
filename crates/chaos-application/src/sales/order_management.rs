@@ -8,10 +8,7 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, OrderDetail, OrderListFilter, OrderManagementRepository,
-        OrderPage,
-    },
+    ports::{AdminActor, OrderDetail, OrderListFilter, OrderManagementRepository, OrderPage},
 };
 
 pub struct ChangeOrderStatusInput {
@@ -20,7 +17,6 @@ pub struct ChangeOrderStatusInput {
     pub order_id: OrderId,
     pub target_status: OrderStatus,
     pub now: OffsetDateTime,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct OrderManagement {
@@ -80,7 +76,6 @@ impl OrderManagement {
                 input.order_id,
                 input.target_status,
                 input.now,
-                &input.idempotency,
             )
             .await
     }

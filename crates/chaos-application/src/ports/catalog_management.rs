@@ -4,7 +4,7 @@ use chaos_domain::{
     store::{SalesChannelId, StoreId},
 };
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 use crate::ApplicationError;
 
 pub struct ProductLifecycleSnapshot {
@@ -24,18 +24,6 @@ pub trait CatalogManagementUnitOfWork: Send + Sync {
 
 #[async_trait]
 pub trait CatalogManagementTransaction: Send {
-    async fn reserve_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<ProductId>, ApplicationError>;
-
-    async fn reserve_variant_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<ProductVariantId>, ApplicationError>;
-
     async fn load_lifecycle(
         &mut self,
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError>;
@@ -59,20 +47,6 @@ pub trait CatalogManagementTransaction: Send {
 
     async fn unpublish(&mut self, sales_channel_id: SalesChannelId)
     -> Result<(), ApplicationError>;
-
-    async fn complete_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        product_id: ProductId,
-    ) -> Result<(), ApplicationError>;
-
-    async fn complete_variant_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        variant_id: ProductVariantId,
-    ) -> Result<(), ApplicationError>;
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError>;
 }

@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -45,8 +45,6 @@ pub struct ChangeOrderStatusParams {
     pub order_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = orders_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -156,7 +154,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Confirm a pending order in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn confirm_order(
         &self,
@@ -169,7 +167,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Cancel a pending order in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn cancel_order(
         &self,
@@ -206,7 +204,6 @@ impl ChaosMcp {
             Ok(id) => OrderId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
         match self
@@ -218,7 +215,6 @@ impl ChaosMcp {
                 order_id,
                 target_status,
                 now,
-                idempotency,
             })
             .await
         {

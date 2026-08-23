@@ -8,11 +8,6 @@ use time::OffsetDateTime;
 
 use crate::{ApplicationError, store::StoreActor};
 
-pub struct IdempotencyRequest {
-    pub key: String,
-    pub request_fingerprint: [u8; 32],
-}
-
 #[async_trait]
 pub trait StoreProvisioningUnitOfWork: Send + Sync {
     async fn begin(
@@ -23,11 +18,6 @@ pub trait StoreProvisioningUnitOfWork: Send + Sync {
 
 #[async_trait]
 pub trait StoreProvisioningTransaction: Send {
-    async fn reserve_store_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<StoreId>, ApplicationError>;
-
     async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError>;
 
     async fn insert_owner_membership(
@@ -38,12 +28,6 @@ pub trait StoreProvisioningTransaction: Send {
     async fn insert_default_sales_channel(
         &mut self,
         channel: &SalesChannel,
-    ) -> Result<(), ApplicationError>;
-
-    async fn complete_store_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-        store_id: StoreId,
     ) -> Result<(), ApplicationError>;
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError>;
@@ -96,7 +80,6 @@ pub trait StoreMembershipRepository: Send + Sync {
         actor: StoreActor,
         store_id: StoreId,
         user_id: UserId,
-        request: &IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError>;
 
     async fn set_role(
@@ -105,13 +88,7 @@ pub trait StoreMembershipRepository: Send + Sync {
         store_id: StoreId,
         user_id: UserId,
         role: StoreRole,
-        request: &IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError>;
 
-    async fn leave(
-        &self,
-        actor: StoreActor,
-        store_id: StoreId,
-        request: &IdempotencyRequest,
-    ) -> Result<(), ApplicationError>;
+    async fn leave(&self, actor: StoreActor, store_id: StoreId) -> Result<(), ApplicationError>;
 }

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, GeneratedPublishableKey, IdempotencyRequest, MachineActor,
-        PublishableKeyGenerator, PublishableKeyListItem, PublishableKeyRepository,
+        AdminActor, GeneratedPublishableKey, MachineActor, PublishableKeyGenerator,
+        PublishableKeyListItem, PublishableKeyRepository,
     },
 };
 use chaos_domain::{
@@ -11,15 +11,10 @@ use chaos_domain::{
     store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
 };
 use rand::Rng;
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.create.v1";
-const REVOKE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.revoke.v1";
 const PUBLIC_KEY_PREFIX: &str = "pk_";
 const PUBLIC_KEY_LENGTH: usize = 24;
 const PUBLIC_KEY_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
@@ -59,37 +54,10 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         actor: AdminActor,
         publishable_key: &PublishableKey,
         generated_key: &GeneratedPublishableKey,
-        idempotency: &IdempotencyRequest,
     ) -> Result<(PublishableKeyId, String), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, publishable_key.store_id()).await?;
-        let scope = IdempotencyScope::Store(actor.store_id().as_uuid());
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &scope,
-            CREATE_PUBLISHABLE_KEY_OPERATION,
-            idempotency,
-        )
-        .await?
-        {
-            let public_key = snapshot
-                .get("data")
-                .and_then(|data| data.get("public_key"))
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(invalid_snapshot)?
-                .to_owned();
-            let id = snapshot
-                .get("data")
-                .and_then(|data| data.get("id"))
-                .and_then(serde_json::Value::as_str)
-                .and_then(|value| value.parse::<Uuid>().ok())
-                .map(PublishableKeyId::from_uuid)
-                .ok_or_else(invalid_snapshot)?;
-            transaction.commit().await.map_err(database_error)?;
-            return Ok((id, public_key));
-        }
-
         sqlx::query(
             "INSERT INTO commerce.store_publishable_keys \
              (id, store_id, public_key, name, created_by_user_id) \
@@ -104,20 +72,6 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         .await
         .map_err(database_error)?;
 
-        idempotency::complete(
-            &mut transaction,
-            &scope,
-            CREATE_PUBLISHABLE_KEY_OPERATION,
-            idempotency,
-            201,
-            json!({
-                "data": {
-                    "id": publishable_key.id().as_uuid(),
-                    "public_key": generated_key.public_key.clone(),
-                }
-            }),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok((publishable_key.id(), generated_key.public_key.clone()))
     }
@@ -167,25 +121,10 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         actor: AdminActor,
         store_id: StoreId,
         publishable_key_id: PublishableKeyId,
-        idempotency: &IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
-        let scope = IdempotencyScope::Store(actor.store_id().as_uuid());
-        if idempotency::reserve(
-            &mut transaction,
-            &scope,
-            REVOKE_PUBLISHABLE_KEY_OPERATION,
-            idempotency,
-        )
-        .await?
-        .is_some()
-        {
-            transaction.commit().await.map_err(database_error)?;
-            return Ok(());
-        }
-
         let result = sqlx::query(
             "UPDATE commerce.store_publishable_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
@@ -206,15 +145,6 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
             });
         }
 
-        idempotency::complete(
-            &mut transaction,
-            &scope,
-            REVOKE_PUBLISHABLE_KEY_OPERATION,
-            idempotency,
-            204,
-            json!({ "data": {} }),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)
     }
 
@@ -298,12 +228,6 @@ fn valid_public_key(value: &str) -> bool {
         && value[PUBLIC_KEY_PREFIX.len()..]
             .bytes()
             .all(|byte| PUBLIC_KEY_ALPHABET.contains(&byte))
-}
-
-fn invalid_snapshot() -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "invalid publishable key idempotency snapshot"
-    ))
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {
@@ -412,10 +336,6 @@ mod tests {
             actor: actor.clone(),
             store_id,
             name: "Storefront production".into(),
-            idempotency: IdempotencyRequest {
-                key: format!("create-{unique_suffix}"),
-                request_fingerprint: [41; 32],
-            },
         };
 
         let issued = management.create(creation_input()).await.unwrap();
@@ -442,30 +362,8 @@ mod tests {
         let machine_actor = authentication.authenticate(&public_key).await.unwrap();
         assert_eq!(machine_actor.store_id, store_id);
 
-        let replay = management.create(creation_input()).await.unwrap();
-        assert_eq!(replay.publishable_key.id(), publishable_key_id);
-        assert_eq!(replay.public_key, public_key);
-
-        let revoke_request = || IdempotencyRequest {
-            key: format!("revoke-{unique_suffix}"),
-            request_fingerprint: [42; 32],
-        };
         management
-            .revoke(
-                actor.clone(),
-                store_id,
-                publishable_key_id,
-                revoke_request(),
-            )
-            .await
-            .unwrap();
-        management
-            .revoke(
-                actor.clone(),
-                store_id,
-                publishable_key_id,
-                revoke_request(),
-            )
+            .revoke(actor.clone(), store_id, publishable_key_id)
             .await
             .unwrap();
         assert!(matches!(
@@ -475,14 +373,6 @@ mod tests {
         let page = management.list(actor, store_id, None, 20).await.unwrap();
         assert!(page.items[0].revoked_at.is_some());
 
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'store' AND scope_id = $1",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM commerce.stores WHERE id = $1")
             .bind(store_id.as_uuid())
             .execute(&owner_pool)

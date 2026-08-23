@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
     tools::ChaosMcp,
 };
 
@@ -32,7 +32,6 @@ pub struct ConfigureMetaDestinationParams {
     /// Destination-level switch. Enabled destinations receive all subsequently scheduled behavior events.
     pub enabled: bool,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -129,7 +128,6 @@ impl ChaosMcp {
             ));
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let configuration = chaos_application::ports::AnalyticsDestinationConfiguration {
             provider: "meta".into(),
             external_account_reference: params.dataset_id,
@@ -140,13 +138,7 @@ impl ChaosMcp {
         let destination = match self
             .state
             .analytics_administration
-            .configure_destination(
-                actor,
-                store_id,
-                configuration,
-                &idempotency,
-                self.state.clock.now(),
-            )
+            .configure_destination(actor, store_id, configuration, self.state.clock.now())
             .await
         {
             Ok(destination) => destination,

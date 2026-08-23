@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 
 pub struct GeneratedPublishableKey {
     pub public_key: String,
@@ -43,7 +43,6 @@ pub trait PublishableKeyRepository: Send + Sync {
         actor: AdminActor,
         publishable_key: &PublishableKey,
         generated_key: &GeneratedPublishableKey,
-        idempotency: &IdempotencyRequest,
     ) -> Result<(PublishableKeyId, String), ApplicationError>;
 
     async fn list(
@@ -59,7 +58,6 @@ pub trait PublishableKeyRepository: Send + Sync {
         actor: AdminActor,
         store_id: StoreId,
         publishable_key_id: PublishableKeyId,
-        idempotency: &IdempotencyRequest,
     ) -> Result<(), ApplicationError>;
 
     async fn authenticate(

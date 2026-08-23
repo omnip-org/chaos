@@ -20,7 +20,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -36,16 +36,12 @@ pub struct UpdateStoreParams {
     pub meta: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ChangeStoreStatusParams {
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -61,8 +57,6 @@ pub struct CreateSalesChannelParams {
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -73,8 +67,6 @@ pub struct UpdateSalesChannelParams {
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -83,8 +75,6 @@ pub struct ChangeSalesChannelStatusParams {
     pub sales_channel_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = store_admin_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -118,7 +108,7 @@ impl ChaosMcp {
     }
 
     #[tool(description = "Update the selected Store's code, name, region, \
-                        and currency. Requires confirm: true and an idempotency_key.")]
+                        and currency. Requires confirm: true.")]
     async fn update_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -138,8 +128,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .store_administration
@@ -151,7 +139,6 @@ impl ChaosMcp {
                 region: params.region,
                 currency: params.currency,
                 meta: params.meta,
-                idempotency,
             })
             .await
         {
@@ -162,7 +149,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Reactivate the selected Store, making it live. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn activate_store(
         &self,
@@ -174,7 +161,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Archive the selected Store. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn archive_store(
         &self,
@@ -252,7 +239,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create a sales channel in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn create_sales_channel(
         &self,
@@ -273,8 +260,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .store_administration
@@ -283,7 +268,6 @@ impl ChaosMcp {
                 store_id,
                 code: params.code,
                 name: params.name,
-                idempotency,
             })
             .await
         {
@@ -294,7 +278,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Update a sales channel's code and name in the selected Store. \
-                        Requires confirm: true and an idempotency_key."
+                        Requires confirm: true."
     )]
     async fn update_sales_channel(
         &self,
@@ -320,8 +304,6 @@ impl ChaosMcp {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .store_administration
@@ -331,7 +313,6 @@ impl ChaosMcp {
                 sales_channel_id,
                 code: params.code,
                 name: params.name,
-                idempotency,
             })
             .await
         {
@@ -342,7 +323,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Activate a sales channel in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn activate_sales_channel(
         &self,
@@ -355,7 +336,7 @@ impl ChaosMcp {
     #[tool(
         description = "Archive a sales channel in the selected Store. The default \
                         channel cannot be archived. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn archive_sales_channel(
         &self,
@@ -387,13 +368,7 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
-        let input = ChangeStoreStatusInput {
-            actor,
-            store_id,
-            idempotency,
-        };
+        let input = ChangeStoreStatusInput { actor, store_id };
         let result = if activate {
             self.state.store_administration.activate_store(input).await
         } else {
@@ -430,13 +405,10 @@ impl ChaosMcp {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = ChangeSalesChannelStatusInput {
             actor,
             store_id,
             sales_channel_id,
-            idempotency,
         };
         let result = if activate {
             self.state

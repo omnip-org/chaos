@@ -7,7 +7,7 @@ use chaos_domain::{
 };
 use time::OffsetDateTime;
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 use crate::ApplicationError;
 
 #[async_trait]
@@ -28,11 +28,6 @@ pub trait PricingProvisioningTransaction: Send {
         currency: CurrencyCode,
     ) -> Result<(), ApplicationError>;
 
-    async fn reserve_price_list_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<PriceListId>, ApplicationError>;
-
     async fn active_variant_ids(
         &mut self,
         variant_ids: &[ProductVariantId],
@@ -44,12 +39,6 @@ pub trait PricingProvisioningTransaction: Send {
     ) -> Result<Vec<ProductVariantId>, ApplicationError>;
 
     async fn insert_price_list(&mut self, price_list: &PriceList) -> Result<(), ApplicationError>;
-
-    async fn complete_price_list_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-        price_list_id: PriceListId,
-    ) -> Result<(), ApplicationError>;
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError>;
 }
@@ -112,12 +101,6 @@ pub trait PricingManagementUnitOfWork: Send + Sync {
 
 #[async_trait]
 pub trait PricingManagementTransaction: Send {
-    async fn reserve_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<PriceListId>, ApplicationError>;
-
     async fn load_for_update(
         &mut self,
     ) -> Result<Option<PriceListMutationSnapshot>, ApplicationError>;
@@ -140,13 +123,6 @@ pub trait PricingManagementTransaction: Send {
     async fn replace(&mut self, price_list: &PriceList) -> Result<(), ApplicationError>;
 
     async fn set_status(&mut self, status: PriceListStatus) -> Result<(), ApplicationError>;
-
-    async fn complete_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        price_list_id: PriceListId,
-    ) -> Result<(), ApplicationError>;
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError>;
 }

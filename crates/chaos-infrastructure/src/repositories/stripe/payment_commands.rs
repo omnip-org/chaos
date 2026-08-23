@@ -6,14 +6,13 @@ impl StripePaymentRepository for PostgresStripeRepository {
         &self,
         shopper: &ShopperActor,
         order_id: OrderId,
-        request: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError> {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        let order = sqlx::query_as::<_, (i64, String, String, String, Option<String>)>(
-            "SELECT total_amount_minor, currency::text, status::text, payment_status::text, \
-                    stripe_checkout_session_id FROM commerce.orders \
+        let order = sqlx::query_as::<_, (i64, String, String, String)>(
+            "SELECT total_amount_minor, currency::text, status::text, payment_status::text \
+                    FROM commerce.orders \
              WHERE store_id = $1 AND sales_channel_id = $2 \
                AND id = $3 AND shopper_id = $4 FOR UPDATE",
         )
@@ -28,19 +27,6 @@ impl StripePaymentRepository for PostgresStripeRepository {
         if order.2 != "pending" || matches!(order.3.as_str(), "paid" | "partially_refunded" | "refunded") {
             return Err(payment_order_not_pending());
         }
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_ATTEMPT_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_attempt(snapshot);
-        }
-        if order.4.is_some() {
-            return Err(active_attempt_exists());
-        }
         let currency = CurrencyCode::parse(&order.1)?;
         let attempt = PaymentAttempt::rehydrate(
             PaymentAttemptId::from_uuid(order_id.as_uuid()),
@@ -49,33 +35,6 @@ impl StripePaymentRepository for PostgresStripeRepository {
             PaymentAttemptStatus::Pending,
             None,
         );
-        sqlx::query(
-            "UPDATE commerce.orders SET payment_status = 'pending', \
-                    payment_failure_code = NULL, updated_at = $3 \
-             WHERE store_id = $1 AND id = $2",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(OffsetDateTime::now_utc())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        append_event(
-            &mut transaction,
-            AnalyticsEventToAppend {
-                store_id: actor.store_id.as_uuid(),
-                shopper_id: shopper.shopper_id.as_uuid(),
-                event_id: attempt.id().as_uuid(),
-                event_name: "add_payment_info".into(),
-                properties: json!({
-                    "_source": "server",
-            "order_id": order_id.as_uuid(),
-                }),
-                occurred_at: OffsetDateTime::now_utc(),
-                received_at: OffsetDateTime::now_utc(),
-            },
-        )
-        .await?;
         let detail = load_attempt(
             &mut transaction,
             actor.store_id,
@@ -85,15 +44,6 @@ impl StripePaymentRepository for PostgresStripeRepository {
         )
         .await?
         .ok_or_else(|| attempt_not_found(attempt.id()))?;
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_ATTEMPT_OPERATION,
-            request,
-            201,
-            attempt_snapshot(&detail)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -155,19 +105,8 @@ impl StripePaymentRepository for PostgresStripeRepository {
         store_id: StoreId,
         attempt_id: PaymentAttemptId,
         amount_minor: i64,
-        request: &IdempotencyRequest,
     ) -> Result<RefundDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            CREATE_REFUND_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_refund(snapshot);
-        }
         let row = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, Uuid)>(
             "SELECT total_amount_minor, currency::text, payment_status::text, \
                     stripe_payment_intent_id, refunded_amount_minor, id \
@@ -224,15 +163,6 @@ impl StripePaymentRepository for PostgresStripeRepository {
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
         };
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            CREATE_REFUND_OPERATION,
-            request,
-            201,
-            refund_snapshot(&detail)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, CatalogManagementTransaction, CatalogManagementUnitOfWork, IdempotencyRequest,
+        AdminActor, CatalogManagementTransaction, CatalogManagementUnitOfWork,
         ProductLifecycleSnapshot,
     },
 };
@@ -13,11 +13,7 @@ use chaos_domain::{
     },
     store::{SalesChannelId, StoreId},
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 #[derive(Clone)]
 pub struct PostgresCatalogManagementUnitOfWork {
@@ -65,62 +61,6 @@ impl CatalogManagementUnitOfWork for PostgresCatalogManagementUnitOfWork {
 
 #[async_trait]
 impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
-    async fn reserve_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<ProductId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        body.get("data")
-            .and_then(|data| data.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(ProductId::from_uuid)
-            .map(Some)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no product mutation response"
-                ))
-            })
-    }
-
-    async fn reserve_variant_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<ProductVariantId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        body.get("data")
-            .and_then(|data| data.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(ProductVariantId::from_uuid)
-            .map(Some)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no product variant mutation response"
-                ))
-            })
-    }
-
     async fn load_lifecycle(
         &mut self,
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {
@@ -272,40 +212,6 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
         Ok(())
     }
 
-    async fn complete_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        product_id: ProductId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-            200,
-            json!({ "data": { "id": product_id.as_uuid() } }),
-        )
-        .await
-    }
-
-    async fn complete_variant_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        variant_id: ProductVariantId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-            200,
-            json!({ "data": { "id": variant_id.as_uuid() } }),
-        )
-        .await
-    }
-
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
         self.transaction
             .commit()
@@ -347,11 +253,12 @@ mod tests {
             CatalogManagement, ChangeProductStatusInput, ProductPublicationInput,
             UpdateProductInput, UpdateProductVariantInput,
         },
-        ports::{AdminActor, IdempotencyRequest},
+        ports::AdminActor,
         store::StoreQueries,
     };
     use chaos_domain::{catalog::ProductVariantId, identity::UserId, store::SalesChannelId};
     use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
     use crate::repositories::PostgresStoreReadRepository;
 
@@ -467,18 +374,12 @@ mod tests {
         let service = CatalogManagement::new(Arc::new(PostgresCatalogManagementUnitOfWork::new(
             runtime_pool,
         )));
-        let request = |key: String, fingerprint| IdempotencyRequest {
-            key,
-            request_fingerprint: fingerprint,
-        };
-
         assert!(matches!(
             service
                 .activate(ChangeProductStatusInput {
                     actor: AdminActor::Store(owner),
                     store_id,
                     product_id: empty_product_id,
-                    idempotency: request(format!("empty-{suffix}"), [61; 32]),
                 })
                 .await,
             Err(ApplicationError::Validation { .. })
@@ -490,13 +391,11 @@ mod tests {
                     store_id,
                     product_id,
                     sales_channel_id: channel_id,
-                    idempotency: request(format!("draft-publish-{suffix}"), [62; 32]),
                 })
                 .await,
             Err(ApplicationError::Validation { .. })
         ));
 
-        let update_key = format!("update-{suffix}");
         let updated = service
             .update(UpdateProductInput {
                 actor: AdminActor::Store(owner),
@@ -506,7 +405,6 @@ mod tests {
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
                 metadata: None,
-                idempotency: request(update_key.clone(), [63; 32]),
             })
             .await
             .unwrap();
@@ -519,13 +417,11 @@ mod tests {
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
                 metadata: None,
-                idempotency: request(update_key, [63; 32]),
             })
             .await
             .unwrap();
         assert_eq!(updated, replay);
 
-        let variant_update_key = format!("update-variant-{suffix}");
         let updated_variant = service
             .update_variant(UpdateProductVariantInput {
                 actor: AdminActor::Store(owner),
@@ -537,7 +433,6 @@ mod tests {
                 requires_shipping: false,
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
-                idempotency: request(variant_update_key.clone(), [69; 32]),
             })
             .await
             .unwrap();
@@ -552,7 +447,6 @@ mod tests {
                 requires_shipping: false,
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
-                idempotency: request(variant_update_key, [69; 32]),
             })
             .await
             .unwrap();
@@ -581,7 +475,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
-                idempotency: request(format!("activate-{suffix}"), [64; 32]),
             })
             .await
             .unwrap();
@@ -592,7 +485,6 @@ mod tests {
                     store_id,
                     product_id,
                     sales_channel_id: other_channel_id,
-                    idempotency: request(format!("wrong-channel-{suffix}"), [65; 32]),
                 })
                 .await,
             Err(ApplicationError::NotFound {
@@ -606,7 +498,6 @@ mod tests {
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
-                idempotency: request(format!("publish-{suffix}"), [66; 32]),
             })
             .await
             .unwrap();
@@ -615,7 +506,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
-                idempotency: request(format!("archive-{suffix}"), [67; 32]),
             })
             .await
             .unwrap();
@@ -649,7 +539,6 @@ mod tests {
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
-                idempotency: request(format!("unpublish-{suffix}"), [68; 32]),
             })
             .await
             .unwrap();
@@ -667,14 +556,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'store' AND scope_id = $1",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)
@@ -751,10 +632,6 @@ mod tests {
         let service = CatalogManagement::new(Arc::new(PostgresCatalogManagementUnitOfWork::new(
             runtime_pool,
         )));
-        let request = |key: String, fingerprint| IdempotencyRequest {
-            key,
-            request_fingerprint: fingerprint,
-        };
         let publishable_machine = AdminActor::Machine(chaos_application::ports::MachineActor {
             publishable_key_id: chaos_domain::store::PublishableKeyId::new(),
             store_id,
@@ -768,7 +645,6 @@ mod tests {
                     actor: publishable_machine,
                     store_id,
                     product_id,
-                    idempotency: request(format!("machine-forbidden-{suffix}"), [70; 32]),
                 })
                 .await,
             Err(ApplicationError::Forbidden)
@@ -779,14 +655,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'store' AND scope_id = $1",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)

@@ -20,7 +20,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -51,8 +51,6 @@ pub struct CreateCollectionParams {
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -68,8 +66,6 @@ pub struct UpdateCollectionParams {
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -78,8 +74,6 @@ pub struct ChangeCollectionStatusParams {
     pub collection_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -90,8 +84,6 @@ pub struct AddProductsToCollectionParams {
     pub product_ids: Vec<String>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -102,8 +94,6 @@ pub struct CollectionPublicationParams {
     pub sales_channel_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = collections_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -228,8 +218,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a draft collection in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+        description = "Create a draft collection in the selected Store. Requires confirm: true."
     )]
     async fn create_collection(
         &self,
@@ -250,8 +239,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .collection_administration
@@ -262,7 +249,6 @@ impl ChaosMcp {
                 title: params.title,
                 description: params.description,
                 metadata: params.metadata,
-                idempotency,
                 now: self.state.clock.now(),
             })
             .await
@@ -273,7 +259,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a collection's handle, title, and description in the selected Store. Requires confirm: true and an idempotency_key."
+        description = "Update a collection's handle, title, and description in the selected Store. Requires confirm: true."
     )]
     async fn update_collection(
         &self,
@@ -298,8 +284,6 @@ impl ChaosMcp {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .collection_administration
@@ -311,7 +295,6 @@ impl ChaosMcp {
                 title: params.title,
                 description: params.description,
                 metadata: params.metadata,
-                idempotency,
                 now: self.state.clock.now(),
             })
             .await
@@ -322,8 +305,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Activate a draft collection in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+        description = "Activate a draft collection in the selected Store. Requires confirm: true."
     )]
     async fn activate_collection(
         &self,
@@ -333,8 +315,7 @@ impl ChaosMcp {
         self.change_collection_status(parts, params, true).await
     }
 
-    #[tool(description = "Archive a collection in the selected Store. Requires \
-                        confirm: true and an idempotency_key.")]
+    #[tool(description = "Archive a collection in the selected Store. Requires confirm: true.")]
     async fn archive_collection(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -347,7 +328,7 @@ impl ChaosMcp {
         description = "Replace the full set of member products in a collection, in the Store \
                         selected by X-Chaos-Store-Id. Pass the complete desired product_ids list, in \
                         display order — this replaces membership, it does not append. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn add_products_to_collection(
         &self,
@@ -379,8 +360,6 @@ impl ChaosMcp {
                 Err(result) => return Ok(result),
             }
         }
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .collection_administration
@@ -389,7 +368,6 @@ impl ChaosMcp {
                 store_id,
                 collection_id,
                 product_ids,
-                idempotency,
                 now: self.state.clock.now(),
             })
             .await
@@ -400,8 +378,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Publish an active collection to a sales channel in the selected Store. \
-                        Requires confirm: true and an idempotency_key."
+        description = "Publish an active collection to a sales channel in the selected Store. Requires confirm: true."
     )]
     async fn publish_collection(
         &self,
@@ -413,7 +390,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Unpublish a collection from a sales channel in the selected Store. Requires confirm: true and an idempotency_key."
+        description = "Unpublish a collection from a sales channel in the selected Store. Requires confirm: true."
     )]
     async fn unpublish_collection(
         &self,
@@ -450,13 +427,10 @@ impl ChaosMcp {
             Ok(id) => CollectionId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = ChangeCollectionStatusInput {
             actor,
             store_id,
             collection_id,
-            idempotency,
             now: self.state.clock.now(),
         };
         let result = if activate {
@@ -499,14 +473,11 @@ impl ChaosMcp {
             Ok(id) => SalesChannelId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = CollectionPublicationInput {
             actor,
             store_id,
             collection_id,
             sales_channel_id,
-            idempotency,
             now: self.state.clock.now(),
         };
         let result = if publish {

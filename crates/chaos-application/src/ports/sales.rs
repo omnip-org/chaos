@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest, MachineActor, ShopperActor, StorefrontMediaAsset};
+use super::{AdminActor, MachineActor, ShopperActor, StorefrontMediaAsset};
 
 pub struct CartLineItem {
     pub product_id: ProductId,
@@ -121,7 +121,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         &self,
         actor: &ShopperActor,
         currency: Option<CurrencyCode>,
-        idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
     async fn get_cart(
@@ -136,7 +135,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
-        idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
     async fn remove_cart_line(
@@ -144,7 +142,6 @@ pub trait StorefrontSalesRepository: Send + Sync {
         actor: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
-        idempotency: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError>;
 
     async fn create_stripe_checkout(
@@ -154,7 +151,7 @@ pub trait StorefrontSalesRepository: Send + Sync {
         email: &str,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
-        idempotency: &IdempotencyRequest,
+        request_id: Uuid,
     ) -> Result<StripeCheckoutDraft, ApplicationError>;
 
     async fn get_order(
@@ -196,6 +193,5 @@ pub trait OrderManagementRepository: Send + Sync {
         order_id: OrderId,
         target_status: OrderStatus,
         now: OffsetDateTime,
-        idempotency: &IdempotencyRequest,
     ) -> Result<OrderDetail, ApplicationError>;
 }

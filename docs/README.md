@@ -49,7 +49,7 @@ preserve the dependency direction in
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
 | Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
 | Payment webhooks and payment queues | application ports | Stripe adapters and Worker loops | `commerce` |
-| Generic outbox, event routing, and idempotency | application ports | Worker loops and integration repositories | `integration` |
+| Generic outbox and event routing | application ports | Worker loops and integration repositories | `integration` |
 | Commerce events and external provider delivery | `analytics` | Storefront collection, MCP settings, and Worker delivery | `integration` |
 
 Rust business modules remain useful navigation boundaries; they do not require
@@ -68,7 +68,7 @@ MCP delivery keeps protocol concerns separate from commerce capabilities under
 `crates/chaos-api/src/mcp/`:
 
 - `router.rs`, `auth.rs`, `error.rs`, and `mutation.rs` own MCP transport,
-  authentication, error mapping, confirmation, and idempotency behavior;
+  authentication, error mapping, and confirmation behavior;
 - `tools/mod.rs` owns shared MCP state and is the single tool-router assembly
   point;
 - `tools/store/`, `catalog/`, `pricing/`, `operations/`, and `integrations/`

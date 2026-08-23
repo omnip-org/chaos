@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -22,8 +22,6 @@ pub struct CreatePublishableKeyParams {
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -43,15 +41,13 @@ pub struct RevokePublishableKeyParams {
     /// Must be explicitly set to true. This action is irreversible and affects live
     /// store data — any caller presenting this key is immediately locked out.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = publishable_keys_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Create a public Storefront Key in the selected Store. The key is safe \
-                        to use in frontend code. Requires confirm: true and an idempotency_key."
+                        to use in frontend code. Requires confirm: true."
     )]
     async fn create_publishable_key(
         &self,
@@ -72,8 +68,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .publishable_key_management
@@ -81,7 +75,6 @@ impl ChaosMcp {
                 actor,
                 store_id,
                 name: params.name,
-                idempotency,
             })
             .await
         {
@@ -155,7 +148,7 @@ impl ChaosMcp {
     #[tool(
         description = "Revoke a Publishable Key in the selected Store, immediately \
                         locking out anyone presenting it. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn revoke_publishable_key(
         &self,
@@ -181,12 +174,10 @@ impl ChaosMcp {
                 Err(result) => return Ok(result),
             };
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .publishable_key_management
-            .revoke(actor, store_id, publishable_key_id, idempotency)
+            .revoke(actor, store_id, publishable_key_id)
             .await
         {
             Ok(()) => Ok(text_result(json!({ "id": publishable_key_id.as_uuid() }))),

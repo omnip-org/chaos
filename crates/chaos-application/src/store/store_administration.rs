@@ -10,10 +10,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, SalesChannelAdminItem, StoreAdminItem,
-        StoreAdministrationRepository,
-    },
+    ports::{AdminActor, SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository},
 };
 
 use super::Page;
@@ -26,13 +23,11 @@ pub struct UpdateStoreInput {
     pub region: String,
     pub currency: String,
     pub meta: Option<serde_json::Value>,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct ChangeStoreStatusInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateSalesChannelInput {
@@ -40,7 +35,6 @@ pub struct CreateSalesChannelInput {
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct UpdateSalesChannelInput {
@@ -49,14 +43,12 @@ pub struct UpdateSalesChannelInput {
     pub sales_channel_id: SalesChannelId,
     pub code: String,
     pub name: String,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct ChangeSalesChannelStatusInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub sales_channel_id: SalesChannelId,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct StoreAdministration {
@@ -89,12 +81,7 @@ impl StoreAdministration {
             input.meta,
         )?;
         self.repository
-            .update_store(
-                input.actor,
-                input.store_id,
-                &replacement,
-                &input.idempotency,
-            )
+            .update_store(input.actor, input.store_id, &replacement)
             .await
     }
 
@@ -104,12 +91,7 @@ impl StoreAdministration {
     ) -> Result<StoreId, ApplicationError> {
         require_store_administrator(&input.actor)?;
         self.repository
-            .change_store_status(
-                input.actor,
-                input.store_id,
-                StoreStatus::Active,
-                &input.idempotency,
-            )
+            .change_store_status(input.actor, input.store_id, StoreStatus::Active)
             .await
     }
 
@@ -119,12 +101,7 @@ impl StoreAdministration {
     ) -> Result<StoreId, ApplicationError> {
         require_store_administrator(&input.actor)?;
         self.repository
-            .change_store_status(
-                input.actor,
-                input.store_id,
-                StoreStatus::Inactive,
-                &input.idempotency,
-            )
+            .change_store_status(input.actor, input.store_id, StoreStatus::Inactive)
             .await
     }
 
@@ -167,7 +144,7 @@ impl StoreAdministration {
         require_store_administrator(&input.actor)?;
         let channel = channel(input.store_id, input.code, input.name)?;
         self.repository
-            .create_sales_channel(input.actor, &channel, &input.idempotency)
+            .create_sales_channel(input.actor, &channel)
             .await
     }
 
@@ -178,12 +155,7 @@ impl StoreAdministration {
         require_store_administrator(&input.actor)?;
         let replacement = channel(input.store_id, input.code, input.name)?;
         self.repository
-            .update_sales_channel(
-                input.actor,
-                input.sales_channel_id,
-                &replacement,
-                &input.idempotency,
-            )
+            .update_sales_channel(input.actor, input.sales_channel_id, &replacement)
             .await
     }
 
@@ -215,7 +187,6 @@ impl StoreAdministration {
                 input.store_id,
                 input.sales_channel_id,
                 status,
-                &input.idempotency,
             )
             .await
     }

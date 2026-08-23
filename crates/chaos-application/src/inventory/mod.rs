@@ -4,10 +4,7 @@ use chaos_domain::{FieldViolation, catalog::ProductVariantId, store::StoreId};
 
 use crate::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, InventoryAdjustment, InventoryRepository,
-        VariantInventoryView,
-    },
+    ports::{AdminActor, InventoryAdjustment, InventoryRepository, VariantInventoryView},
 };
 
 pub struct AdjustInventoryInput {
@@ -16,7 +13,6 @@ pub struct AdjustInventoryInput {
     pub product_variant_id: ProductVariantId,
     pub delta_quantity: i64,
     pub note: String,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct InventoryManagement {
@@ -53,7 +49,6 @@ impl InventoryManagement {
                     delta_quantity: input.delta_quantity,
                     note: input.note.trim().into(),
                 },
-                &input.idempotency,
             )
             .await
     }

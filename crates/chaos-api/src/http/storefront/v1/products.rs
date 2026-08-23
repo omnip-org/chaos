@@ -1,25 +1,22 @@
 use axum::{
     Router,
     extract::State,
-    http::HeaderMap,
     routing::{get, post},
 };
 use chaos_application::{
-    ApplicationError,
     catalog::SubmitReviewInput,
     ports::{
-        IdempotencyRequest, ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant,
-        StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,
-        StorefrontProductOptionValue, StorefrontSelectedOption,
+        ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
+        StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
+        StorefrontSelectedOption,
     },
 };
 use chaos_domain::catalog::{ProductId, ReviewId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::http::shared::pagination::{
-    CursorKind, decode_cursor, encode_cursor, idempotency_key, page_limit, page_meta,
+    CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
 };
 use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
@@ -311,12 +308,10 @@ struct ReviewData {
 
 async fn submit_review(
     State(state): State<ApiState>,
-    headers: HeaderMap,
     StorefrontMachine(actor): StorefrontMachine,
     ApiPath(path): ApiPath<ReviewProductPath>,
     ApiJson(body): ApiJson<SubmitReviewBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
-    let request = review_mutation(&headers, &(path.product_id, &body))?;
     let id = state
         .review_administration
         .submit(SubmitReviewInput {
@@ -327,7 +322,6 @@ async fn submit_review(
             content: body.content,
             author_name: body.author_name,
             author_email: body.author_email,
-            idempotency: request,
             now: state.clock.now(),
         })
         .await?;
@@ -400,20 +394,6 @@ fn review_data(item: ReviewSummary) -> ReviewData {
     }
 }
 
-fn review_mutation<T: Serialize>(
-    headers: &HeaderMap,
-    value: &T,
-) -> Result<IdempotencyRequest, ApiError> {
-    Ok(IdempotencyRequest {
-        key: idempotency_key(headers)?,
-        request_fingerprint: Sha256::digest(
-            serde_json::to_vec(value)
-                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        )
-        .into(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use axum::{
@@ -427,7 +407,6 @@ mod tests {
         store::{PublishableKeyId, SalesChannelId, StoreId},
     };
     use chaos_infrastructure::repositories::DefaultPublishableKeyGenerator;
-    use secrecy::ExposeSecret;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use tower::ServiceExt;
 

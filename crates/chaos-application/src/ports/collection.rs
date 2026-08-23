@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest, MachineActor};
+use super::{AdminActor, MachineActor};
 
 pub struct CollectionListItem {
     pub id: CollectionId,
@@ -67,7 +67,6 @@ pub trait CollectionRepository: Send + Sync {
         &self,
         actor: AdminActor,
         record: CreateCollectionRecord,
-        request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError>;
 
     async fn list(
@@ -91,7 +90,6 @@ pub trait CollectionRepository: Send + Sync {
         store_id: StoreId,
         collection_id: CollectionId,
         content: &CollectionContent,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError>;
 
@@ -101,7 +99,6 @@ pub trait CollectionRepository: Send + Sync {
         store_id: StoreId,
         collection_id: CollectionId,
         status: CollectionStatus,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError>;
 
@@ -111,7 +108,6 @@ pub trait CollectionRepository: Send + Sync {
         store_id: StoreId,
         collection_id: CollectionId,
         product_ids: &[ProductId],
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError>;
 
@@ -119,7 +115,6 @@ pub trait CollectionRepository: Send + Sync {
         &self,
         actor: AdminActor,
         record: CollectionPublicationRecord,
-        request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError>;
 
     async fn list_storefront(

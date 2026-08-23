@@ -1,24 +1,11 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, PricingProvisioningTransaction,
-        PricingProvisioningUnitOfWork,
-    },
+    ports::{AdminActor, PricingProvisioningTransaction, PricingProvisioningUnitOfWork},
 };
-use chaos_domain::{
-    CurrencyCode,
-    catalog::ProductVariantId,
-    pricing::{PriceList, PriceListId},
-    store::StoreId,
-};
-use serde_json::json;
+use chaos_domain::{CurrencyCode, catalog::ProductVariantId, pricing::PriceList, store::StoreId};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE_PRICE_LIST_OPERATION: &str = "price_lists.create.v1";
 
 #[derive(Clone)]
 pub struct PostgresPricingProvisioningUnitOfWork {
@@ -104,33 +91,6 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
         }
     }
 
-    async fn reserve_price_list_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<PriceListId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            CREATE_PRICE_LIST_OPERATION,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        body.get("data")
-            .and_then(|data| data.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(PriceListId::from_uuid)
-            .map(Some)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no price list response"
-                ))
-            })
-    }
-
     async fn active_variant_ids(
         &mut self,
         variant_ids: &[ProductVariantId],
@@ -206,22 +166,6 @@ impl PricingProvisioningTransaction for PostgresPricingProvisioningTransaction {
             .map_err(map_pricing_write_error)?;
         }
         Ok(())
-    }
-
-    async fn complete_price_list_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-        price_list_id: PriceListId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            CREATE_PRICE_LIST_OPERATION,
-            request,
-            201,
-            json!({ "data": { "id": price_list_id.as_uuid() } }),
-        )
-        .await
     }
 
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
@@ -373,62 +317,36 @@ mod tests {
         let service = CreatePriceList::new(Arc::new(PostgresPricingProvisioningUnitOfWork::new(
             runtime_pool.clone(),
         )));
-        let key = format!("price-list-{suffix}");
-        let input = |actor: chaos_application::store::StoreActor,
-                     currency: &str,
-                     variant,
-                     fingerprint,
-                     key: String| CreatePriceListInput {
-            actor: AdminActor::Store(actor),
-            store_id,
-            code: "us-retail".into(),
-            name: "US Retail".into(),
-            currency: currency.into(),
-            starts_at: None,
-            ends_at: None,
-            activate: true,
-            prices: vec![CreatePriceInput {
-                product_variant_id: variant,
-                amount_minor: 2_500,
-            }],
-            idempotency: IdempotencyRequest {
-                key,
-                request_fingerprint: fingerprint,
-            },
+        let input = |actor: chaos_application::store::StoreActor, currency: &str, variant| {
+            CreatePriceListInput {
+                actor: AdminActor::Store(actor),
+                store_id,
+                code: "us-retail".into(),
+                name: "US Retail".into(),
+                currency: currency.into(),
+                starts_at: None,
+                ends_at: None,
+                activate: true,
+                prices: vec![CreatePriceInput {
+                    product_variant_id: variant,
+                    amount_minor: 2_500,
+                }],
+            }
         };
         assert!(matches!(
-            service
-                .execute(input(
-                    owner,
-                    "EUR",
-                    variant_id,
-                    [51; 32],
-                    format!("disabled-{suffix}"),
-                ))
-                .await,
+            service.execute(input(owner, "EUR", variant_id,)).await,
             Err(ApplicationError::Validation { .. })
         ));
         assert!(matches!(
             service
-                .execute(input(
-                    owner,
-                    "USD",
-                    other_variant_id,
-                    [52; 32],
-                    format!("cross-store-{suffix}"),
-                ))
+                .execute(input(owner, "USD", other_variant_id,))
                 .await,
             Err(ApplicationError::Validation { .. })
         ));
         let created = service
-            .execute(input(owner, "USD", variant_id, [53; 32], key.clone()))
+            .execute(input(owner, "USD", variant_id))
             .await
             .unwrap();
-        let replay = service
-            .execute(input(owner, "USD", variant_id, [53; 32], key))
-            .await
-            .unwrap();
-        assert_eq!(created.price_list_id, replay.price_list_id);
 
         let stored: (String, String, i64) = sqlx::query_as(
             "SELECT price_list.status::text, price_list.currency::text, price.amount_minor \
@@ -461,14 +379,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'store' AND scope_id = $1",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(owner_id.as_uuid())
             .execute(&owner_pool)

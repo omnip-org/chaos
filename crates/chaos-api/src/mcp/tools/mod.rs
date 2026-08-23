@@ -80,8 +80,7 @@ impl rmcp::ServerHandler for ChaosMcp {
              Store-scoped request must include X-Chaos-Store-Id and current Store membership \
              is checked before the tool runs. create_store and list_stores are User-scoped and \
              do not require that header. Read tools return \
-             store data; write tools require confirm: true and a client-chosen \
-             idempotency_key."
+             store data; write tools require confirm: true."
                 .into(),
         );
         info

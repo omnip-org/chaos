@@ -2,9 +2,8 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, PriceListDetail, PriceListMutationSnapshot,
-        PriceListReadItem, PriceReadItem, PricingManagementTransaction,
-        PricingManagementUnitOfWork, PricingReadRepository,
+        AdminActor, PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem,
+        PricingManagementTransaction, PricingManagementUnitOfWork, PricingReadRepository,
     },
 };
 use chaos_domain::{
@@ -13,12 +12,9 @@ use chaos_domain::{
     pricing::{PriceList, PriceListId, PriceListStatus},
     store::StoreId,
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 #[derive(Clone)]
 pub struct PostgresPricingManagementRepository {
@@ -180,33 +176,6 @@ impl PricingManagementUnitOfWork for PostgresPricingManagementRepository {
 
 #[async_trait]
 impl PricingManagementTransaction for PostgresPricingManagementTransaction {
-    async fn reserve_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<PriceListId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        body.pointer("/data/id")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(PriceListId::from_uuid)
-            .map(Some)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no price list mutation response"
-                ))
-            })
-    }
-
     async fn load_for_update(
         &mut self,
     ) -> Result<Option<PriceListMutationSnapshot>, ApplicationError> {
@@ -343,23 +312,6 @@ impl PricingManagementTransaction for PostgresPricingManagementTransaction {
         }
     }
 
-    async fn complete_mutation(
-        &mut self,
-        operation: &'static str,
-        request: &IdempotencyRequest,
-        price_list_id: PriceListId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            operation,
-            request,
-            200,
-            json!({ "data": { "id": price_list_id.as_uuid() } }),
-        )
-        .await
-    }
-
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
         self.transaction.commit().await.map_err(database_error)
     }
@@ -454,7 +406,7 @@ mod tests {
     use std::sync::Arc;
 
     use chaos_application::{
-        ports::{AdminActor, IdempotencyRequest},
+        ports::AdminActor,
         pricing::{
             ChangePriceListStatusInput, CreatePriceInput, PricingManagement, UpdatePriceListInput,
         },
@@ -470,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn manages_price_lists_with_idempotency_authorization_and_store_isolation() {
+    async fn manages_price_lists_with_authorization_and_store_isolation() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -609,10 +561,6 @@ mod tests {
                 product_variant_id: variant_id,
                 amount_minor: 3000,
             }],
-            idempotency: IdempotencyRequest {
-                key: format!("update-{suffix}"),
-                request_fingerprint: [61; 32],
-            },
         };
         service.update(update_input()).await.unwrap();
         service.update(update_input()).await.unwrap();
@@ -628,10 +576,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 price_list_id,
-                idempotency: IdempotencyRequest {
-                    key: format!("activate-{suffix}"),
-                    request_fingerprint: [62; 32],
-                },
             })
             .await
             .unwrap();
@@ -649,10 +593,6 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 price_list_id,
-                idempotency: IdempotencyRequest {
-                    key: format!("archive-{suffix}"),
-                    request_fingerprint: [64; 32],
-                },
             })
             .await
             .unwrap();

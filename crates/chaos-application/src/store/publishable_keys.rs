@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, MachineActor, PublishableKeyGenerator,
-        PublishableKeyListItem, PublishableKeyRepository,
+        AdminActor, MachineActor, PublishableKeyGenerator, PublishableKeyListItem,
+        PublishableKeyRepository,
     },
 };
 use chaos_domain::store::{PublishableKey, PublishableKeyId, StoreId, StoreRole};
@@ -15,7 +15,6 @@ pub struct CreatePublishableKeyInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub name: String,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreatePublishableKeyOutput {
@@ -48,7 +47,7 @@ impl PublishableKeyManagement {
         let material = self.generator.generate();
         let (publishable_key_id, public_key) = self
             .repository
-            .create(input.actor, &publishable_key, &material, &input.idempotency)
+            .create(input.actor, &publishable_key, &material)
             .await?;
         let publishable_key = if publishable_key_id == publishable_key.id() {
             publishable_key
@@ -91,11 +90,10 @@ impl PublishableKeyManagement {
         actor: AdminActor,
         store_id: StoreId,
         publishable_key_id: PublishableKeyId,
-        idempotency: IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
         authorize_publishable_key_management(&actor)?;
         self.repository
-            .revoke(actor, store_id, publishable_key_id, &idempotency)
+            .revoke(actor, store_id, publishable_key_id)
             .await
     }
 }

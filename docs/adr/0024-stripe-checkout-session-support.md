@@ -18,9 +18,10 @@ component. Chaos never persists that client secret.
 Checkout creation is a synchronous API operation: Chaos commits the pending
 Order first, creates the Stripe Session outside the database transaction, saves
 the returned `cs_` identifier, and returns the client handoff in the same
-response. The request idempotency key is also sent to Stripe so a retry can
-recover from a response or persistence failure without creating a second
-Session.
+response. The Order's client request UUID is sent to Stripe as its provider
+idempotency key, so a retry can recover from a response or persistence failure
+without creating a second Session. Chaos itself deduplicates the Order through
+the `(store_id, sales_channel_id, shopper_id, request_id)` database constraint.
 
 Payment webhooks are Store-scoped payment input. A Stripe event for a
 direct Stripe account does not carry a Chaos Store identifier, and Stripe

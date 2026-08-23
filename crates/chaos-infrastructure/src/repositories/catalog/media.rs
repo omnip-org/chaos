@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
+        AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
         MediaAssetRepository, PendingMediaUpload,
     },
 };
@@ -11,16 +11,9 @@ use chaos_domain::{
     catalog::{MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductVariantId},
     store::StoreId,
 };
-use serde_json::json;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE: &str = "media_assets.create.v1";
-const COMPLETE: &str = "media_assets.complete.v1";
-const ARCHIVE: &str = "media_assets.archive.v1";
 
 #[derive(Clone)]
 pub struct PostgresMediaAssetRepository {
@@ -76,23 +69,9 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         &self,
         actor: AdminActor,
         record: CreateMediaAssetRecord,
-        request: &IdempotencyRequest,
     ) -> Result<PendingMediaUpload, ApplicationError> {
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, CREATE, request).await? {
-            let row = load(
-                &mut tx,
-                &actor,
-                record.store_id,
-                record.product_id,
-                MediaAssetId::from_uuid(id),
-            )
-            .await?
-            .ok_or_else(invalid_snapshot)?;
-            tx.commit().await.map_err(database_error)?;
-            return pending(row);
-        }
         let product_exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2 AND status<>'archived')").bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if !product_exists {
             return Err(ApplicationError::NotFound {
@@ -114,7 +93,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         let digest = decode_digest(record.descriptor.sha256_hex())?;
         sqlx::query("INSERT INTO commerce.media_assets (id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::commerce.media_kind,$9,$10,$11,$12,'pending_upload',$13,$14,$14)")
             .bind(record.id.as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(audit_user_id).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
-        complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         let row = load(
             &mut tx,
             &actor,
@@ -181,23 +159,9 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         actor: AdminActor,
         mutation: MediaAssetMutation,
         public_url: &str,
-        request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError> {
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, COMPLETE, request).await? {
-            let row = load(
-                &mut tx,
-                &actor,
-                mutation.store_id,
-                mutation.product_id,
-                MediaAssetId::from_uuid(id),
-            )
-            .await?
-            .ok_or_else(invalid_snapshot)?;
-            tx.commit().await.map_err(database_error)?;
-            return item(row);
-        }
         let changed=sqlx::query("UPDATE commerce.media_assets SET status='ready',public_url=$4,ready_by=$5,ready_at=$6,updated_at=$6 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status='pending_upload'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         let row = load(
             &mut tx,
@@ -214,15 +178,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
                 message: "the Media Asset is not pending upload",
             });
         }
-        complete(
-            &mut tx,
-            &actor,
-            COMPLETE,
-            request,
-            mutation.media_asset_id,
-            200,
-        )
-        .await?;
         tx.commit().await.map_err(database_error)?;
         item(row)
     }
@@ -231,23 +186,9 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         &self,
         actor: AdminActor,
         mutation: MediaAssetMutation,
-        request: &IdempotencyRequest,
     ) -> Result<MediaAssetItem, ApplicationError> {
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, ARCHIVE, request).await? {
-            let row = load(
-                &mut tx,
-                &actor,
-                mutation.store_id,
-                mutation.product_id,
-                MediaAssetId::from_uuid(id),
-            )
-            .await?
-            .ok_or_else(invalid_snapshot)?;
-            tx.commit().await.map_err(database_error)?;
-            return item(row);
-        }
         sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_by=$4,archived_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?;
         let row = load(
             &mut tx,
@@ -258,15 +199,6 @@ impl MediaAssetRepository for PostgresMediaAssetRepository {
         )
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
-        complete(
-            &mut tx,
-            &actor,
-            ARCHIVE,
-            request,
-            mutation.media_asset_id,
-            200,
-        )
-        .await?;
         tx.commit().await.map_err(database_error)?;
         item(row)
     }
@@ -328,47 +260,6 @@ fn pending(row: MediaRow) -> Result<PendingMediaUpload, ApplicationError> {
         asset: item(row)?,
         object_key,
     })
-}
-async fn reserve(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    let Some(value) = idempotency::reserve(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|v| Uuid::parse_str(v).ok())
-        .map(Some)
-        .ok_or_else(invalid_snapshot)
-}
-async fn complete(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: MediaAssetId,
-    status: i16,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-        status,
-        json!({"id":id.as_uuid()}),
-    )
-    .await
 }
 fn decode_digest(value: &str) -> Result<[u8; 32], ApplicationError> {
     let mut output = [0_u8; 32];

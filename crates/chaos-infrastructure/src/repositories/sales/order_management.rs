@@ -3,8 +3,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, OrderDetail, OrderLineItem, OrderListFilter,
-        OrderManagementRepository, OrderPage, OrderTransitionItem,
+        AdminActor, OrderDetail, OrderLineItem, OrderListFilter, OrderManagementRepository,
+        OrderPage, OrderTransitionItem,
     },
 };
 use chaos_domain::{
@@ -18,7 +18,6 @@ use chaos_domain::{
     store::StoreId,
 };
 use rand::Rng;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -33,11 +32,6 @@ fn generate_order_tracking_token() -> (String, [u8; 32]) {
     let digest = Sha256::digest(plaintext.as_bytes()).into();
     (plaintext, digest)
 }
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CONFIRM_OPERATION: &str = "orders.confirm.v1";
-const CANCEL_OPERATION: &str = "orders.cancel.v1";
 
 #[derive(sqlx::FromRow)]
 struct HeaderRow {
@@ -188,33 +182,12 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         order_id: OrderId,
         target_status: OrderStatus,
         now: OffsetDateTime,
-        request: &IdempotencyRequest,
     ) -> Result<OrderDetail, ApplicationError> {
-        let operation = match target_status {
-            OrderStatus::Confirmed => CONFIRM_OPERATION,
-            OrderStatus::Cancelled => CANCEL_OPERATION,
-            OrderStatus::Pending => return Err(invalid_target()),
-        };
+        if target_status == OrderStatus::Pending {
+            return Err(invalid_target());
+        }
         let audit_user_id = actor.audit_user_id().as_uuid();
         let mut transaction = self.begin_for_admin(&actor).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            operation,
-            request,
-        )
-        .await?
-        {
-            let replay_id = snapshot
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok())
-                .map(OrderId::from_uuid)
-                .ok_or_else(corrupt_snapshot)?;
-            return load_order(&mut transaction, store_id, replay_id)
-                .await?
-                .ok_or_else(|| order_not_found(replay_id));
-        }
         let row = sqlx::query_scalar::<_, String>(
             "SELECT status::text FROM commerce.orders \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
@@ -278,15 +251,6 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
             .await
             .map_err(database_error)?;
         }
-        idempotency::complete(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            operation,
-            request,
-            200,
-            json!({"id": order_id.as_uuid()}),
-        )
-        .await?;
         let detail = load_order(&mut transaction, store_id, order_id)
             .await?
             .ok_or_else(|| order_not_found(order_id))?;
@@ -509,10 +473,6 @@ fn invalid_target() -> ApplicationError {
 
 fn corrupt_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown Order state"))
-}
-
-fn corrupt_snapshot() -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("invalid Order idempotency snapshot"))
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {

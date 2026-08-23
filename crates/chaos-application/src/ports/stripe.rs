@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, store::StoreActor};
 
-use super::{AdminActor, IdempotencyRequest, ShopperActor, integration::QueueJob};
+use super::{AdminActor, ShopperActor, integration::QueueJob};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StripeReadinessStatus {
@@ -241,7 +241,6 @@ pub trait StripePaymentRepository: Send + Sync {
         &self,
         actor: &ShopperActor,
         order_id: OrderId,
-        idempotency: &IdempotencyRequest,
     ) -> Result<PaymentAttemptDetail, ApplicationError>;
 
     async fn prepare_checkout_command(
@@ -272,7 +271,6 @@ pub trait StripePaymentRepository: Send + Sync {
         store_id: StoreId,
         attempt_id: PaymentAttemptId,
         amount_minor: i64,
-        idempotency: &IdempotencyRequest,
     ) -> Result<RefundDetail, ApplicationError>;
 
     async fn ingest_webhook(&self, event: &StripeWebhookEvent) -> Result<bool, ApplicationError>;
@@ -327,7 +325,6 @@ pub trait StripeAccountRepository: Send + Sync {
         store_id: StoreId,
         account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
-        idempotency: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError>;
 
     async fn update(
@@ -336,6 +333,5 @@ pub trait StripeAccountRepository: Send + Sync {
         store_id: StoreId,
         account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
-        idempotency: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError>;
 }

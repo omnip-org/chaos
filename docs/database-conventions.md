@@ -6,7 +6,7 @@ PostgreSQL schemas represent data ownership, not individual users, Stores, Rust 
 
 `commerce` owns Stores, Store memberships, Sales Channels, Store locales, public Storefront Keys, catalogs, pricing, inventory, sales, Stripe payment account configuration, payment readiness, payment commands, and the verified Stripe webhook inbox. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
 
-Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned catalog, inventory, sales, payment, and rebuildable Storefront read models. `integration` contains generic idempotency, outbox/event routing, and analytical processing state.
+Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned catalog, inventory, sales, payment, and rebuildable Storefront read models. `integration` contains outbox/event routing and analytical processing state.
 
 Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
 

@@ -3,28 +3,17 @@ use chaos_application::{
     ApplicationError,
     ports::{
         AdminActor, CollectionDetail, CollectionListItem, CollectionProductItem,
-        CollectionPublicationRecord, CollectionRepository, CreateCollectionRecord,
-        IdempotencyRequest, MachineActor, StorefrontCollectionItem,
+        CollectionPublicationRecord, CollectionRepository, CreateCollectionRecord, MachineActor,
+        StorefrontCollectionItem,
     },
 };
 use chaos_domain::{
     catalog::{CollectionContent, CollectionId, CollectionStatus, ProductId},
     store::{SalesChannelId, StoreId},
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE: &str = "collections.create.v1";
-const UPDATE: &str = "collections.update.v1";
-const ACTIVATE: &str = "collections.activate.v1";
-const ARCHIVE: &str = "collections.archive.v1";
-const REPLACE_PRODUCTS: &str = "collections.replace_products.v1";
-const PUBLISH: &str = "collections.publish.v1";
-const UNPUBLISH: &str = "collections.unpublish.v1";
 
 #[derive(Clone)]
 pub struct PostgresCollectionRepository {
@@ -78,19 +67,14 @@ impl CollectionRepository for PostgresCollectionRepository {
         &self,
         actor: AdminActor,
         record: CreateCollectionRecord,
-        request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, CREATE, request).await? {
-            return Ok(CollectionId::from_uuid(id));
-        }
         require_store(&mut tx, &actor, record.store_id).await?;
         sqlx::query("INSERT INTO commerce.collections (id, store_id, handle, title, description, metadata, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,'draft',$7,$7)")
             .bind(record.id.as_uuid()).bind(record.store_id.as_uuid())
             .bind(record.content.handle().as_str()).bind(record.content.title()).bind(record.content.description())
             .bind(record.content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(record.created_at)
             .execute(&mut *tx).await.map_err(map_collection_error)?;
-        complete(&mut tx, &actor, CREATE, request, record.id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(record.id)
     }
@@ -176,18 +160,13 @@ impl CollectionRepository for PostgresCollectionRepository {
         store_id: StoreId,
         collection_id: CollectionId,
         content: &CollectionContent,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, UPDATE, request).await? {
-            return Ok(CollectionId::from_uuid(id));
-        }
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let changed=sqlx::query("UPDATE commerce.collections SET handle=$3,title=$4,description=$5,metadata=$6::jsonb,updated_at=$7 WHERE store_id=$1 AND id=$2")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(content.handle().as_str()).bind(content.title()).bind(content.description()).bind(content.metadata().map(chaos_domain::catalog::CatalogMetadata::as_str)).bind(now).execute(&mut *tx).await.map_err(map_collection_error)?.rows_affected();
         require_changed(changed, collection_id)?;
-        complete(&mut tx, &actor, UPDATE, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -198,18 +177,9 @@ impl CollectionRepository for PostgresCollectionRepository {
         store_id: StoreId,
         collection_id: CollectionId,
         status: CollectionStatus,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
-        let operation = if status == CollectionStatus::Active {
-            ACTIVATE
-        } else {
-            ARCHIVE
-        };
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
-            return Ok(CollectionId::from_uuid(id));
-        }
         let changed=sqlx::query("UPDATE commerce.collections SET status=$3::commerce.collection_status,updated_at=$4 WHERE store_id=$1 AND id=$2 AND (($3='active' AND status='draft') OR ($3='archived' AND status IN ('draft','active')))")
             .bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(status.as_str()).bind(now).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         if changed == 0 && !collection_exists(&mut tx, &actor, store_id, collection_id).await? {
@@ -231,7 +201,6 @@ impl CollectionRepository for PostgresCollectionRepository {
                 });
             }
         }
-        complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -242,13 +211,9 @@ impl CollectionRepository for PostgresCollectionRepository {
         store_id: StoreId,
         collection_id: CollectionId,
         product_ids: &[ProductId],
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<CollectionId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, REPLACE_PRODUCTS, request).await? {
-            return Ok(CollectionId::from_uuid(id));
-        }
         require_writable_collection(&mut tx, &actor, store_id, collection_id).await?;
         let ids: Vec<Uuid> = product_ids.iter().map(|id| id.as_uuid()).collect();
         let count: i64 = sqlx::query_scalar(
@@ -285,15 +250,6 @@ impl CollectionRepository for PostgresCollectionRepository {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        complete(
-            &mut tx,
-            &actor,
-            REPLACE_PRODUCTS,
-            request,
-            collection_id,
-            200,
-        )
-        .await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -302,7 +258,6 @@ impl CollectionRepository for PostgresCollectionRepository {
         &self,
         actor: AdminActor,
         record: CollectionPublicationRecord,
-        request: &IdempotencyRequest,
     ) -> Result<CollectionId, ApplicationError> {
         let CollectionPublicationRecord {
             store_id,
@@ -311,11 +266,7 @@ impl CollectionRepository for PostgresCollectionRepository {
             published,
             changed_at: now,
         } = record;
-        let operation = if published { PUBLISH } else { UNPUBLISH };
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
-            return Ok(CollectionId::from_uuid(id));
-        }
         let status: String = sqlx::query_scalar(
             "SELECT status::text FROM commerce.collections WHERE store_id=$1 AND id=$2",
         )
@@ -343,7 +294,6 @@ impl CollectionRepository for PostgresCollectionRepository {
         } else {
             sqlx::query("DELETE FROM commerce.collection_publications WHERE store_id=$1 AND collection_id=$2 AND sales_channel_id=$3").bind(store_id.as_uuid()).bind(collection_id.as_uuid()).bind(sales_channel_id.as_uuid()).execute(&mut *tx).await.map_err(database_error)?;
         }
-        complete(&mut tx, &actor, operation, request, collection_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(collection_id)
     }
@@ -457,47 +407,6 @@ fn require_changed(changed: u64, id: CollectionId) -> Result<(), ApplicationErro
     } else {
         Err(not_found(id))
     }
-}
-async fn reserve(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    let Some(value) = idempotency::reserve(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|v| Uuid::parse_str(v).ok())
-        .map(Some)
-        .ok_or_else(invalid_snapshot)
-}
-async fn complete(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: CollectionId,
-    status: i16,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-        status,
-        json!({"id":id.as_uuid()}),
-    )
-    .await
 }
 fn parse_status(value: &str) -> Result<CollectionStatus, ApplicationError> {
     CollectionStatus::parse(value).ok_or_else(invalid_snapshot)

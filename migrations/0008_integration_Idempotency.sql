@@ -1,48 +1,7 @@
 CREATE SCHEMA integration;
 
-CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
-
 SELECT pgmq.create('chaos_shipping_events');
 SELECT pgmq.create('chaos_search_events');
-
-CREATE TABLE integration.idempotency_keys (
-    id                   UUID                             NOT NULL PRIMARY KEY,
-    scope                integration.idempotency_scope    NOT NULL,
-    scope_id             UUID                             NOT NULL,
-    operation            TEXT                             NOT NULL,
-    idempotency_key      TEXT                             NOT NULL,
-    request_fingerprint  BYTEA                            NOT NULL,
-    response_status      SMALLINT,
-    response_body        JSONB,
-    completed_at         TIMESTAMPTZ,
-    expires_at           TIMESTAMPTZ                      NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '7 days'),
-    created_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT idempotency_keys_scope_scope_id_operation_key_key    UNIQUE (scope, scope_id, operation, idempotency_key),
-    CONSTRAINT idempotency_keys_operation_length_check              CHECK (length(operation) BETWEEN 1 AND 120),
-    CONSTRAINT idempotency_keys_key_length_check                    CHECK (octet_length(idempotency_key) BETWEEN 1 AND 255),
-    CONSTRAINT idempotency_keys_request_fingerprint_length_check    CHECK (octet_length(request_fingerprint) = 32),
-    CONSTRAINT idempotency_keys_response_completion_check           CHECK ((response_status IS NULL AND response_body IS NULL AND completed_at IS NULL) OR (response_status BETWEEN 200 AND 599 AND response_body IS NOT NULL AND completed_at IS NOT NULL))
-);
-
-CREATE INDEX idempotency_keys_expiry_idx ON integration.idempotency_keys (expires_at) WHERE completed_at IS NOT NULL;
-
-SELECT cron.schedule(
-    'chaos-idempotency-cleanup',
-    '17 * * * *',
-    $$
-    DELETE FROM integration.idempotency_keys
-     WHERE id IN (
-         SELECT id
-           FROM integration.idempotency_keys
-          WHERE completed_at IS NOT NULL
-            AND expires_at < CURRENT_TIMESTAMP
-          ORDER BY expires_at, id
-          LIMIT 10000
-     )
-    $$
-);
 
 CREATE TABLE integration.event_consumers (
     event_type  TEXT PRIMARY KEY,
@@ -255,12 +214,7 @@ BEGIN
 END;
 $$;
 
-ALTER TABLE integration.idempotency_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration.event_outbox ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY idempotency_scope_isolation ON integration.idempotency_keys
-    USING ((scope = 'user' AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid) OR (scope = 'store' AND scope_id = nullif(current_setting('app.store_id', true), '')::uuid) OR (scope = 'shopper' AND scope_id = nullif(current_setting('app.shopper_id', true), '')::uuid))
-    WITH CHECK ((scope = 'user' AND scope_id = nullif(current_setting('app.user_id', true), '')::uuid) OR (scope = 'store' AND scope_id = nullif(current_setting('app.store_id', true), '')::uuid) OR (scope = 'shopper' AND scope_id = nullif(current_setting('app.shopper_id', true), '')::uuid));
 
 CREATE POLICY store_isolation ON integration.event_outbox
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)

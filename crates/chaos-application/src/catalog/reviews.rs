@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, IdempotencyRequest, MachineActor, ReviewRepository, ReviewSummary},
+    ports::{AdminActor, MachineActor, ReviewRepository, ReviewSummary},
     store::Page,
 };
 
@@ -21,7 +21,6 @@ pub struct SubmitReviewInput {
     pub content: String,
     pub author_name: String,
     pub author_email: Option<String>,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -30,7 +29,6 @@ pub struct ApproveReviewInput {
     pub store_id: StoreId,
     pub review_id: ReviewId,
     pub verified_buyer: bool,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -38,7 +36,6 @@ pub struct RejectReviewInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub review_id: ReviewId,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -47,7 +44,6 @@ pub struct AddReviewReplyInput {
     pub store_id: StoreId,
     pub parent_review_id: ReviewId,
     pub content: String,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -85,7 +81,6 @@ impl ReviewAdministration {
                     content,
                     created_at: input.now,
                 },
-                &input.idempotency,
             )
             .await
     }
@@ -124,7 +119,6 @@ impl ReviewAdministration {
                 input.review_id,
                 ReviewStatus::Approved,
                 input.verified_buyer,
-                &input.idempotency,
                 input.now,
             )
             .await
@@ -139,7 +133,6 @@ impl ReviewAdministration {
                 input.review_id,
                 ReviewStatus::Rejected,
                 false,
-                &input.idempotency,
                 input.now,
             )
             .await
@@ -157,7 +150,6 @@ impl ReviewAdministration {
                 input.store_id,
                 input.parent_review_id,
                 content,
-                &input.idempotency,
                 input.now,
             )
             .await

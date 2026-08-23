@@ -19,7 +19,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -43,8 +43,6 @@ pub struct UploadProductMediaParams {
     pub position: u16,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -61,8 +59,6 @@ pub struct ArchiveProductMediaParams {
     pub media_asset_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = media_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -72,7 +68,7 @@ impl ChaosMcp {
                         one call. Provide the image as base64-encoded bytes (data_base64); this \
                         tool computes the checksum, creates the Media Asset record, uploads the \
                         bytes to storage, and marks it ready — no separate presigned-URL steps \
-                        required. Requires confirm: true and an idempotency_key."
+                        required. Requires confirm: true."
     )]
     async fn upload_product_media(
         &self,
@@ -122,11 +118,6 @@ impl ChaosMcp {
         let byte_size = bytes.len() as u64;
         let sha256_hex = hex_digest(&bytes);
         let now = self.state.clock.now();
-        let create_idempotency =
-            idempotency_request(format!("{}-create", params.idempotency_key), &params);
-        let complete_idempotency =
-            idempotency_request(format!("{}-complete", params.idempotency_key), &params);
-
         let created = match self
             .state
             .media_administration
@@ -141,7 +132,6 @@ impl ChaosMcp {
                 sha256_hex,
                 alt_text: params.alt_text,
                 position: params.position,
-                idempotency: create_idempotency,
                 now,
             })
             .await
@@ -196,7 +186,6 @@ impl ChaosMcp {
                 store_id,
                 product_id,
                 media_asset_id: created.asset.id,
-                idempotency: complete_idempotency,
                 now,
             })
             .await
@@ -246,7 +235,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Archive a media asset for a product in the selected Store. \
-                        Requires confirm: true and an idempotency_key."
+                        Requires confirm: true."
     )]
     async fn archive_product_media(
         &self,
@@ -275,7 +264,6 @@ impl ChaosMcp {
             Ok(id) => MediaAssetId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let now = self.state.clock.now();
 
         match self
@@ -286,7 +274,6 @@ impl ChaosMcp {
                 store_id,
                 product_id,
                 media_asset_id,
-                idempotency,
                 now,
             })
             .await

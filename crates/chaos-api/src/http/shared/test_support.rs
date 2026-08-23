@@ -93,15 +93,15 @@ pub(crate) async fn response_json(response: axum::response::Response) -> Value {
 pub(crate) fn request(
     method: Method,
     uri: &str,
-    idempotency_key: Option<&str>,
+    request_id: Option<&str>,
     body: Option<Value>,
 ) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
         .header("authorization", "Bearer test-session");
-    if let Some(key) = idempotency_key {
-        builder = builder.header("idempotency-key", key);
+    if let Some(request_id) = request_id {
+        builder = builder.header("x-request-id", request_id);
     }
     if body.is_some() {
         builder = builder.header("content-type", "application/json");

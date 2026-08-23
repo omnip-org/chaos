@@ -9,17 +9,10 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{
-        AdminActor, IdempotencyRequest, PriceListDetail, PricingManagementTransaction,
-        PricingManagementUnitOfWork, PricingReadRepository,
-    },
+    ports::{AdminActor, PriceListDetail, PricingManagementUnitOfWork, PricingReadRepository},
 };
 
 use super::CreatePriceInput;
-
-const UPDATE_PRICE_LIST_OPERATION: &str = "price_lists.update.v1";
-const ACTIVATE_PRICE_LIST_OPERATION: &str = "price_lists.activate.v1";
-const ARCHIVE_PRICE_LIST_OPERATION: &str = "price_lists.archive.v1";
 
 pub struct UpdatePriceListInput {
     pub actor: AdminActor,
@@ -31,14 +24,12 @@ pub struct UpdatePriceListInput {
     pub starts_at: Option<OffsetDateTime>,
     pub ends_at: Option<OffsetDateTime>,
     pub prices: Vec<CreatePriceInput>,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct ChangePriceListStatusInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub price_list_id: PriceListId,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct PriceListPage {
@@ -113,12 +104,6 @@ impl PricingManagement {
             .unit_of_work
             .begin(input.actor, input.store_id, input.price_list_id)
             .await?;
-        if let Some(id) = transaction
-            .reserve_mutation(UPDATE_PRICE_LIST_OPERATION, &input.idempotency)
-            .await?
-        {
-            return Ok(id);
-        }
         let snapshot = transaction
             .load_for_update()
             .await?
@@ -156,13 +141,7 @@ impl PricingManagement {
             PriceListStatus::Archived => replacement.archive(),
         }
         transaction.replace(&replacement).await?;
-        complete(
-            transaction,
-            UPDATE_PRICE_LIST_OPERATION,
-            &input.idempotency,
-            input.price_list_id,
-        )
-        .await
+        transaction.commit().await.map(|()| input.price_list_id)
     }
 
     pub async fn activate(
@@ -174,12 +153,6 @@ impl PricingManagement {
             .unit_of_work
             .begin(input.actor, input.store_id, input.price_list_id)
             .await?;
-        if let Some(id) = transaction
-            .reserve_mutation(ACTIVATE_PRICE_LIST_OPERATION, &input.idempotency)
-            .await?
-        {
-            return Ok(id);
-        }
         let snapshot = transaction
             .load_for_update()
             .await?
@@ -189,13 +162,7 @@ impl PricingManagement {
             .await?;
         PriceList::validate_activation(&snapshot.priced_variant_ids, &active_ids)?;
         transaction.set_status(PriceListStatus::Active).await?;
-        complete(
-            transaction,
-            ACTIVATE_PRICE_LIST_OPERATION,
-            &input.idempotency,
-            input.price_list_id,
-        )
-        .await
+        transaction.commit().await.map(|()| input.price_list_id)
     }
 
     pub async fn archive(
@@ -207,37 +174,12 @@ impl PricingManagement {
             .unit_of_work
             .begin(input.actor, input.store_id, input.price_list_id)
             .await?;
-        if let Some(id) = transaction
-            .reserve_mutation(ARCHIVE_PRICE_LIST_OPERATION, &input.idempotency)
-            .await?
-        {
-            return Ok(id);
-        }
         if transaction.load_for_update().await?.is_none() {
             return Err(price_list_not_found(input.price_list_id));
         }
         transaction.set_status(PriceListStatus::Archived).await?;
-        complete(
-            transaction,
-            ARCHIVE_PRICE_LIST_OPERATION,
-            &input.idempotency,
-            input.price_list_id,
-        )
-        .await
+        transaction.commit().await.map(|()| input.price_list_id)
     }
-}
-
-async fn complete(
-    mut transaction: Box<dyn PricingManagementTransaction>,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    price_list_id: PriceListId,
-) -> Result<PriceListId, ApplicationError> {
-    transaction
-        .complete_mutation(operation, request, price_list_id)
-        .await?;
-    transaction.commit().await?;
-    Ok(price_list_id)
 }
 
 fn require_pricing_writer(actor: &AdminActor) -> Result<(), ApplicationError> {

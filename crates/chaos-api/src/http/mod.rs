@@ -54,10 +54,7 @@ use chaos_infrastructure::{
     storage::media::{S3MediaStorage, S3MediaStorageConfiguration, UnavailableMediaStorage},
 };
 use secrecy::ExposeSecret as _;
-use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::TraceLayer,
-};
+use tower_http::trace::TraceLayer;
 
 use chaos_infrastructure::runtime::lifecycle::Lifecycle;
 
@@ -344,9 +341,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/storefront/v1", storefront::v1::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
-        .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TraceLayer::new_for_http())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 #[cfg(test)]
@@ -413,14 +408,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn liveness_uses_the_success_envelope_and_request_id() {
+    async fn liveness_uses_the_success_envelope_without_synthetic_request_ids() {
         let response = router(test_state())
             .oneshot(Request::get("/health/live").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().contains_key("x-request-id"));
+        assert!(response.headers().get("x-request-id").is_none());
 
         let body = to_bytes(response.into_body(), 1024).await.unwrap();
         assert_eq!(

@@ -1,4 +1,3 @@
-use axum::http::HeaderMap;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::ApplicationError;
 use chaos_domain::FieldViolation;
@@ -6,7 +5,6 @@ use uuid::Uuid;
 
 use crate::http::{ApiError, PageMeta, ResponseMeta};
 
-const IDEMPOTENCY_KEY: &str = "idempotency-key";
 const CURSOR_VERSION: u8 = 1;
 
 #[derive(Clone, Copy)]
@@ -63,24 +61,6 @@ pub(crate) fn page_meta(has_more: bool, next_cursor: Option<String>) -> Response
             next_cursor,
         }),
     }
-}
-
-pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<String, ApiError> {
-    headers
-        .get(IDEMPOTENCY_KEY)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty() && value.len() <= 255)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ApplicationError::Validation {
-                violations: vec![FieldViolation {
-                    field: "idempotency_key",
-                    reason: "must be a non-empty Idempotency-Key header of at most 255 bytes"
-                        .into(),
-                }],
-            }
-            .into()
-        })
 }
 
 #[cfg(test)]

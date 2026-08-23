@@ -6,12 +6,11 @@ export class CartResource {
 
   constructor(private readonly client: ChaosStorefrontClient) {}
 
-  create(body: CreateCartRequest = {}, idempotencyKey?: string): Promise<DataEnvelope<Cart>> {
+  create(body: CreateCartRequest = {}): Promise<DataEnvelope<Cart>> {
     return this.client.request("/carts", {
       method: "POST",
       body,
       requiresShopperToken: true,
-      idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
     });
   }
 
@@ -26,10 +25,9 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
-    idempotencyKey?: string,
   ): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, () =>
-      this.setLineRequest(cartId, productVariantId, body, idempotencyKey),
+      this.setLineRequest(cartId, productVariantId, body),
     );
   }
 
@@ -38,7 +36,6 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     quantity = 1,
-    idempotencyKey?: string,
   ): Promise<DataEnvelope<Cart>> {
     if (!Number.isInteger(quantity) || quantity < 1) {
       throw new RangeError("quantity must be a positive integer");
@@ -50,20 +47,18 @@ export class CartResource {
         cartId,
         productVariantId,
         { quantity: (existing?.quantity ?? 0) + quantity },
-        idempotencyKey,
       );
       return response;
     });
   }
 
-  removeLine(cartId: string, productVariantId: string, idempotencyKey?: string): Promise<DataEnvelope<Cart>> {
+  removeLine(cartId: string, productVariantId: string): Promise<DataEnvelope<Cart>> {
     return this.enqueueMutation(cartId, () =>
       this.client.request(
         `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
         {
           method: "DELETE",
           requiresShopperToken: true,
-          idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
         },
       ),
     );
@@ -73,7 +68,6 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
-    idempotencyKey?: string,
   ): Promise<DataEnvelope<Cart>> {
     return this.client.request<DataEnvelope<Cart>>(
       `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
@@ -81,7 +75,6 @@ export class CartResource {
         method: "PUT",
         body,
         requiresShopperToken: true,
-        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
       },
     );
   }

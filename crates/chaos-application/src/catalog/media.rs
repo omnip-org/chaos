@@ -9,7 +9,7 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, CreateMediaAssetRecord, IdempotencyRequest, MediaAssetItem, MediaAssetMutation,
+        AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
         MediaAssetRepository, MediaStorage, MediaUploadRequest,
     },
 };
@@ -25,7 +25,6 @@ pub struct CreateMediaAssetInput {
     pub sha256_hex: String,
     pub alt_text: String,
     pub position: u16,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 pub struct MediaAssetActionInput {
@@ -33,7 +32,6 @@ pub struct MediaAssetActionInput {
     pub store_id: StoreId,
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 pub struct RefreshMediaUploadInput {
@@ -95,7 +93,6 @@ impl MediaAdministration {
                     position: input.position,
                     created_at: input.now,
                 },
-                &input.idempotency,
             )
             .await?;
         let upload = self.upload(&pending, input.now).await?;
@@ -182,7 +179,6 @@ impl MediaAdministration {
                     changed_at: input.now,
                 },
                 &public_url,
-                &input.idempotency,
             )
             .await
     }
@@ -200,7 +196,6 @@ impl MediaAdministration {
                     media_asset_id: input.media_asset_id,
                     changed_at: input.now,
                 },
-                &input.idempotency,
             )
             .await
     }

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{ApplicationError, store::StoreActor};
 
-use super::{IdempotencyRequest, MachineActor};
+use super::MachineActor;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AnalyticsRateLimitDecision {
@@ -126,7 +126,6 @@ pub trait AnalyticsDestinationRepository: Send + Sync {
         actor: StoreActor,
         store_id: StoreId,
         configuration: AnalyticsDestinationConfiguration,
-        idempotency: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsDestination, ApplicationError>;
 }

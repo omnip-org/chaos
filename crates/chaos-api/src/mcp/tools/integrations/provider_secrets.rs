@@ -35,8 +35,7 @@ impl ChaosMcp {
                         secret_key and publishable_key, while payment_webhook must be the raw \
                         Stripe whsec_... endpoint signing secret. The value is encrypted at rest and \
                         referenced by an opaque string thereafter; it cannot be read back. \
-                        This tool has no idempotency_key parameter because the underlying \
-                        operation is not idempotent — calling it twice creates two independent \
+                        Calling it twice creates two independent \
                         secret references. There is no update or \
                         delete tool for provider secrets; create a new one to rotate. Requires \
                         confirm: true."

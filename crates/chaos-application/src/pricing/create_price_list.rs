@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::{
     ApplicationError,
-    ports::{AdminActor, IdempotencyRequest, PricingProvisioningUnitOfWork},
+    ports::{AdminActor, PricingProvisioningUnitOfWork},
 };
 
 pub struct CreatePriceInput {
@@ -28,7 +28,6 @@ pub struct CreatePriceListInput {
     pub ends_at: Option<OffsetDateTime>,
     pub activate: bool,
     pub prices: Vec<CreatePriceInput>,
-    pub idempotency: IdempotencyRequest,
 }
 
 #[derive(Debug)]
@@ -65,12 +64,6 @@ impl CreatePriceList {
         let mut transaction = self.unit_of_work.begin(input.actor, input.store_id).await?;
         transaction.require_writable_store().await?;
         transaction.require_store_currency(currency).await?;
-        if let Some(price_list_id) = transaction
-            .reserve_price_list_creation(&input.idempotency)
-            .await?
-        {
-            return Ok(CreatePriceListOutput { price_list_id });
-        }
         let requested_ids = input
             .prices
             .iter()
@@ -90,9 +83,6 @@ impl CreatePriceList {
             price_list.activate(&active_ids)?;
         }
         transaction.insert_price_list(&price_list).await?;
-        transaction
-            .complete_price_list_creation(&input.idempotency, price_list.id())
-            .await?;
         transaction.commit().await?;
         Ok(CreatePriceListOutput {
             price_list_id: price_list.id(),

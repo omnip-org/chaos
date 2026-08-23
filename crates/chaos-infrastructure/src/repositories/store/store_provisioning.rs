@@ -1,19 +1,13 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork},
+    ports::{StoreProvisioningTransaction, StoreProvisioningUnitOfWork},
 };
 use chaos_domain::{
     identity::UserId,
-    store::{SalesChannel, Store, StoreId, StoreMembership},
+    store::{SalesChannel, Store, StoreMembership},
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE_STORE_OPERATION: &str = "stores.create.v1";
 
 #[derive(Clone)]
 pub struct PostgresStoreProvisioningUnitOfWork {
@@ -28,7 +22,6 @@ impl PostgresStoreProvisioningUnitOfWork {
 
 struct PostgresStoreProvisioningTransaction {
     transaction: Transaction<'static, Postgres>,
-    user_id: UserId,
 }
 
 #[async_trait]
@@ -45,41 +38,12 @@ impl StoreProvisioningUnitOfWork for PostgresStoreProvisioningUnitOfWork {
             .map_err(unexpected_database_error)?;
         Ok(Box::new(PostgresStoreProvisioningTransaction {
             transaction,
-            user_id,
         }))
     }
 }
 
 #[async_trait]
 impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
-    async fn reserve_store_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<StoreId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::User(self.user_id.as_uuid()),
-            CREATE_STORE_OPERATION,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let store_id = body
-            .get("data")
-            .and_then(|data| data.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(StoreId::from_uuid)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no store response"
-                ))
-            })?;
-        Ok(Some(store_id))
-    }
-
     async fn insert_store(&mut self, store: &Store) -> Result<(), ApplicationError> {
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .bind(store.id().as_uuid().to_string())
@@ -141,22 +105,6 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         Ok(())
     }
 
-    async fn complete_store_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-        store_id: StoreId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::User(self.user_id.as_uuid()),
-            CREATE_STORE_OPERATION,
-            request,
-            201,
-            json!({ "data": { "id": store_id.as_uuid() } }),
-        )
-        .await
-    }
-
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
         self.transaction
             .commit()
@@ -187,12 +135,13 @@ mod tests {
 
     use chaos_application::store::{CreateStore, CreateStoreInput};
     use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
     use super::*;
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn provisions_a_store_with_owner_membership_currency_and_idempotency() {
+    async fn provisions_a_store_with_owner_membership_currency_and_constraints() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -215,7 +164,6 @@ mod tests {
             .unwrap();
         let owner_user_id = UserId::new();
         let unique_suffix = Uuid::now_v7().simple().to_string()[..12].to_owned();
-        let idempotency_key = format!("store-{unique_suffix}");
 
         sqlx::query("INSERT INTO identity.users (id, email) VALUES ($1, $2)")
             .bind(owner_user_id.as_uuid())
@@ -227,31 +175,16 @@ mod tests {
         let service = CreateStore::new(Arc::new(PostgresStoreProvisioningUnitOfWork::new(
             runtime_pool,
         )));
-        let make_input = |fingerprint| CreateStoreInput {
+        let make_input = || CreateStoreInput {
             user_id: owner_user_id,
             code: format!("primary-{unique_suffix}"),
             name: "Primary Store".into(),
             region: None,
             currency: None,
             meta: None,
-            idempotency: IdempotencyRequest {
-                key: idempotency_key.clone(),
-                request_fingerprint: fingerprint,
-            },
         };
 
-        let output = service.execute(make_input([21; 32])).await.unwrap();
-        let replay = service.execute(make_input([21; 32])).await.unwrap();
-        assert_eq!(replay.store_id, output.store_id);
-
-        let mismatch = service.execute(make_input([22; 32])).await;
-        assert!(matches!(
-            mismatch,
-            Err(ApplicationError::Conflict {
-                code: "idempotency_key_reused",
-                ..
-            })
-        ));
+        let output = service.execute(make_input()).await.unwrap();
 
         let stored: (String, String, String, String, bool) = sqlx::query_as(
             "SELECT store.status::text, store.region::text, \
@@ -293,14 +226,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'user' AND scope_id = $1",
-        )
-        .bind(owner_user_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(owner_user_id.as_uuid())
             .execute(&owner_pool)

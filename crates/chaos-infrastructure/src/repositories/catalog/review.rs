@@ -1,23 +1,15 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{AdminActor, IdempotencyRequest, MachineActor, ReviewRepository, ReviewSummary},
+    ports::{AdminActor, MachineActor, ReviewRepository, ReviewSummary},
 };
 use chaos_domain::{
     catalog::{ProductId, ReviewId, ReviewStatus, StaffReplyContent},
     store::StoreId,
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const SUBMIT: &str = "reviews.submit.v1";
-const APPROVE: &str = "reviews.approve.v1";
-const REJECT: &str = "reviews.reject.v1";
-const ADD_REPLY: &str = "reviews.add_reply.v1";
 
 type ReviewRow = (
     Uuid,
@@ -82,12 +74,8 @@ impl ReviewRepository for PostgresReviewRepository {
         &self,
         actor: &MachineActor,
         record: chaos_application::ports::SubmitReviewRecord,
-        request: &IdempotencyRequest,
     ) -> Result<ReviewId, ApplicationError> {
         let mut tx = self.begin_machine(actor).await?;
-        if let Some(id) = reserve_machine(&mut tx, actor, SUBMIT, request).await? {
-            return Ok(ReviewId::from_uuid(id));
-        }
         let content = record.content;
         sqlx::query(
             "INSERT INTO commerce.reviews \
@@ -107,7 +95,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .execute(&mut *tx)
         .await
         .map_err(map_review_write_error)?;
-        complete_machine(&mut tx, actor, SUBMIT, request, record.id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(record.id)
     }
@@ -204,18 +191,9 @@ impl ReviewRepository for PostgresReviewRepository {
         review_id: ReviewId,
         status: ReviewStatus,
         verified_buyer: bool,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<ReviewId, ApplicationError> {
-        let operation = if status == ReviewStatus::Approved {
-            APPROVE
-        } else {
-            REJECT
-        };
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, operation, request).await? {
-            return Ok(ReviewId::from_uuid(id));
-        }
         let approved = status == ReviewStatus::Approved;
         let changed = sqlx::query(
             "UPDATE commerce.reviews \
@@ -239,7 +217,6 @@ impl ReviewRepository for PostgresReviewRepository {
         if changed == 0 && !review_exists(&mut tx, store_id, review_id).await? {
             return Err(not_found(review_id));
         }
-        complete(&mut tx, &actor, operation, request, review_id, 200).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(review_id)
     }
@@ -250,13 +227,9 @@ impl ReviewRepository for PostgresReviewRepository {
         store_id: StoreId,
         parent_review_id: ReviewId,
         content: StaffReplyContent,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<ReviewId, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        if let Some(id) = reserve(&mut tx, &actor, ADD_REPLY, request).await? {
-            return Ok(ReviewId::from_uuid(id));
-        }
         let product_id: Option<Uuid> = sqlx::query_scalar(
             "SELECT product_id FROM commerce.reviews \
              WHERE store_id=$1 AND id=$2 AND status='approved' \
@@ -291,7 +264,6 @@ impl ReviewRepository for PostgresReviewRepository {
         .execute(&mut *tx)
         .await
         .map_err(map_review_write_error)?;
-        complete(&mut tx, &actor, ADD_REPLY, request, reply_id, 201).await?;
         tx.commit().await.map_err(database_error)?;
         Ok(reply_id)
     }
@@ -415,91 +387,6 @@ async fn review_exists(
         .fetch_one(&mut **tx)
         .await
         .map_err(database_error)
-}
-
-async fn reserve(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    reserve_for_scope(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-    )
-    .await
-}
-
-async fn reserve_machine(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    reserve_for_scope(
-        tx,
-        &IdempotencyScope::Store(actor.store_id.as_uuid()),
-        operation,
-        request,
-    )
-    .await
-}
-
-async fn reserve_for_scope(
-    tx: &mut Transaction<'static, Postgres>,
-    scope: &IdempotencyScope,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-) -> Result<Option<Uuid>, ApplicationError> {
-    let Some(value) = idempotency::reserve(tx, scope, operation, request).await? else {
-        return Ok(None);
-    };
-    value
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|v| Uuid::parse_str(v).ok())
-        .map(Some)
-        .ok_or_else(invalid_snapshot)
-}
-
-async fn complete(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &AdminActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: ReviewId,
-    status: i16,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        tx,
-        &IdempotencyScope::Store(actor.store_id().as_uuid()),
-        operation,
-        request,
-        status,
-        json!({"id": id.as_uuid()}),
-    )
-    .await
-}
-
-async fn complete_machine(
-    tx: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: ReviewId,
-    status: i16,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        tx,
-        &IdempotencyScope::Store(actor.store_id.as_uuid()),
-        operation,
-        request,
-        status,
-        json!({"id": id.as_uuid()}),
-    )
-    .await
 }
 
 fn not_found(id: ReviewId) -> ApplicationError {

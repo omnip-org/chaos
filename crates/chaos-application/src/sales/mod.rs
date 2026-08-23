@@ -10,8 +10,7 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     ApplicationError,
     ports::{
-        CartDetail, IdempotencyRequest, MachineActor, ShopperActor, StorefrontSalesRepository,
-        StripeCheckoutDraft,
+        CartDetail, MachineActor, ShopperActor, StorefrontSalesRepository, StripeCheckoutDraft,
     },
 };
 
@@ -21,7 +20,6 @@ pub use order_management::{ChangeOrderStatusInput, OrderManagement};
 pub struct CreateCartInput {
     pub actor: ShopperActor,
     pub currency: Option<String>,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct SetCartLineInput {
@@ -29,14 +27,12 @@ pub struct SetCartLineInput {
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub quantity: u32,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct RemoveCartLineInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateStripeCheckoutInput {
@@ -44,7 +40,7 @@ pub struct CreateStripeCheckoutInput {
     pub cart_id: CartId,
     pub email: String,
     pub now: OffsetDateTime,
-    pub idempotency: IdempotencyRequest,
+    pub request_id: uuid::Uuid,
 }
 
 pub struct StorefrontSales {
@@ -74,9 +70,7 @@ impl StorefrontSales {
             .as_deref()
             .map(CurrencyCode::parse)
             .transpose()?;
-        self.repository
-            .create_cart(&input.actor, currency, &input.idempotency)
-            .await
+        self.repository.create_cart(&input.actor, currency).await
     }
 
     pub async fn get_cart(
@@ -105,7 +99,6 @@ impl StorefrontSales {
                 input.cart_id,
                 input.product_variant_id,
                 input.quantity,
-                &input.idempotency,
             )
             .await
     }
@@ -116,12 +109,7 @@ impl StorefrontSales {
     ) -> Result<CartDetail, ApplicationError> {
         require_storefront_actor(&input.actor.machine)?;
         self.repository
-            .remove_cart_line(
-                &input.actor,
-                input.cart_id,
-                input.product_variant_id,
-                &input.idempotency,
-            )
+            .remove_cart_line(&input.actor, input.cart_id, input.product_variant_id)
             .await
     }
 
@@ -138,7 +126,7 @@ impl StorefrontSales {
                 contact.email(),
                 input.now,
                 input.now + Duration::minutes(30),
-                &input.idempotency,
+                input.request_id,
             )
             .await
     }

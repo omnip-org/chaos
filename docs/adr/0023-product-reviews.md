@@ -15,7 +15,7 @@ The critical evidence rule carried over from the prior integration this replaces
 
 **`verified_buyer` is a plain boolean set only by the approving moderator, in the same request as approval.** It is never derived from an Order, Customer, or payment lookup — the MCP `approve_review` tool requires the field explicitly (`{"verified_buyer": true|false}`), forcing a conscious choice rather than defaulting to either value. Chaos does not attempt to automatically match a reviewer to a completed Order; that matching, if a Store wants it, remains a human moderation step outside Chaos, identical in spirit to how this capability worked in the prior integration.
 
-Storefront submission (`POST /storefront/v1/products/{product_id}/reviews`) requires a Publishable Key and an `Idempotency-Key`, and needs no Shopper credential. A submission always lands `pending` and is invisible to `GET /storefront/v1/products/{product_id}/reviews` until an administrator approves it. That read endpoint requires the same Publishable Key as every other Storefront API operation and returns approved top-level reviews newest-first with their approved staff replies nested underneath. ADR 0028 removed the originally introduced Publishable Key scopes.
+Storefront submission (`POST /storefront/v1/products/{product_id}/reviews`) requires a Publishable Key and needs no Shopper credential. A submission always lands `pending` and is invisible to `GET /storefront/v1/products/{product_id}/reviews` until an administrator approves it. That read endpoint requires the same Publishable Key as every other Storefront API operation and returns approved top-level reviews newest-first with their approved staff replies nested underneath. ADR 0028 removed the originally introduced Publishable Key scopes.
 
 Review moderation is exposed through MCP tools authenticated with a User-owned Access Key and authorized through current Store membership. Approval and rejection are terminal from `pending` only; a moderation mistake requires a new review, matching other terminal commerce transitions.
 
@@ -24,7 +24,7 @@ Review moderation is exposed through MCP tools authenticated with a User-owned A
 - The Storefront client's existing review data shape (id, product_id, parent_id, author_name, author_email, rating, title, content, images, status, is_staff_reply, created_at, updated_at, replies) is preserved field-for-field, with one deliberate addition: **`verified_buyer` is now a real field in the response** rather than a badge the client renders unconditionally. A client that previously assumed every returned review was verified must now read this field and gate the badge on it — a small, intentional change that makes the "Verified Buyer" claim strictly more honest than before, not less.
 - Review-photo uploads are out of scope for this release; `images` is always `[]`. Chaos already has a direct-upload Media Asset mechanism (ADR 0018) that a future increment can reuse for review photos rather than building a second upload path.
 - MCP tools expose review listing, approval, rejection, and staff replies.
-- There is no rate limiting specific to review submission beyond the general request path; a Store that needs abuse resistance beyond `Idempotency-Key` replay protection would need it added as a follow-up, the same gap that exists for every other Storefront write endpoint today.
+- There is no rate limiting specific to review submission beyond the general request path; a Store that needs abuse resistance would need it added as a follow-up.
 
 ## Rejected alternatives
 

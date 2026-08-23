@@ -6,9 +6,7 @@ use axum::{
 };
 use chaos_application::{
     ApplicationError,
-    ports::{
-        CartDetail, CartLineItem, IdempotencyRequest, PaymentClientAction, StorefrontMediaAsset,
-    },
+    ports::{CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset},
     sales::CreateStripeCheckoutInput,
     sales::{CreateCartInput, RemoveCartLineInput, SetCartLineInput},
     stripe::CreatePaymentAttemptInput,
@@ -16,10 +14,8 @@ use chaos_application::{
 use chaos_domain::{catalog::ProductVariantId, sales::CartId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::http::shared::pagination::idempotency_key;
 use crate::http::{
     ApiDateTime, ApiError, ApiJson, ApiPath, ApiResponse, ApiState, CartShopper, PaymentShopper,
 };
@@ -99,17 +95,14 @@ struct CartData {
 
 async fn create_cart(
     State(state): State<ApiState>,
-    headers: HeaderMap,
     CartShopper(actor): CartShopper,
     ApiJson(body): ApiJson<CreateCartBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
-    let idempotency = body_request(&headers, "create_cart", &body)?;
     let cart = state
         .storefront_sales
         .create_cart(CreateCartInput {
             actor,
             currency: body.currency,
-            idempotency,
         })
         .await?;
     Ok(ApiResponse::created(cart_data(cart)?))
@@ -129,16 +122,10 @@ async fn get_cart(
 
 async fn set_cart_line(
     State(state): State<ApiState>,
-    headers: HeaderMap,
     CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(body): ApiJson<SetCartLineBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
-    let idempotency = body_request(
-        &headers,
-        "set_cart_line",
-        &(path.cart_id, path.product_variant_id, &body),
-    )?;
     let cart = state
         .storefront_sales
         .set_cart_line(SetCartLineInput {
@@ -146,7 +133,6 @@ async fn set_cart_line(
             cart_id: CartId::from_uuid(path.cart_id),
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
             quantity: body.quantity,
-            idempotency,
         })
         .await?;
     Ok(ApiResponse::ok(cart_data(cart)?))
@@ -154,40 +140,18 @@ async fn set_cart_line(
 
 async fn remove_cart_line(
     State(state): State<ApiState>,
-    headers: HeaderMap,
     CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
-    let idempotency = body_request(
-        &headers,
-        "remove_cart_line",
-        &(path.cart_id, path.product_variant_id),
-    )?;
     let cart = state
         .storefront_sales
         .remove_cart_line(RemoveCartLineInput {
             actor,
             cart_id: CartId::from_uuid(path.cart_id),
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
-            idempotency,
         })
         .await?;
     Ok(ApiResponse::ok(cart_data(cart)?))
-}
-
-fn body_request<T: Serialize>(
-    headers: &HeaderMap,
-    operation: &'static str,
-    body: &T,
-) -> Result<IdempotencyRequest, ApiError> {
-    Ok(IdempotencyRequest {
-        key: idempotency_key(headers)?,
-        request_fingerprint: Sha256::digest(
-            serde_json::to_vec(&(operation, body))
-                .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        )
-        .into(),
-    })
 }
 
 fn cart_data(cart: CartDetail) -> Result<CartData, ApplicationError> {
@@ -261,7 +225,12 @@ async fn create_embedded_checkout(
     ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
 ) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
     validate_return_url(&body.return_url)?;
-    let idempotency = body_request(&headers, "create_stripe_checkout", &(path.cart_id, &body))?;
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|value| !value.is_nil())
+        .ok_or_else(|| invalid_value("X-Request-ID", "must be a valid UUID"))?;
     let draft = state
         .storefront_sales
         .create_stripe_checkout(CreateStripeCheckoutInput {
@@ -269,7 +238,7 @@ async fn create_embedded_checkout(
             cart_id: CartId::from_uuid(path.cart_id),
             email: body.email.clone(),
             now: state.clock.now(),
-            idempotency,
+            request_id,
         })
         .await?;
     let mut return_url = url::Url::parse(&body.return_url)
@@ -284,11 +253,7 @@ async fn create_embedded_checkout(
             order_id: draft.order_id,
             return_url: Some(return_url.to_string()),
             now: state.clock.now(),
-            idempotency: body_request(
-                &headers,
-                "create_embedded_checkout_payment_attempt",
-                &(draft.order_id.as_uuid(), &body),
-            )?,
+            request_id,
         })
         .await?;
     Ok(ApiResponse::created(EmbeddedCheckoutData {

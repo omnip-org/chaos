@@ -1,22 +1,13 @@
 use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
-    ports::{
-        AdminActor, CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork,
-        IdempotencyRequest,
-    },
+    ports::{AdminActor, CatalogProvisioningTransaction, CatalogProvisioningUnitOfWork},
 };
 use chaos_domain::{
-    catalog::{CatalogMetadata, Product, ProductId},
+    catalog::{CatalogMetadata, Product},
     store::StoreId,
 };
-use serde_json::json;
 use sqlx::{PgPool, Postgres, Transaction};
-use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CREATE_PRODUCT_OPERATION: &str = "products.create.v1";
 
 #[derive(Clone)]
 pub struct PostgresCatalogProvisioningUnitOfWork {
@@ -77,34 +68,6 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
                 id: self.store_id.as_uuid().to_string(),
             })
         }
-    }
-
-    async fn reserve_product_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-    ) -> Result<Option<ProductId>, ApplicationError> {
-        let Some(body) = idempotency::reserve(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            CREATE_PRODUCT_OPERATION,
-            request,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        let product_id = body
-            .get("data")
-            .and_then(|data| data.get("id"))
-            .and_then(|id| id.as_str())
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .map(ProductId::from_uuid)
-            .ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "completed idempotency record has no product response"
-                ))
-            })?;
-        Ok(Some(product_id))
     }
 
     async fn insert_product(&mut self, product: &Product) -> Result<(), ApplicationError> {
@@ -195,22 +158,6 @@ impl CatalogProvisioningTransaction for PostgresCatalogProvisioningTransaction {
         Ok(())
     }
 
-    async fn complete_product_creation(
-        &mut self,
-        request: &IdempotencyRequest,
-        product_id: ProductId,
-    ) -> Result<(), ApplicationError> {
-        idempotency::complete(
-            &mut self.transaction,
-            &IdempotencyScope::Store(self.store_id.as_uuid()),
-            CREATE_PRODUCT_OPERATION,
-            request,
-            201,
-            json!({ "data": { "id": product_id.as_uuid() } }),
-        )
-        .await
-    }
-
     async fn commit(self: Box<Self>) -> Result<(), ApplicationError> {
         self.transaction
             .commit()
@@ -249,7 +196,7 @@ mod tests {
             CreateProduct, CreateProductInput, CreateProductOptionInput,
             CreateProductSelectedOptionInput, CreateProductVariantInput,
         },
-        ports::{AdminActor, IdempotencyRequest},
+        ports::AdminActor,
         store::StoreQueries,
     };
     use chaos_domain::{
@@ -257,6 +204,7 @@ mod tests {
         store::{StoreId, StoreRole},
     };
     use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
     use crate::repositories::PostgresStoreReadRepository;
 
@@ -264,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
-    async fn creates_a_product_atomically_with_authorization_and_idempotency() {
+    async fn creates_a_product_atomically_with_authorization_and_unique_constraints() {
         let database_url =
             std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
         let owner_pool = PgPoolOptions::new()
@@ -330,96 +278,51 @@ mod tests {
         let service = CreateProduct::new(Arc::new(PostgresCatalogProvisioningUnitOfWork::new(
             runtime_pool,
         )));
-        let idempotency_key = format!("product-{suffix}");
-        let make_input = |actor: chaos_application::store::StoreActor,
-                          fingerprint,
-                          key: String,
-                          handle: &str,
-                          sku: &str| CreateProductInput {
-            actor: AdminActor::Store(actor),
-            store_id,
-            handle: handle.into(),
-            title: "Classic Shirt".into(),
-            description: "A durable everyday shirt.".into(),
-            options: vec![
-                CreateProductOptionInput {
-                    name: "Color".into(),
-                    values: vec!["Blue".into(), "Black".into()],
-                },
-                CreateProductOptionInput {
-                    name: "Size".into(),
-                    values: vec!["S".into(), "M".into()],
-                },
-            ],
-            variants: vec![CreateProductVariantInput {
-                title: "Blue / M".into(),
-                sku: Some(sku.into()),
-                requires_shipping: true,
-                track_inventory: true,
-                selected_options: vec![
-                    CreateProductSelectedOptionInput {
-                        option: "Color".into(),
-                        value: "Blue".into(),
+        let make_input = |actor: chaos_application::store::StoreActor, handle: &str, sku: &str| {
+            CreateProductInput {
+                actor: AdminActor::Store(actor),
+                store_id,
+                handle: handle.into(),
+                title: "Classic Shirt".into(),
+                description: "A durable everyday shirt.".into(),
+                options: vec![
+                    CreateProductOptionInput {
+                        name: "Color".into(),
+                        values: vec!["Blue".into(), "Black".into()],
                     },
-                    CreateProductSelectedOptionInput {
-                        option: "Size".into(),
-                        value: "M".into(),
+                    CreateProductOptionInput {
+                        name: "Size".into(),
+                        values: vec!["S".into(), "M".into()],
                     },
                 ],
+                variants: vec![CreateProductVariantInput {
+                    title: "Blue / M".into(),
+                    sku: Some(sku.into()),
+                    requires_shipping: true,
+                    track_inventory: true,
+                    selected_options: vec![
+                        CreateProductSelectedOptionInput {
+                            option: "Color".into(),
+                            value: "Blue".into(),
+                        },
+                        CreateProductSelectedOptionInput {
+                            option: "Size".into(),
+                            value: "M".into(),
+                        },
+                    ],
+                    metadata: None,
+                }],
                 metadata: None,
-            }],
-            metadata: None,
-            idempotency: IdempotencyRequest {
-                key,
-                request_fingerprint: fingerprint,
-            },
+            }
         };
 
         let output = service
-            .execute(make_input(
-                owner,
-                [41; 32],
-                idempotency_key.clone(),
-                "classic-shirt",
-                "SHIRT-BLUE-M",
-            ))
+            .execute(make_input(owner, "classic-shirt", "SHIRT-BLUE-M"))
             .await
             .unwrap();
-        let replay = service
-            .execute(make_input(
-                owner,
-                [41; 32],
-                idempotency_key.clone(),
-                "classic-shirt",
-                "SHIRT-BLUE-M",
-            ))
-            .await
-            .unwrap();
-        assert_eq!(output.product_id, replay.product_id);
         assert!(matches!(
             service
-                .execute(make_input(
-                    owner,
-                    [42; 32],
-                    idempotency_key.clone(),
-                    "classic-shirt",
-                    "SHIRT-BLUE-M",
-                ))
-                .await,
-            Err(ApplicationError::Conflict {
-                code: "idempotency_key_reused",
-                ..
-            })
-        ));
-        assert!(matches!(
-            service
-                .execute(make_input(
-                    owner,
-                    [43; 32],
-                    format!("handle-conflict-{suffix}"),
-                    "classic-shirt",
-                    "ANOTHER-SKU",
-                ))
+                .execute(make_input(owner, "classic-shirt", "SHIRT-BLUE-M"))
                 .await,
             Err(ApplicationError::Conflict {
                 code: "product_handle_taken",
@@ -428,13 +331,16 @@ mod tests {
         ));
         assert!(matches!(
             service
-                .execute(make_input(
-                    owner,
-                    [44; 32],
-                    format!("sku-conflict-{suffix}"),
-                    "another-shirt",
-                    "shirt-blue-m",
-                ))
+                .execute(make_input(owner, "classic-shirt", "ANOTHER-SKU",))
+                .await,
+            Err(ApplicationError::Conflict {
+                code: "product_handle_taken",
+                ..
+            })
+        ));
+        assert!(matches!(
+            service
+                .execute(make_input(owner, "another-shirt", "shirt-blue-m",))
                 .await,
             Err(ApplicationError::Conflict {
                 code: "variant_sku_taken",
@@ -468,14 +374,6 @@ mod tests {
             .execute(&owner_pool)
             .await
             .unwrap();
-        sqlx::query(
-            "DELETE FROM integration.idempotency_keys \
-             WHERE scope = 'store' AND scope_id = $1",
-        )
-        .bind(store_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
             .bind(vec![owner_user_id.as_uuid(), member_user_id.as_uuid()])
             .execute(&owner_pool)

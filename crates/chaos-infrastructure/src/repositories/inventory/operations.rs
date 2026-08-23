@@ -1,7 +1,3 @@
-use serde_json::Value;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
 async fn require_store(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
@@ -34,37 +30,4 @@ fn invalid_inventory_selection() -> ApplicationError {
             reason: "must reference an inventory-tracked variant in the Store".into(),
         }],
     }
-}
-
-async fn reserve_idempotency(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: Uuid,
-    operation: &'static str,
-    request: &chaos_application::ports::IdempotencyRequest,
-) -> Result<Option<Value>, ApplicationError> {
-    idempotency::reserve(
-        transaction,
-        &IdempotencyScope::Store(store_id),
-        operation,
-        request,
-    )
-    .await
-}
-
-async fn complete_snapshot(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: Uuid,
-    operation: &'static str,
-    request: &chaos_application::ports::IdempotencyRequest,
-    snapshot: Value,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        transaction,
-        &IdempotencyScope::Store(store_id),
-        operation,
-        request,
-        200,
-        snapshot,
-    )
-    .await
 }

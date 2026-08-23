@@ -8,7 +8,7 @@ use base64::{
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
+        AdminActor, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
         PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage, StripeAccountRepository,
         StripeReadiness, StripeReadinessJob, StripeReadinessQueue, StripeReadinessStatus,
@@ -31,7 +31,6 @@ use chaos_domain::{
     store::{SalesChannelId, StoreId},
 };
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -40,10 +39,8 @@ use uuid::Uuid;
 
 use crate::repositories::{
     analytics::{AnalyticsEventToAppend, append_event},
-    shared::idempotency::{self, IdempotencyScope},
 };
 
-const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";
 const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
 
 fn generate_order_tracking_token() -> (String, [u8; 32]) {
@@ -53,9 +50,6 @@ fn generate_order_tracking_token() -> (String, [u8; 32]) {
     let digest = Sha256::digest(plaintext.as_bytes()).into();
     (plaintext, digest)
 }
-const CREATE_REFUND_OPERATION: &str = "refunds.create.v1";
-const CREATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.create.v1";
-const UPDATE_PROVIDER_ACCOUNT_OPERATION: &str = "payment_provider_accounts.update.v1";
 type ProviderAccountRow = (
     Uuid,
     String,
@@ -136,7 +130,7 @@ impl PostgresStripeRepository {
     }
 }
 
-// Shared transaction helpers, provider account reconstruction, and idempotency snapshots.
+// Shared transaction helpers and provider account reconstruction.
 
 async fn set_config(
     transaction: &mut Transaction<'static, Postgres>,
@@ -150,23 +144,6 @@ async fn set_config(
         .await
         .map_err(database_error)?;
     Ok(())
-}
-
-fn format_time(value: OffsetDateTime) -> Result<String, ApplicationError> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| ApplicationError::Unexpected(error.into()))
-}
-
-fn parse_time(value: &str) -> Result<OffsetDateTime, ApplicationError> {
-    OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|error| ApplicationError::Unexpected(error.into()))
-}
-
-fn invalid_snapshot(error: serde_json::Error) -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!(
-        "invalid payment idempotency snapshot: {error}"
-    ))
 }
 
 fn unexpected_conversion(
@@ -293,40 +270,6 @@ fn readiness_status(readiness: &StripeReadiness) -> StripeReadinessStatus {
     }
 }
 
-async fn replay_stripe_account(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    snapshot: Value,
-) -> Result<StripeAccountDetail, ApplicationError> {
-    let id = snapshot
-        .pointer("/data/id")
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .map(StripeAccountId::from_uuid)
-        .ok_or_else(corrupt_state)?;
-    load_stripe_account(transaction, store_id, id)
-        .await?
-        .ok_or_else(corrupt_state)
-}
-
-async fn complete_stripe_account(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    operation: &'static str,
-    request: &IdempotencyRequest,
-    id: StripeAccountId,
-) -> Result<(), ApplicationError> {
-    idempotency::complete(
-        transaction,
-        &IdempotencyScope::Store(store_id.as_uuid()),
-        operation,
-        request,
-        200,
-        json!({"data":{"id":id.as_uuid()}}),
-    )
-    .await
-}
-
 fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database) = &error {
         let (code, message) = match database.constraint() {
@@ -365,13 +308,6 @@ fn payment_order_not_pending() -> ApplicationError {
     ApplicationError::Conflict {
         code: "order_not_pending_payment",
         message: "the Order is not awaiting payment",
-    }
-}
-
-fn active_attempt_exists() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "active_payment_attempt_exists",
-        message: "the Order already has an active Payment Attempt",
     }
 }
 
@@ -416,90 +352,4 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
         }
         _ => ApplicationError::Unexpected(error.into()),
     }
-}
-
-#[derive(Serialize, Deserialize)]
-struct AttemptSnapshot {
-    id: Uuid,
-    order_id: Uuid,
-    amount_minor: i64,
-    currency: String,
-    status: String,
-    stripe_checkout_session_id: Option<String>,
-    failure_code: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RefundSnapshot {
-    id: Uuid,
-    payment_attempt_id: Uuid,
-    amount_minor: i64,
-    currency: String,
-    status: String,
-    stripe_refund_id: Option<String>,
-    failure_code: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
-fn attempt_snapshot(detail: &PaymentAttemptDetail) -> Result<Value, ApplicationError> {
-    serde_json::to_value(AttemptSnapshot {
-        id: detail.id.as_uuid(),
-        order_id: detail.order_id.as_uuid(),
-        amount_minor: detail.amount_minor,
-        currency: detail.currency.as_str().into(),
-        status: detail.status.as_str().into(),
-        stripe_checkout_session_id: detail.stripe_checkout_session_id.clone(),
-        failure_code: detail.failure_code.clone(),
-        created_at: format_time(detail.created_at)?,
-        updated_at: format_time(detail.updated_at)?,
-    })
-    .map_err(|error| ApplicationError::Unexpected(error.into()))
-}
-
-fn replay_attempt(value: Value) -> Result<PaymentAttemptDetail, ApplicationError> {
-    let value: AttemptSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
-    Ok(PaymentAttemptDetail {
-        id: PaymentAttemptId::from_uuid(value.id),
-        order_id: OrderId::from_uuid(value.order_id),
-        amount_minor: value.amount_minor,
-        currency: CurrencyCode::parse(&value.currency)?,
-        status: PaymentAttemptStatus::parse(&value.status).ok_or_else(corrupt_payment_state)?,
-        stripe_checkout_session_id: value.stripe_checkout_session_id,
-        failure_code: value.failure_code,
-        created_at: parse_time(&value.created_at)?,
-        updated_at: parse_time(&value.updated_at)?,
-    })
-}
-
-fn refund_snapshot(detail: &RefundDetail) -> Result<Value, ApplicationError> {
-    serde_json::to_value(RefundSnapshot {
-        id: detail.id.as_uuid(),
-        payment_attempt_id: detail.payment_attempt_id.as_uuid(),
-        amount_minor: detail.amount_minor,
-        currency: detail.currency.as_str().into(),
-        status: detail.status.as_str().into(),
-        stripe_refund_id: detail.stripe_refund_id.clone(),
-        failure_code: detail.failure_code.clone(),
-        created_at: format_time(detail.created_at)?,
-        updated_at: format_time(detail.updated_at)?,
-    })
-    .map_err(|error| ApplicationError::Unexpected(error.into()))
-}
-
-fn replay_refund(value: Value) -> Result<RefundDetail, ApplicationError> {
-    let value: RefundSnapshot = serde_json::from_value(value).map_err(invalid_snapshot)?;
-    Ok(RefundDetail {
-        id: RefundId::from_uuid(value.id),
-        payment_attempt_id: PaymentAttemptId::from_uuid(value.payment_attempt_id),
-        amount_minor: value.amount_minor,
-        currency: CurrencyCode::parse(&value.currency)?,
-        status: RefundStatus::parse(&value.status).ok_or_else(corrupt_payment_state)?,
-        stripe_refund_id: value.stripe_refund_id,
-        failure_code: value.failure_code,
-        created_at: parse_time(&value.created_at)?,
-        updated_at: parse_time(&value.updated_at)?,
-    })
 }

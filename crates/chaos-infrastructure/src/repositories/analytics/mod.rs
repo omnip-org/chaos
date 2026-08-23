@@ -1,15 +1,10 @@
 use async_trait::async_trait;
 use chaos_application::{ApplicationError, ports::*, store::StoreActor};
 use chaos_domain::store::StoreId;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::repositories::shared::idempotency::{self, IdempotencyScope};
-
-const CONFIGURE_DESTINATION_OPERATION: &str = "analytics.configure_destination";
 
 pub struct PostgresAnalyticsEventStore {
     pool: PgPool,
@@ -41,20 +36,7 @@ impl PostgresAnalyticsDeliveryStore {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct DestinationSnapshot {
-    id: Uuid,
-    store_id: Uuid,
-    provider: String,
-    external_account_reference: String,
-    enabled: bool,
-    credentials_configured: bool,
-    configuration: Value,
-    created_at: OffsetDateTime,
-    updated_at: OffsetDateTime,
-}
-
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct DeliverySnapshot {
     provider: String,
     status: String,
@@ -337,23 +319,10 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsDestinationStore {
         actor: StoreActor,
         store: StoreId,
         configuration: AnalyticsDestinationConfiguration,
-        request: &IdempotencyRequest,
         now: OffsetDateTime,
     ) -> Result<AnalyticsDestination, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut tx,
-            &IdempotencyScope::Store(store.as_uuid()),
-            CONFIGURE_DESTINATION_OPERATION,
-            request,
-        )
-        .await?
-        {
-            let result = destination_from_snapshot(snapshot)?;
-            tx.commit().await.map_err(db)?;
-            return Ok(result);
-        }
         let row: (
             Uuid,
             String,
@@ -390,15 +359,6 @@ impl AnalyticsDestinationRepository for PostgresAnalyticsDestinationStore {
             created_at: row.5,
             updated_at: row.6,
         };
-        idempotency::complete(
-            &mut tx,
-            &IdempotencyScope::Store(store.as_uuid()),
-            CONFIGURE_DESTINATION_OPERATION,
-            request,
-            200,
-            destination_snapshot(&result)?,
-        )
-        .await?;
         tx.commit().await.map_err(db)?;
         Ok(result)
     }
@@ -511,41 +471,6 @@ impl AnalyticsDeliveryRepository for PostgresAnalyticsDeliveryStore {
             })
         }
     }
-}
-
-fn destination_snapshot(item: &AnalyticsDestination) -> Result<Value, ApplicationError> {
-    serde_json::to_value(DestinationSnapshot {
-        id: item.id,
-        store_id: item.store_id.as_uuid(),
-        provider: item.provider.clone(),
-        external_account_reference: item.external_account_reference.clone(),
-        enabled: item.enabled,
-        credentials_configured: item.credentials_configured,
-        configuration: item.configuration.clone(),
-        created_at: item.created_at,
-        updated_at: item.updated_at,
-    })
-    .map_err(|error| ApplicationError::Unexpected(error.into()))
-}
-
-fn destination_from_snapshot(value: Value) -> Result<AnalyticsDestination, ApplicationError> {
-    let item: DestinationSnapshot =
-        serde_json::from_value(value).map_err(|_| invalid_snapshot())?;
-    Ok(AnalyticsDestination {
-        id: item.id,
-        store_id: StoreId::from_uuid(item.store_id),
-        provider: item.provider,
-        external_account_reference: item.external_account_reference,
-        enabled: item.enabled,
-        credentials_configured: item.credentials_configured,
-        configuration: item.configuration,
-        created_at: item.created_at,
-        updated_at: item.updated_at,
-    })
-}
-
-fn invalid_snapshot() -> ApplicationError {
-    ApplicationError::Unexpected(anyhow::anyhow!("invalid Analytics idempotency snapshot"))
 }
 
 fn db(error: sqlx::Error) -> ApplicationError {

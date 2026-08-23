@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 
 pub struct StoreAdminItem {
     pub id: StoreId,
@@ -47,7 +47,6 @@ pub trait StoreAdministrationRepository: Send + Sync {
         actor: AdminActor,
         store_id: StoreId,
         replacement: &Store,
-        request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError>;
 
     async fn change_store_status(
@@ -55,7 +54,6 @@ pub trait StoreAdministrationRepository: Send + Sync {
         actor: AdminActor,
         store_id: StoreId,
         status: StoreStatus,
-        request: &IdempotencyRequest,
     ) -> Result<StoreId, ApplicationError>;
 
     async fn list_sales_channels(
@@ -77,7 +75,6 @@ pub trait StoreAdministrationRepository: Send + Sync {
         &self,
         actor: AdminActor,
         channel: &SalesChannel,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError>;
 
     async fn update_sales_channel(
@@ -85,7 +82,6 @@ pub trait StoreAdministrationRepository: Send + Sync {
         actor: AdminActor,
         sales_channel_id: SalesChannelId,
         replacement: &SalesChannel,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError>;
 
     async fn change_sales_channel_status(
@@ -94,6 +90,5 @@ pub trait StoreAdministrationRepository: Send + Sync {
         store_id: StoreId,
         sales_channel_id: SalesChannelId,
         status: SalesChannelStatus,
-        request: &IdempotencyRequest,
     ) -> Result<SalesChannelId, ApplicationError>;
 }

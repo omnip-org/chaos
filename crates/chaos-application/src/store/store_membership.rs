@@ -7,7 +7,7 @@ use chaos_domain::{
 
 use crate::{
     ApplicationError,
-    ports::{IdempotencyRequest, StoreMembershipItem, StoreMembershipRepository},
+    ports::{StoreMembershipItem, StoreMembershipRepository},
 };
 
 use super::StoreActor;
@@ -34,12 +34,9 @@ impl StoreMembershipManagement {
         actor: StoreActor,
         store_id: StoreId,
         user_id: UserId,
-        request: IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError> {
         require_owner(actor)?;
-        self.repository
-            .add_member(actor, store_id, user_id, &request)
-            .await
+        self.repository.add_member(actor, store_id, user_id).await
     }
 
     pub async fn set_role(
@@ -48,11 +45,10 @@ impl StoreMembershipManagement {
         store_id: StoreId,
         user_id: UserId,
         role: StoreRole,
-        request: IdempotencyRequest,
     ) -> Result<StoreMembershipItem, ApplicationError> {
         require_owner(actor)?;
         self.repository
-            .set_role(actor, store_id, user_id, role, &request)
+            .set_role(actor, store_id, user_id, role)
             .await
     }
 
@@ -60,9 +56,8 @@ impl StoreMembershipManagement {
         &self,
         actor: StoreActor,
         store_id: StoreId,
-        request: IdempotencyRequest,
     ) -> Result<(), ApplicationError> {
-        self.repository.leave(actor, store_id, &request).await
+        self.repository.leave(actor, store_id).await
     }
 }
 
@@ -103,7 +98,6 @@ mod tests {
             _actor: StoreActor,
             _store_id: StoreId,
             user_id: UserId,
-            _request: &IdempotencyRequest,
         ) -> Result<StoreMembershipItem, ApplicationError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(StoreMembershipItem {
@@ -120,7 +114,6 @@ mod tests {
             _store_id: StoreId,
             _user_id: UserId,
             _role: StoreRole,
-            _request: &IdempotencyRequest,
         ) -> Result<StoreMembershipItem, ApplicationError> {
             unreachable!()
         }
@@ -129,16 +122,8 @@ mod tests {
             &self,
             _actor: StoreActor,
             _store_id: StoreId,
-            _request: &IdempotencyRequest,
         ) -> Result<(), ApplicationError> {
             unreachable!()
-        }
-    }
-
-    fn request() -> IdempotencyRequest {
-        IdempotencyRequest {
-            key: "membership-test".into(),
-            request_fingerprint: [1; 32],
         }
     }
 
@@ -151,18 +136,13 @@ mod tests {
 
         let member = StoreActor::new(UserId::new(), store_id, StoreRole::Member);
         assert!(matches!(
-            service
-                .add_member(member, store_id, owner_id, request())
-                .await,
+            service.add_member(member, store_id, owner_id).await,
             Err(ApplicationError::Forbidden)
         ));
         assert_eq!(repository.0.load(Ordering::SeqCst), 0);
 
         let owner = StoreActor::new(UserId::new(), store_id, StoreRole::Owner);
-        let added = service
-            .add_member(owner, store_id, owner_id, request())
-            .await
-            .unwrap();
+        let added = service.add_member(owner, store_id, owner_id).await.unwrap();
         assert_eq!(added.user_id, owner_id);
         assert_eq!(repository.0.load(Ordering::SeqCst), 1);
     }

@@ -31,7 +31,7 @@ test("does not construct browser analytics during SSR", () => {
     publishableKey: "public_test",
     baseUrl: "https://shop.example.com/storefront/v1",
     storage: null,
-    randomUUID: () => "idempotency-key",
+    randomUUID: () => "random-id",
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
 
@@ -171,7 +171,7 @@ test("serializes concurrent addLine calls for one cart", async () => {
     publishableKey: "public_test",
     storage: null,
     analytics: false,
-    randomUUID: () => "idempotency-key",
+    randomUUID: () => "random-id",
     fetch: (async (url: string, init: RequestInit) => {
       if (url.endsWith("/shopper-sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
@@ -283,10 +283,10 @@ test("payments create an embedded Checkout session in one request", async () => 
   const session = await client.payments.createEmbeddedCheckout("cart-1", {
     email: "shopper@example.com",
     return_url: "https://shop.example.com/checkout/success",
-  });
+  }, "order-request-1");
 
   assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
-  assert.equal(requests[1]?.headers.get("idempotency-key"), "id-1");
+  assert.equal(requests[1]?.headers.get("x-request-id"), "order-request-1");
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
     email: "shopper@example.com",
     return_url: "https://shop.example.com/checkout/success",
@@ -304,7 +304,7 @@ test("browser SDK observations record only after successful responses", async ()
     publishableKey: "public_test",
     storage: new MemoryStorage(),
     analytics: false,
-    randomUUID: () => "idempotency-key",
+    randomUUID: () => "random-id",
     fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
   // Replace transport and analytics at the resource boundary to test orchestration only.

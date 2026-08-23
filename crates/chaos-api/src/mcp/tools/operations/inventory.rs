@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -34,7 +34,6 @@ pub struct AdjustInventoryParams {
     /// A short human-readable reason for this adjustment (1-500 characters).
     pub note: String,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = inventory_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -100,7 +99,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Adjust the on-hand quantity for one product variant in the selected Store. Requires confirm: true and an idempotency_key."
+        description = "Adjust the on-hand quantity for one product variant in the selected Store. Requires confirm: true."
     )]
     async fn adjust_variant_inventory(
         &self,
@@ -125,7 +124,6 @@ impl ChaosMcp {
                 Ok(id) => ProductVariantId::from_uuid(id),
                 Err(result) => return Ok(result),
             };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         let store_id = actor.store_id();
         match self
             .state
@@ -136,7 +134,6 @@ impl ChaosMcp {
                 product_variant_id,
                 delta_quantity: params.delta_quantity,
                 note: params.note,
-                idempotency,
             })
             .await
         {

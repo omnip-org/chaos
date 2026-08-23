@@ -91,11 +91,12 @@ The MCP operation chain is `request_id -> access_key_id -> user_id -> store_id -
 
 ## Commerce reliability
 
-PostgreSQL is the source of truth for catalogs, inventory, orders, payments, refunds, fulfillment, idempotency records, and durable jobs. Redis is limited to rate limiting and disposable coordination; losing Redis must not violate commerce invariants.
+PostgreSQL is the source of truth for catalogs, inventory, orders, payments, refunds, fulfillment, and durable jobs. Redis is limited to rate limiting and disposable coordination; losing Redis must not violate commerce invariants.
 
 Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, address, and Provider evidence required to preserve history. Stripe owns checkout tax and promotion calculation; its verified webhook writes subtotal, discount, tax, shipping, and total as Order facts. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
-Orders use an internal UUID for joins and idempotency, plus a random shopper-facing
+Orders use an internal UUID for joins and a client-supplied request UUID for checkout
+deduplication, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
 tracking uses a Chaos-hosted URL with a fragment capability. The browser exchanges the
 one-time-looking long-lived capability for a short-lived, store-bound session; only
@@ -115,8 +116,9 @@ schema so Store-scoped foreign keys and RLS stay simple. Payment credentials,
 readiness, payment queues, and verified webhook ingestion are logical modules,
 not separate PostgreSQL schemas. The `commerce` migration is organized into logical modules: Store foundation,
 Catalog, Pricing, Inventory, Search read model, Sales, Fulfillment configuration,
-and Fulfillment execution. Generic idempotency, event routing, and analytics
-delivery remain in the `integration` schema.
+and Fulfillment execution. Event routing and analytics delivery remain in the
+`integration` schema. Checkout request deduplication is owned by the Order row in
+`commerce`, through its request UUID and database unique constraint.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
 creates a pending Order and reserves tracked inventory while leaving the Cart
@@ -139,7 +141,7 @@ of stored events through destination and delivery records. See ADR 0026.
 The `commerce` schema owns `payment_provider_accounts`, `provider_webhooks`,
 payment readiness routines, and payment queue routines.
 The Integration schema keeps one concise name for each generic responsibility:
-`idempotency_keys`, `event_consumers`, `event_outbox`, `analytics_events`,
+`event_consumers`, `event_outbox`, `analytics_events`,
 `analytics_destinations`, and `analytics_deliveries`. The last three form one chain: an internal Analytics
 event is scheduled for a configured destination, then its delivery observation
 is recorded by `destination_id` and `analytics_event_id`. Business outbox

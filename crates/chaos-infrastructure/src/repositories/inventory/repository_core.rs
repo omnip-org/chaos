@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, InventoryAdjustment, InventoryRepository,
+        AdminActor, InventoryAdjustment, InventoryRepository,
         VariantInventoryView,
     },
 };
@@ -10,8 +10,6 @@ use chaos_domain::{catalog::ProductVariantId, inventory::InventoryBalance, store
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-const ADJUST_INVENTORY_OPERATION: &str = "inventory.adjust.v1";
 
 type VariantInventoryRow = (Uuid, i64, OffsetDateTime);
 
@@ -50,19 +48,8 @@ impl InventoryRepository for PostgresInventoryRepository {
         &self,
         actor: AdminActor,
         adjustment: &InventoryAdjustment,
-        request: &IdempotencyRequest,
     ) -> Result<VariantInventoryView, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
-        if let Some(snapshot) = reserve_idempotency(
-            &mut transaction,
-            adjustment.store_id.as_uuid(),
-            ADJUST_INVENTORY_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_variant_inventory(&snapshot);
-        }
         require_store(&mut transaction, adjustment.store_id).await?;
         let on_hand = sqlx::query_scalar::<_, i64>(
             "SELECT on_hand_quantity \
@@ -95,14 +82,6 @@ impl InventoryRepository for PostgresInventoryRepository {
             on_hand_quantity: balance.on_hand(),
             updated_at,
         };
-        complete_snapshot(
-            &mut transaction,
-            adjustment.store_id.as_uuid(),
-            ADJUST_INVENTORY_OPERATION,
-            request,
-            inventory_snapshot(&inventory),
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(inventory)
     }
@@ -145,5 +124,13 @@ fn database_error(error: sqlx::Error) -> ApplicationError {
             }
         }
         _ => ApplicationError::Unexpected(error.into()),
+    }
+}
+
+fn variant_inventory(row: VariantInventoryRow) -> VariantInventoryView {
+    VariantInventoryView {
+        product_variant_id: ProductVariantId::from_uuid(row.0),
+        on_hand_quantity: row.1,
+        updated_at: row.2,
     }
 }

@@ -16,7 +16,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -62,8 +62,6 @@ pub struct CreatePriceListParams {
     pub prices: Vec<PriceEntryParams>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -81,8 +79,6 @@ pub struct UpdatePriceListParams {
     pub prices: Vec<PriceEntryParams>,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -91,8 +87,6 @@ pub struct ChangePriceListStatusParams {
     pub price_list_id: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = price_lists_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -220,7 +214,7 @@ impl ChaosMcp {
     #[tool(
         description = "Create a price list in the selected Store. Set activate: \
                         true to activate immediately (every priced variant must already be \
-                        active). Requires confirm: true and an idempotency_key."
+                        active). Requires confirm: true."
     )]
     async fn create_price_list(
         &self,
@@ -253,8 +247,6 @@ impl ChaosMcp {
             Ok(prices) => prices,
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .create_price_list
@@ -268,7 +260,6 @@ impl ChaosMcp {
                 ends_at,
                 activate: params.activate,
                 prices,
-                idempotency,
             })
             .await
         {
@@ -280,7 +271,7 @@ impl ChaosMcp {
     #[tool(
         description = "Replace a price list's code, name, currency, schedule, and full price \
                         set in the selected Store. Requires confirm: true and an \
-                        idempotency_key."
+                        confirm: true."
     )]
     async fn update_price_list(
         &self,
@@ -317,8 +308,6 @@ impl ChaosMcp {
             Ok(prices) => prices,
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .pricing_management
@@ -332,7 +321,6 @@ impl ChaosMcp {
                 starts_at,
                 ends_at,
                 prices,
-                idempotency,
             })
             .await
         {
@@ -344,7 +332,7 @@ impl ChaosMcp {
     #[tool(
         description = "Activate a draft price list in the selected Store. Every \
                         priced variant must already be active. Requires confirm: true and an \
-                        idempotency_key."
+                        true."
     )]
     async fn activate_price_list(
         &self,
@@ -357,7 +345,7 @@ impl ChaosMcp {
     #[tool(
         description = "Archive a price list in the selected Store, removing it \
                         from pricing resolution without deleting it. Requires confirm: true and \
-                        an idempotency_key."
+                        confirm: true."
     )]
     async fn archive_price_list(
         &self,
@@ -393,13 +381,10 @@ impl ChaosMcp {
             Ok(id) => PriceListId::from_uuid(id),
             Err(result) => return Ok(result),
         };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         let input = ChangePriceListStatusInput {
             actor,
             store_id,
             price_list_id,
-            idempotency,
         };
         let result = if activate {
             self.state.pricing_management.activate(input).await

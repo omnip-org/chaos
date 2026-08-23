@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
-use super::{AdminActor, IdempotencyRequest};
+use super::AdminActor;
 
 pub struct VariantInventoryView {
     pub product_variant_id: ProductVariantId,
@@ -25,7 +25,6 @@ pub trait InventoryRepository: Send + Sync {
         &self,
         actor: AdminActor,
         adjustment: &InventoryAdjustment,
-        idempotency: &IdempotencyRequest,
     ) -> Result<VariantInventoryView, ApplicationError>;
 
     async fn list_variant_inventory(

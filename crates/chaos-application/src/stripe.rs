@@ -14,11 +14,10 @@ const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, IntegrationQueue, MachineActor, PaymentAttemptDetail,
-        PaymentClientAction, QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration,
-        StripeAccountDetail, StripeAccountPage, StripeAccountReadiness, StripeAccountRepository,
-        StripePaymentGateway, StripePaymentRepository, StripeReadinessQueue,
-        StripeWebhookSignatureVerifier,
+        AdminActor, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentClientAction,
+        QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration, StripeAccountDetail,
+        StripeAccountPage, StripeAccountReadiness, StripeAccountRepository, StripePaymentGateway,
+        StripePaymentRepository, StripeReadinessQueue, StripeWebhookSignatureVerifier,
     },
     store::StoreActor,
 };
@@ -28,7 +27,7 @@ pub struct CreatePaymentAttemptInput {
     pub order_id: OrderId,
     pub return_url: Option<String>,
     pub now: OffsetDateTime,
-    pub idempotency: IdempotencyRequest,
+    pub request_id: uuid::Uuid,
 }
 
 pub struct EmbeddedCheckoutResult {
@@ -41,7 +40,6 @@ pub struct CreateRefundInput {
     pub store_id: StoreId,
     pub payment_attempt_id: PaymentAttemptId,
     pub amount_minor: i64,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct CreateStripeAccountInput {
@@ -52,7 +50,6 @@ pub struct CreateStripeAccountInput {
     pub webhook_secret_reference: String,
     pub enabled: bool,
     pub checked_at: OffsetDateTime,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct UpdateStripeAccountInput {
@@ -64,7 +61,6 @@ pub struct UpdateStripeAccountInput {
     pub webhook_secret_reference: String,
     pub enabled: bool,
     pub checked_at: OffsetDateTime,
-    pub idempotency: IdempotencyRequest,
 }
 
 pub struct StripeAccountAdministration {
@@ -130,13 +126,7 @@ impl StripeAccountAdministration {
             account.update_administration(account.display_name().to_owned(), false)?;
         }
         self.repository
-            .create(
-                input.actor,
-                input.store_id,
-                &account,
-                &configuration,
-                &input.idempotency,
-            )
+            .create(input.actor, input.store_id, &account, &configuration)
             .await
     }
 
@@ -174,13 +164,7 @@ impl StripeAccountAdministration {
                 .update_administration(detail.account.display_name().to_owned(), false)?;
         }
         self.repository
-            .update(
-                input.actor,
-                input.store_id,
-                &detail.account,
-                &configuration,
-                &input.idempotency,
-            )
+            .update(input.actor, input.store_id, &detail.account, &configuration)
             .await
     }
 
@@ -244,11 +228,16 @@ impl PaymentService {
                 })?;
         let attempt = self
             .repository
-            .create_attempt(&input.actor, input.order_id, &input.idempotency)
+            .create_attempt(&input.actor, input.order_id)
             .await?;
         let command = self
             .repository
-            .prepare_checkout_command(&input.actor, attempt.id, return_url, &input.idempotency.key)
+            .prepare_checkout_command(
+                &input.actor,
+                attempt.id,
+                return_url,
+                &input.request_id.to_string(),
+            )
             .await?;
         let result = self.stripe_gateway.execute(command).await?;
         self.repository
@@ -285,7 +274,6 @@ impl PaymentService {
                 input.store_id,
                 input.payment_attempt_id,
                 input.amount_minor,
-                &input.idempotency,
             )
             .await
     }

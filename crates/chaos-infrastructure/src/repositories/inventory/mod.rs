@@ -2,4 +2,3 @@
 
 include!("repository_core.rs");
 include!("operations.rs");
-include!("snapshots.rs");

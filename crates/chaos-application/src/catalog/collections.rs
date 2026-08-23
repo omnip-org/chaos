@@ -10,7 +10,7 @@ use crate::{
     ApplicationError,
     ports::{
         AdminActor, CollectionDetail, CollectionPublicationRecord, CollectionRepository,
-        CreateCollectionRecord, IdempotencyRequest, MachineActor, StorefrontCollectionItem,
+        CreateCollectionRecord, MachineActor, StorefrontCollectionItem,
     },
     store::Page,
 };
@@ -22,7 +22,6 @@ pub struct CreateCollectionInput {
     pub title: String,
     pub description: String,
     pub metadata: Option<serde_json::Value>,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -34,7 +33,6 @@ pub struct UpdateCollectionInput {
     pub title: String,
     pub description: String,
     pub metadata: Option<serde_json::Value>,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -42,7 +40,6 @@ pub struct ChangeCollectionStatusInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub collection_id: CollectionId,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -51,7 +48,6 @@ pub struct ReplaceCollectionProductsInput {
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub product_ids: Vec<ProductId>,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -60,7 +56,6 @@ pub struct CollectionPublicationInput {
     pub store_id: StoreId,
     pub collection_id: CollectionId,
     pub sales_channel_id: SalesChannelId,
-    pub idempotency: IdempotencyRequest,
     pub now: OffsetDateTime,
 }
 
@@ -88,7 +83,6 @@ impl CollectionAdministration {
                     content,
                     created_at: input.now,
                 },
-                &input.idempotency,
             )
             .await
     }
@@ -137,7 +131,6 @@ impl CollectionAdministration {
                 input.store_id,
                 input.collection_id,
                 &content,
-                &input.idempotency,
                 input.now,
             )
             .await
@@ -169,7 +162,6 @@ impl CollectionAdministration {
                 input.store_id,
                 input.collection_id,
                 status,
-                &input.idempotency,
                 input.now,
             )
             .await
@@ -196,7 +188,6 @@ impl CollectionAdministration {
                 input.store_id,
                 input.collection_id,
                 &input.product_ids,
-                &input.idempotency,
                 input.now,
             )
             .await
@@ -232,7 +223,6 @@ impl CollectionAdministration {
                     published,
                     changed_at: input.now,
                 },
-                &input.idempotency,
             )
             .await
     }

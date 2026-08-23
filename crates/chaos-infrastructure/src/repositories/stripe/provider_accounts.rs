@@ -56,19 +56,8 @@ impl StripeAccountRepository for PostgresStripeRepository {
         store_id: StoreId,
         account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
-        request: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            CREATE_PROVIDER_ACCOUNT_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_stripe_account(&mut transaction, store_id, snapshot).await;
-        }
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
             "INSERT INTO commerce.payment_provider_accounts \
@@ -106,14 +95,6 @@ impl StripeAccountRepository for PostgresStripeRepository {
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
-        complete_stripe_account(
-            &mut transaction,
-            store_id,
-            CREATE_PROVIDER_ACCOUNT_OPERATION,
-            request,
-            account.id(),
-        )
-        .await?;
         let value = load_stripe_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;
@@ -127,19 +108,8 @@ impl StripeAccountRepository for PostgresStripeRepository {
         store_id: StoreId,
         account: &StripeAccount,
         configuration: &StripeAccountConfiguration,
-        request: &IdempotencyRequest,
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        if let Some(snapshot) = idempotency::reserve(
-            &mut transaction,
-            &IdempotencyScope::Store(store_id.as_uuid()),
-            UPDATE_PROVIDER_ACCOUNT_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_stripe_account(&mut transaction, store_id, snapshot).await;
-        }
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
             "UPDATE commerce.payment_provider_accounts SET display_name = $3, \
@@ -222,14 +192,6 @@ impl StripeAccountRepository for PostgresStripeRepository {
         if result.rows_affected() != 1 {
             return Err(provider_account_not_found(account.id()));
         }
-        complete_stripe_account(
-            &mut transaction,
-            store_id,
-            UPDATE_PROVIDER_ACCOUNT_OPERATION,
-            request,
-            account.id(),
-        )
-        .await?;
         let value = load_stripe_account(&mut transaction, store_id, account.id())
             .await?
             .ok_or_else(corrupt_state)?;

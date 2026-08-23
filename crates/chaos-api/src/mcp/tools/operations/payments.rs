@@ -14,7 +14,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -25,15 +25,13 @@ pub struct CreateRefundParams {
     pub amount_minor: i64,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
-    /// A client-chosen key identifying this exact attempt.
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = payments_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
         description = "Refund some or all of a payment attempt in the selected Store. Requires \
-                        confirm: true and an idempotency_key."
+                        confirm: true."
     )]
     async fn create_refund(
         &self,
@@ -59,8 +57,6 @@ impl ChaosMcp {
                 Ok(id) => PaymentAttemptId::from_uuid(id),
                 Err(result) => return Ok(result),
             };
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
-
         match self
             .state
             .payment_service
@@ -69,7 +65,6 @@ impl ChaosMcp {
                 store_id,
                 payment_attempt_id,
                 amount_minor: params.amount_minor,
-                idempotency,
             })
             .await
         {

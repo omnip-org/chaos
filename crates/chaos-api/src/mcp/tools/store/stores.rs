@@ -19,7 +19,7 @@ use serde_json::json;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -33,7 +33,6 @@ pub struct CreateStoreParams {
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -51,7 +50,6 @@ pub struct ListStoreMembersParams {}
 pub struct AddStoreMemberParams {
     pub user_id: String,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -59,13 +57,11 @@ pub struct SetStoreMemberRoleParams {
     pub user_id: String,
     pub role: String,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct LeaveStoreParams {
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = stores_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -73,7 +69,7 @@ impl ChaosMcp {
     #[tool(
         description = "Create a Store owned by the authenticated User. This tool does not use \
                        X-Chaos-Store-Id because the Store does not exist yet. Requires confirm: \
-                       true and an idempotency_key."
+                       true."
     )]
     async fn create_store(
         &self,
@@ -92,7 +88,6 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .create_store
@@ -103,7 +98,6 @@ impl ChaosMcp {
                 region: Some(params.region),
                 currency: Some(params.currency),
                 meta: params.meta,
-                idempotency,
             })
             .await
         {
@@ -208,11 +202,10 @@ impl ChaosMcp {
             Err(_) => return Ok(invalid_uuid("user_id")),
         };
         let store_id = actor.store_id();
-        let request = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .store_membership_management
-            .add_member(actor, store_id, user_id, request)
+            .add_member(actor, store_id, user_id)
             .await
         {
             Ok(item) => Ok(text_result(membership_json(item))),
@@ -247,11 +240,10 @@ impl ChaosMcp {
             }
         };
         let store_id = actor.store_id();
-        let request = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .store_membership_management
-            .set_role(actor, store_id, user_id, role, request)
+            .set_role(actor, store_id, user_id, role)
             .await
         {
             Ok(item) => Ok(text_result(membership_json(item))),
@@ -273,11 +265,10 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let request = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .store_membership_management
-            .leave(actor, store_id, request)
+            .leave(actor, store_id)
             .await
         {
             Ok(()) => Ok(text_result(json!({ "left": true }))),

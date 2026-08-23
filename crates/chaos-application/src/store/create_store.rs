@@ -6,10 +6,7 @@ use chaos_domain::{
     store::{SalesChannel, Store, StoreCode, StoreId, StoreMembership},
 };
 
-use crate::{
-    ApplicationError,
-    ports::{IdempotencyRequest, StoreProvisioningUnitOfWork},
-};
+use crate::{ApplicationError, ports::StoreProvisioningUnitOfWork};
 
 pub struct CreateStoreInput {
     pub user_id: UserId,
@@ -18,7 +15,6 @@ pub struct CreateStoreInput {
     pub region: Option<String>,
     pub currency: Option<String>,
     pub meta: Option<serde_json::Value>,
-    pub idempotency: IdempotencyRequest,
 }
 
 #[derive(Debug)]
@@ -62,22 +58,12 @@ impl CreateStore {
         let owner_membership = StoreMembership::owner(store.id(), input.user_id);
         let mut transaction = self.unit_of_work.begin(input.user_id).await?;
 
-        if let Some(store_id) = transaction
-            .reserve_store_creation(&input.idempotency)
-            .await?
-        {
-            return Ok(CreateStoreOutput { store_id });
-        }
-
         transaction.insert_store(&store).await?;
         transaction
             .insert_owner_membership(&owner_membership)
             .await?;
         transaction
             .insert_default_sales_channel(&default_sales_channel)
-            .await?;
-        transaction
-            .complete_store_creation(&input.idempotency, store.id())
             .await?;
         transaction.commit().await?;
 

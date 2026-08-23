@@ -43,22 +43,11 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         currency: Option<CurrencyCode>,
-        request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
         let shopper_id = shopper.shopper_id;
         let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        if let Some(snapshot) = reserve(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_CART_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_cart(snapshot);
-        }
         let (price_list_id, currency) =
             select_price_list(&mut transaction, actor, channel_id, currency)
                 .await?
@@ -86,15 +75,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let detail = load_cart(&mut transaction, actor, cart.id())
             .await?
             .ok_or_else(|| cart_not_found(cart.id()))?;
-        complete(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_CART_OPERATION,
-            request,
-            201,
-            cart_snapshot(&detail)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -118,21 +98,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
-        request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        if let Some(snapshot) = reserve(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            SET_CART_LINE_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_cart(snapshot);
-        }
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
         let previous_quantity: Option<i32> = sqlx::query_scalar(
             "SELECT quantity FROM commerce.cart_lines \
@@ -209,15 +178,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
             .ok_or_else(|| cart_not_found(cart_id))?;
-        complete(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            SET_CART_LINE_OPERATION,
-            request,
-            200,
-            cart_snapshot(&detail)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -227,21 +187,10 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
-        request: &IdempotencyRequest,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        if let Some(snapshot) = reserve(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            REMOVE_CART_LINE_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_cart(snapshot);
-        }
         lock_active_cart(&mut transaction, actor, cart_id).await?;
         sqlx::query(
             "DELETE FROM commerce.cart_lines WHERE store_id = $1 \
@@ -257,15 +206,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
             .ok_or_else(|| cart_not_found(cart_id))?;
-        complete(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            REMOVE_CART_LINE_OPERATION,
-            request,
-            200,
-            cart_snapshot(&detail)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
@@ -277,22 +217,12 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         email: &str,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
-        request: &IdempotencyRequest,
+        request_id: Uuid,
     ) -> Result<StripeCheckoutDraft, ApplicationError> {
         let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        if let Some(snapshot) = reserve(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_STRIPE_CHECKOUT_OPERATION,
-            request,
-        )
-        .await?
-        {
-            return replay_stripe_checkout(snapshot);
-        }
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
         if header.0 != channel_id.as_uuid() {
             return Err(cart_not_found(cart_id));
@@ -339,31 +269,56 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             lines.clone(),
         )?;
         ensure_inventory_available(&mut transaction, actor, &cart).await?;
-        let order_id = OrderId::new();
+        let requested_order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
         let order_number = generate_order_number(now)?;
-        sqlx::query(
+        let inserted_order_id: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO commerce.orders \
-             (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, \
+             (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, request_id, \
               price_list_id, currency, contact_email, \
               subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
               shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,0,0,0,0,$11,$11)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,0,$12,$12) \
+             ON CONFLICT (store_id, sales_channel_id, shopper_id, request_id) DO NOTHING \
+             RETURNING id",
         )
-        .bind(order_id.as_uuid())
+        .bind(requested_order_id.as_uuid())
         .bind(actor.store_id.as_uuid())
         .bind(order_number.as_str())
         .bind(channel_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
+        .bind(request_id)
         .bind(header.1)
         .bind(currency.as_str())
         .bind(email)
         .bind(subtotal)
         .bind(now)
-        .execute(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
+        let Some(_) = inserted_order_id else {
+            let existing = sqlx::query_as::<_, (Uuid, String, i64)>(
+                "SELECT id, currency::text, subtotal_amount_minor FROM commerce.orders \
+                 WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
+                   AND request_id = $4",
+            )
+            .bind(actor.store_id.as_uuid())
+            .bind(channel_id.as_uuid())
+            .bind(shopper.shopper_id.as_uuid())
+            .bind(request_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(StripeCheckoutDraft {
+                order_id: OrderId::from_uuid(existing.0),
+                currency: parse_currency(&existing.1)?,
+                subtotal_amount_minor: existing.2,
+                expires_at,
+            });
+        };
+        let order_id = requested_order_id;
         insert_order_lines(&mut transaction, actor, order_id, &cart, now).await?;
         sqlx::query(
             "INSERT INTO commerce.order_transitions \
@@ -401,15 +356,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             subtotal_amount_minor: subtotal,
             expires_at,
         };
-        complete(
-            &mut transaction,
-            &IdempotencyScope::Shopper(shopper.shopper_id.as_uuid()),
-            CREATE_STRIPE_CHECKOUT_OPERATION,
-            request,
-            201,
-            stripe_checkout_snapshot(&draft)?,
-        )
-        .await?;
         transaction.commit().await.map_err(database_error)?;
         Ok(draft)
     }

@@ -30,4 +30,4 @@ Modeling the known content shapes (taglines, comparison tables, size guides, and
 
 ### Give metadata its own PUT endpoint separate from content update
 
-A dedicated endpoint would let a client update metadata without resending title/description, but it would also let a client observe or create a Product/Collection state with content and metadata written by two non-atomic requests. Folding metadata into the existing content update keeps one write, one idempotency key, and one audit event.
+A dedicated endpoint would let a client update metadata without resending title/description, but it would also let a client observe or create a Product/Collection state with content and metadata written by two non-atomic requests. Folding metadata into the existing content update keeps one write and one audit event.

@@ -71,8 +71,8 @@ pub use sales::{
 };
 pub use shipping_events::{ShippingEventJob, ShippingEventQueue};
 pub use store::{
-    IdempotencyRequest, StoreListItem, StoreMembershipItem, StoreMembershipRepository,
-    StoreProvisioningTransaction, StoreProvisioningUnitOfWork, StoreReadRepository,
+    StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreProvisioningTransaction,
+    StoreProvisioningUnitOfWork, StoreReadRepository,
 };
 pub use store_administration::{
     SalesChannelAdminItem, StoreAdminItem, StoreAdministrationRepository,

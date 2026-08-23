@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::mcp::tools::ChaosMcp;
 use crate::mcp::{
     error::{text_result, tool_error},
-    mutation::{idempotency_request, require_confirmation},
+    mutation::require_confirmation,
 };
 
 #[derive(Deserialize, JsonSchema)]
@@ -43,7 +43,6 @@ pub struct CreateStripeAccountParams {
     /// Set true only after the Stripe keys and webhook endpoint are ready. A failed readiness check keeps the account disabled.
     pub enabled: bool,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -57,7 +56,6 @@ pub struct UpdateStripeAccountParams {
     /// Set true only after the Stripe keys and webhook endpoint are ready. A failed readiness check keeps the account disabled.
     pub enabled: bool,
     pub confirm: bool,
-    pub idempotency_key: String,
 }
 
 #[tool_router(router = payment_providers_tool_router, vis = "pub(in crate::mcp::tools)")]
@@ -159,7 +157,6 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .stripe_account_administration
@@ -171,7 +168,6 @@ impl ChaosMcp {
                 webhook_secret_reference: params.webhook_secret_reference,
                 enabled: params.enabled,
                 checked_at: self.state.clock.now(),
-                idempotency,
             })
             .await
         {
@@ -204,7 +200,6 @@ impl ChaosMcp {
             Err(_) => return Ok(invalid_id("stripe_account_id")),
         };
         let store_id = actor.store_id();
-        let idempotency = idempotency_request(params.idempotency_key.clone(), &params);
         match self
             .state
             .stripe_account_administration
@@ -217,7 +212,6 @@ impl ChaosMcp {
                 webhook_secret_reference: params.webhook_secret_reference,
                 enabled: params.enabled,
                 checked_at: self.state.clock.now(),
-                idempotency,
             })
             .await
         {
