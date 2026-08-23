@@ -73,11 +73,11 @@ CREATE TABLE commerce.store_publishable_keys (
     CONSTRAINT store_publishable_keys_revocation_check      CHECK ((revoked_at IS NULL AND revoked_by_user_id IS NULL) OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL))
 );
 
-CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX stores_status_idx ON commerce.stores (status);
-CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
+CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
 CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
+CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
 
 CREATE FUNCTION commerce.authenticate_publishable_key(presented_public_key TEXT)
 RETURNS TABLE (
