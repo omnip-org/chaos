@@ -17,12 +17,12 @@ CREATE TABLE identity.users (
     )
 );
 
--- TODO: add meta
 CREATE TABLE identity.credentials (
     provider    identity.identity_provider  NOT NULL,
     subject     TEXT                        NOT NULL,
     user_id     UUID                        NOT NULL,
     email       extensions.citext           NOT NULL,
+    meta        JSONB,
     created_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
