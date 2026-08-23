@@ -57,7 +57,7 @@ pub struct ProductSelectedOptionParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ProductVariantParams {
-    /// Canonical variant title used by the default locale when no translation overrides it.
+    /// Canonical variant title.
     pub title: String,
     #[serde(default)]
     pub sku: Option<String>,
@@ -120,8 +120,7 @@ pub struct UpdateProductParams {
     pub product_id: String,
     /// URL-safe handle, unique within the Store.
     pub handle: String,
-    /// Canonical product title. This does not update variant titles, option names or values,
-    /// or locale translations.
+    /// Canonical product title. This does not update variant titles, option names or values.
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -143,8 +142,7 @@ pub struct UpdateProductVariantParams {
     pub product_id: String,
     /// The product variant's UUID.
     pub product_variant_id: String,
-    /// Canonical variant title. This is the default-locale title used when no locale
-    /// translation overrides it.
+    /// Canonical variant title.
     pub title: String,
     /// Set to null to remove the SKU.
     #[serde(default)]
@@ -253,8 +251,7 @@ impl ChaosMcp {
                         metadata (both product-level and per-variant). The product title and \
                         description are canonical fields from commerce.products, and each \
                         variant title is the canonical field from commerce.product_variants. \
-                        This tool does not resolve locale translations; use \
-                        get_product_translation for a non-default locale."
+                        This tool returns the Store's English catalog fields."
     )]
     async fn get_product(
         &self,
@@ -328,8 +325,7 @@ impl ChaosMcp {
         description = "Create a new draft product in the selected Store, with its \
                         options, variants, and optional metadata (product-level and \
                         per-variant, arbitrary JSON up to 32KB, useful for automation \
-                        bookkeeping). Product and variant titles are canonical catalog fields; \
-                        use upsert_product_translation for enabled non-default locales. The \
+                        bookkeeping). Product and variant titles are English catalog fields. The \
                         product starts as draft and is not visible anywhere until \
                         activate_product and publish_product are also called. Requires confirm: \
                         true and an idempotency_key."
@@ -407,7 +403,7 @@ impl ChaosMcp {
     #[tool(
         description = "Update a product's handle, title, description, and metadata in the \
                         selected Store. These are canonical product fields only: this does not \
-                        update variant titles, option names or values, or locale translations. \
+                        update variant titles, option names or values. \
                         Every field is replaced wholesale, including metadata (omit it to clear \
                         existing metadata). Requires confirm: true and an idempotency_key."
     )]
@@ -459,8 +455,7 @@ impl ChaosMcp {
     #[tool(
         description = "Update one variant's canonical title, SKU, shipping flag, inventory \
                         tracking flag, and metadata in the selected Store. This updates the \
-                        default-locale catalog fields used when no locale translation exists; \
-                        it does not change selected option values or locale translations. \
+                        canonical catalog fields; it does not change selected option values. \
                         Mutable fields are replaced wholesale, and omitting metadata clears it. \
                         Requires confirm: true and an idempotency_key."
     )]

@@ -1,5 +1,5 @@
 import type { ChaosStorefrontClient } from "../client.js";
-import type { DataEnvelope, Order, OrderTrackingSession } from "../types.js";
+import type { DataEnvelope, Order } from "../types.js";
 
 export class OrdersResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
@@ -25,17 +25,10 @@ export class OrdersResource {
     });
   }
 
-  exchangeTrackingKey(trackingKey: string): Promise<DataEnvelope<OrderTrackingSession>> {
-    return this.client.request("/order-tracking-sessions", {
-      method: "POST",
-      body: { tracking_key: trackingKey },
-    });
-  }
-
-  getTrackedOrder(accessToken: string): Promise<DataEnvelope<Order>> {
+  getTrackedOrder(trackingToken: string): Promise<DataEnvelope<Order>> {
     return this.client.request("/order-tracking-orders", {
       method: "POST",
-      body: { access_token: accessToken },
+      body: { tracking_token: trackingToken },
     });
   }
 }

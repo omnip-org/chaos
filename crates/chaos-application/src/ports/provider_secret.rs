@@ -8,7 +8,6 @@ use crate::ApplicationError;
 pub enum ProviderSecretKind {
     PaymentCredential,
     PaymentWebhook,
-    ShippingCredential,
     AnalyticsCredential,
 }
 
@@ -17,7 +16,6 @@ impl ProviderSecretKind {
         match self {
             Self::PaymentCredential => "payment-credential",
             Self::PaymentWebhook => "payment-webhook",
-            Self::ShippingCredential => "shipping-credential",
             Self::AnalyticsCredential => "analytics-credential",
         }
     }
@@ -26,7 +24,6 @@ impl ProviderSecretKind {
         match value {
             "payment_credential" => Some(Self::PaymentCredential),
             "payment_webhook" => Some(Self::PaymentWebhook),
-            "shipping_credential" => Some(Self::ShippingCredential),
             "analytics_credential" => Some(Self::AnalyticsCredential),
             _ => None,
         }

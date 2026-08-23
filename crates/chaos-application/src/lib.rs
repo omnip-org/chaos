@@ -3,13 +3,13 @@
 pub mod analytics;
 pub mod catalog;
 mod error;
-pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
 pub mod payments;
 pub mod ports;
 pub mod pricing;
 pub mod sales;
+pub mod shipping_events;
 pub mod store;
 pub mod storefront;
 

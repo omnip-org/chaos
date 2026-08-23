@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
-use chaos_domain::store::{PublishableKey, PublishableKeyId, StoreId, StoreRole};
-use secrecy::SecretString;
-
 use crate::{
     ApplicationError,
     ports::{
-        AdminActor, IdempotencyRequest, MachineActor, PublishableKeyCreationStatus,
-        PublishableKeyListItem, PublishableKeyMaterialGenerator, PublishableKeyRepository,
+        AdminActor, IdempotencyRequest, MachineActor, PublishableKeyGenerator,
+        PublishableKeyListItem, PublishableKeyRepository,
     },
 };
+use chaos_domain::store::{PublishableKey, PublishableKeyId, StoreId, StoreRole};
 
 use super::Page;
 
@@ -22,20 +20,18 @@ pub struct CreatePublishableKeyInput {
 
 pub struct CreatePublishableKeyOutput {
     pub publishable_key: PublishableKey,
-    pub key_identifier: String,
-    pub display_suffix: String,
-    pub plaintext: SecretString,
+    pub public_key: String,
 }
 
 pub struct PublishableKeyManagement {
     repository: Arc<dyn PublishableKeyRepository>,
-    generator: Arc<dyn PublishableKeyMaterialGenerator>,
+    generator: Arc<dyn PublishableKeyGenerator>,
 }
 
 impl PublishableKeyManagement {
     pub fn new(
         repository: Arc<dyn PublishableKeyRepository>,
-        generator: Arc<dyn PublishableKeyMaterialGenerator>,
+        generator: Arc<dyn PublishableKeyGenerator>,
     ) -> Self {
         Self {
             repository,
@@ -50,22 +46,23 @@ impl PublishableKeyManagement {
         authorize_publishable_key_management(&input.actor)?;
         let publishable_key = PublishableKey::issue(input.store_id, input.name)?;
         let material = self.generator.generate();
-        let status = self
+        let (publishable_key_id, public_key) = self
             .repository
             .create(input.actor, &publishable_key, &material, &input.idempotency)
             .await?;
-        if status == PublishableKeyCreationStatus::Replayed {
-            return Err(ApplicationError::Conflict {
-                code: "publishable_key_secret_already_issued",
-                message: "the Publishable Key was already created and its secret cannot be shown again",
-            });
-        }
+        let publishable_key = if publishable_key_id == publishable_key.id() {
+            publishable_key
+        } else {
+            PublishableKey::from_parts(
+                publishable_key_id,
+                input.store_id,
+                publishable_key.name().to_owned(),
+            )?
+        };
 
         Ok(CreatePublishableKeyOutput {
             publishable_key,
-            key_identifier: material.key_identifier,
-            display_suffix: material.display_suffix,
-            plaintext: material.plaintext,
+            public_key,
         })
     }
 
@@ -114,7 +111,7 @@ impl PublishableKeyAuthentication {
 
     pub async fn authenticate(
         &self,
-        presented_key: &SecretString,
+        presented_key: &str,
     ) -> Result<MachineActor, ApplicationError> {
         let actor = self
             .repository

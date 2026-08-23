@@ -2,11 +2,9 @@ use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::ShippingSelection,
-    inventory::InventoryReservationId,
     pricing::PriceListId,
     sales::{
-        CartId, CartStatus, OrderDeliveryStatus, OrderFulfillmentStatus, OrderId, OrderIdentity,
+        CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderShippingStatus,
         OrderStatus, ShopperId,
     },
 };
@@ -80,30 +78,30 @@ pub struct OrderDetail {
     pub id: OrderId,
     pub order_number: chaos_domain::sales::OrderNumber,
     pub shopper_id: ShopperId,
-    pub inventory_reservation_id: Option<InventoryReservationId>,
     pub price_list_id: PriceListId,
     pub currency: CurrencyCode,
     pub locale: Locale,
     pub status: OrderStatus,
-    pub fulfillment_status: OrderFulfillmentStatus,
-    pub delivery_status: OrderDeliveryStatus,
+    pub payment_status: OrderPaymentStatus,
+    pub shipping_status: OrderShippingStatus,
     pub identity: OrderIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
-    pub shipping: Option<ShippingSelection>,
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
+    pub refunded_amount_minor: i64,
+    pub stripe_checkout_session_id: Option<String>,
+    pub stripe_payment_intent_id: Option<String>,
+    pub stripe_charge_id: Option<String>,
+    pub shipping_provider: Option<String>,
+    pub shipping_provider_reference: Option<String>,
+    pub shipping_tracking_number: Option<String>,
+    pub shipping_tracking_url: Option<String>,
     pub lines: Vec<OrderLineItem>,
     pub transitions: Vec<OrderTransitionItem>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
-}
-
-pub struct OrderTrackingSession {
-    pub access_token: SecretString,
-    pub expires_at: OffsetDateTime,
-    pub order: OrderDetail,
 }
 
 pub struct OrderListFilter {
@@ -168,17 +166,10 @@ pub trait StorefrontSalesRepository: Send + Sync {
         order_id: OrderId,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 
-    async fn exchange_order_tracking_key(
-        &self,
-        actor: &MachineActor,
-        tracking_key: &SecretString,
-        now: OffsetDateTime,
-    ) -> Result<Option<OrderTrackingSession>, ApplicationError>;
-
     async fn get_tracked_order(
         &self,
         actor: &MachineActor,
-        access_token: &SecretString,
+        tracking_token: &SecretString,
         now: OffsetDateTime,
     ) -> Result<Option<OrderDetail>, ApplicationError>;
 }

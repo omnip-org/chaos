@@ -186,7 +186,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             .await
             .map_err(database_error)?;
             let active_default_channel: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM commerce.sales_channels \
+                "SELECT EXISTS (SELECT 1 FROM commerce.store_sales_channels \
                  WHERE store_id = $1 \
                    AND is_default AND status = 'active')",
             )
@@ -231,7 +231,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, status::text, is_default, \
-                    created_at, updated_at FROM commerce.sales_channels \
+                    created_at, updated_at FROM commerce.store_sales_channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
         )
@@ -257,7 +257,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, code::text, name, status::text, is_default, \
-                    created_at, updated_at FROM commerce.sales_channels \
+                    created_at, updated_at FROM commerce.store_sales_channels \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -283,7 +283,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
         }
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
-            "INSERT INTO commerce.sales_channels \
+            "INSERT INTO commerce.store_sales_channels \
              (id, store_id, code, name, status, is_default) \
              VALUES ($1, $2, $3, $4, 'active', false)",
         )
@@ -320,7 +320,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let result = sqlx::query(
-            "UPDATE commerce.sales_channels SET code = $3, name = $4, \
+            "UPDATE commerce.store_sales_channels SET code = $3, name = $4, \
                     updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -363,7 +363,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             return Ok(SalesChannelId::from_uuid(id));
         }
         let is_default = sqlx::query_scalar::<_, bool>(
-            "SELECT is_default FROM commerce.sales_channels \
+            "SELECT is_default FROM commerce.store_sales_channels \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -376,7 +376,7 @@ impl StoreAdministrationRepository for PostgresStoreAdministrationRepository {
             SalesChannel::validate_archival(is_default)?;
         }
         sqlx::query(
-            "UPDATE commerce.sales_channels \
+            "UPDATE commerce.store_sales_channels \
              SET status = $3::commerce.sales_channel_status, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -517,7 +517,7 @@ fn map_store_error(error: sqlx::Error) -> ApplicationError {
 
 fn map_channel_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("sales_channels_store_id_code_key")
+        && database_error.constraint() == Some("store_sales_channels_store_id_code_key")
     {
         return ApplicationError::Conflict {
             code: "sales_channel_code_taken",
@@ -636,7 +636,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.sales_channels \
+            "INSERT INTO commerce.store_sales_channels \
              (id, store_id, code, name, is_default) \
              VALUES ($1, $2, 'web', 'Online Store', true)",
         )

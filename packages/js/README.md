@@ -109,14 +109,12 @@ const chaos = createStorefrontClient({
 });
 ```
 
-If a storefront receives an order tracking capability through its own notification
-channel, it can exchange the capability and refresh the order without exposing it in a
-URL:
+If a storefront receives an order tracking token through its own notification
+channel, it can use the token to refresh the order:
 
 ```ts
-const session = await chaos.orders.exchangeTrackingKey(trackingKey);
-const tracked = await chaos.orders.getTrackedOrder(session.access_token);
-console.log(tracked.order_number, tracked.delivery_status);
+const tracked = await chaos.orders.getTrackedOrder(trackingToken);
+console.log(tracked.order_number, tracked.shipping_status);
 ```
 
 ### Errors

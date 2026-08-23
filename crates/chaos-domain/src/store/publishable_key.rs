@@ -50,6 +50,16 @@ impl PublishableKey {
         })
     }
 
+    pub fn from_parts(
+        id: PublishableKeyId,
+        store_id: StoreId,
+        name: impl Into<String>,
+    ) -> Result<Self, DomainError> {
+        let mut key = Self::issue(store_id, name)?;
+        key.id = id;
+        Ok(key)
+    }
+
     pub const fn id(&self) -> PublishableKeyId {
         self.id
     }

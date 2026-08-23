@@ -120,49 +120,20 @@ fn optional_address(
     }
 }
 
-fn shipping_selection_from_row(
-    row: (Uuid, String, String, i64, String, i16, i16),
-) -> Result<ShippingSelection, ApplicationError> {
-    let currency = parse_currency(&row.4)?;
-    ShippingSelection::rehydrate(
-        ShippingServiceId::from_uuid(row.0),
-        row.1,
-        row.2,
-        Money::new(row.3, currency),
-        u16::try_from(row.5).map_err(unexpected_conversion)?,
-        u16::try_from(row.6).map_err(unexpected_conversion)?,
-    )
-    .map_err(ApplicationError::from)
-}
-
-async fn load_order_shipping(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    order_id: OrderId,
-) -> Result<Option<ShippingSelection>, ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
-        "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
-                estimated_min_days, estimated_max_days \
-         FROM commerce.order_shipping_selections \
-         WHERE store_id = $1 AND order_id = $2",
-    )
-    .bind(actor.store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    row.map(shipping_selection_from_row).transpose()
-}
-
 pub(super) async fn load_order(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT id, shopper_id, inventory_reservation_id, price_list_id, currency::text, \
-                status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, created_at, updated_at \
+        "SELECT id, shopper_id, price_list_id, currency::text AS currency, \
+                status::text AS status, payment_status::text AS payment_status, \
+                shipping_status::text AS shipping_status, subtotal_amount_minor, \
+                discount_amount_minor, tax_amount_minor, \
+                shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
+                stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id, \
+                shipping_provider, shipping_provider_reference, shipping_tracking_number, \
+                shipping_tracking_url, created_at, updated_at \
          FROM commerce.orders WHERE store_id = $1 AND sales_channel_id = $2 AND id = $3",
     )
     .bind(actor.store_id.as_uuid())
@@ -174,10 +145,8 @@ pub(super) async fn load_order(
     let Some(row) = row else {
         return Ok(None);
     };
-    let (locale, order_number, fulfillment_status, delivery_status): (String, String, String, String) =
-        sqlx::query_as(
-            "SELECT locale, order_number, fulfillment_status::text, delivery_status::text \
-             FROM commerce.orders WHERE store_id=$1 AND id=$2",
+    let (locale, order_number): (String, String) = sqlx::query_as(
+            "SELECT locale, order_number FROM commerce.orders WHERE store_id=$1 AND id=$2",
         )
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -185,7 +154,6 @@ pub(super) async fn load_order(
         .await
         .map_err(database_error)?;
     let identity = load_order_identity(transaction, actor, order_id).await?;
-    let shipping = load_order_shipping(transaction, actor, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -211,25 +179,31 @@ pub(super) async fn load_order(
     .await
     .map_err(database_error)?;
     Ok(Some(OrderDetail {
-        id: OrderId::from_uuid(row.0),
+        id: OrderId::from_uuid(row.id),
         order_number: OrderNumber::parse(order_number)?,
-        shopper_id: ShopperId::from_uuid(row.1),
-        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.3),
-        currency: parse_currency(&row.4)?,
+        shopper_id: ShopperId::from_uuid(row.shopper_id),
+        price_list_id: PriceListId::from_uuid(row.price_list_id),
+        currency: parse_currency(&row.currency)?,
         locale: parse_locale(&locale)?,
-        status: OrderStatus::parse(&row.5).ok_or_else(corrupt_sales_state)?,
-        fulfillment_status: OrderFulfillmentStatus::parse(&fulfillment_status)
+        status: OrderStatus::parse(&row.status).ok_or_else(corrupt_sales_state)?,
+        payment_status: OrderPaymentStatus::parse(&row.payment_status)
             .ok_or_else(corrupt_sales_state)?,
-        delivery_status: OrderDeliveryStatus::parse(&delivery_status)
+        shipping_status: OrderShippingStatus::parse(&row.shipping_status)
             .ok_or_else(corrupt_sales_state)?,
         identity,
-        subtotal_amount_minor: row.6,
-        discount_amount_minor: row.7,
-        tax_amount_minor: row.8,
-        shipping,
-        shipping_amount_minor: row.9,
-        total_amount_minor: row.10,
+        subtotal_amount_minor: row.subtotal_amount_minor,
+        discount_amount_minor: row.discount_amount_minor,
+        tax_amount_minor: row.tax_amount_minor,
+        shipping_amount_minor: row.shipping_amount_minor,
+        total_amount_minor: row.total_amount_minor,
+        refunded_amount_minor: row.refunded_amount_minor,
+        stripe_checkout_session_id: row.stripe_checkout_session_id,
+        stripe_payment_intent_id: row.stripe_payment_intent_id,
+        stripe_charge_id: row.stripe_charge_id,
+        shipping_provider: row.shipping_provider,
+        shipping_provider_reference: row.shipping_provider_reference,
+        shipping_tracking_number: row.shipping_tracking_number,
+        shipping_tracking_url: row.shipping_tracking_url,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -252,7 +226,7 @@ pub(super) async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.11,
-        updated_at: row.12,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }))
 }

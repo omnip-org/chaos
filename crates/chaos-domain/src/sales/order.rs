@@ -81,83 +81,64 @@ impl OrderStatus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrderFulfillmentStatus {
-    Unfulfilled,
-    PartiallyFulfilled,
-    Fulfilled,
+pub enum OrderPaymentStatus {
+    Pending,
+    Paid,
+    Failed,
+    PartiallyRefunded,
+    Refunded,
 }
 
-impl OrderFulfillmentStatus {
+impl OrderPaymentStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Unfulfilled => "unfulfilled",
-            Self::PartiallyFulfilled => "partially_fulfilled",
-            Self::Fulfilled => "fulfilled",
+            Self::Pending => "pending",
+            Self::Paid => "paid",
+            Self::Failed => "failed",
+            Self::PartiallyRefunded => "partially_refunded",
+            Self::Refunded => "refunded",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "unfulfilled" => Some(Self::Unfulfilled),
-            "partially_fulfilled" => Some(Self::PartiallyFulfilled),
-            "fulfilled" => Some(Self::Fulfilled),
+            "pending" => Some(Self::Pending),
+            "paid" => Some(Self::Paid),
+            "failed" => Some(Self::Failed),
+            "partially_refunded" => Some(Self::PartiallyRefunded),
+            "refunded" => Some(Self::Refunded),
             _ => None,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrderDeliveryStatus {
-    NotDelivered,
-    PartiallyDelivered,
+pub enum OrderShippingStatus {
+    Pending,
+    Shipped,
     Delivered,
+    Cancelled,
 }
 
-impl OrderDeliveryStatus {
+impl OrderShippingStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::NotDelivered => "not_delivered",
-            Self::PartiallyDelivered => "partially_delivered",
+            Self::Pending => "pending",
+            Self::Shipped => "shipped",
             Self::Delivered => "delivered",
+            Self::Cancelled => "cancelled",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "not_delivered" => Some(Self::NotDelivered),
-            "partially_delivered" => Some(Self::PartiallyDelivered),
+            "pending" => Some(Self::Pending),
+            "shipped" => Some(Self::Shipped),
             "delivered" => Some(Self::Delivered),
+            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
     }
-}
-
-pub fn reconcile_fulfillment_statuses(
-    total_shippable_quantity: u64,
-    shipped_quantity: u64,
-    delivered_quantity: u64,
-) -> Result<(OrderFulfillmentStatus, OrderDeliveryStatus), DomainError> {
-    if shipped_quantity > total_shippable_quantity || delivered_quantity > shipped_quantity {
-        return Err(DomainError::Validation(vec![FieldViolation {
-            field: "fulfillment_quantity",
-            reason: "derived quantities must satisfy delivered <= shipped <= shippable".into(),
-        }]));
-    }
-    let fulfillment = if shipped_quantity == 0 {
-        OrderFulfillmentStatus::Unfulfilled
-    } else if shipped_quantity == total_shippable_quantity {
-        OrderFulfillmentStatus::Fulfilled
-    } else {
-        OrderFulfillmentStatus::PartiallyFulfilled
-    };
-    let delivery = if delivered_quantity == 0 {
-        OrderDeliveryStatus::NotDelivered
-    } else if delivered_quantity == total_shippable_quantity {
-        OrderDeliveryStatus::Delivered
-    } else {
-        OrderDeliveryStatus::PartiallyDelivered
-    };
-    Ok((fulfillment, delivery))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,29 +269,5 @@ mod tests {
         assert_eq!(number.as_str(), "W-20260820-7K4M9Q2D");
         assert!(OrderNumber::parse("W-20260820-000001").is_err());
         assert!(OrderNumber::parse("W-20260820-ILOU1234").is_err());
-    }
-
-    #[test]
-    fn fulfillment_reconciliation_tracks_partial_and_complete_progress() {
-        assert_eq!(
-            reconcile_fulfillment_statuses(3, 2, 1).unwrap(),
-            (
-                OrderFulfillmentStatus::PartiallyFulfilled,
-                OrderDeliveryStatus::PartiallyDelivered
-            )
-        );
-        assert_eq!(
-            reconcile_fulfillment_statuses(3, 3, 3).unwrap(),
-            (
-                OrderFulfillmentStatus::Fulfilled,
-                OrderDeliveryStatus::Delivered
-            )
-        );
-    }
-
-    #[test]
-    fn fulfillment_reconciliation_rejects_impossible_quantities() {
-        assert!(reconcile_fulfillment_statuses(1, 2, 0).is_err());
-        assert!(reconcile_fulfillment_statuses(2, 1, 2).is_err());
     }
 }

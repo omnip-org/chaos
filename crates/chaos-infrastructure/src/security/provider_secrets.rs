@@ -10,13 +10,9 @@ use chaos_application::{
     ApplicationError,
     ports::{
         AnalyticsDeliveryError, PaymentSecretResolver, ProviderSecretKind, ProviderSecretWriter,
-        ShippingSecretResolver,
     },
 };
-use chaos_domain::{
-    fulfillment::ShippingSecretReference, identity::UserId, payments::PaymentSecretReference,
-    store::StoreId,
-};
+use chaos_domain::{identity::UserId, payments::PaymentSecretReference, store::StoreId};
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 
@@ -83,21 +79,6 @@ impl PaymentSecretResolver for DynamicSecretResolver {
             .map_err(|_| ApplicationError::Unavailable {
                 service: "payment_secret_manager",
                 source: anyhow::anyhow!("Payment Provider credentials are unavailable"),
-            })
-    }
-}
-
-#[async_trait]
-impl ShippingSecretResolver for DynamicSecretResolver {
-    async fn resolve(
-        &self,
-        reference: &ShippingSecretReference,
-    ) -> Result<SecretString, ApplicationError> {
-        self.resolve_reference(reference.expose_reference(), "CHAOS_SHIPPING_SECRET_")
-            .await
-            .map_err(|_| ApplicationError::Conflict {
-                code: "shipping_provider_credentials_unavailable",
-                message: "The shipping provider credentials are unavailable",
             })
     }
 }

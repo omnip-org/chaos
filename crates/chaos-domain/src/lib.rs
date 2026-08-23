@@ -2,7 +2,6 @@
 //! caches, serialization formats, or other delivery mechanisms.
 
 pub mod catalog;
-pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
 pub mod payments;

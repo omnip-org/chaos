@@ -144,7 +144,7 @@ impl AnalyticsEventRepository for PostgresAnalyticsEventStore {
         let active: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM commerce.stores s
-                JOIN commerce.sales_channels c ON c.store_id=s.id
+                JOIN commerce.store_sales_channels c ON c.store_id=s.id
                 WHERE s.id=$1 AND c.id=$2 AND s.status='active' AND c.status='active'
             )",
         )

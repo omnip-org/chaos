@@ -1,11 +1,9 @@
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
-        AdminActor, GeneratedPublishableKeyMaterial, IdempotencyRequest, MachineActor,
-        PublishableKeyCreationStatus, PublishableKeyListItem, PublishableKeyMaterialGenerator,
-        PublishableKeyRepository,
+        AdminActor, GeneratedPublishableKey, IdempotencyRequest, MachineActor,
+        PublishableKeyGenerator, PublishableKeyListItem, PublishableKeyRepository,
     },
 };
 use chaos_domain::{
@@ -13,9 +11,7 @@ use chaos_domain::{
     store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
 };
 use rand::Rng;
-use secrecy::{ExposeSecret, SecretString};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -24,30 +20,23 @@ use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CREATE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.create.v1";
 const REVOKE_PUBLISHABLE_KEY_OPERATION: &str = "publishable_keys.revoke.v1";
-const PUBLIC_KEY_PREFIX: &str = "public_";
-const KEY_IDENTIFIER_LENGTH: usize = 16;
-const KEY_SECRET_LENGTH: usize = 43;
+const PUBLIC_KEY_PREFIX: &str = "pk_";
+const PUBLIC_KEY_LENGTH: usize = 24;
+const PUBLIC_KEY_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
 
 #[derive(Default)]
-pub struct SecurePublishableKeyMaterialGenerator;
+pub struct DefaultPublishableKeyGenerator;
 
-impl PublishableKeyMaterialGenerator for SecurePublishableKeyMaterialGenerator {
-    fn generate(&self) -> GeneratedPublishableKeyMaterial {
-        let mut identifier_bytes = [0_u8; 12];
-        let mut secret_bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut identifier_bytes);
-        rand::rng().fill_bytes(&mut secret_bytes);
-        let key_identifier = URL_SAFE_NO_PAD.encode(identifier_bytes);
-        let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext = format!("{PUBLIC_KEY_PREFIX}{key_identifier}_{secret}");
-        let secret_digest = Sha256::digest(plaintext.as_bytes()).into();
-        let display_suffix = secret[secret.len() - 4..].to_owned();
-
-        GeneratedPublishableKeyMaterial {
-            key_identifier,
-            secret_digest,
-            display_suffix,
-            plaintext: SecretString::from(plaintext),
+impl PublishableKeyGenerator for DefaultPublishableKeyGenerator {
+    fn generate(&self) -> GeneratedPublishableKey {
+        let mut random = [0_u8; PUBLIC_KEY_LENGTH];
+        rand::rng().fill_bytes(&mut random);
+        let suffix = random
+            .into_iter()
+            .map(|byte| PUBLIC_KEY_ALPHABET[usize::from(byte) % PUBLIC_KEY_ALPHABET.len()] as char)
+            .collect::<String>();
+        GeneratedPublishableKey {
+            public_key: format!("{PUBLIC_KEY_PREFIX}{suffix}"),
         }
     }
 }
@@ -69,37 +58,46 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         &self,
         actor: AdminActor,
         publishable_key: &PublishableKey,
-        material: &GeneratedPublishableKeyMaterial,
+        generated_key: &GeneratedPublishableKey,
         idempotency: &IdempotencyRequest,
-    ) -> Result<PublishableKeyCreationStatus, ApplicationError> {
+    ) -> Result<(PublishableKeyId, String), ApplicationError> {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, publishable_key.store_id()).await?;
         let scope = IdempotencyScope::Store(actor.store_id().as_uuid());
-        if idempotency::reserve(
+        if let Some(snapshot) = idempotency::reserve(
             &mut transaction,
             &scope,
             CREATE_PUBLISHABLE_KEY_OPERATION,
             idempotency,
         )
         .await?
-        .is_some()
         {
+            let public_key = snapshot
+                .get("data")
+                .and_then(|data| data.get("public_key"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid_snapshot)?
+                .to_owned();
+            let id = snapshot
+                .get("data")
+                .and_then(|data| data.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse::<Uuid>().ok())
+                .map(PublishableKeyId::from_uuid)
+                .ok_or_else(invalid_snapshot)?;
             transaction.commit().await.map_err(database_error)?;
-            return Ok(PublishableKeyCreationStatus::Replayed);
+            return Ok((id, public_key));
         }
 
         sqlx::query(
-            "INSERT INTO commerce.publishable_keys \
-             (id, store_id, key_identifier, secret_digest, display_suffix, name, \
-              created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO commerce.store_publishable_keys \
+             (id, store_id, public_key, name, created_by_user_id) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(publishable_key.id().as_uuid())
         .bind(publishable_key.store_id().as_uuid())
-        .bind(&material.key_identifier)
-        .bind(material.secret_digest.as_slice())
-        .bind(&material.display_suffix)
+        .bind(&generated_key.public_key)
         .bind(publishable_key.name())
         .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
@@ -112,11 +110,16 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
             CREATE_PUBLISHABLE_KEY_OPERATION,
             idempotency,
             201,
-            json!({ "data": { "id": publishable_key.id().as_uuid() } }),
+            json!({
+                "data": {
+                    "id": publishable_key.id().as_uuid(),
+                    "public_key": generated_key.public_key.clone(),
+                }
+            }),
         )
         .await?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(PublishableKeyCreationStatus::Created)
+        Ok((publishable_key.id(), generated_key.public_key.clone()))
     }
 
     async fn list(
@@ -129,46 +132,33 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         set_context(&mut transaction, &actor).await?;
         require_store(&mut transaction, store_id).await?;
-        let rows = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                String,
-                String,
-                String,
-                OffsetDateTime,
-                Option<OffsetDateTime>,
-            ),
-        >(
-            "SELECT key.id, key.name, key.key_identifier, key.display_suffix::text, \
-                    key.created_at, key.revoked_at \
-             FROM commerce.publishable_keys AS key \
+        let rows =
+            sqlx::query_as::<_, (Uuid, String, String, OffsetDateTime, Option<OffsetDateTime>)>(
+                "SELECT key.id, key.name, key.public_key, key.created_at, key.revoked_at \
+             FROM commerce.store_publishable_keys AS key \
              WHERE key.store_id = $1 \
                AND ($2::uuid IS NULL OR key.id > $2) \
              ORDER BY key.id ASC \
              LIMIT $3",
-        )
-        .bind(store_id.as_uuid())
-        .bind(after.map(PublishableKeyId::as_uuid))
-        .bind(i64::from(limit))
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+            )
+            .bind(store_id.as_uuid())
+            .bind(after.map(PublishableKeyId::as_uuid))
+            .bind(i64::from(limit))
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
 
         rows.into_iter()
-            .map(
-                |(id, name, key_identifier, display_suffix, created_at, revoked_at)| {
-                    Ok(PublishableKeyListItem {
-                        id: PublishableKeyId::from_uuid(id),
-                        name,
-                        key_identifier,
-                        display_suffix,
-                        created_at,
-                        revoked_at,
-                    })
-                },
-            )
+            .map(|(id, name, public_key, created_at, revoked_at)| {
+                Ok(PublishableKeyListItem {
+                    id: PublishableKeyId::from_uuid(id),
+                    name,
+                    public_key,
+                    created_at,
+                    revoked_at,
+                })
+            })
             .collect()
     }
 
@@ -197,7 +187,7 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
         }
 
         let result = sqlx::query(
-            "UPDATE commerce.publishable_keys \
+            "UPDATE commerce.store_publishable_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
                  revoked_by_user_id = COALESCE(revoked_by_user_id, $3), \
                  updated_at = CURRENT_TIMESTAMP \
@@ -230,19 +220,16 @@ impl PublishableKeyRepository for PostgresPublishableKeyRepository {
 
     async fn authenticate(
         &self,
-        presented_key: &SecretString,
+        presented_key: &str,
     ) -> Result<Option<MachineActor>, ApplicationError> {
-        let Some(key_identifier) = parse_key_identifier(presented_key.expose_secret()) else {
+        if !valid_public_key(presented_key) {
             return Ok(None);
-        };
-        let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
+        }
         let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, Uuid)>(
-            "SELECT publishable_key_id, store_id, sales_channel_id, \
-                    created_by_user_id \
-             FROM commerce.authenticate_publishable_key($1, $2)",
+            "SELECT publishable_key_id, store_id, sales_channel_id, created_by_user_id \
+             FROM commerce.authenticate_publishable_key($1)",
         )
-        .bind(key_identifier)
-        .bind(digest.as_slice())
+        .bind(presented_key)
         .fetch_optional(&self.pool)
         .await
         .map_err(database_error)?;
@@ -305,21 +292,18 @@ async fn require_store(
     Ok(())
 }
 
-fn parse_key_identifier(presented_key: &str) -> Option<&str> {
-    let remainder = presented_key.strip_prefix(PUBLIC_KEY_PREFIX)?;
-    let (identifier, remainder) = remainder.split_at_checked(KEY_IDENTIFIER_LENGTH)?;
-    let secret = remainder.strip_prefix('_')?;
-    if secret.len() != KEY_SECRET_LENGTH
-        || !identifier.bytes().all(is_base64url_byte)
-        || !secret.bytes().all(is_base64url_byte)
-    {
-        return None;
-    }
-    Some(identifier)
+fn valid_public_key(value: &str) -> bool {
+    value.len() == PUBLIC_KEY_PREFIX.len() + PUBLIC_KEY_LENGTH
+        && value.starts_with(PUBLIC_KEY_PREFIX)
+        && value[PUBLIC_KEY_PREFIX.len()..]
+            .bytes()
+            .all(|byte| PUBLIC_KEY_ALPHABET.contains(&byte))
 }
 
-fn is_base64url_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+fn invalid_snapshot() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "invalid publishable key idempotency snapshot"
+    ))
 }
 
 fn database_error(error: sqlx::Error) -> ApplicationError {
@@ -343,33 +327,24 @@ mod tests {
 
     #[test]
     fn generated_key_has_parseable_public_shape() {
-        let generated = SecurePublishableKeyMaterialGenerator.generate();
-        let plaintext = generated.plaintext.expose_secret();
-
+        let generated = DefaultPublishableKeyGenerator.generate();
+        assert!(valid_public_key(&generated.public_key));
+        assert!(generated.public_key.starts_with(PUBLIC_KEY_PREFIX));
         assert_eq!(
-            parse_key_identifier(plaintext),
-            Some(generated.key_identifier.as_str())
+            generated.public_key.len(),
+            PUBLIC_KEY_PREFIX.len() + PUBLIC_KEY_LENGTH
         );
-        let expected_digest: [u8; 32] = Sha256::digest(plaintext.as_bytes()).into();
-        assert_eq!(generated.secret_digest, expected_digest);
-        assert!(plaintext.starts_with(PUBLIC_KEY_PREFIX));
-        assert!(plaintext.ends_with(&generated.display_suffix));
     }
 
     #[test]
     fn malformed_key_is_rejected_before_database_lookup() {
-        assert_eq!(parse_key_identifier("public_short_secret"), None);
-        assert_eq!(parse_key_identifier("not-a-key"), None);
+        assert!(!valid_public_key("pk_short"));
+        assert!(!valid_public_key("not-a-key"));
     }
 
     #[test]
     fn old_publishable_key_shape_is_rejected() {
-        let old_key = format!(
-            "cc_v1_publishable_{}_{}",
-            "a".repeat(KEY_IDENTIFIER_LENGTH),
-            "b".repeat(KEY_SECRET_LENGTH)
-        );
-        assert_eq!(parse_key_identifier(&old_key), None);
+        assert!(!valid_public_key("cc_v1_publishable_a_secret"));
     }
 
     #[tokio::test]
@@ -430,7 +405,7 @@ mod tests {
         let actor = AdminActor::Store(queries.authorize(user_id, store_id).await.unwrap());
         let management = PublishableKeyManagement::new(
             repository.clone(),
-            Arc::new(SecurePublishableKeyMaterialGenerator),
+            Arc::new(DefaultPublishableKeyGenerator),
         );
         let authentication = PublishableKeyAuthentication::new(repository);
         let creation_input = || CreatePublishableKeyInput {
@@ -445,15 +420,15 @@ mod tests {
 
         let issued = management.create(creation_input()).await.unwrap();
         let publishable_key_id = issued.publishable_key.id();
-        let plaintext = issued.plaintext;
-        let stored_digest: Vec<u8> =
-            sqlx::query_scalar("SELECT secret_digest FROM commerce.publishable_keys WHERE id = $1")
-                .bind(publishable_key_id.as_uuid())
-                .fetch_one(&owner_pool)
-                .await
-                .unwrap();
-        let expected_digest: [u8; 32] = Sha256::digest(plaintext.expose_secret().as_bytes()).into();
-        assert_eq!(stored_digest, expected_digest);
+        let public_key = issued.public_key;
+        let stored_public_key: String = sqlx::query_scalar(
+            "SELECT public_key FROM commerce.store_publishable_keys WHERE id = $1",
+        )
+        .bind(publishable_key_id.as_uuid())
+        .fetch_one(&owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(stored_public_key, public_key);
 
         let page = management
             .list(actor.clone(), store_id, None, 20)
@@ -461,19 +436,15 @@ mod tests {
             .unwrap();
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].id, publishable_key_id);
+        assert_eq!(page.items[0].public_key, public_key);
         assert_eq!(page.items[0].revoked_at, None);
 
-        let machine_actor = authentication.authenticate(&plaintext).await.unwrap();
+        let machine_actor = authentication.authenticate(&public_key).await.unwrap();
         assert_eq!(machine_actor.store_id, store_id);
 
-        let replay = management.create(creation_input()).await;
-        assert!(matches!(
-            replay,
-            Err(ApplicationError::Conflict {
-                code: "publishable_key_secret_already_issued",
-                ..
-            })
-        ));
+        let replay = management.create(creation_input()).await.unwrap();
+        assert_eq!(replay.publishable_key.id(), publishable_key_id);
+        assert_eq!(replay.public_key, public_key);
 
         let revoke_request = || IdempotencyRequest {
             key: format!("revoke-{unique_suffix}"),
@@ -498,7 +469,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            authentication.authenticate(&plaintext).await,
+            authentication.authenticate(&public_key).await,
             Err(ApplicationError::Unauthorized)
         ));
         let page = management.list(actor, store_id, None, 20).await.unwrap();

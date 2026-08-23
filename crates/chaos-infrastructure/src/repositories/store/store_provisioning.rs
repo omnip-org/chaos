@@ -138,7 +138,7 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         channel: &SalesChannel,
     ) -> Result<(), ApplicationError> {
         sqlx::query(
-            "INSERT INTO commerce.sales_channels \
+            "INSERT INTO commerce.store_sales_channels \
              (id, store_id, code, name, status, is_default) \
              VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_status, $6)",
         )
@@ -148,23 +148,6 @@ impl StoreProvisioningTransaction for PostgresStoreProvisioningTransaction {
         .bind(channel.name())
         .bind(channel.status().as_str())
         .bind(channel.is_default())
-        .execute(&mut *self.transaction)
-        .await
-        .map_err(unexpected_database_error)?;
-        Ok(())
-    }
-
-    async fn insert_default_inventory_location(
-        &mut self,
-        store: &Store,
-    ) -> Result<(), ApplicationError> {
-        sqlx::query(
-            "INSERT INTO commerce.inventory_locations \
-             (id, store_id, code, name) \
-             VALUES ($1, $2, 'default', 'Default Warehouse')",
-        )
-        .bind(Uuid::now_v7())
-        .bind(store.id().as_uuid())
         .execute(&mut *self.transaction)
         .await
         .map_err(unexpected_database_error)?;
@@ -289,7 +272,7 @@ mod tests {
              FROM commerce.stores AS store \
              INNER JOIN commerce.store_currencies AS currency \
                  ON currency.store_id = store.id \
-             INNER JOIN commerce.sales_channels AS channel \
+             INNER JOIN commerce.store_sales_channels AS channel \
                  ON channel.store_id = store.id \
              WHERE store.id = $1",
         )
@@ -307,18 +290,6 @@ mod tests {
                 "web".into(),
                 true,
             )
-        );
-
-        let default_location: (String, String) = sqlx::query_as(
-            "SELECT code::text, name FROM commerce.inventory_locations WHERE store_id = $1",
-        )
-        .bind(output.store_id.as_uuid())
-        .fetch_one(&owner_pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            default_location,
-            ("default".into(), "Default Warehouse".into())
         );
 
         let membership_role: String = sqlx::query_scalar(

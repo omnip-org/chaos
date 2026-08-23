@@ -4,7 +4,7 @@ mod order_identity;
 
 pub use cart::{Cart, CartId, CartLine, CartStatus, ShopperId};
 pub use order::{
-    Order, OrderDeliveryStatus, OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus,
-    OrderTransition, OrderTransitionKind, reconcile_fulfillment_statuses,
+    Order, OrderId, OrderNumber, OrderPaymentStatus, OrderShippingStatus, OrderStatus,
+    OrderTransition, OrderTransitionKind,
 };
 pub use order_identity::{OrderContact, OrderIdentity, PostalAddress};

@@ -2,4 +2,3 @@
 
 pub mod analytics;
 pub mod payments;
-pub mod shipping;

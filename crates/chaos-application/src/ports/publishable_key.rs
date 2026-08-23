@@ -3,35 +3,24 @@ use chaos_domain::{
     identity::UserId,
     store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
 };
-use secrecy::SecretString;
 use time::OffsetDateTime;
 
 use crate::ApplicationError;
 
 use super::{AdminActor, IdempotencyRequest};
 
-pub struct GeneratedPublishableKeyMaterial {
-    pub key_identifier: String,
-    pub secret_digest: [u8; 32],
-    pub display_suffix: String,
-    pub plaintext: SecretString,
+pub struct GeneratedPublishableKey {
+    pub public_key: String,
 }
 
-pub trait PublishableKeyMaterialGenerator: Send + Sync {
-    fn generate(&self) -> GeneratedPublishableKeyMaterial;
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PublishableKeyCreationStatus {
-    Created,
-    Replayed,
+pub trait PublishableKeyGenerator: Send + Sync {
+    fn generate(&self) -> GeneratedPublishableKey;
 }
 
 pub struct PublishableKeyListItem {
     pub id: PublishableKeyId,
     pub name: String,
-    pub key_identifier: String,
-    pub display_suffix: String,
+    pub public_key: String,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
 }
@@ -53,9 +42,9 @@ pub trait PublishableKeyRepository: Send + Sync {
         &self,
         actor: AdminActor,
         publishable_key: &PublishableKey,
-        material: &GeneratedPublishableKeyMaterial,
+        generated_key: &GeneratedPublishableKey,
         idempotency: &IdempotencyRequest,
-    ) -> Result<PublishableKeyCreationStatus, ApplicationError>;
+    ) -> Result<(PublishableKeyId, String), ApplicationError>;
 
     async fn list(
         &self,
@@ -75,6 +64,6 @@ pub trait PublishableKeyRepository: Send + Sync {
 
     async fn authenticate(
         &self,
-        presented_key: &SecretString,
+        presented_key: &str,
     ) -> Result<Option<MachineActor>, ApplicationError>;
 }

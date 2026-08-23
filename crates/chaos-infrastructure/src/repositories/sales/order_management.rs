@@ -10,12 +10,10 @@ use chaos_application::{
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{ShippingSelection, ShippingServiceId},
-    inventory::InventoryReservationId,
-    pricing::{Money, PriceListId},
+    pricing::PriceListId,
     sales::{
-        Order, OrderContact, OrderDeliveryStatus, OrderFulfillmentStatus, OrderId, OrderIdentity,
-        OrderNumber, OrderStatus, PostalAddress, ShopperId,
+        Order, OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus,
+        OrderShippingStatus, OrderStatus, PostalAddress, ShopperId,
     },
     store::StoreId,
 };
@@ -26,39 +24,46 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-const ORDER_TRACKING_KEY_LIFETIME: time::Duration = time::Duration::days(180);
+const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
 
-fn generate_order_tracking_key() -> (String, [u8; 32]) {
+fn generate_order_tracking_token() -> (String, [u8; 32]) {
     let mut secret = [0_u8; 32];
     rand::rng().fill_bytes(&mut secret);
-    let plaintext = format!("otk_{}", URL_SAFE_NO_PAD.encode(secret));
+    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
     let digest = Sha256::digest(plaintext.as_bytes()).into();
     (plaintext, digest)
 }
 
-use crate::repositories::{
-    inventory::{ReservationClosure, close_reservation},
-    shared::idempotency::{self, IdempotencyScope},
-};
+use crate::repositories::shared::idempotency::{self, IdempotencyScope};
 
 const CONFIRM_OPERATION: &str = "orders.confirm.v1";
 const CANCEL_OPERATION: &str = "orders.cancel.v1";
 
-type HeaderRow = (
-    Uuid,
-    Uuid,
-    Option<Uuid>,
-    Uuid,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+#[derive(sqlx::FromRow)]
+struct HeaderRow {
+    id: Uuid,
+    shopper_id: Uuid,
+    price_list_id: Uuid,
+    currency: String,
+    status: String,
+    payment_status: String,
+    shipping_status: String,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    refunded_amount_minor: i64,
+    stripe_checkout_session_id: Option<String>,
+    stripe_payment_intent_id: Option<String>,
+    stripe_charge_id: Option<String>,
+    shipping_provider: Option<String>,
+    shipping_provider_reference: Option<String>,
+    shipping_tracking_number: Option<String>,
+    shipping_tracking_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
 type LineRow = (
     Uuid,
     Uuid,
@@ -210,8 +215,8 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
                 .await?
                 .ok_or_else(|| order_not_found(replay_id));
         }
-        let row = sqlx::query_as::<_, (String, Option<Uuid>)>(
-            "SELECT status::text, inventory_reservation_id FROM commerce.orders \
+        let row = sqlx::query_scalar::<_, String>(
+            "SELECT status::text FROM commerce.orders \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -220,27 +225,13 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
-        let current_status = OrderStatus::parse(&row.0).ok_or_else(corrupt_state)?;
+        let current_status = OrderStatus::parse(&row).ok_or_else(corrupt_state)?;
         let mut order = Order::rehydrate(order_id, current_status);
         let transition = match target_status {
             OrderStatus::Confirmed => order.confirm(now)?,
             OrderStatus::Cancelled => order.cancel(now)?,
             OrderStatus::Pending => return Err(invalid_target()),
         };
-        if let Some(reservation_id) = row.1.map(InventoryReservationId::from_uuid) {
-            close_reservation(
-                &mut transaction,
-                store_id,
-                reservation_id,
-                if target_status == OrderStatus::Confirmed {
-                    ReservationClosure::Consumed
-                } else {
-                    ReservationClosure::Released
-                },
-                now,
-            )
-            .await?;
-        }
         let transition_id = Uuid::now_v7();
         sqlx::query(
             "UPDATE commerce.orders SET status = $3::commerce.order_status, updated_at = $4 \
@@ -272,17 +263,16 @@ impl OrderManagementRepository for PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            let (_, tracking_digest) = generate_order_tracking_key();
+            let (_, tracking_digest) = generate_order_tracking_token();
             sqlx::query(
-                "INSERT INTO commerce.order_tracking_keys \
-                 (id,store_id,order_id,secret_digest,expires_at,created_at) \
-                 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(store_id,order_id) DO NOTHING",
+                "INSERT INTO commerce.order_tracking_tokens \
+                 (store_id,order_id,token_digest,expires_at,created_at) \
+                 VALUES($1,$2,$3,$4,$5) ON CONFLICT(store_id,order_id) DO NOTHING",
             )
-            .bind(Uuid::now_v7())
             .bind(store_id.as_uuid())
             .bind(order_id.as_uuid())
             .bind(tracking_digest.as_slice())
-            .bind(now + ORDER_TRACKING_KEY_LIFETIME)
+            .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
             .bind(now)
             .execute(&mut *transaction)
             .await
@@ -311,9 +301,14 @@ async fn load_order(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, HeaderRow>(
-        "SELECT id, shopper_id, inventory_reservation_id, price_list_id, currency::text, \
-                status::text, subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, created_at, updated_at FROM commerce.orders \
+        "SELECT id, shopper_id, price_list_id, currency::text AS currency, \
+                status::text AS status, payment_status::text AS payment_status, \
+                shipping_status::text AS shipping_status, subtotal_amount_minor, \
+                discount_amount_minor, tax_amount_minor, \
+                shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
+                stripe_checkout_session_id, stripe_payment_intent_id, stripe_charge_id, \
+                shipping_provider, shipping_provider_reference, shipping_tracking_number, \
+                shipping_tracking_url, created_at, updated_at FROM commerce.orders \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -333,17 +328,7 @@ async fn load_order(
     .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let derived_statuses = sqlx::query_as::<_, (String, String)>(
-        "SELECT fulfillment_status::text, delivery_status::text FROM commerce.orders \
-         WHERE store_id = $1 AND id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
     let identity = load_order_identity(transaction, store_id, order_id).await?;
-    let shipping = load_order_shipping(transaction, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, LineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
                 requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
@@ -376,25 +361,30 @@ async fn load_order(
     .await
     .map_err(database_error)?;
     Ok(Some(OrderDetail {
-        id: OrderId::from_uuid(row.0),
+        id: OrderId::from_uuid(row.id),
         order_number: OrderNumber::parse(order_number)?,
-        shopper_id: ShopperId::from_uuid(row.1),
-        inventory_reservation_id: row.2.map(InventoryReservationId::from_uuid),
-        price_list_id: PriceListId::from_uuid(row.3),
-        currency: CurrencyCode::parse(&row.4)?,
+        shopper_id: ShopperId::from_uuid(row.shopper_id),
+        price_list_id: PriceListId::from_uuid(row.price_list_id),
+        currency: CurrencyCode::parse(&row.currency)?,
         locale: Locale::parse(&locale)?,
-        status: OrderStatus::parse(&row.5).ok_or_else(corrupt_state)?,
-        fulfillment_status: OrderFulfillmentStatus::parse(&derived_statuses.0)
-            .ok_or_else(corrupt_state)?,
-        delivery_status: OrderDeliveryStatus::parse(&derived_statuses.1)
+        status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
+        payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
+        shipping_status: OrderShippingStatus::parse(&row.shipping_status)
             .ok_or_else(corrupt_state)?,
         identity,
-        subtotal_amount_minor: row.6,
-        discount_amount_minor: row.7,
-        tax_amount_minor: row.8,
-        shipping,
-        shipping_amount_minor: row.9,
-        total_amount_minor: row.10,
+        subtotal_amount_minor: row.subtotal_amount_minor,
+        discount_amount_minor: row.discount_amount_minor,
+        tax_amount_minor: row.tax_amount_minor,
+        shipping_amount_minor: row.shipping_amount_minor,
+        total_amount_minor: row.total_amount_minor,
+        refunded_amount_minor: row.refunded_amount_minor,
+        stripe_checkout_session_id: row.stripe_checkout_session_id,
+        stripe_payment_intent_id: row.stripe_payment_intent_id,
+        stripe_charge_id: row.stripe_charge_id,
+        shipping_provider: row.shipping_provider,
+        shipping_provider_reference: row.shipping_provider_reference,
+        shipping_tracking_number: row.shipping_tracking_number,
+        shipping_tracking_url: row.shipping_tracking_url,
         lines: lines
             .into_iter()
             .map(|line| {
@@ -430,39 +420,9 @@ async fn load_order(
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?,
-        created_at: row.11,
-        updated_at: row.12,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }))
-}
-
-async fn load_order_shipping(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-) -> Result<Option<ShippingSelection>, ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, String, String, i64, String, i16, i16)>(
-        "SELECT shipping_service_id, service_code, service_name, amount_minor, currency::text, \
-                estimated_min_days, estimated_max_days \
-         FROM commerce.order_shipping_selections \
-         WHERE store_id = $1 AND order_id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    row.map(|row| {
-        ShippingSelection::rehydrate(
-            ShippingServiceId::from_uuid(row.0),
-            row.1,
-            row.2,
-            Money::new(row.3, CurrencyCode::parse(&row.4)?),
-            u16::try_from(row.5).map_err(|error| ApplicationError::Unexpected(error.into()))?,
-            u16::try_from(row.6).map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        )
-        .map_err(ApplicationError::from)
-    })
-    .transpose()
 }
 
 async fn load_order_identity(

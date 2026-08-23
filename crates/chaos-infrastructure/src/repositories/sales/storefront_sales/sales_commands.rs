@@ -1,5 +1,28 @@
 // Cart-to-Order commands and the Stripe Embedded Checkout handoff.
 
+async fn ensure_inventory_available(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart: &Cart,
+) -> Result<(), ApplicationError> {
+    for line in cart.lines().iter().filter(|line| line.track_inventory()) {
+        let available: Option<i64> = sqlx::query_scalar(
+            "SELECT on_hand_quantity \
+             FROM commerce.product_variants \
+             WHERE store_id = $1 AND id = $2 AND track_inventory FOR UPDATE",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(line.product_variant_id().as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if available.unwrap_or_default() < i64::from(line.quantity()) {
+            return Err(insufficient_inventory(line.product_variant_id()));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
     async fn create_shopper(&self, actor: &MachineActor) -> Result<ShopperId, ApplicationError> {
@@ -136,6 +159,21 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
+        if row.5 {
+            let available: Option<i64> = sqlx::query_scalar(
+                "SELECT on_hand_quantity \
+                 FROM commerce.product_variants \
+                 WHERE store_id = $1 AND id = $2 AND track_inventory",
+            )
+            .bind(actor.store_id.as_uuid())
+            .bind(product_variant_id.as_uuid())
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if available.unwrap_or_default() < i64::from(quantity) {
+                return Err(insufficient_inventory(product_variant_id));
+            }
+        }
         let line = CartLine::new(
             ProductId::from_uuid(row.0),
             product_variant_id,
@@ -306,18 +344,17 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
             CartStatus::Active,
             lines.clone(),
         )?;
-        let reservation_id = reserve_inventory(&mut transaction, actor, channel_id, &cart, expires_at)
-            .await?;
+        ensure_inventory_available(&mut transaction, actor, &cart).await?;
         let order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
         let order_number = generate_order_number(now)?;
         sqlx::query(
             "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, \
-              inventory_reservation_id, price_list_id, currency, locale, contact_email, \
+              price_list_id, currency, locale, contact_email, \
               subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
               shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,0,0,0,0,$13,$13)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,0,$12,$12)",
         )
         .bind(order_id.as_uuid())
         .bind(actor.store_id.as_uuid())
@@ -325,7 +362,6 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         .bind(channel_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
-        .bind(reservation_id.map(InventoryReservationId::as_uuid))
         .bind(header.1)
         .bind(currency.as_str())
         .bind(locale.as_str())
@@ -398,93 +434,27 @@ impl StorefrontSalesRepository for PostgresStorefrontSalesRepository {
         Ok(detail)
     }
 
-    async fn exchange_order_tracking_key(
-        &self,
-        actor: &MachineActor,
-        tracking_key: &SecretString,
-        now: OffsetDateTime,
-    ) -> Result<Option<OrderTrackingSession>, ApplicationError> {
-        if !valid_capability(tracking_key.expose_secret(), "otk_") {
-            return Ok(None);
-        }
-        let mut transaction = self.begin(actor).await?;
-        let key_digest: [u8; 32] = Sha256::digest(tracking_key.expose_secret()).into();
-        let key = sqlx::query_as::<_, (Uuid, Uuid)>(
-            "SELECT key.id, key.order_id FROM commerce.order_tracking_keys AS key \
-             INNER JOIN commerce.orders AS order_row ON order_row.store_id=key.store_id AND order_row.id=key.order_id \
-             WHERE key.store_id=$1 AND order_row.sales_channel_id=$2 AND key.secret_digest=$3 \
-               AND key.revoked_at IS NULL AND key.expires_at>$4 FOR UPDATE OF key",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
-        .bind(key_digest.as_slice())
-        .bind(now)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        let Some((tracking_key_id, order_id)) = key else {
-            transaction.commit().await.map_err(database_error)?;
-            return Ok(None);
-        };
-        let mut token_bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut token_bytes);
-        let access_token =
-            SecretString::from(format!("ots_{}", URL_SAFE_NO_PAD.encode(token_bytes)));
-        let access_digest: [u8; 32] = Sha256::digest(access_token.expose_secret()).into();
-        let expires_at = now + TRACKING_SESSION_LIFETIME;
-        sqlx::query(
-            "INSERT INTO commerce.order_tracking_sessions \
-             (id,store_id,tracking_key_id,access_digest,expires_at,created_at) \
-             VALUES($1,$2,$3,$4,$5,$6)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(actor.store_id.as_uuid())
-        .bind(tracking_key_id)
-        .bind(access_digest.as_slice())
-        .bind(expires_at)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        sqlx::query(
-            "UPDATE commerce.order_tracking_keys SET last_used_at=$1 WHERE store_id=$2 AND id=$3",
-        )
-        .bind(now)
-        .bind(actor.store_id.as_uuid())
-        .bind(tracking_key_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        let order = load_order(&mut transaction, actor, OrderId::from_uuid(order_id))
-            .await?
-            .ok_or_else(|| order_not_found(OrderId::from_uuid(order_id)))?;
-        transaction.commit().await.map_err(database_error)?;
-        Ok(Some(OrderTrackingSession {
-            access_token,
-            expires_at,
-            order,
-        }))
-    }
-
     async fn get_tracked_order(
         &self,
         actor: &MachineActor,
-        access_token: &SecretString,
+        tracking_token: &SecretString,
         now: OffsetDateTime,
     ) -> Result<Option<OrderDetail>, ApplicationError> {
-        if !valid_capability(access_token.expose_secret(), "ots_") {
+        if !valid_capability(tracking_token.expose_secret(), "ot_") {
             return Ok(None);
         }
         let mut transaction = self.begin(actor).await?;
-        let digest: [u8; 32] = Sha256::digest(access_token.expose_secret()).into();
+        let digest: [u8; 32] = Sha256::digest(tracking_token.expose_secret()).into();
         let order_id: Option<Uuid> = sqlx::query_scalar(
-            "UPDATE commerce.order_tracking_sessions AS session SET last_used_at=$1 \
-             FROM commerce.order_tracking_keys AS key, commerce.orders AS order_row \
-             WHERE session.store_id=$2 AND session.access_digest=$3 AND session.expires_at>$1 \
-               AND key.store_id=session.store_id AND key.id=session.tracking_key_id \
-               AND key.revoked_at IS NULL AND key.expires_at>$1 \
-               AND order_row.store_id=key.store_id AND order_row.id=key.order_id \
-               AND order_row.sales_channel_id=$4 RETURNING key.order_id",
+            "UPDATE commerce.order_tracking_tokens AS token SET last_used_at=$1 \
+             WHERE token.store_id=$2 AND token.token_digest=$3 AND token.expires_at>$1 \
+               AND EXISTS ( \
+                   SELECT 1 FROM commerce.orders AS order_row \
+                   WHERE order_row.store_id=token.store_id \
+                     AND order_row.id=token.order_id \
+                     AND order_row.sales_channel_id=$4 \
+               ) \
+             RETURNING token.order_id",
         )
         .bind(now)
         .bind(actor.store_id.as_uuid())

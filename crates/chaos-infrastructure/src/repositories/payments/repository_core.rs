@@ -13,7 +13,7 @@ use chaos_application::{
         StripeAccountDetail, StripeAccountPage, StripeAccountRepository,
         StripeReadiness, StripeReadinessJob, StripeReadinessQueue, StripeReadinessStatus,
         StripePaymentRepository,
-        PaymentShippingAddress, PaymentShippingOption,
+        PaymentShippingAddress,
         StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
         StripeCommandResult, StripeClientActionCommand, QueueJob, RefundDetail, ShopperActor,
         StripeWebhookEvent,
@@ -22,7 +22,6 @@ use chaos_application::{
 };
 use chaos_domain::{
     CurrencyCode,
-    inventory::InventoryReservationId,
     payments::{
         PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, StripeAccount, StripeAccountId,
         PaymentSecretReference, Refund, RefundId, RefundStatus,
@@ -41,17 +40,16 @@ use uuid::Uuid;
 
 use crate::repositories::{
     analytics::{AnalyticsEventToAppend, append_event},
-    inventory::{ReservationClosure, close_reservation},
     shared::idempotency::{self, IdempotencyScope},
 };
 
 const CREATE_ATTEMPT_OPERATION: &str = "payment_attempts.create.v1";
-const ORDER_TRACKING_KEY_LIFETIME: time::Duration = time::Duration::days(180);
+const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
 
-fn generate_order_tracking_key() -> (String, [u8; 32]) {
+fn generate_order_tracking_token() -> (String, [u8; 32]) {
     let mut secret = [0_u8; 32];
     rand::rng().fill_bytes(&mut secret);
-    let plaintext = format!("otk_{}", URL_SAFE_NO_PAD.encode(secret));
+    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
     let digest = Sha256::digest(plaintext.as_bytes()).into();
     (plaintext, digest)
 }

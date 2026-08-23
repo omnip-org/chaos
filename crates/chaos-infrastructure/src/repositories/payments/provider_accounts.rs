@@ -17,7 +17,7 @@ impl StripeAccountRepository for PostgresPaymentRepository {
                     COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                     credential_rotation_expires_at, webhook_rotation_expires_at, \
                     created_at, updated_at \
-             FROM commerce.provider_accounts \
+             FROM commerce.payment_provider_accounts \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
@@ -71,7 +71,7 @@ impl StripeAccountRepository for PostgresPaymentRepository {
         }
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
-            "INSERT INTO commerce.provider_accounts \
+            "INSERT INTO commerce.payment_provider_accounts \
              (id, store_id, provider, display_name, \
               credential_secret_reference, webhook_secret_reference, \
               readiness_status, readiness_snapshot, readiness_checked_at, \
@@ -142,7 +142,7 @@ impl StripeAccountRepository for PostgresPaymentRepository {
         }
         let readiness = configuration.readiness.as_ref();
         let result = sqlx::query(
-            "UPDATE commerce.provider_accounts SET display_name = $3, \
+            "UPDATE commerce.payment_provider_accounts SET display_name = $3, \
                     previous_credential_secret_reference = CASE \
                         WHEN credential_secret_reference IS NOT NULL \
                              AND credential_secret_reference IS DISTINCT FROM $4 \

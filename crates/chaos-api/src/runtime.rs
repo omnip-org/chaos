@@ -4,21 +4,18 @@ use std::sync::Arc;
 
 use chaos_application::{
     analytics::AnalyticsDeliveryWorker,
-    fulfillment::FulfillmentWorkers,
     payments::PaymentWorkers,
     ports::{
-        AnalyticsEventDestination, Clock, IntegrationQueue, ShippingProvider,
-        StripeAccountReadiness, StripePaymentGateway,
+        AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
+        StripePaymentGateway,
     },
+    shipping_events::ShippingEventWorkers,
 };
 use chaos_infrastructure::{
-    integrations::{
-        analytics::meta::MetaConversionsDestination, payments::stripe::StripeGateway,
-        shipping::easypost::EasyPostShippingProvider,
-    },
+    integrations::{analytics::meta::MetaConversionsDestination, payments::stripe::StripeGateway},
     repositories::{
-        PostgresAnalyticsDeliveryStore, PostgresFulfillmentRepository, PostgresIntegrationQueue,
-        PostgresPaymentRepository, PostgresSearchIndexer, PostgresShippingServiceRepository,
+        PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresPaymentRepository,
+        PostgresSearchIndexer, PostgresShippingEventRepository,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::provider_secrets::DynamicSecretResolver,
@@ -29,7 +26,7 @@ use chaos_infrastructure::{
 pub struct WorkerRuntime {
     pub infrastructure: AppState,
     pub payment_workers: Arc<PaymentWorkers>,
-    pub fulfillment_workers: Arc<FulfillmentWorkers>,
+    pub shipping_event_workers: Arc<ShippingEventWorkers>,
     pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
@@ -72,27 +69,15 @@ impl WorkerRuntime {
             payment_onboarding,
         );
 
-        let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
+        let shipping_event_repository = Arc::new(PostgresShippingEventRepository::new(
             infrastructure.runtime_pool(),
         ));
-        let shipping_repository = Arc::new(PostgresShippingServiceRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let shipping_provider: Arc<dyn ShippingProvider> = Arc::new(EasyPostShippingProvider::new(
-            settings.easypost_api_base_url.clone(),
-            settings.dependency_timeout,
-            dynamic_secrets,
-        )?);
-        let fulfillment_workers = FulfillmentWorkers::new(
-            fulfillment_repository,
-            shipping_repository,
-            [shipping_provider],
-        );
+        let shipping_event_workers = ShippingEventWorkers::new(shipping_event_repository);
 
         Ok(Self {
             infrastructure: infrastructure.clone(),
             payment_workers: Arc::new(payment_workers),
-            fulfillment_workers: Arc::new(fulfillment_workers),
+            shipping_event_workers: Arc::new(shipping_event_workers),
             analytics_delivery_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
             clock: Arc::new(SystemClock),

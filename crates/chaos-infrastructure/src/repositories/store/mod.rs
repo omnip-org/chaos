@@ -6,9 +6,7 @@ mod store_membership;
 mod store_provisioning;
 mod store_read;
 
-pub use publishable_key::{
-    PostgresPublishableKeyRepository, SecurePublishableKeyMaterialGenerator,
-};
+pub use publishable_key::{DefaultPublishableKeyGenerator, PostgresPublishableKeyRepository};
 pub use store_administration::PostgresStoreAdministrationRepository;
 pub use store_membership::PostgresStoreMembershipRepository;
 pub use store_provisioning::PostgresStoreProvisioningUnitOfWork;

@@ -40,11 +40,6 @@ pub trait StoreProvisioningTransaction: Send {
         channel: &SalesChannel,
     ) -> Result<(), ApplicationError>;
 
-    async fn insert_default_inventory_location(
-        &mut self,
-        store: &Store,
-    ) -> Result<(), ApplicationError>;
-
     async fn complete_store_creation(
         &mut self,
         request: &IdempotencyRequest,

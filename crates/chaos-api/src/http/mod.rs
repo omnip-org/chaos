@@ -7,11 +7,9 @@ use axum::Router;
 use chaos_application::{
     analytics::{AnalyticsAdministration, AnalyticsCollection},
     catalog::{
-        CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
-        CreateProduct, MediaAdministration, ReviewAdministration, StorefrontCollections,
-        StorefrontReviews,
+        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
+        MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
     },
-    fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
@@ -30,20 +28,18 @@ use chaos_infrastructure::{
     integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
         payments::stripe::{StripeGateway, StripeWebhookVerifier},
-        shipping::easypost::EasyPostShippingProvider,
     },
     repositories::{
-        PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
-        PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
+        DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
+        PostgresAnalyticsEventStore, PostgresCatalogManagementUnitOfWork,
         PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
-        PostgresMediaAssetRepository, PostgresOrderManagementRepository, PostgresPaymentRepository,
+        PostgresCollectionRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresOrderManagementRepository, PostgresPaymentRepository,
         PostgresPricingManagementRepository, PostgresPricingProvisioningUnitOfWork,
         PostgresPublishableKeyRepository, PostgresReviewRepository,
-        PostgresShippingServiceRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
-        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, SecurePublishableKeyMaterialGenerator,
+        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
+        PostgresStoreProvisioningUnitOfWork, PostgresStoreReadRepository,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
     },
     runtime::{clock::SystemClock, config::Settings, state::AppState},
     security::{
@@ -92,7 +88,6 @@ pub struct ApiState {
     pub review_administration: Arc<ReviewAdministration>,
     pub storefront_reviews: Arc<StorefrontReviews>,
     pub media_administration: Arc<MediaAdministration>,
-    pub catalog_localization: Arc<CatalogLocalization>,
     pub create_price_list: Arc<CreatePriceList>,
     pub pricing_management: Arc<PricingManagement>,
     pub store_queries: Arc<StoreQueries>,
@@ -107,9 +102,6 @@ pub struct ApiState {
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub stripe_account_administration: Arc<StripeAccountAdministration>,
-    pub fulfillment_management: Arc<FulfillmentManagement>,
-    pub shipping_management: Arc<ShippingManagement>,
-    pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
 }
@@ -221,9 +213,6 @@ impl ApiState {
             )),
             media_storage,
         );
-        let catalog_localization = CatalogLocalization::new(Arc::new(
-            PostgresCatalogLocalizationRepository::new(infrastructure.runtime_pool()),
-        ));
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningUnitOfWork::new(infrastructure.runtime_pool()),
         ));
@@ -245,7 +234,7 @@ impl ApiState {
         ));
         let publishable_key_management = PublishableKeyManagement::new(
             publishable_key_repository.clone(),
-            Arc::new(SecurePublishableKeyMaterialGenerator),
+            Arc::new(DefaultPublishableKeyGenerator),
         );
         let publishable_key_authentication =
             PublishableKeyAuthentication::new(publishable_key_repository);
@@ -301,25 +290,6 @@ impl ApiState {
         );
         let stripe_account_administration =
             StripeAccountAdministration::new(payment_repository.clone(), payment_onboarding);
-        let fulfillment_repository = Arc::new(PostgresFulfillmentRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let fulfillment_management = FulfillmentManagement::new(fulfillment_repository);
-        let shipping_repository = Arc::new(PostgresShippingServiceRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let shipping_management = ShippingManagement::new(shipping_repository.clone());
-        let shipping_provider: Arc<dyn chaos_application::ports::ShippingProvider> =
-            Arc::new(EasyPostShippingProvider::new(
-                settings.easypost_api_base_url.clone(),
-                settings.dependency_timeout,
-                dynamic_secrets,
-            )?);
-        let shipping_provider_administration = ShippingProviderAdministration::new(
-            shipping_repository.clone(),
-            shipping_repository,
-            [shipping_provider],
-        );
         let shopper_credentials = HmacShopperCredentialCodec::new(
             settings.shopper_token_active_key_id.clone(),
             settings.shopper_token_active_secret.as_bytes().to_vec(),
@@ -347,7 +317,6 @@ impl ApiState {
             review_administration: Arc::new(review_administration),
             storefront_reviews: Arc::new(storefront_reviews),
             media_administration: Arc::new(media_administration),
-            catalog_localization: Arc::new(catalog_localization),
             create_price_list: Arc::new(create_price_list),
             pricing_management: Arc::new(pricing_management),
             store_queries: Arc::new(store_queries),
@@ -362,9 +331,6 @@ impl ApiState {
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             stripe_account_administration: Arc::new(stripe_account_administration),
-            fulfillment_management: Arc::new(fulfillment_management),
-            shipping_management: Arc::new(shipping_management),
-            shipping_provider_administration: Arc::new(shipping_provider_administration),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),
         })
@@ -387,14 +353,10 @@ pub fn router(state: ApiState) -> Router {
             create_price_list: state.create_price_list.clone(),
             inventory_management: state.inventory_management.clone(),
             order_management: state.order_management.clone(),
-            fulfillment_management: state.fulfillment_management.clone(),
-            shipping_management: state.shipping_management.clone(),
-            shipping_provider_administration: state.shipping_provider_administration.clone(),
             store_administration: state.store_administration.clone(),
             payment_service: state.payment_service.clone(),
             stripe_account_administration: state.stripe_account_administration.clone(),
             media_administration: state.media_administration.clone(),
-            catalog_localization: state.catalog_localization.clone(),
             review_administration: state.review_administration.clone(),
             publishable_key_management: state.publishable_key_management.clone(),
             provider_secret_management: state.provider_secret_management.clone(),

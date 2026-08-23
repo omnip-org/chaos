@@ -5,11 +5,9 @@ mod catalog_management;
 mod catalog_read;
 mod clock;
 mod collection;
-mod fulfillment;
 mod identity;
 mod integration;
 mod inventory;
-mod localization;
 mod media;
 mod payments;
 mod pricing;
@@ -18,6 +16,7 @@ mod provider_secret;
 mod publishable_key;
 mod review;
 mod sales;
+mod shipping_events;
 mod shopper;
 mod store;
 mod store_administration;
@@ -47,34 +46,13 @@ pub use collection::{
     CollectionDetail, CollectionListItem, CollectionProductItem, CollectionPublicationRecord,
     CollectionRepository, CreateCollectionRecord, StorefrontCollectionItem,
 };
-pub use fulfillment::{
-    CancelShippingLabelCommand, FulfillmentAllocationInput, FulfillmentDetail, FulfillmentEventJob,
-    FulfillmentEventQueue, FulfillmentRepository, PreparedShippingLabelCancellation,
-    PreparedShippingLabelPurchase, PreparedShippingQuote, ProviderTrackingStatus,
-    PurchaseShippingLabelCommand, PurchasedShippingLabel, ReconcileShippingLabelCommand,
-    ReconciledShippingLabel, RefreshTrackingCommand, ReturnDetail, ReturnLineInput,
-    ReturnReceiptInput, ShippingAddress, ShippingCancellationJob, ShippingCancellationStatus,
-    ShippingLabelDetail, ShippingOperationRepository, ShippingParcel, ShippingProvider,
-    ShippingProviderAccountConfiguration, ShippingProviderAccountDetail,
-    ShippingProviderAccountRepository, ShippingQuoteCommand, ShippingRateQuote,
-    ShippingRateQuoteDetail, ShippingSecretResolver, ShippingServiceDetail,
-    ShippingServiceRepository, ShippingTrackingJob, ShippingTrackingQueue,
-    ShippingTrackingSnapshot,
-};
 pub use identity::{
     AccessKeyListItem, AccessKeyMaterialGenerator, AccessKeyRepository, AccessTokenCodec,
     AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityAuthentication,
     IdentityRepository, McpPrincipal, VerifiedExternalIdentity,
 };
 pub use integration::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, QueueJob};
-pub use inventory::{
-    InventoryAdjustment, InventoryItemView, InventoryLocationItem, InventoryRepository,
-    InventoryReservationDetail, InventoryReservationTransition,
-};
-pub use localization::{
-    CatalogLocalizationRepository, CollectionTranslation, MediaTranslation, ProductTranslation,
-    ProductVariantTranslation, StoreLocaleConfiguration,
-};
+pub use inventory::{InventoryAdjustment, InventoryRepository, VariantInventoryView};
 pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetRepository, MediaStorage,
     MediaUploadRequest, PendingMediaUpload, StoredMediaObject,
@@ -95,15 +73,16 @@ pub use pricing_management::{
 };
 pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{
-    GeneratedPublishableKeyMaterial, MachineActor, PublishableKeyCreationStatus,
-    PublishableKeyListItem, PublishableKeyMaterialGenerator, PublishableKeyRepository,
+    GeneratedPublishableKey, MachineActor, PublishableKeyGenerator, PublishableKeyListItem,
+    PublishableKeyRepository,
 };
 pub use review::{ReviewRepository, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, OrderDetail, OrderLineItem, OrderListFilter,
-    OrderManagementRepository, OrderPage, OrderTrackingSession, OrderTransitionItem,
-    StorefrontSalesRepository, StripeCheckoutDraft,
+    OrderManagementRepository, OrderPage, OrderTransitionItem, StorefrontSalesRepository,
+    StripeCheckoutDraft,
 };
+pub use shipping_events::{ShippingEventJob, ShippingEventQueue};
 pub use shopper::{ShopperActor, ShopperCredentialCodec};
 pub use store::{IdempotencyRequest, StoreProvisioningTransaction, StoreProvisioningUnitOfWork};
 pub use store_administration::{

@@ -1,6 +1,5 @@
 mod collections;
 mod create_product;
-mod localization;
 mod management;
 mod media;
 mod metadata;
@@ -15,11 +14,6 @@ pub use collections::{
 pub use create_product::{
     CreateProduct, CreateProductInput, CreateProductOptionInput, CreateProductOutput,
     CreateProductSelectedOptionInput, CreateProductVariantInput,
-};
-pub use localization::{
-    CatalogLocalization, MediaTranslationActionInput, ProductVariantTranslationInput,
-    StoreLocaleInput, TranslationActionInput, UpsertCollectionTranslationInput,
-    UpsertMediaTranslationInput, UpsertProductTranslationInput,
 };
 pub use management::{
     CatalogManagement, ChangeProductStatusInput, ProductPublicationInput, UpdateProductInput,

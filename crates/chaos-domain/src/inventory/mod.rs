@@ -1,18 +1,6 @@
-//! Inventory domain model: locations, balances, and shopper reservations.
+//! Variant-level inventory domain model.
 
-use std::collections::HashSet;
+use crate::{DomainError, FieldViolation};
 
-use time::OffsetDateTime;
-use uuid::Uuid;
-
-use crate::{DomainError, FieldViolation, store::StoreId};
-
-include!("ids.rs");
-include!("locations.rs");
 include!("balance.rs");
-include!("reservations.rs");
 include!("validation.rs");
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

@@ -3,24 +3,21 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_application::{
     ApplicationError,
     ports::{
         CartDetail, CartLineItem, IdempotencyRequest, MachineActor, OrderDetail, OrderLineItem,
-        OrderTrackingSession, OrderTransitionItem, ShopperActor, StorefrontMediaAsset,
-        StorefrontSalesRepository, StripeCheckoutDraft,
+        OrderTransitionItem, ShopperActor, StorefrontMediaAsset, StorefrontSalesRepository,
+        StripeCheckoutDraft,
     },
 };
 use chaos_domain::{
     CurrencyCode, Locale,
     catalog::{ProductId, ProductVariantId},
-    fulfillment::{ShippingSelection, ShippingServiceId},
-    inventory::{InventoryBalance, InventoryReservationId},
     pricing::{Money, PriceListId},
     sales::{
-        Cart, CartId, CartLine, CartStatus, OrderContact, OrderDeliveryStatus,
-        OrderFulfillmentStatus, OrderId, OrderNumber, OrderStatus, PostalAddress, ShopperId,
+        Cart, CartId, CartLine, CartStatus, OrderContact, OrderId, OrderNumber,
+        OrderPaymentStatus, OrderShippingStatus, OrderStatus, PostalAddress, ShopperId,
         OrderIdentity,
     },
     store::SalesChannelId,
@@ -41,7 +38,6 @@ use crate::repositories::{
 
 const CREATE_CART_OPERATION: &str = "carts.create.v1";
 const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const TRACKING_SESSION_LIFETIME: time::Duration = time::Duration::minutes(30);
 
 fn generate_order_number(now: OffsetDateTime) -> Result<OrderNumber, ApplicationError> {
     let mut random = [0_u8; 8];
@@ -96,21 +92,31 @@ type CartMediaRow = (
     i16,
     String,
 );
-type OrderHeaderRow = (
-    Uuid,
-    Uuid,
-    Option<Uuid>,
-    Uuid,
-    String,
-    String,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+#[derive(sqlx::FromRow)]
+struct OrderHeaderRow {
+    id: Uuid,
+    shopper_id: Uuid,
+    price_list_id: Uuid,
+    currency: String,
+    status: String,
+    payment_status: String,
+    shipping_status: String,
+    subtotal_amount_minor: i64,
+    discount_amount_minor: i64,
+    tax_amount_minor: i64,
+    shipping_amount_minor: i64,
+    total_amount_minor: i64,
+    refunded_amount_minor: i64,
+    stripe_checkout_session_id: Option<String>,
+    stripe_payment_intent_id: Option<String>,
+    stripe_charge_id: Option<String>,
+    shipping_provider: Option<String>,
+    shipping_provider_reference: Option<String>,
+    shipping_tracking_number: Option<String>,
+    shipping_tracking_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
 type OrderLineRow = (
     Uuid,
     Uuid,

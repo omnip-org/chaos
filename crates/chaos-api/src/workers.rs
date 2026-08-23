@@ -11,8 +11,8 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
-    let fulfillment_worker = tokio::spawn(fulfillment_worker_loop(
-        runtime.fulfillment_workers.clone(),
+    let shipping_event_worker = tokio::spawn(shipping_event_worker_loop(
+        runtime.shipping_event_workers.clone(),
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
@@ -30,7 +30,11 @@ pub async fn run(
     shutdown_signal(lifecycle).await;
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
-        drain_worker("fulfillment", fulfillment_worker, worker_shutdown_timeout),
+        drain_worker(
+            "shipping-events",
+            shipping_event_worker,
+            worker_shutdown_timeout
+        ),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
     );
@@ -160,8 +164,8 @@ async fn payment_worker_loop(
     }
 }
 
-async fn fulfillment_worker_loop(
-    workers: std::sync::Arc<chaos_application::fulfillment::FulfillmentWorkers>,
+async fn shipping_event_worker_loop(
+    workers: std::sync::Arc<chaos_application::shipping_events::ShippingEventWorkers>,
     clock: std::sync::Arc<dyn chaos_application::ports::Clock>,
     lifecycle: Lifecycle,
 ) {
@@ -173,19 +177,7 @@ async fn fulfillment_worker_loop(
         match workers.run_batch(now, 50).await {
             Ok(count) => processed += count,
             Err(error) => {
-                tracing::warn!(%worker_id, %error, "fulfillment event batch failed");
-            }
-        }
-        match workers.run_tracking_batch(worker_id, now, 25).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "shipping tracking batch failed");
-            }
-        }
-        match workers.run_cancellation_batch(worker_id, now, 25).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "shipping cancellation batch failed");
+                tracing::warn!(%worker_id, %error, "shipping event batch failed");
             }
         }
         tokio::time::sleep(backoff.observe(processed)).await;

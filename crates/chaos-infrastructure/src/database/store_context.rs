@@ -129,7 +129,7 @@ mod tests {
             [(channel_a, store_a, "web-a"), (channel_b, store_b, "web-b")]
         {
             sqlx::query(
-                "INSERT INTO commerce.sales_channels \
+                "INSERT INTO commerce.store_sales_channels \
                  (id, store_id, code, name, is_default) \
                  VALUES ($1, $2, $3, $3, true)",
             )
@@ -155,20 +155,18 @@ mod tests {
             .await
             .unwrap();
         }
-        for (key_id, store_id, identifier) in [
-            (key_a, store_a, "RlsKeyAccountA01"),
-            (key_b, store_b, "RlsKeyAccountB02"),
+        for (key_id, store_id, public_key) in [
+            (key_a, store_a, "pk_123456789ABCDEFGHJKLMNPQ"),
+            (key_b, store_b, "pk_23456789ABCDEFGHJKLMNPQR"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.publishable_keys \
-                 (id, store_id, key_identifier, secret_digest, \
-                  display_suffix, name, created_by_user_id) \
-                 VALUES ($1, $2, $3, $4, 'abcd', 'RLS test key', $5)",
+                "INSERT INTO commerce.store_publishable_keys \
+                 (id, store_id, public_key, name, created_by_user_id) \
+                 VALUES ($1, $2, $3, 'RLS test key', $4)",
             )
             .bind(key_id)
             .bind(store_id)
-            .bind(identifier)
-            .bind(vec![7_u8; 32])
+            .bind(public_key)
             .bind(user_id)
             .execute(&pool)
             .await
@@ -184,7 +182,7 @@ mod tests {
         }
         for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(
-                "INSERT INTO commerce.provider_accounts \
+                "INSERT INTO commerce.payment_provider_accounts \
                  (id, store_id, provider) \
                  VALUES ($1, $2, 'stripe_checkout')",
             )
@@ -208,12 +206,12 @@ mod tests {
                 .await
                 .unwrap();
         let visible_key_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.publishable_keys ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM commerce.store_publishable_keys ORDER BY id")
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
         let visible_channel_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.sales_channels ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM commerce.store_sales_channels ORDER BY id")
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
@@ -228,7 +226,7 @@ mod tests {
                 .await
                 .unwrap();
         let visible_provider_account_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.provider_accounts ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM commerce.payment_provider_accounts ORDER BY id")
                 .fetch_all(transaction.connection())
                 .await
                 .unwrap();
@@ -241,7 +239,7 @@ mod tests {
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
-        sqlx::query("DELETE FROM commerce.provider_accounts WHERE store_id = ANY($1)")
+        sqlx::query("DELETE FROM commerce.payment_provider_accounts WHERE store_id = ANY($1)")
             .bind(vec![store_a, store_b])
             .execute(&pool)
             .await

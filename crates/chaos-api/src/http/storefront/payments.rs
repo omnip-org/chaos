@@ -83,7 +83,6 @@ struct CreateEmbeddedCheckoutBody {
 #[derive(Serialize)]
 struct EmbeddedCheckoutData {
     order_id: Uuid,
-    payment_attempt_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -139,7 +138,7 @@ async fn create_embedded_checkout(
     return_url
         .query_pairs_mut()
         .append_pair("order_id", &draft.order_id.as_uuid().to_string());
-    let attempt = state
+    state
         .payment_service
         .create_attempt(CreatePaymentAttemptInput {
             actor,
@@ -154,7 +153,6 @@ async fn create_embedded_checkout(
         .await?;
     Ok(ApiResponse::created(EmbeddedCheckoutData {
         order_id: draft.order_id.as_uuid(),
-        payment_attempt_id: attempt.id.as_uuid(),
     }))
 }
 

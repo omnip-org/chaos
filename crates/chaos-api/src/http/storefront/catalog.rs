@@ -47,6 +47,8 @@ struct StorefrontVariantData {
     #[serde(skip_serializing_if = "Option::is_none")]
     sku: Option<String>,
     requires_shipping: bool,
+    track_inventory: bool,
+    on_hand_quantity: i64,
     price: StorefrontPriceData,
     selected_options: Vec<StorefrontSelectedOptionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,6 +238,8 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
         title: variant.title,
         sku: variant.sku,
         requires_shipping: variant.requires_shipping,
+        track_inventory: variant.track_inventory,
+        on_hand_quantity: variant.on_hand_quantity,
         price: StorefrontPriceData {
             amount_minor: variant.amount_minor,
             currency: variant.currency.as_str().to_owned(),
@@ -255,15 +259,13 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use chaos_application::ports::{
-        GeneratedPublishableKeyMaterial, PublishableKeyMaterialGenerator,
-    };
+    use chaos_application::ports::{GeneratedPublishableKey, PublishableKeyGenerator};
     use chaos_domain::{
         catalog::{ProductId, ProductVariantId},
         identity::UserId,
         store::{PublishableKeyId, SalesChannelId, StoreId},
     };
-    use chaos_infrastructure::repositories::SecurePublishableKeyMaterialGenerator;
+    use chaos_infrastructure::repositories::DefaultPublishableKeyGenerator;
     use secrecy::ExposeSecret;
     use sqlx::{PgPool, postgres::PgPoolOptions};
     use tower::ServiceExt;
@@ -279,20 +281,17 @@ mod tests {
         pool: &PgPool,
         store_id: StoreId,
         user_id: UserId,
-    ) -> GeneratedPublishableKeyMaterial {
-        let material = SecurePublishableKeyMaterialGenerator.generate();
+    ) -> GeneratedPublishableKey {
+        let material = DefaultPublishableKeyGenerator.generate();
         let key_id = PublishableKeyId::new();
         sqlx::query(
-            "INSERT INTO commerce.publishable_keys \
-             (id, store_id, key_identifier, secret_digest, \
-              display_suffix, name, created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, 'Storefront HTTP', $6)",
+            "INSERT INTO commerce.store_publishable_keys \
+             (id, store_id, public_key, name, created_by_user_id) \
+             VALUES ($1, $2, $3, 'Storefront HTTP', $4)",
         )
         .bind(key_id.as_uuid())
         .bind(store_id.as_uuid())
-        .bind(&material.key_identifier)
-        .bind(material.secret_digest.as_slice())
-        .bind(&material.display_suffix)
+        .bind(&material.public_key)
         .bind(user_id.as_uuid())
         .execute(pool)
         .await
@@ -336,7 +335,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.sales_channels \
+            "INSERT INTO commerce.store_sales_channels \
              (id, store_id, code, name, is_default) \
              VALUES ($1, $2, 'web', 'Web', true)",
         )
@@ -407,49 +406,6 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        for locale in ["zh", "zh-CN", "fr"] {
-            sqlx::query(
-                "INSERT INTO commerce.store_locales \
-                 (store_id, locale, created_by_user_id, created_at) \
-                 VALUES ($1, $2, $3, CURRENT_TIMESTAMP)",
-            )
-            .bind(store_id.as_uuid())
-            .bind(locale)
-            .bind(user_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        for (locale, title) in [("zh", "Language Shirt"), ("zh-CN", "Regional Shirt")] {
-            sqlx::query(
-                "INSERT INTO commerce.product_translations \
-                 (store_id, product_id, locale, title, description, \
-                  updated_by_user_id, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, 'Localized description', $5, \
-                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-            )
-            .bind(store_id.as_uuid())
-            .bind(product_id.as_uuid())
-            .bind(locale)
-            .bind(title)
-            .bind(user_id.as_uuid())
-            .execute(&owner_pool)
-            .await
-            .unwrap();
-        }
-        sqlx::query(
-            "INSERT INTO commerce.product_variant_translations \
-             (store_id, product_id, product_variant_id, locale, title, \
-              updated_by_user_id, created_at, updated_at) \
-             VALUES ($1, $2, $3, 'zh', 'Localized Default', $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-        )
-        .bind(store_id.as_uuid())
-        .bind(product_id.as_uuid())
-        .bind(variant_id.as_uuid())
-        .bind(user_id.as_uuid())
-        .execute(&owner_pool)
-        .await
-        .unwrap();
         let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
@@ -461,7 +417,7 @@ mod tests {
             .unwrap()
                 >= 2
         );
-        let authorize = format!("Bearer {}", material.plaintext.expose_secret());
+        let authorize = format!("Bearer {}", material.public_key);
 
         let response = router(state.clone())
             .oneshot(
@@ -493,52 +449,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-
-        let response = router(state.clone())
-            .oneshot(
-                Request::get("/store/v1/products/public-shirt?locale=zh-CN")
-                    .header("authorization", &authorize)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let localized = response_json(response).await;
-        assert_eq!(localized["data"]["locale"], "zh-CN");
-        assert_eq!(localized["data"]["title"], "Regional Shirt");
-        assert_eq!(
-            localized["data"]["variants"][0]["title"],
-            "Localized Default"
-        );
-
-        let response = router(state.clone())
-            .oneshot(
-                Request::get("/store/v1/products/public-shirt?locale=fr")
-                    .header("authorization", &authorize)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let fallback = response_json(response).await;
-        assert_eq!(fallback["data"]["locale"], "fr");
-        assert_eq!(fallback["data"]["title"], "Public Shirt");
-
-        assert_eq!(
-            router(state.clone())
-                .oneshot(
-                    Request::get("/store/v1/products/public-shirt?locale=es")
-                        .header("authorization", &authorize)
-                        .body(Body::empty())
-                        .unwrap()
-                )
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNPROCESSABLE_ENTITY
-        );
 
         let response = router(state.clone())
             .oneshot(

@@ -41,6 +41,8 @@ export interface ProductVariant {
   title: string;
   sku?: string;
   requires_shipping: boolean;
+  track_inventory: boolean;
+  on_hand_quantity: number;
   price: Price;
   selected_options: ProductSelectedOption[];
   metadata?: unknown;
@@ -144,16 +146,6 @@ export interface PostalAddress {
   country_code: string;
 }
 
-export interface ShippingOption {
-  service_id: UUID;
-  code: string;
-  name: string;
-  amount_minor: number;
-  currency: CurrencyCode;
-  estimated_min_days: number;
-  estimated_max_days: number;
-}
-
 export interface OrderLine {
   product_id: UUID;
   product_variant_id: UUID;
@@ -178,32 +170,32 @@ export interface OrderTransition {
 export interface Order {
   id: UUID;
   order_number: string;
-  inventory_reservation_id?: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
   locale: Locale;
   status: "pending" | "confirmed" | "cancelled";
-  fulfillment_status: "unfulfilled" | "partially_fulfilled" | "fulfilled";
-  delivery_status: "not_delivered" | "partially_delivered" | "delivered";
+  payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+  shipping_status: "pending" | "shipped" | "delivered" | "cancelled";
   contact: OrderContact;
   billing_address?: PostalAddress;
   shipping_address?: PostalAddress;
-  shipping?: ShippingOption;
   subtotal_amount_minor: number;
   discount_amount_minor: number;
   tax_amount_minor: number;
   shipping_amount_minor: number;
   total_amount_minor: number;
+  refunded_amount_minor: number;
+  stripe_checkout_session_id?: string;
+  stripe_payment_intent_id?: string;
+  stripe_charge_id?: string;
+  shipping_provider?: string;
+  shipping_provider_reference?: string;
+  shipping_tracking_number?: string;
+  shipping_tracking_url?: string;
   lines: OrderLine[];
   transitions: OrderTransition[];
   created_at: string;
   updated_at: string;
-}
-
-export interface OrderTrackingSession {
-  access_token: string;
-  expires_at: string;
-  order: Order;
 }
 
 export interface CreatePaymentAttemptRequest {
@@ -219,7 +211,6 @@ export interface CreateEmbeddedCheckoutRequest {
 
 export interface EmbeddedCheckoutSession {
   order_id: UUID;
-  payment_attempt_id: UUID;
 }
 
 export interface PaymentAttempt {

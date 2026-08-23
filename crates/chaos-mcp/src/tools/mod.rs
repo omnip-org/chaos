@@ -9,10 +9,9 @@ use std::sync::Arc;
 use chaos_application::{
     analytics::AnalyticsAdministration,
     catalog::{
-        CatalogLocalization, CatalogManagement, CatalogQueries, CollectionAdministration,
-        CreateProduct, MediaAdministration, ReviewAdministration,
+        CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
+        MediaAdministration, ReviewAdministration,
     },
-    fulfillment::{FulfillmentManagement, ShippingManagement, ShippingProviderAdministration},
     identity::AccessKeyAuthentication,
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
@@ -43,14 +42,10 @@ pub struct McpState {
     pub create_price_list: Arc<CreatePriceList>,
     pub inventory_management: Arc<InventoryManagement>,
     pub order_management: Arc<OrderManagement>,
-    pub fulfillment_management: Arc<FulfillmentManagement>,
-    pub shipping_management: Arc<ShippingManagement>,
-    pub shipping_provider_administration: Arc<ShippingProviderAdministration>,
     pub store_administration: Arc<StoreAdministration>,
     pub payment_service: Arc<PaymentService>,
     pub stripe_account_administration: Arc<StripeAccountAdministration>,
     pub media_administration: Arc<MediaAdministration>,
-    pub catalog_localization: Arc<CatalogLocalization>,
     pub review_administration: Arc<ReviewAdministration>,
     pub publishable_key_management: Arc<PublishableKeyManagement>,
     pub provider_secret_management: Arc<ProviderSecretManagement>,
@@ -80,7 +75,7 @@ impl ChaosMcp {
         router
     }
 
-    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 16] {
+    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 14] {
         [
             Self::products_tool_router(),
             Self::stores_tool_router(),
@@ -88,12 +83,10 @@ impl ChaosMcp {
             Self::inventory_tool_router(),
             Self::orders_tool_router(),
             Self::collections_tool_router(),
-            Self::fulfillment_tool_router(),
             Self::store_admin_tool_router(),
             Self::payments_tool_router(),
             Self::payment_providers_tool_router(),
             Self::media_tool_router(),
-            Self::localization_tool_router(),
             Self::reviews_tool_router(),
             Self::publishable_keys_tool_router(),
             Self::analytics_tool_router(),

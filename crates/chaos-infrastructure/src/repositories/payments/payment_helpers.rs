@@ -109,7 +109,7 @@ async fn load_stripe_account(
                 readiness_status, readiness_checked_at, readiness_valid_until, \
                 COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
                 credential_rotation_expires_at, webhook_rotation_expires_at, \
-                created_at, updated_at FROM commerce.provider_accounts \
+                created_at, updated_at FROM commerce.payment_provider_accounts \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
@@ -192,7 +192,7 @@ async fn complete_stripe_account(
 fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database) = &error {
         let (code, message) = match database.constraint() {
-            Some("provider_accounts_store_provider_key") => (
+            Some("payment_provider_accounts_store_provider_key") => (
                 "payment_provider_already_configured",
                 "the Payment Provider is already configured for this Store",
             ),
@@ -227,13 +227,6 @@ fn payment_order_not_pending() -> ApplicationError {
     ApplicationError::Conflict {
         code: "order_not_pending_payment",
         message: "the Order is not awaiting payment",
-    }
-}
-
-fn checkout_configuration_unavailable() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "checkout_configuration_unavailable",
-        message: "no active shipping service is configured for this destination",
     }
 }
 

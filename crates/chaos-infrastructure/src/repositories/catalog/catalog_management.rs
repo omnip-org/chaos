@@ -227,7 +227,7 @@ impl CatalogManagementTransaction for PostgresCatalogManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         sqlx::query_scalar(
             "SELECT EXISTS (\
-                SELECT 1 FROM commerce.sales_channels \
+                SELECT 1 FROM commerce.store_sales_channels \
                 WHERE store_id = $1 AND id = $2 \
                   AND status = 'active'\
              )",
@@ -421,7 +421,7 @@ mod tests {
             (other_channel_id, other_store_id, "other-web"),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.sales_channels \
+                "INSERT INTO commerce.store_sales_channels \
                  (id, store_id, code, name) \
                  VALUES ($1, $2, $3, 'Web')",
             )

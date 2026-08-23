@@ -660,55 +660,13 @@
         }
       }
     },
-    "/order-tracking-sessions": {
-      "post": {
-        "operationId": "exchangeOrderTrackingKey",
-        "tags": [
-          "Orders"
-        ],
-        "summary": "Exchange an emailed Order tracking key for a short-lived session",
-        "security": [
-          {
-            "publishableKey": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExchangeOrderTrackingKey"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Tracking session created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OrderTrackingSessionEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
     "/order-tracking-orders": {
       "post": {
         "operationId": "getTrackedOrder",
         "tags": [
           "Orders"
         ],
-        "summary": "Read one Order with a short-lived tracking session",
+        "summary": "Read one Order with a tracking token",
         "security": [
           {
             "publishableKey": []
@@ -719,7 +677,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OrderTrackingAccess"
+                "$ref": "#/components/schemas/OrderTrackingToken"
               }
             }
           }
@@ -916,7 +874,7 @@
       "publishableKey": {
         "type": "http",
         "scheme": "bearer",
-        "description": "An active Store-scoped public key with the public_<identifier>_<secret> format."
+        "description": "An active Store-scoped public key in pk_<24-character Base58 format."
       }
     },
     "parameters": {
@@ -1216,6 +1174,8 @@
           "id",
           "title",
           "requires_shipping",
+          "track_inventory",
+          "on_hand_quantity",
           "price",
           "selected_options"
         ],
@@ -1232,6 +1192,14 @@
           },
           "requires_shipping": {
             "type": "boolean"
+          },
+          "track_inventory": {
+            "type": "boolean"
+          },
+          "on_hand_quantity": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "price": {
             "$ref": "#/components/schemas/Price"
@@ -1682,15 +1650,10 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "order_id",
-          "payment_attempt_id"
+          "order_id"
         ],
         "properties": {
           "order_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "payment_attempt_id": {
             "type": "string",
             "format": "uuid"
           }
@@ -1705,53 +1668,6 @@
         "properties": {
           "data": {
             "$ref": "#/components/schemas/EmbeddedCheckoutSession"
-          }
-        }
-      },
-      "ShippingOption": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "service_id",
-          "code",
-          "name",
-          "amount_minor",
-          "currency",
-          "estimated_min_days",
-          "estimated_max_days"
-        ],
-        "properties": {
-          "service_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "code": {
-            "type": "string",
-            "pattern": "^[a-z0-9-]{1,64}$"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120
-          },
-          "amount_minor": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "currency": {
-            "type": "string",
-            "pattern": "^[A-Z]{3}$"
-          },
-          "estimated_min_days": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 365
-          },
-          "estimated_max_days": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 365
           }
         }
       },
@@ -1821,14 +1737,15 @@
           "currency",
           "locale",
           "status",
-          "fulfillment_status",
-          "delivery_status",
+          "payment_status",
+          "shipping_status",
           "contact",
           "subtotal_amount_minor",
           "discount_amount_minor",
           "tax_amount_minor",
           "shipping_amount_minor",
           "total_amount_minor",
+          "refunded_amount_minor",
           "lines",
           "transitions",
           "created_at",
@@ -1842,10 +1759,6 @@
           "order_number": {
             "type": "string",
             "pattern": "^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$"
-          },
-          "inventory_reservation_id": {
-            "type": "string",
-            "format": "uuid"
           },
           "price_list_id": {
             "type": "string",
@@ -1866,20 +1779,23 @@
               "cancelled"
             ]
           },
-          "fulfillment_status": {
+          "payment_status": {
             "type": "string",
             "enum": [
-              "unfulfilled",
-              "partially_fulfilled",
-              "fulfilled"
+              "pending",
+              "paid",
+              "failed",
+              "partially_refunded",
+              "refunded"
             ]
           },
-          "delivery_status": {
+          "shipping_status": {
             "type": "string",
             "enum": [
-              "not_delivered",
-              "partially_delivered",
-              "delivered"
+              "pending",
+              "shipped",
+              "delivered",
+              "cancelled"
             ]
           },
           "contact": {
@@ -1890,9 +1806,6 @@
           },
           "shipping_address": {
             "$ref": "#/components/schemas/PostalAddress"
-          },
-          "shipping": {
-            "$ref": "#/components/schemas/ShippingOption"
           },
           "subtotal_amount_minor": {
             "type": "integer",
@@ -1918,6 +1831,33 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "refunded_amount_minor": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stripe_checkout_session_id": {
+            "type": "string"
+          },
+          "stripe_payment_intent_id": {
+            "type": "string"
+          },
+          "stripe_charge_id": {
+            "type": "string"
+          },
+          "shipping_provider": {
+            "type": "string"
+          },
+          "shipping_provider_reference": {
+            "type": "string"
+          },
+          "shipping_tracking_number": {
+            "type": "string"
+          },
+          "shipping_tracking_url": {
+            "type": "string",
+            "format": "uri"
           },
           "lines": {
             "type": "array",
@@ -1955,63 +1895,16 @@
           }
         }
       },
-      "ExchangeOrderTrackingKey": {
+      "OrderTrackingToken": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "tracking_key"
+          "tracking_token"
         ],
         "properties": {
-          "tracking_key": {
+          "tracking_token": {
             "type": "string",
-            "pattern": "^otk_[A-Za-z0-9_-]{43}$"
-          }
-        }
-      },
-      "OrderTrackingAccess": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "access_token"
-        ],
-        "properties": {
-          "access_token": {
-            "type": "string",
-            "pattern": "^ots_[A-Za-z0-9_-]{43}$"
-          }
-        }
-      },
-      "OrderTrackingSession": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "access_token",
-          "expires_at",
-          "order"
-        ],
-        "properties": {
-          "access_token": {
-            "type": "string",
-            "pattern": "^ots_[A-Za-z0-9_-]{43}$"
-          },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "order": {
-            "$ref": "#/components/schemas/Order"
-          }
-        }
-      },
-      "OrderTrackingSessionEnvelope": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "data"
-        ],
-        "properties": {
-          "data": {
-            "$ref": "#/components/schemas/OrderTrackingSession"
+            "pattern": "^ot_[A-Za-z0-9_-]{43}$"
           }
         }
       },

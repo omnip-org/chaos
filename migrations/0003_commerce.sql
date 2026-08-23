@@ -66,7 +66,7 @@ CREATE TABLE commerce.store_locales (
     )
 );
 
-CREATE TABLE commerce.sales_channels (
+CREATE TABLE commerce.store_sales_channels (
     id                   UUID                              NOT NULL PRIMARY KEY,
     store_id             UUID                              NOT NULL,
     code                 extensions.citext                 NOT NULL,
@@ -80,10 +80,10 @@ CREATE TABLE commerce.sales_channels (
     UNIQUE (store_id, id),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT sales_channels_code_format_check CHECK (
+    CONSTRAINT store_sales_channels_code_format_check CHECK (
         code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
     ),
-    CONSTRAINT sales_channels_name_length_check CHECK (
+    CONSTRAINT store_sales_channels_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 120
     )
 );
@@ -101,18 +101,14 @@ CREATE TABLE commerce.store_currencies (
     )
 );
 
-CREATE TABLE commerce.publishable_keys (
+CREATE TABLE commerce.store_publishable_keys (
     id                   UUID                      NOT NULL PRIMARY KEY,
     store_id             UUID                      NOT NULL,
     sales_channel_id     UUID,
-    key_identifier       TEXT                      NOT NULL UNIQUE,
-    secret_digest        BYTEA                     NOT NULL,
-    display_suffix       CHAR(4)                   NOT NULL,
+    public_key           TEXT                      NOT NULL UNIQUE,
     name                 TEXT                      NOT NULL,
     created_by_user_id   UUID                      NOT NULL,
     revoked_by_user_id   UUID,
-    expires_at           TIMESTAMPTZ,
-    last_used_at         TIMESTAMPTZ,
     revoked_at           TIMESTAMPTZ,
     created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -120,27 +116,18 @@ CREATE TABLE commerce.publishable_keys (
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id) ON DELETE CASCADE,
     FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
+        REFERENCES commerce.store_sales_channels(id),
     FOREIGN KEY (created_by_user_id)
         REFERENCES identity.users(id),
     FOREIGN KEY (revoked_by_user_id)
         REFERENCES identity.users(id),
-    CONSTRAINT publishable_keys_identifier_format_check CHECK (
-        key_identifier ~ '^[A-Za-z0-9_-]{16}$'
+    CONSTRAINT store_publishable_keys_public_key_format_check CHECK (
+        public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'
     ),
-    CONSTRAINT publishable_keys_secret_digest_length_check CHECK (
-        octet_length(secret_digest) = 32
-    ),
-    CONSTRAINT publishable_keys_display_suffix_format_check CHECK (
-        display_suffix ~ '^[A-Za-z0-9_-]{4}$'
-    ),
-    CONSTRAINT publishable_keys_name_length_check CHECK (
+    CONSTRAINT store_publishable_keys_name_length_check CHECK (
         length(trim(name)) BETWEEN 1 AND 80
     ),
-    CONSTRAINT publishable_keys_expiration_check CHECK (
-        expires_at IS NULL OR expires_at > created_at
-    ),
-    CONSTRAINT publishable_keys_revocation_check CHECK (
+    CONSTRAINT store_publishable_keys_revocation_check CHECK (
         (revoked_at IS NULL AND revoked_by_user_id IS NULL)
         OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL)
     )
@@ -152,15 +139,15 @@ CREATE INDEX store_memberships_user_idx
 CREATE INDEX stores_status_idx
     ON commerce.stores (status);
 
-CREATE UNIQUE INDEX sales_channels_one_default_per_store_idx
-    ON commerce.sales_channels (store_id)
+CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx
+    ON commerce.store_sales_channels (store_id)
     WHERE is_default;
 
-CREATE INDEX sales_channels_store_status_idx
-    ON commerce.sales_channels (store_id, status);
+CREATE INDEX store_sales_channels_store_status_idx
+    ON commerce.store_sales_channels (store_id, status);
 
-CREATE INDEX publishable_keys_store_created_idx
-    ON commerce.publishable_keys (store_id, created_at DESC, id DESC);
+CREATE INDEX store_publishable_keys_store_created_idx
+    ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
 
 CREATE FUNCTION commerce.prevent_default_locale_removal()
 RETURNS TRIGGER
@@ -180,10 +167,7 @@ BEGIN
 END
 $$;
 
-CREATE FUNCTION commerce.authenticate_publishable_key(
-    presented_key_identifier  TEXT,
-    presented_secret_digest  BYTEA
-)
+CREATE FUNCTION commerce.authenticate_publishable_key(presented_public_key TEXT)
 RETURNS TABLE (
     publishable_key_id   UUID,
     store_id             UUID,
@@ -199,26 +183,24 @@ AS $$
            publishable_key.store_id,
            sales_channel.id,
            publishable_key.created_by_user_id
-    FROM commerce.publishable_keys AS publishable_key
+    FROM commerce.store_publishable_keys AS publishable_key
     INNER JOIN commerce.stores AS store
         ON store.id = publishable_key.store_id
-    LEFT JOIN commerce.sales_channels AS sales_channel
+    LEFT JOIN commerce.store_sales_channels AS sales_channel
         ON sales_channel.store_id = publishable_key.store_id
        AND sales_channel.status = 'active'
        AND sales_channel.id = COALESCE(
            publishable_key.sales_channel_id,
            (
                SELECT default_channel.id
-               FROM commerce.sales_channels AS default_channel
+               FROM commerce.store_sales_channels AS default_channel
                WHERE default_channel.store_id = publishable_key.store_id
                  AND default_channel.is_default
                LIMIT 1
            )
        )
-    WHERE publishable_key.key_identifier = presented_key_identifier
-      AND publishable_key.secret_digest = presented_secret_digest
+    WHERE publishable_key.public_key = presented_public_key
       AND publishable_key.revoked_at IS NULL
-      AND (publishable_key.expires_at IS NULL OR publishable_key.expires_at > CURRENT_TIMESTAMP)
       AND store.status = 'active';
 $$;
 
@@ -234,9 +216,9 @@ ALTER TABLE commerce.store_locales ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.store_currencies ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.sales_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.publishable_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.stores
     USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -290,7 +272,7 @@ CREATE POLICY store_isolation ON commerce.store_currencies
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.sales_channels
+CREATE POLICY store_isolation ON commerce.store_sales_channels
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -300,7 +282,7 @@ CREATE POLICY store_isolation ON commerce.sales_channels
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.publishable_keys
+CREATE POLICY store_isolation ON commerce.store_publishable_keys
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -310,13 +292,13 @@ CREATE POLICY store_isolation ON commerce.publishable_keys
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT, BYTEA) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT) FROM PUBLIC;
 
-COMMENT ON FUNCTION commerce.authenticate_publishable_key(TEXT, BYTEA) IS
-    'Authenticates a machine credential without exposing stored secret digests';
+COMMENT ON FUNCTION commerce.authenticate_publishable_key(TEXT) IS
+    'Authenticates a public Storefront key';
 
 GRANT EXECUTE
-    ON FUNCTION commerce.authenticate_publishable_key(TEXT, BYTEA) TO chaos_runtime;
+    ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
@@ -352,7 +334,7 @@ CREATE TABLE commerce.products (
     handle               extensions.citext          NOT NULL,
     title                TEXT                       NOT NULL,
     description          TEXT                       NOT NULL DEFAULT '',
-    status               commerce.product_status     NOT NULL DEFAULT 'draft',
+    status               commerce.product_status    NOT NULL DEFAULT 'draft',
     metadata             JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -372,31 +354,6 @@ CREATE TABLE commerce.products (
     ),
     CONSTRAINT products_metadata_size_check CHECK (
         metadata IS NULL OR octet_length(metadata::text) <= 32768
-    )
-);
-
-CREATE TABLE commerce.product_translations (
-    store_id            UUID        NOT NULL,
-    product_id          UUID        NOT NULL,
-    locale              VARCHAR(63) NOT NULL,
-    title               TEXT        NOT NULL,
-    description         TEXT        NOT NULL DEFAULT '',
-    updated_by_user_id  UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    updated_at          TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (store_id, product_id, locale),
-    FOREIGN KEY (store_id, product_id)
-        REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT product_translations_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    ),
-    CONSTRAINT product_translations_title_length_check CHECK (
-        length(trim(title)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT product_translations_description_length_check CHECK (
-        length(description) <= 100000
     )
 );
 
@@ -452,9 +409,10 @@ CREATE TABLE commerce.product_variants (
     product_id           UUID                       NOT NULL,
     title                TEXT                       NOT NULL,
     sku                  extensions.citext,
-    status               commerce.variant_status     NOT NULL DEFAULT 'active',
+    status               commerce.variant_status    NOT NULL DEFAULT 'active',
     requires_shipping    BOOLEAN                    NOT NULL DEFAULT true,
     track_inventory      BOOLEAN                    NOT NULL DEFAULT true,
+    on_hand_quantity     BIGINT                     NOT NULL DEFAULT 0,
     metadata             JSONB,
     created_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -472,34 +430,11 @@ CREATE TABLE commerce.product_variants (
     CONSTRAINT product_variants_sku_characters_check CHECK (
         sku IS NULL OR sku::text !~ '[[:cntrl:]]'
     ),
+    CONSTRAINT product_variants_on_hand_nonnegative_check CHECK (
+        on_hand_quantity >= 0
+    ),
     CONSTRAINT product_variants_metadata_size_check CHECK (
         metadata IS NULL OR octet_length(metadata::text) <= 32768
-    )
-);
-
-CREATE TABLE commerce.product_variant_translations (
-    store_id            UUID        NOT NULL,
-    product_id          UUID        NOT NULL,
-    product_variant_id  UUID        NOT NULL,
-    locale              VARCHAR(63) NOT NULL,
-    title               TEXT        NOT NULL,
-    updated_by_user_id  UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    updated_at          TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (store_id, product_id, product_variant_id, locale),
-    FOREIGN KEY (store_id, product_id, product_variant_id)
-        REFERENCES commerce.product_variants(store_id, product_id, id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (store_id, product_id, locale)
-        REFERENCES commerce.product_translations(store_id, product_id, locale
-        ) ON DELETE CASCADE,
-    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT product_variant_translations_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    ),
-    CONSTRAINT product_variant_translations_title_length_check CHECK (
-        length(trim(title)) BETWEEN 1 AND 255
     )
 );
 
@@ -534,7 +469,7 @@ CREATE TABLE commerce.product_publications (
     FOREIGN KEY (store_id, product_id)
         REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
     FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id) ON DELETE CASCADE
+        REFERENCES commerce.store_sales_channels(id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.collections (
@@ -566,31 +501,6 @@ CREATE TABLE commerce.collections (
     )
 );
 
-CREATE TABLE commerce.collection_translations (
-    store_id            UUID        NOT NULL,
-    collection_id       UUID        NOT NULL,
-    locale              VARCHAR(63) NOT NULL,
-    title               TEXT        NOT NULL,
-    description         TEXT        NOT NULL DEFAULT '',
-    updated_by_user_id  UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    updated_at          TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (store_id, collection_id, locale),
-    FOREIGN KEY (store_id, collection_id)
-        REFERENCES commerce.collections(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT collection_translations_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    ),
-    CONSTRAINT collection_translations_title_length_check CHECK (
-        length(trim(title)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT collection_translations_description_length_check CHECK (
-        length(description) <= 100000
-    )
-);
-
 CREATE TABLE commerce.collection_products (
     store_id             UUID        NOT NULL,
     collection_id        UUID        NOT NULL,
@@ -617,7 +527,7 @@ CREATE TABLE commerce.collection_publications (
     FOREIGN KEY (store_id, collection_id)
         REFERENCES commerce.collections(store_id, id) ON DELETE CASCADE,
     FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id) ON DELETE CASCADE
+        REFERENCES commerce.store_sales_channels(id) ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.media_assets (
@@ -685,30 +595,6 @@ CREATE TABLE commerce.media_assets (
         OR (status = 'archived' AND archived_by IS NOT NULL AND archived_at IS NOT NULL
             AND ((public_url IS NULL AND ready_by IS NULL AND ready_at IS NULL)
                 OR (public_url IS NOT NULL AND ready_by IS NOT NULL AND ready_at IS NOT NULL)))
-    )
-);
-
-CREATE TABLE commerce.media_asset_translations (
-    store_id            UUID        NOT NULL,
-    product_id          UUID        NOT NULL,
-    media_asset_id      UUID        NOT NULL,
-    locale              VARCHAR(63) NOT NULL,
-    alt_text            TEXT        NOT NULL DEFAULT '',
-    updated_by_user_id  UUID        NOT NULL,
-    created_at          TIMESTAMPTZ NOT NULL,
-    updated_at          TIMESTAMPTZ NOT NULL,
-
-    PRIMARY KEY (store_id, product_id, media_asset_id, locale),
-    FOREIGN KEY (store_id, media_asset_id)
-        REFERENCES commerce.media_assets(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, product_id)
-        REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (updated_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT media_asset_translations_locale_check CHECK (
-        locale ~ '^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$'
-    ),
-    CONSTRAINT media_asset_translations_alt_text_check CHECK (
-        length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'
     )
 );
 
@@ -802,15 +688,11 @@ CREATE INDEX reviews_parent_idx
 
 ALTER TABLE commerce.products ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.product_translations ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.product_options ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.product_option_values ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.product_variants ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.product_variant_translations ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.variant_selected_options ENABLE ROW LEVEL SECURITY;
 
@@ -818,29 +700,15 @@ ALTER TABLE commerce.product_publications ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collections ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.collection_translations ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.collection_products ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.collection_publications ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.media_assets ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.media_asset_translations ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.products
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.product_translations
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -880,16 +748,6 @@ CREATE POLICY store_isolation ON commerce.product_variants
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.product_variant_translations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
 CREATE POLICY store_isolation ON commerce.variant_selected_options
     USING (
         store_id =
@@ -920,16 +778,6 @@ CREATE POLICY store_isolation ON commerce.collections
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.collection_translations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
 CREATE POLICY store_isolation ON commerce.collection_products
     USING (
         store_id =
@@ -951,16 +799,6 @@ CREATE POLICY store_isolation ON commerce.collection_publications
     );
 
 CREATE POLICY store_isolation ON commerce.media_assets
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.media_asset_translations
     USING (
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
@@ -1098,248 +936,6 @@ CREATE POLICY store_isolation ON commerce.prices
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
-
--- === Inventory ===
-
-CREATE TYPE commerce.inventory_reservation_status AS ENUM (
-    'active',
-    'released',
-    'consumed',
-    'expired'
-);
-
-CREATE TABLE commerce.inventory_locations (
-    id                   UUID                                    NOT NULL PRIMARY KEY,
-    store_id             UUID                                    NOT NULL,
-    code                 extensions.citext                       NOT NULL DEFAULT 'default',
-    name                 TEXT                                    NOT NULL DEFAULT 'Default Warehouse',
-    archived_at          TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, code),
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT inventory_locations_code_format_check CHECK (
-        code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'
-    ),
-    CONSTRAINT inventory_locations_name_length_check CHECK (
-        length(trim(name)) BETWEEN 1 AND 120
-    )
-);
-
-CREATE TABLE commerce.inventory_items (
-    id                    UUID        NOT NULL PRIMARY KEY,
-    store_id              UUID        NOT NULL,
-    inventory_location_id UUID        NOT NULL,
-    product_variant_id    UUID        NOT NULL,
-    on_hand_quantity      BIGINT      NOT NULL DEFAULT 0,
-    reserved_quantity     BIGINT      NOT NULL DEFAULT 0,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, inventory_location_id, product_variant_id),
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id, inventory_location_id)
-        REFERENCES commerce.inventory_locations(store_id, id),
-    FOREIGN KEY (store_id, product_variant_id)
-        REFERENCES commerce.product_variants(store_id, id),
-    CONSTRAINT inventory_items_on_hand_nonnegative_check CHECK (on_hand_quantity >= 0),
-    CONSTRAINT inventory_items_reserved_range_check CHECK (
-        reserved_quantity >= 0 AND reserved_quantity <= on_hand_quantity
-    )
-);
-
-CREATE TABLE commerce.inventory_reservations (
-    id                   UUID                                      NOT NULL PRIMARY KEY,
-    store_id             UUID                                      NOT NULL,
-    sales_channel_id     UUID                                      NOT NULL,
-    status               commerce.inventory_reservation_status     NOT NULL DEFAULT 'active',
-    expires_at           TIMESTAMPTZ                               NOT NULL,
-    closed_at            TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, sales_channel_id)
-        REFERENCES commerce.sales_channels(store_id, id),
-    CONSTRAINT inventory_reservations_expiration_check CHECK (expires_at > created_at),
-    CONSTRAINT inventory_reservations_closure_check CHECK (
-        (status = 'active' AND closed_at IS NULL)
-        OR (status <> 'active' AND closed_at IS NOT NULL)
-    )
-);
-
-CREATE TABLE commerce.inventory_reservation_lines (
-    store_id             UUID    NOT NULL,
-    reservation_id       UUID    NOT NULL,
-    inventory_item_id    UUID    NOT NULL,
-    quantity             BIGINT  NOT NULL,
-
-    PRIMARY KEY (store_id, reservation_id, inventory_item_id),
-    FOREIGN KEY (store_id, reservation_id)
-        REFERENCES commerce.inventory_reservations(store_id, id)
-        ON DELETE CASCADE,
-    FOREIGN KEY (store_id, inventory_item_id)
-        REFERENCES commerce.inventory_items(store_id, id),
-    CONSTRAINT inventory_reservation_lines_quantity_positive_check CHECK (quantity > 0)
-);
-
-CREATE TABLE commerce.inventory_transactions (
-    id                           UUID                        NOT NULL PRIMARY KEY,
-    store_id                     UUID                        NOT NULL,
-    inventory_item_id            UUID                        NOT NULL,
-    reference_type               TEXT,
-    reference_id                 UUID,
-    on_hand_delta_quantity       BIGINT                      NOT NULL,
-    reserved_delta_quantity      BIGINT                      NOT NULL,
-    resulting_on_hand_quantity   BIGINT                      NOT NULL,
-    resulting_reserved_quantity  BIGINT                      NOT NULL,
-    note                         TEXT,
-    actor_user_id                UUID,
-    created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id, inventory_item_id)
-        REFERENCES commerce.inventory_items(store_id, id),
-    FOREIGN KEY (actor_user_id)
-        REFERENCES identity.users(id),
-    CONSTRAINT inventory_transactions_resulting_balance_check CHECK (
-        resulting_on_hand_quantity >= 0
-        AND resulting_reserved_quantity >= 0
-        AND resulting_reserved_quantity <= resulting_on_hand_quantity
-    ),
-    CONSTRAINT inventory_transactions_note_length_check CHECK (
-        note IS NULL OR length(trim(note)) BETWEEN 1 AND 500
-    ),
-    CONSTRAINT inventory_transactions_delta_check CHECK (
-        on_hand_delta_quantity <> 0 OR reserved_delta_quantity <> 0
-    ),
-    CONSTRAINT inventory_transactions_reference_type_check CHECK (
-        reference_type IS NULL OR length(trim(reference_type)) BETWEEN 1 AND 80
-    ),
-    CONSTRAINT inventory_transactions_reference_pair_check CHECK (
-        (reference_type IS NULL AND reference_id IS NULL)
-        OR (reference_type IS NOT NULL AND reference_id IS NOT NULL)
-    )
-);
-
-CREATE INDEX inventory_locations_store_idx
-    ON commerce.inventory_locations (store_id, archived_at, created_at, id);
-
-CREATE INDEX inventory_items_variant_availability_idx
-    ON commerce.inventory_items (store_id,
-        product_variant_id,
-        inventory_location_id
-    );
-
-CREATE INDEX inventory_reservations_expiration_idx
-    ON commerce.inventory_reservations (store_id,
-        status,
-        expires_at,
-        id
-    );
-
-CREATE INDEX inventory_reservation_lines_item_idx
-    ON commerce.inventory_reservation_lines (store_id,
-        inventory_item_id,
-        reservation_id
-    );
-
-CREATE INDEX inventory_transactions_item_created_idx
-    ON commerce.inventory_transactions (store_id,
-        inventory_item_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX inventory_transactions_reference_idx
-    ON commerce.inventory_transactions (store_id,
-        reference_type,
-        reference_id,
-        created_at DESC,
-        id DESC
-    );
-
-ALTER TABLE commerce.inventory_locations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.inventory_items ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.inventory_reservations ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.inventory_reservation_lines ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.inventory_transactions ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY store_isolation ON commerce.inventory_locations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.inventory_items
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.inventory_reservations
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.inventory_reservation_lines
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.inventory_transactions
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-REVOKE UPDATE, DELETE
-    ON commerce.inventory_transactions FROM chaos_runtime;
 
 GRANT USAGE, SELECT
     ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
@@ -1514,46 +1110,20 @@ CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 
 CREATE TYPE commerce.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
 
-CREATE TYPE commerce.order_fulfillment_status AS ENUM (
-    'unfulfilled',
-    'partially_fulfilled',
-    'fulfilled'
-);
-
-CREATE TYPE commerce.order_delivery_status AS ENUM (
-    'not_delivered',
-    'partially_delivered',
-    'delivered'
-);
-
-CREATE TYPE commerce.shipping_service_status AS ENUM ('active', 'archived');
-
-CREATE TYPE commerce.payment_attempt_status AS ENUM (
+CREATE TYPE commerce.order_payment_status AS ENUM (
     'pending',
-    'authorized',
-    'captured',
+    'paid',
     'failed',
-    'cancelled'
+    'partially_refunded',
+    'refunded'
 );
 
-CREATE TYPE commerce.refund_status AS ENUM ('pending', 'succeeded', 'failed');
-
-CREATE TYPE commerce.fulfillment_status AS ENUM (
+CREATE TYPE commerce.order_shipping_status AS ENUM (
     'pending',
     'shipped',
     'delivered',
     'cancelled'
 );
-
-CREATE TYPE commerce.return_status AS ENUM (
-    'requested',
-    'authorized',
-    'received',
-    'completed',
-    'rejected'
-);
-
-CREATE TYPE commerce.return_disposition AS ENUM ('restock', 'discard');
 
 -- Shopper identity, Cart, and Order form the Storefront sales flow.
 -- Stripe owns checkout UI, address collection, shipping, tax, and payment
@@ -1588,7 +1158,7 @@ CREATE TABLE commerce.carts (
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id),
     FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
+        REFERENCES commerce.store_sales_channels(id),
     FOREIGN KEY (store_id, shopper_id)
         REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (store_id, price_list_id, currency)
@@ -1640,13 +1210,22 @@ CREATE TABLE commerce.orders (
     sales_channel_id         UUID                               NOT NULL,
     cart_id                  UUID                               NOT NULL,
     shopper_id               UUID                               NOT NULL,
-    inventory_reservation_id UUID,
     price_list_id            UUID                               NOT NULL,
     currency                 CHAR(3)                            NOT NULL,
     locale                   VARCHAR(63)                        NOT NULL DEFAULT 'en-US',
     status                   commerce.order_status              NOT NULL DEFAULT 'pending',
-    fulfillment_status       commerce.order_fulfillment_status  NOT NULL DEFAULT 'unfulfilled',
-    delivery_status          commerce.order_delivery_status     NOT NULL DEFAULT 'not_delivered',
+    payment_status           commerce.order_payment_status      NOT NULL DEFAULT 'pending',
+    shipping_status          commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
+    stripe_checkout_session_id TEXT,
+    stripe_payment_intent_id TEXT,
+    stripe_charge_id         TEXT,
+    stripe_refund_id         TEXT,
+    payment_failure_code     TEXT,
+    refunded_amount_minor    BIGINT                             NOT NULL DEFAULT 0,
+    shipping_provider        TEXT,
+    shipping_provider_reference TEXT,
+    shipping_tracking_number TEXT,
+    shipping_tracking_url    TEXT,
     subtotal_amount_minor    BIGINT                             NOT NULL,
     discount_amount_minor    BIGINT                             NOT NULL,
     tax_amount_minor         BIGINT                             NOT NULL,
@@ -1681,11 +1260,9 @@ CREATE TABLE commerce.orders (
     FOREIGN KEY (store_id, shopper_id)
         REFERENCES commerce.shoppers(store_id, id),
     FOREIGN KEY (sales_channel_id)
-        REFERENCES commerce.sales_channels(id),
+        REFERENCES commerce.store_sales_channels(id),
     FOREIGN KEY (store_id, price_list_id, currency)
         REFERENCES commerce.price_lists(store_id, id, currency),
-    FOREIGN KEY (store_id, inventory_reservation_id)
-        REFERENCES commerce.inventory_reservations(store_id, id),
     CONSTRAINT orders_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_order_number_check CHECK (
         order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'
@@ -1699,6 +1276,8 @@ CREATE TABLE commerce.orders (
         AND tax_amount_minor >= 0
         AND shipping_amount_minor >= 0
         AND total_amount_minor >= 0
+        AND refunded_amount_minor >= 0
+        AND refunded_amount_minor <= total_amount_minor
     ),
     CONSTRAINT orders_contact_email_length_check CHECK (
         contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320
@@ -1711,46 +1290,54 @@ CREATE TABLE commerce.orders (
     ),
     CONSTRAINT orders_shipping_country_code_check CHECK (
         shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'
+    ),
+    CONSTRAINT orders_stripe_checkout_session_check CHECK (
+        stripe_checkout_session_id IS NULL
+        OR length(trim(stripe_checkout_session_id)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT orders_stripe_payment_intent_check CHECK (
+        stripe_payment_intent_id IS NULL OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'
+    ),
+    CONSTRAINT orders_stripe_charge_check CHECK (
+        stripe_charge_id IS NULL OR stripe_charge_id ~ '^ch_[A-Za-z0-9]+$'
+    ),
+    CONSTRAINT orders_stripe_refund_check CHECK (
+        stripe_refund_id IS NULL OR stripe_refund_id ~ '^re_[A-Za-z0-9]+$'
+    ),
+    CONSTRAINT orders_payment_failure_code_check CHECK (
+        payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000
+    ),
+    CONSTRAINT orders_shipping_provider_check CHECK (
+        shipping_provider IS NULL OR length(trim(shipping_provider)) BETWEEN 1 AND 64
+    ),
+    CONSTRAINT orders_shipping_reference_check CHECK (
+        shipping_provider_reference IS NULL
+        OR length(trim(shipping_provider_reference)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT orders_shipping_tracking_number_check CHECK (
+        shipping_tracking_number IS NULL
+        OR length(trim(shipping_tracking_number)) BETWEEN 1 AND 255
+    ),
+    CONSTRAINT orders_shipping_tracking_url_check CHECK (
+        shipping_tracking_url IS NULL
+        OR (length(shipping_tracking_url) BETWEEN 9 AND 2048 AND shipping_tracking_url ~ '^https://')
     )
 );
 
-CREATE TABLE commerce.order_tracking_keys (
-    id                UUID        NOT NULL PRIMARY KEY,
-    store_id          UUID        NOT NULL,
-    order_id          UUID        NOT NULL,
-    secret_digest     BYTEA       NOT NULL,
-    expires_at        TIMESTAMPTZ NOT NULL,
-    revoked_at        TIMESTAMPTZ,
-    last_used_at      TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE commerce.order_tracking_tokens (
+    store_id       UUID        NOT NULL,
+    order_id       UUID        NOT NULL,
+    token_digest   BYTEA       NOT NULL,
+    expires_at     TIMESTAMPTZ NOT NULL,
+    last_used_at   TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, order_id),
-    UNIQUE (store_id, secret_digest),
+    PRIMARY KEY (store_id, order_id),
+    UNIQUE (store_id, token_digest),
     FOREIGN KEY (store_id, order_id)
         REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT order_tracking_keys_digest_check CHECK (octet_length(secret_digest) = 32),
-    CONSTRAINT order_tracking_keys_expiry_check CHECK (expires_at > created_at),
-    CONSTRAINT order_tracking_keys_revocation_check CHECK (
-        revoked_at IS NULL OR revoked_at >= created_at
-    )
-);
-
-CREATE TABLE commerce.order_tracking_sessions (
-    id                UUID        NOT NULL PRIMARY KEY,
-    store_id          UUID        NOT NULL,
-    tracking_key_id   UUID        NOT NULL,
-    access_digest     BYTEA       NOT NULL,
-    expires_at        TIMESTAMPTZ NOT NULL,
-    last_used_at      TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, access_digest),
-    FOREIGN KEY (store_id, tracking_key_id)
-        REFERENCES commerce.order_tracking_keys(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT order_tracking_sessions_digest_check CHECK (octet_length(access_digest) = 32),
-    CONSTRAINT order_tracking_sessions_expiry_check CHECK (expires_at > created_at)
+    CONSTRAINT order_tracking_tokens_digest_check CHECK (octet_length(token_digest) = 32),
+    CONSTRAINT order_tracking_tokens_expiry_check CHECK (expires_at > created_at)
 );
 
 CREATE TABLE commerce.order_lines (
@@ -1815,177 +1402,9 @@ CREATE TABLE commerce.order_transitions (
 ALTER TABLE commerce.orders
     ADD UNIQUE (store_id, id, currency);
 
-CREATE TABLE commerce.order_fulfillment_transitions (
-    id                       UUID                           NOT NULL PRIMARY KEY,
-    store_id                 UUID                           NOT NULL,
-    order_id                 UUID                           NOT NULL,
-    source_event_id          UUID                           NOT NULL UNIQUE,
-    from_fulfillment_status  commerce.order_fulfillment_status NOT NULL,
-    to_fulfillment_status    commerce.order_fulfillment_status NOT NULL,
-    from_delivery_status     commerce.order_delivery_status    NOT NULL,
-    to_delivery_status       commerce.order_delivery_status    NOT NULL,
-    occurred_at              TIMESTAMPTZ                    NOT NULL,
-
-    UNIQUE (store_id, order_id, id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id)
-);
-
--- === Fulfillment configuration ===
-
-CREATE TABLE commerce.shipping_services (
-    id                         UUID                                NOT NULL PRIMARY KEY,
-    store_id                   UUID                                NOT NULL,
-    code                       TEXT                                NOT NULL,
-    name                       TEXT                                NOT NULL,
-    amount_minor               BIGINT                              NOT NULL,
-    currency                   CHAR(3)                             NOT NULL,
-    estimated_min_days         SMALLINT                            NOT NULL,
-    estimated_max_days         SMALLINT                            NOT NULL,
-    status                     commerce.shipping_service_status NOT NULL DEFAULT 'active',
-    created_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                 TIMESTAMPTZ                         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, code),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id),
-    FOREIGN KEY (store_id, currency)
-        REFERENCES commerce.store_currencies(store_id, currency),
-    CONSTRAINT shipping_services_code_format_check CHECK (code ~ '^[a-z0-9-]{1,64}$'),
-    CONSTRAINT shipping_services_name_length_check CHECK (length(trim(name)) BETWEEN 1 AND 120),
-    CONSTRAINT shipping_services_amount_nonnegative_check CHECK (amount_minor >= 0),
-    CONSTRAINT shipping_services_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT shipping_services_estimate_check CHECK (
-        estimated_min_days BETWEEN 0 AND 365
-        AND estimated_max_days BETWEEN estimated_min_days AND 365
-    )
-);
-
-CREATE TABLE commerce.shipping_provider_accounts (
-    id                                   UUID        NOT NULL PRIMARY KEY,
-    store_id                             UUID        NOT NULL,
-    provider                             TEXT        NOT NULL,
-    display_name                         TEXT        NOT NULL,
-    credential_secret_reference          TEXT        NOT NULL,
-    previous_credential_secret_reference TEXT,
-    credential_rotation_expires_at       TIMESTAMPTZ,
-    origin_name                          TEXT        NOT NULL,
-    origin_company                       TEXT,
-    origin_address_line_1                TEXT        NOT NULL,
-    origin_address_line_2                TEXT,
-    origin_city                          TEXT        NOT NULL,
-    origin_region                        TEXT,
-    origin_postal_code                   TEXT        NOT NULL,
-    origin_country_code                  CHAR(2)     NOT NULL,
-    origin_phone                         TEXT,
-    origin_email                         TEXT,
-    enabled                              BOOLEAN     NOT NULL DEFAULT false,
-    created_by_user_id                   UUID,
-    created_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    CONSTRAINT shipping_provider_accounts_store_provider_key
-        UNIQUE (store_id, provider),
-    FOREIGN KEY (store_id)
-        REFERENCES commerce.stores(id),
-    FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
-    CONSTRAINT shipping_provider_accounts_provider_format_check CHECK (
-        provider ~ '^[a-z0-9_]{1,64}$'
-    ),
-    CONSTRAINT shipping_provider_accounts_display_name_length_check CHECK (
-        length(trim(display_name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_provider_accounts_credential_reference_check CHECK (
-        credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
-        OR (
-            char_length(credential_secret_reference) <= 32768
-            AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-        )
-    ),
-    CONSTRAINT shipping_provider_accounts_previous_credential_reference_check CHECK (
-        previous_credential_secret_reference IS NULL
-        OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{7,254}$'
-        OR (
-            char_length(previous_credential_secret_reference) <= 32768
-            AND previous_credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-        )
-    ),
-    CONSTRAINT shipping_provider_accounts_credential_rotation_shape_check CHECK (
-        (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
-        OR (previous_credential_secret_reference IS NOT NULL AND credential_rotation_expires_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_name_length_check CHECK (
-        length(trim(origin_name)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_company_length_check CHECK (
-        origin_company IS NULL OR length(trim(origin_company)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_address_length_check CHECK (
-        length(trim(origin_address_line_1)) BETWEEN 1 AND 200
-        AND (origin_address_line_2 IS NULL OR length(trim(origin_address_line_2)) BETWEEN 1 AND 200)
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_city_length_check CHECK (
-        length(trim(origin_city)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_region_length_check CHECK (
-        origin_region IS NULL OR length(trim(origin_region)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_postal_length_check CHECK (
-        length(trim(origin_postal_code)) BETWEEN 1 AND 32
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_country_check CHECK (
-        origin_country_code ~ '^[A-Z]{2}$'
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_phone_length_check CHECK (
-        origin_phone IS NULL OR length(trim(origin_phone)) BETWEEN 1 AND 32
-    ),
-    CONSTRAINT shipping_provider_accounts_origin_email_length_check CHECK (
-        origin_email IS NULL OR length(trim(origin_email)) BETWEEN 3 AND 254
-    )
-);
-
-CREATE TABLE commerce.shipping_service_regions (
-    store_id            UUID    NOT NULL,
-    shipping_service_id UUID    NOT NULL,
-    country_code        CHAR(2) NOT NULL,
-
-    PRIMARY KEY (store_id, shipping_service_id, country_code),
-    FOREIGN KEY (store_id, shipping_service_id)
-        REFERENCES commerce.shipping_services(store_id, id),
-    CONSTRAINT shipping_service_regions_country_check CHECK (country_code ~ '^[A-Z]{2}$')
-);
-
-CREATE TABLE commerce.order_shipping_selections (
-    store_id            UUID        NOT NULL,
-    order_id            UUID        NOT NULL,
-    shipping_service_id UUID        NOT NULL,
-    service_code        TEXT        NOT NULL,
-    service_name        TEXT        NOT NULL,
-    amount_minor        BIGINT      NOT NULL,
-    currency            CHAR(3)     NOT NULL,
-    estimated_min_days  SMALLINT    NOT NULL,
-    estimated_max_days  SMALLINT    NOT NULL,
-
-    PRIMARY KEY (store_id, order_id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (store_id, shipping_service_id)
-        REFERENCES commerce.shipping_services(store_id, id),
-    CONSTRAINT order_shipping_code_length_check CHECK (length(trim(service_code)) BETWEEN 1 AND 64),
-    CONSTRAINT order_shipping_name_length_check CHECK (length(trim(service_name)) BETWEEN 1 AND 120),
-    CONSTRAINT order_shipping_amount_nonnegative_check CHECK (amount_minor >= 0),
-    CONSTRAINT order_shipping_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT order_shipping_estimate_check CHECK (
-        estimated_min_days BETWEEN 0 AND 365
-        AND estimated_max_days BETWEEN estimated_min_days AND 365
-    )
-);
-
 -- === Payments ===
 
-CREATE TABLE commerce.provider_accounts (
+CREATE TABLE commerce.payment_provider_accounts (
     id                         UUID        NOT NULL PRIMARY KEY,
     store_id                   UUID        NOT NULL,
     provider                   TEXT        NOT NULL,
@@ -2011,21 +1430,21 @@ CREATE TABLE commerce.provider_accounts (
     updated_at                 TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE (store_id, id),
-    CONSTRAINT provider_accounts_store_provider_key
+    CONSTRAINT payment_provider_accounts_store_provider_key
         UNIQUE (store_id, provider),
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id),
     FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
-    CONSTRAINT provider_accounts_provider_length_check CHECK (
+    CONSTRAINT payment_provider_accounts_provider_length_check CHECK (
         provider ~ '^[a-z0-9_]{1,64}$'
     ),
-    CONSTRAINT provider_accounts_stripe_only_check CHECK (
+    CONSTRAINT payment_provider_accounts_stripe_only_check CHECK (
         provider = 'stripe_checkout'
     ),
-    CONSTRAINT provider_accounts_display_name_length_check CHECK (
+    CONSTRAINT payment_provider_accounts_display_name_length_check CHECK (
         length(trim(display_name)) BETWEEN 1 AND 120
     ),
-    CONSTRAINT provider_accounts_credential_reference_check CHECK (
+    CONSTRAINT payment_provider_accounts_credential_reference_check CHECK (
         credential_secret_reference IS NULL
         OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
         OR (
@@ -2033,7 +1452,7 @@ CREATE TABLE commerce.provider_accounts (
             AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
         )
     ),
-    CONSTRAINT provider_accounts_previous_credential_reference_check CHECK (
+    CONSTRAINT payment_provider_accounts_previous_credential_reference_check CHECK (
         previous_credential_secret_reference IS NULL
         OR previous_credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
         OR (
@@ -2041,11 +1460,11 @@ CREATE TABLE commerce.provider_accounts (
             AND previous_credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
         )
     ),
-    CONSTRAINT provider_accounts_credential_rotation_shape_check CHECK (
+    CONSTRAINT payment_provider_accounts_credential_rotation_shape_check CHECK (
         (previous_credential_secret_reference IS NULL AND credential_rotation_expires_at IS NULL)
         OR (previous_credential_secret_reference IS NOT NULL AND credential_rotation_expires_at IS NOT NULL)
     ),
-    CONSTRAINT provider_accounts_webhook_reference_check CHECK (
+    CONSTRAINT payment_provider_accounts_webhook_reference_check CHECK (
         webhook_secret_reference IS NULL
         OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
         OR (
@@ -2053,7 +1472,7 @@ CREATE TABLE commerce.provider_accounts (
             AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
         )
     ),
-    CONSTRAINT provider_accounts_previous_webhook_reference_check CHECK (
+    CONSTRAINT payment_provider_accounts_previous_webhook_reference_check CHECK (
         previous_webhook_secret_reference IS NULL
         OR previous_webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
         OR (
@@ -2061,14 +1480,14 @@ CREATE TABLE commerce.provider_accounts (
             AND previous_webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
         )
     ),
-    CONSTRAINT provider_accounts_webhook_rotation_shape_check CHECK (
+    CONSTRAINT payment_provider_accounts_webhook_rotation_shape_check CHECK (
         (previous_webhook_secret_reference IS NULL AND webhook_rotation_expires_at IS NULL)
         OR (previous_webhook_secret_reference IS NOT NULL AND webhook_rotation_expires_at IS NOT NULL)
     ),
-    CONSTRAINT provider_accounts_readiness_status_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_status_check CHECK (
         readiness_status IN ('unchecked', 'ready', 'action_required')
     ),
-    CONSTRAINT provider_accounts_readiness_shape_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_shape_check CHECK (
         (
             readiness_status = 'unchecked'
             AND readiness_snapshot IS NULL
@@ -2083,7 +1502,7 @@ CREATE TABLE commerce.provider_accounts (
             AND readiness_checked_at IS NOT NULL
         )
     ),
-    CONSTRAINT provider_accounts_enabled_readiness_check CHECK (
+    CONSTRAINT payment_provider_accounts_enabled_readiness_check CHECK (
         NOT enabled
         OR (
             readiness_status = 'ready'
@@ -2091,7 +1510,7 @@ CREATE TABLE commerce.provider_accounts (
             AND readiness_reconcile_at IS NOT NULL
         )
     ),
-    CONSTRAINT provider_accounts_readiness_validity_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_validity_check CHECK (
         (
             readiness_status = 'ready'
             AND readiness_valid_until > readiness_checked_at
@@ -2103,404 +1522,15 @@ CREATE TABLE commerce.provider_accounts (
             AND readiness_reconcile_at IS NULL
         )
     ),
-    CONSTRAINT provider_accounts_readiness_lock_shape_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_lock_shape_check CHECK (
         (readiness_locked_by IS NULL AND readiness_locked_at IS NULL)
         OR (readiness_locked_by IS NOT NULL AND readiness_locked_at IS NOT NULL)
     ),
-    CONSTRAINT provider_accounts_readiness_attempts_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_attempts_check CHECK (
         readiness_reconcile_attempts BETWEEN 0 AND 31
     ),
-    CONSTRAINT provider_accounts_readiness_error_length_check CHECK (
+    CONSTRAINT payment_provider_accounts_readiness_error_length_check CHECK (
         readiness_last_error IS NULL OR length(readiness_last_error) BETWEEN 1 AND 2000
-    )
-);
-
-CREATE TABLE commerce.payment_attempts (
-    id                         UUID                            NOT NULL PRIMARY KEY,
-    store_id                   UUID                            NOT NULL,
-    order_id                   UUID                            NOT NULL,
-    shopper_id                 UUID                            NOT NULL,
-    provider_account_id       UUID                            NOT NULL,
-    amount_minor               BIGINT                          NOT NULL,
-    currency                   CHAR(3)                         NOT NULL,
-    status                     commerce.payment_attempt_status NOT NULL DEFAULT 'pending',
-    stripe_checkout_session_id TEXT,
-    stripe_payment_intent_id   TEXT,
-    stripe_charge_id           TEXT,
-    failure_code               TEXT,
-    created_at                 TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                 TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, id, shopper_id),
-    UNIQUE (store_id, id, currency),
-    UNIQUE (provider_account_id, stripe_checkout_session_id),
-    FOREIGN KEY (store_id, order_id, shopper_id)
-        REFERENCES commerce.orders(store_id, id, shopper_id),
-    FOREIGN KEY (store_id, order_id, currency)
-        REFERENCES commerce.orders(store_id, id, currency),
-    FOREIGN KEY (store_id, provider_account_id)
-        REFERENCES commerce.provider_accounts(store_id, id),
-    CONSTRAINT payment_attempts_amount_positive_check CHECK (amount_minor > 0),
-    CONSTRAINT payment_attempts_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT payment_attempts_stripe_session_length_check CHECK (
-        stripe_checkout_session_id IS NULL
-        OR length(trim(stripe_checkout_session_id)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT payment_attempts_stripe_payment_intent_check CHECK (
-        stripe_payment_intent_id IS NULL
-        OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'
-    ),
-    CONSTRAINT payment_attempts_stripe_charge_check CHECK (
-        stripe_charge_id IS NULL
-        OR stripe_charge_id ~ '^ch_[A-Za-z0-9]+$'
-    ),
-    CONSTRAINT payment_attempts_failure_shape_check CHECK (
-        (status = 'failed' AND failure_code IS NOT NULL)
-        OR (status <> 'failed' AND failure_code IS NULL)
-    )
-);
-
-CREATE TABLE commerce.refunds (
-    id                     UUID                    NOT NULL PRIMARY KEY,
-    store_id               UUID                    NOT NULL,
-    payment_attempt_id     UUID                    NOT NULL,
-    amount_minor           BIGINT                  NOT NULL,
-    currency               CHAR(3)                 NOT NULL,
-    status                 commerce.refund_status  NOT NULL DEFAULT 'pending',
-    stripe_refund_id       TEXT,
-    failure_code           TEXT,
-    created_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (payment_attempt_id, stripe_refund_id),
-    FOREIGN KEY (store_id, payment_attempt_id, currency)
-        REFERENCES commerce.payment_attempts(store_id, id, currency),
-    CONSTRAINT refunds_amount_positive_check CHECK (amount_minor > 0),
-    CONSTRAINT refunds_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_stripe_refund_length_check CHECK (
-        stripe_refund_id IS NULL
-        OR length(trim(stripe_refund_id)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT refunds_failure_shape_check CHECK (
-        (status = 'failed' AND failure_code IS NOT NULL)
-        OR (status <> 'failed' AND failure_code IS NULL)
-    )
-);
-
--- === Fulfillment execution and returns ===
-
-CREATE TABLE commerce.fulfillments (
-    id                   UUID                           NOT NULL PRIMARY KEY,
-    store_id             UUID                           NOT NULL,
-    order_id             UUID                           NOT NULL,
-    status               commerce.fulfillment_status NOT NULL DEFAULT 'pending',
-    carrier              TEXT,
-    tracking_number      TEXT,
-    shipped_at           TIMESTAMPTZ,
-    delivered_at         TIMESTAMPTZ,
-    cancelled_at         TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, carrier, tracking_number),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id),
-    CONSTRAINT fulfillments_tracking_shape_check CHECK (
-        (status = 'pending' AND carrier IS NULL AND tracking_number IS NULL
-            AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL)
-        OR (status = 'shipped' AND carrier IS NOT NULL AND tracking_number IS NOT NULL
-            AND shipped_at IS NOT NULL AND delivered_at IS NULL AND cancelled_at IS NULL)
-        OR (status = 'delivered' AND carrier IS NOT NULL AND tracking_number IS NOT NULL
-            AND shipped_at IS NOT NULL AND delivered_at IS NOT NULL AND cancelled_at IS NULL)
-        OR (status = 'cancelled' AND shipped_at IS NULL AND delivered_at IS NULL
-            AND cancelled_at IS NOT NULL)
-    ),
-    CONSTRAINT fulfillments_carrier_length_check CHECK (
-        carrier IS NULL OR length(trim(carrier)) BETWEEN 1 AND 64
-    ),
-    CONSTRAINT fulfillments_tracking_number_length_check CHECK (
-        tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255
-    )
-);
-
-CREATE TABLE commerce.fulfillment_lines (
-    store_id             UUID    NOT NULL,
-    fulfillment_id       UUID    NOT NULL,
-    product_variant_id   UUID    NOT NULL,
-    quantity             INTEGER NOT NULL,
-
-    PRIMARY KEY (store_id, fulfillment_id, product_variant_id),
-    FOREIGN KEY (store_id, fulfillment_id)
-        REFERENCES commerce.fulfillments(store_id, id),
-    CONSTRAINT fulfillment_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999)
-);
-
-CREATE TABLE commerce.shipping_quote_requests (
-    id                    UUID        NOT NULL PRIMARY KEY,
-    store_id              UUID        NOT NULL,
-    fulfillment_id        UUID        NOT NULL,
-    provider_account_id   UUID        NOT NULL,
-    idempotency_key       TEXT        NOT NULL,
-    request_fingerprint   BYTEA       NOT NULL,
-    length_millimetres    INTEGER     NOT NULL,
-    width_millimetres     INTEGER     NOT NULL,
-    height_millimetres    INTEGER     NOT NULL,
-    weight_grams          INTEGER     NOT NULL,
-    state                 TEXT        NOT NULL DEFAULT 'pending',
-    expires_at            TIMESTAMPTZ,
-    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, idempotency_key),
-    FOREIGN KEY (store_id, fulfillment_id)
-        REFERENCES commerce.fulfillments(store_id, id),
-    FOREIGN KEY (store_id, provider_account_id)
-        REFERENCES commerce.shipping_provider_accounts(store_id, id),
-    CONSTRAINT shipping_quote_requests_idempotency_length_check CHECK (
-        length(idempotency_key) BETWEEN 1 AND 128
-    ),
-    CONSTRAINT shipping_quote_requests_fingerprint_length_check CHECK (
-        octet_length(request_fingerprint) = 32
-    ),
-    CONSTRAINT shipping_quote_requests_parcel_check CHECK (
-        length_millimetres BETWEEN 1 AND 10000
-        AND width_millimetres BETWEEN 1 AND 10000
-        AND height_millimetres BETWEEN 1 AND 10000
-        AND weight_grams BETWEEN 1 AND 1000000
-    ),
-    CONSTRAINT shipping_quote_requests_state_check CHECK (state IN ('pending', 'completed')),
-    CONSTRAINT shipping_quote_requests_completion_check CHECK (
-        (state = 'pending' AND expires_at IS NULL)
-        OR (state = 'completed' AND expires_at IS NOT NULL)
-    )
-);
-
-CREATE TABLE commerce.shipping_rate_quotes (
-    id                            UUID        NOT NULL PRIMARY KEY,
-    store_id                      UUID        NOT NULL,
-    quote_request_id              UUID        NOT NULL,
-    provider_shipment_reference   TEXT        NOT NULL,
-    provider_rate_reference       TEXT        NOT NULL,
-    carrier                       TEXT        NOT NULL,
-    service                       TEXT        NOT NULL,
-    amount_minor                  BIGINT      NOT NULL,
-    currency                      CHAR(3)     NOT NULL,
-    estimated_delivery_days       SMALLINT,
-    guaranteed                    BOOLEAN     NOT NULL,
-    expires_at                    TIMESTAMPTZ NOT NULL,
-    created_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, quote_request_id, provider_rate_reference),
-    FOREIGN KEY (store_id, quote_request_id)
-        REFERENCES commerce.shipping_quote_requests(store_id, id),
-    CONSTRAINT shipping_rate_quotes_shipment_reference_length_check CHECK (
-        length(trim(provider_shipment_reference)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_rate_quotes_rate_reference_length_check CHECK (
-        length(trim(provider_rate_reference)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_rate_quotes_carrier_length_check CHECK (
-        length(trim(carrier)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT shipping_rate_quotes_service_length_check CHECK (
-        length(trim(service)) BETWEEN 1 AND 120
-    ),
-    CONSTRAINT shipping_rate_quotes_amount_nonnegative_check CHECK (amount_minor >= 0),
-    CONSTRAINT shipping_rate_quotes_currency_format_check CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT shipping_rate_quotes_delivery_days_check CHECK (
-        estimated_delivery_days IS NULL OR estimated_delivery_days BETWEEN 0 AND 365
-    )
-);
-
-CREATE TABLE commerce.shipping_labels (
-    id                              UUID        NOT NULL PRIMARY KEY,
-    store_id                        UUID        NOT NULL,
-    fulfillment_id                  UUID        NOT NULL,
-    provider_account_id             UUID        NOT NULL,
-    rate_quote_id                   UUID        NOT NULL,
-    purchase_idempotency_key        TEXT        NOT NULL,
-    purchase_request_fingerprint    BYTEA       NOT NULL,
-    purchase_state                  TEXT        NOT NULL DEFAULT 'purchasing',
-    provider_shipment_reference     TEXT        NOT NULL,
-    provider_rate_reference         TEXT        NOT NULL,
-    carrier                         TEXT,
-    tracking_number                 TEXT,
-    provider_tracker_reference      TEXT,
-    label_url                       TEXT,
-    label_media_type                TEXT,
-    cancellation_idempotency_key    TEXT,
-    cancellation_request_fingerprint BYTEA,
-    cancellation_status             TEXT,
-    cancellation_reconcile_at       TIMESTAMPTZ,
-    cancellation_locked_by          UUID,
-    cancellation_locked_at          TIMESTAMPTZ,
-    cancellation_attempts           INTEGER     NOT NULL DEFAULT 0,
-    cancellation_last_error         TEXT,
-    tracking_status                 TEXT,
-    tracking_status_detail          TEXT,
-    estimated_delivery_at           TIMESTAMPTZ,
-    tracking_observed_at            TIMESTAMPTZ,
-    next_tracking_refresh_at        TIMESTAMPTZ,
-    tracking_locked_by              UUID,
-    tracking_locked_at              TIMESTAMPTZ,
-    tracking_attempts               INTEGER     NOT NULL DEFAULT 0,
-    tracking_last_error             TEXT,
-    purchased_at                    TIMESTAMPTZ,
-    cancellation_requested_at       TIMESTAMPTZ,
-    created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    UNIQUE (store_id, fulfillment_id),
-    CONSTRAINT shipping_labels_purchase_idempotency_key
-        UNIQUE (store_id, purchase_idempotency_key),
-    CONSTRAINT shipping_labels_cancellation_idempotency_key
-        UNIQUE (store_id, cancellation_idempotency_key),
-    UNIQUE (carrier, tracking_number),
-    FOREIGN KEY (store_id, fulfillment_id)
-        REFERENCES commerce.fulfillments(store_id, id),
-    FOREIGN KEY (store_id, provider_account_id)
-        REFERENCES commerce.shipping_provider_accounts(store_id, id),
-    FOREIGN KEY (store_id, rate_quote_id)
-        REFERENCES commerce.shipping_rate_quotes(store_id, id),
-    CONSTRAINT shipping_labels_purchase_idempotency_length_check CHECK (
-        length(purchase_idempotency_key) BETWEEN 1 AND 128
-    ),
-    CONSTRAINT shipping_labels_purchase_fingerprint_length_check CHECK (
-        octet_length(purchase_request_fingerprint) = 32
-    ),
-    CONSTRAINT shipping_labels_purchase_state_check CHECK (
-        purchase_state IN ('purchasing', 'purchased')
-    ),
-    CONSTRAINT shipping_labels_provider_reference_length_check CHECK (
-        length(trim(provider_shipment_reference)) BETWEEN 1 AND 255
-        AND length(trim(provider_rate_reference)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_labels_purchase_shape_check CHECK (
-        (purchase_state = 'purchasing' AND carrier IS NULL AND tracking_number IS NULL
-            AND label_url IS NULL AND label_media_type IS NULL AND purchased_at IS NULL)
-        OR (purchase_state = 'purchased' AND carrier IS NOT NULL AND tracking_number IS NOT NULL
-            AND label_url IS NOT NULL AND label_media_type IS NOT NULL AND purchased_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_labels_carrier_length_check CHECK (
-        carrier IS NULL OR length(trim(carrier)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT shipping_labels_tracking_number_length_check CHECK (
-        tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_labels_tracker_reference_length_check CHECK (
-        provider_tracker_reference IS NULL
-        OR length(trim(provider_tracker_reference)) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_labels_label_url_check CHECK (
-        label_url IS NULL OR (length(label_url) BETWEEN 9 AND 2048 AND label_url ~ '^https://')
-    ),
-    CONSTRAINT shipping_labels_media_type_length_check CHECK (
-        label_media_type IS NULL OR length(trim(label_media_type)) BETWEEN 1 AND 100
-    ),
-    CONSTRAINT shipping_labels_cancellation_shape_check CHECK (
-        (cancellation_idempotency_key IS NULL AND cancellation_request_fingerprint IS NULL
-            AND cancellation_status IS NULL AND cancellation_requested_at IS NULL)
-        OR (length(cancellation_idempotency_key) BETWEEN 1 AND 128
-            AND octet_length(cancellation_request_fingerprint) = 32
-            AND cancellation_status IN ('submitted', 'cancelled', 'rejected', 'not_available')
-            AND cancellation_requested_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_labels_cancellation_lock_shape_check CHECK (
-        (cancellation_locked_by IS NULL AND cancellation_locked_at IS NULL)
-        OR (cancellation_locked_by IS NOT NULL AND cancellation_locked_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_labels_cancellation_attempts_check CHECK (
-        cancellation_attempts BETWEEN 0 AND 31
-    ),
-    CONSTRAINT shipping_labels_cancellation_error_length_check CHECK (
-        cancellation_last_error IS NULL OR length(cancellation_last_error) BETWEEN 1 AND 2000
-    ),
-    CONSTRAINT shipping_labels_tracking_status_check CHECK (
-        tracking_status IS NULL
-        OR tracking_status IN ('pre_transit', 'in_transit', 'out_for_delivery', 'delivered', 'failure', 'unknown')
-    ),
-    CONSTRAINT shipping_labels_tracking_detail_length_check CHECK (
-        tracking_status_detail IS NULL OR length(tracking_status_detail) BETWEEN 1 AND 255
-    ),
-    CONSTRAINT shipping_labels_tracking_observation_shape_check CHECK (
-        (tracking_status IS NULL AND tracking_observed_at IS NULL)
-        OR (tracking_status IS NOT NULL AND tracking_observed_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_labels_tracking_lock_shape_check CHECK (
-        (tracking_locked_by IS NULL AND tracking_locked_at IS NULL)
-        OR (tracking_locked_by IS NOT NULL AND tracking_locked_at IS NOT NULL)
-    ),
-    CONSTRAINT shipping_labels_tracking_attempts_check CHECK (
-        tracking_attempts BETWEEN 0 AND 31
-    ),
-    CONSTRAINT shipping_labels_tracking_error_length_check CHECK (
-        tracking_last_error IS NULL OR length(tracking_last_error) BETWEEN 1 AND 2000
-    )
-);
-
-CREATE TABLE commerce.returns (
-    id                   UUID                      NOT NULL PRIMARY KEY,
-    store_id             UUID                      NOT NULL,
-    order_id             UUID                      NOT NULL,
-    status               commerce.return_status NOT NULL DEFAULT 'requested',
-    refund_id            UUID,
-    refund_amount_minor  BIGINT                    NOT NULL,
-    currency             CHAR(3)                   NOT NULL,
-    requested_at         TIMESTAMPTZ               NOT NULL,
-    authorized_at        TIMESTAMPTZ,
-    received_at          TIMESTAMPTZ,
-    completed_at         TIMESTAMPTZ,
-    rejected_at          TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE (store_id, id),
-    FOREIGN KEY (store_id, order_id)
-        REFERENCES commerce.orders(store_id, id),
-    FOREIGN KEY (store_id, order_id, currency)
-        REFERENCES commerce.orders(store_id, id, currency),
-    FOREIGN KEY (store_id, refund_id)
-        REFERENCES commerce.refunds(store_id, id),
-    CONSTRAINT returns_status_timestamps_check CHECK (
-        (status = 'requested' AND authorized_at IS NULL AND received_at IS NULL
-            AND completed_at IS NULL AND rejected_at IS NULL)
-        OR (status = 'authorized' AND authorized_at IS NOT NULL AND received_at IS NULL
-            AND completed_at IS NULL AND rejected_at IS NULL)
-        OR (status = 'received' AND authorized_at IS NOT NULL AND received_at IS NOT NULL
-            AND completed_at IS NULL AND rejected_at IS NULL)
-        OR (status = 'completed' AND authorized_at IS NOT NULL AND received_at IS NOT NULL
-            AND completed_at IS NOT NULL AND rejected_at IS NULL)
-        OR (status = 'rejected' AND received_at IS NULL AND completed_at IS NULL
-            AND rejected_at IS NOT NULL)
-    ),
-    CONSTRAINT returns_refund_amount_nonnegative_check CHECK (refund_amount_minor >= 0),
-    CONSTRAINT returns_currency_format_check CHECK (currency ~ '^[A-Z]{3}$')
-);
-
-CREATE TABLE commerce.return_lines (
-    store_id             UUID                           NOT NULL,
-    return_id            UUID                           NOT NULL,
-    product_variant_id   UUID                           NOT NULL,
-    inventory_location_id UUID,
-    quantity             INTEGER                        NOT NULL,
-    refund_amount_minor  BIGINT                         NOT NULL,
-    disposition          commerce.return_disposition,
-
-    PRIMARY KEY (store_id, return_id, product_variant_id),
-    FOREIGN KEY (store_id, return_id)
-        REFERENCES commerce.returns(store_id, id),
-    FOREIGN KEY (store_id, inventory_location_id)
-        REFERENCES commerce.inventory_locations(store_id, id),
-    CONSTRAINT return_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999),
-    CONSTRAINT return_lines_refund_amount_nonnegative_check CHECK (refund_amount_minor >= 0),
-    CONSTRAINT return_lines_restock_location_check CHECK (
-        disposition <> 'restock' OR inventory_location_id IS NOT NULL
     )
 );
 
@@ -2527,8 +1557,8 @@ CREATE INDEX orders_channel_created_idx
         id DESC
     );
 
-CREATE INDEX order_tracking_sessions_expiry_idx
-    ON commerce.order_tracking_sessions (expires_at, id);
+CREATE INDEX order_tracking_tokens_expiry_idx
+    ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
 
 CREATE INDEX order_transitions_order_time_idx
     ON commerce.order_transitions (store_id,
@@ -2537,110 +1567,14 @@ CREATE INDEX order_transitions_order_time_idx
         id
     );
 
-CREATE INDEX order_fulfillment_transitions_order_idx
-    ON commerce.order_fulfillment_transitions (store_id,
-        order_id,
-        occurred_at,
-        id
-    );
+CREATE INDEX payment_provider_accounts_store_created_idx
+    ON commerce.payment_provider_accounts (store_id, created_at DESC, id DESC);
 
-CREATE INDEX provider_accounts_store_created_idx
-    ON commerce.provider_accounts (store_id, created_at DESC, id DESC);
-
-CREATE INDEX provider_accounts_readiness_due_idx
-    ON commerce.provider_accounts (readiness_reconcile_at, id)
+CREATE INDEX payment_provider_accounts_readiness_due_idx
+    ON commerce.payment_provider_accounts (readiness_reconcile_at, id)
     WHERE enabled;
 
-CREATE INDEX payment_attempts_order_created_idx
-    ON commerce.payment_attempts (store_id,
-        order_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX refunds_attempt_created_idx
-    ON commerce.refunds (store_id,
-        payment_attempt_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE UNIQUE INDEX payment_attempts_stripe_payment_intent_key
-    ON commerce.payment_attempts (stripe_payment_intent_id)
-    WHERE stripe_payment_intent_id IS NOT NULL;
-
-CREATE UNIQUE INDEX refunds_stripe_refund_key
-    ON commerce.refunds (stripe_refund_id)
-    WHERE stripe_refund_id IS NOT NULL;
-
-CREATE INDEX shipping_services_quote_idx
-    ON commerce.shipping_services (store_id,
-        currency,
-        status,
-        id
-    );
-
-CREATE INDEX shipping_provider_accounts_store_created_idx
-    ON commerce.shipping_provider_accounts (store_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX shipping_service_regions_quote_idx
-    ON commerce.shipping_service_regions (store_id,
-        country_code,
-        shipping_service_id
-    );
-
-CREATE INDEX fulfillments_order_created_idx
-    ON commerce.fulfillments (store_id,
-        order_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX fulfillment_lines_variant_idx
-    ON commerce.fulfillment_lines (store_id,
-        product_variant_id,
-        fulfillment_id
-    );
-
-CREATE INDEX shipping_quote_requests_fulfillment_created_idx
-    ON commerce.shipping_quote_requests (store_id,
-        fulfillment_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX shipping_rate_quotes_request_expiry_idx
-    ON commerce.shipping_rate_quotes (store_id,
-        quote_request_id,
-        expires_at,
-        id
-    );
-
-CREATE INDEX shipping_labels_tracking_due_idx
-    ON commerce.shipping_labels (next_tracking_refresh_at, id)
-    WHERE purchase_state = 'purchased' AND next_tracking_refresh_at IS NOT NULL;
-
-CREATE INDEX shipping_labels_cancellation_due_idx
-    ON commerce.shipping_labels (cancellation_reconcile_at, id)
-    WHERE cancellation_status = 'submitted' AND cancellation_reconcile_at IS NOT NULL;
-
-CREATE INDEX returns_order_created_idx
-    ON commerce.returns (store_id,
-        order_id,
-        created_at DESC,
-        id DESC
-    );
-
-CREATE INDEX return_lines_variant_idx
-    ON commerce.return_lines (store_id,
-        product_variant_id,
-        return_id
-    );
-
--- === Sales and fulfillment workflows ===
+-- === Payment provider workflows ===
 
 CREATE FUNCTION commerce.resolve_provider_account(
     requested_provider             TEXT,
@@ -2656,7 +1590,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id
-      FROM commerce.provider_accounts AS account
+      FROM commerce.payment_provider_accounts AS account
      WHERE account.provider = requested_provider
        AND account.id = requested_provider_account_id
        AND account.enabled;
@@ -2676,7 +1610,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, candidate.secret_reference
-      FROM commerce.provider_accounts AS account
+      FROM commerce.payment_provider_accounts AS account
       CROSS JOIN LATERAL (
           VALUES
               (account.webhook_secret_reference, 0),
@@ -2712,7 +1646,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     WITH expired AS (
-        UPDATE commerce.provider_accounts AS account
+        UPDATE commerce.payment_provider_accounts AS account
            SET enabled = false,
                readiness_status = 'action_required',
                readiness_snapshot = jsonb_set(
@@ -2730,7 +1664,7 @@ AS $$
         RETURNING account.id
     ), claimable AS (
         SELECT account.id
-          FROM commerce.provider_accounts AS account
+          FROM commerce.payment_provider_accounts AS account
          WHERE account.enabled
            AND account.credential_secret_reference IS NOT NULL
            AND account.readiness_valid_until > claimed_at
@@ -2743,7 +1677,7 @@ AS $$
          FOR UPDATE SKIP LOCKED
          LIMIT greatest(least(batch_size, 100), 1)
     )
-    UPDATE commerce.provider_accounts AS account
+    UPDATE commerce.payment_provider_accounts AS account
        SET readiness_locked_by = worker_id,
            readiness_locked_at = claimed_at,
            readiness_reconcile_attempts = least(account.readiness_reconcile_attempts, 30) + 1
@@ -2769,7 +1703,7 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
-    UPDATE commerce.provider_accounts AS account
+    UPDATE commerce.payment_provider_accounts AS account
        SET enabled = CASE
                WHEN succeeded THEN account.enabled AND ready
                ELSE account.enabled
@@ -2815,101 +1749,6 @@ AS $$
     RETURNING true;
 $$;
 
-CREATE FUNCTION commerce.claim_shipping_tracking(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
-)
-RETURNS TABLE (
-    label_id UUID,
-    store_id UUID,
-    fulfillment_id UUID,
-    provider TEXT,
-    provider_tracker_reference TEXT,
-    credential_secret_reference TEXT,
-    attempts INTEGER
-)
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    WITH claimable AS (
-        SELECT label.id
-        FROM commerce.shipping_labels AS label
-        WHERE label.purchase_state = 'purchased'
-          AND label.provider_tracker_reference IS NOT NULL
-          AND label.next_tracking_refresh_at <= claimed_at
-          AND (
-              label.tracking_locked_at IS NULL
-              OR label.tracking_locked_at <= stale_before
-          )
-        ORDER BY label.next_tracking_refresh_at, label.id
-        FOR UPDATE SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE commerce.shipping_labels AS label
-       SET tracking_locked_by = worker_id,
-           tracking_locked_at = claimed_at,
-           tracking_attempts = least(label.tracking_attempts, 30) + 1
-      FROM claimable,
-           commerce.shipping_provider_accounts AS account
-     WHERE label.id = claimable.id
-       AND account.id = label.provider_account_id
-       AND account.store_id = label.store_id
-    RETURNING label.id, label.store_id, label.fulfillment_id,
-              account.provider, label.provider_tracker_reference,
-              account.credential_secret_reference, label.tracking_attempts;
-$$;
-
-CREATE FUNCTION commerce.claim_shipping_cancellations(
-    worker_id UUID,
-    batch_size INTEGER,
-    claimed_at TIMESTAMPTZ,
-    stale_before TIMESTAMPTZ
-)
-RETURNS TABLE (
-    label_id UUID,
-    store_id UUID,
-    fulfillment_id UUID,
-    provider TEXT,
-    provider_shipment_reference TEXT,
-    credential_secret_reference TEXT,
-    attempts INTEGER
-)
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    WITH claimable AS (
-        SELECT label.id
-        FROM commerce.shipping_labels AS label
-        WHERE label.cancellation_status = 'submitted'
-          AND label.cancellation_reconcile_at <= claimed_at
-          AND (
-              label.cancellation_locked_at IS NULL
-              OR label.cancellation_locked_at <= stale_before
-          )
-        ORDER BY label.cancellation_reconcile_at, label.id
-        FOR UPDATE SKIP LOCKED
-        LIMIT greatest(least(batch_size, 100), 1)
-    )
-    UPDATE commerce.shipping_labels AS label
-       SET cancellation_locked_by = worker_id,
-           cancellation_locked_at = claimed_at,
-           cancellation_attempts = least(label.cancellation_attempts, 30) + 1
-      FROM claimable,
-           commerce.shipping_provider_accounts AS account
-     WHERE label.id = claimable.id
-       AND account.id = label.provider_account_id
-       AND account.store_id = label.store_id
-    RETURNING label.id, label.store_id, label.fulfillment_id,
-              account.provider, label.provider_shipment_reference,
-              account.credential_secret_reference, label.cancellation_attempts;
-$$;
-
 -- === Row-level security ===
 
 ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
@@ -2925,43 +1764,11 @@ ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE commerce.order_tracking_keys ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_tracking_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.order_tracking_tokens ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE commerce.order_transitions ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_fulfillment_transitions ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.order_shipping_selections ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.provider_accounts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.payment_attempts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.refunds ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.fulfillments ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_services ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_provider_accounts ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_service_regions ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.fulfillment_lines ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_quote_requests ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_rate_quotes ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.shipping_labels ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.returns ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE commerce.return_lines ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.carts
     USING (
@@ -2993,11 +1800,7 @@ CREATE POLICY store_isolation ON commerce.orders
         nullif(current_setting('app.store_id', true), '')::uuid
     );
 
-CREATE POLICY store_isolation ON commerce.order_tracking_keys
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-CREATE POLICY store_isolation ON commerce.order_tracking_sessions
+CREATE POLICY store_isolation ON commerce.order_tracking_tokens
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -3020,174 +1823,6 @@ CREATE POLICY store_isolation ON commerce.order_transitions
         store_id =
         nullif(current_setting('app.store_id', true), '')::uuid
     );
-
-CREATE POLICY store_isolation ON commerce.order_fulfillment_transitions
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.order_shipping_selections
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.provider_accounts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.payment_attempts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.refunds
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.fulfillments
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_services
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_provider_accounts
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_service_regions
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.fulfillment_lines
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_quote_requests
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_rate_quotes
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.shipping_labels
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.returns
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-CREATE POLICY store_isolation ON commerce.return_lines
-    USING (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    )
-    WITH CHECK (
-        store_id =
-        nullif(current_setting('app.store_id', true), '')::uuid
-    );
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-
-REVOKE DELETE ON commerce.orders FROM chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
-
-REVOKE UPDATE, DELETE
-    ON commerce.order_shipping_selections FROM chaos_runtime;
 
 REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) FROM PUBLIC;
 
@@ -3228,32 +1863,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
-REVOKE ALL ON FUNCTION commerce.claim_shipping_tracking(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-) FROM PUBLIC;
-
-REVOKE ALL ON FUNCTION commerce.claim_shipping_cancellations(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION commerce.claim_shipping_tracking(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-) TO chaos_runtime;
-
-GRANT EXECUTE ON FUNCTION commerce.claim_shipping_cancellations(
-    UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
-) TO chaos_runtime;
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-    ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-
-GRANT USAGE, SELECT
-    ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+REVOKE DELETE ON commerce.orders FROM chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;

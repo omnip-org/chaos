@@ -7,7 +7,6 @@ use rmcp::{
     tool, tool_router,
 };
 use schemars::JsonSchema;
-use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
@@ -51,9 +50,8 @@ pub struct RevokePublishableKeyParams {
 #[tool_router(router = publishable_keys_tool_router, vis = "pub(in crate::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Create a new Publishable Key in the selected Store. The returned \
-                        secret is shown exactly once and cannot be retrieved again — store it \
-                        immediately. Requires confirm: true and an idempotency_key."
+        description = "Create a public Storefront Key in the selected Store. The key is safe \
+                        to use in frontend code. Requires confirm: true and an idempotency_key."
     )]
     async fn create_publishable_key(
         &self,
@@ -90,17 +88,15 @@ impl ChaosMcp {
             Ok(output) => Ok(text_result(json!({
                 "id": output.publishable_key.id().as_uuid(),
                 "name": output.publishable_key.name(),
-                "key_identifier": output.key_identifier,
-                "display_suffix": output.display_suffix,
-                "secret": output.plaintext.expose_secret(),
+                "public_key": output.public_key,
             }))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
-        description = "List Publishable Keys in the selected Store. Never includes \
-                        secret material. Paginated; use the returned next_cursor for more \
+        description = "List public Storefront Keys in the selected Store. Paginated; use the \
+                        returned next_cursor for more \
                         pages."
     )]
     async fn list_publishable_keys(
@@ -205,8 +201,7 @@ fn publishable_key_summary(
     json!({
         "id": item.id.as_uuid(),
         "name": item.name,
-        "key_identifier": item.key_identifier,
-        "display_suffix": item.display_suffix,
+        "public_key": item.public_key,
         "created_at": format_time(item.created_at),
         "revoked_at": item.revoked_at.map(format_time),
     })

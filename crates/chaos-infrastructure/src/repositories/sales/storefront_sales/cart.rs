@@ -11,7 +11,7 @@ async fn select_price_list(
          FROM commerce.price_lists AS price_list \
          INNER JOIN commerce.stores AS store \
            ON store.id = price_list.store_id \
-         INNER JOIN commerce.sales_channels AS channel \
+         INNER JOIN commerce.store_sales_channels AS channel \
            ON channel.store_id = store.id AND channel.id = $1 \
          INNER JOIN commerce.store_currencies AS store_currency \
            ON store_currency.store_id = store.id \
@@ -50,55 +50,12 @@ async fn select_locale(
     if selected.as_str() == default {
         return Ok(selected);
     }
-    let enabled: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
-    )
-    .bind(actor.store_id.as_uuid())
-    .bind(selected.as_str())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if enabled {
-        Ok(selected)
-    } else {
-        Err(ApplicationError::Validation {
-            violations: vec![chaos_domain::FieldViolation {
-                field: "locale",
-                reason: "must be enabled for the Store".into(),
-            }],
-        })
-    }
-}
-
-async fn translation_locales(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    locale: &Locale,
-) -> Result<(Option<String>, Option<String>), ApplicationError> {
-    let default: String =
-        sqlx::query_scalar("SELECT default_locale FROM commerce.stores WHERE id=$1")
-            .bind(actor.store_id.as_uuid())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(database_error)?;
-    if locale.as_str() == default {
-        return Ok((None, None));
-    }
-    let language = locale.language();
-    let primary = if language != locale.as_str() && language != default {
-        sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM commerce.store_locales WHERE store_id=$1 AND locale=$2)",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(language)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(database_error)?
-        .then(|| language.to_owned())
-    } else {
-        None
-    };
-    Ok((Some(locale.as_str().to_owned()), primary))
+    Err(ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "locale",
+            reason: "only the Store default English locale is supported".into(),
+        }],
+    })
 }
 
 async fn resolve_variant(
@@ -107,36 +64,29 @@ async fn resolve_variant(
     channel_id: SalesChannelId,
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
-    locale: &Locale,
+    _locale: &Locale,
 ) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64)>, ApplicationError>
 {
-    let translations = translation_locales(transaction, actor, locale).await?;
     sqlx::query_as(
-        "SELECT product.id, COALESCE((SELECT translation.title FROM commerce.product_translations AS translation WHERE translation.store_id=product.store_id AND translation.product_id=product.id AND (translation.locale=$1 OR translation.locale=$2) ORDER BY CASE WHEN translation.locale=$3 THEN 0 ELSE 1 END LIMIT 1),product.title), COALESCE((SELECT translation.title FROM commerce.product_variant_translations AS translation WHERE translation.store_id=variant.store_id AND translation.product_id=variant.product_id AND translation.product_variant_id=variant.id AND (translation.locale=$4 OR translation.locale=$5) ORDER BY CASE WHEN translation.locale=$6 THEN 0 ELSE 1 END LIMIT 1),variant.title), variant.sku::text, \
+        "SELECT product.id, product.title, variant.title, variant.sku::text, \
                 variant.requires_shipping, variant.track_inventory, price.amount_minor \
          FROM commerce.product_variants AS variant \
          INNER JOIN commerce.products AS product \
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
          INNER JOIN commerce.product_publications AS publication \
            ON publication.store_id = product.store_id AND publication.product_id = product.id \
-          AND publication.sales_channel_id = $7 \
+          AND publication.sales_channel_id = $1 \
          INNER JOIN commerce.price_lists AS price_list \
-           ON price_list.store_id = variant.store_id AND price_list.id = $8 \
+           ON price_list.store_id = variant.store_id AND price_list.id = $2 \
          INNER JOIN commerce.prices AS price \
            ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
-         WHERE variant.store_id = $9 AND variant.id = $10 \
+         WHERE variant.store_id = $3 AND variant.id = $4 \
            AND variant.status = 'active' AND product.status = 'active' \
            AND price_list.status = 'active' \
            AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
            AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP)",
     )
-    .bind(translations.0.as_deref())
-    .bind(translations.1.as_deref())
-    .bind(translations.0.as_deref())
-    .bind(translations.0.as_deref())
-    .bind(translations.1.as_deref())
-    .bind(translations.0.as_deref())
     .bind(channel_id.as_uuid())
     .bind(price_list_id.as_uuid())
     .bind(actor.store_id.as_uuid())
@@ -274,25 +224,16 @@ async fn load_cart(
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
-    locale: &Locale,
+    _locale: &Locale,
     lines: &[CartLineRow],
 ) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
     let product_ids = lines.iter().map(|line| line.0).collect::<Vec<_>>();
     if product_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let (exact_locale, language_locale) = translation_locales(transaction, actor, locale).await?;
     let rows = sqlx::query_as::<_, CartMediaRow>(
         "SELECT media.product_id, media.id, media.product_variant_id, media.media_type, \
-                media.media_kind::text, \
-                COALESCE(\
-                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
-                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
-                       AND translation.media_asset_id = media.id AND translation.locale = $3 LIMIT 1), \
-                    (SELECT translation.alt_text FROM commerce.media_asset_translations AS translation \
-                     WHERE translation.store_id = media.store_id AND translation.product_id = media.product_id \
-                       AND translation.media_asset_id = media.id AND translation.locale = $4 LIMIT 1), \
-                    media.alt_text), \
+                media.media_kind::text, media.alt_text, \
                 media.position, media.public_url \
          FROM commerce.media_assets AS media \
          WHERE media.store_id = $1 AND media.product_id = ANY($2) AND media.status = 'ready' \
@@ -300,8 +241,6 @@ async fn load_cart_media(
     )
     .bind(actor.store_id.as_uuid())
     .bind(&product_ids)
-    .bind(exact_locale.as_deref())
-    .bind(language_locale.as_deref())
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;

@@ -8,7 +8,7 @@ CREATE TYPE integration.idempotency_scope AS ENUM ('user', 'store', 'shopper');
 CREATE TYPE integration.delivery_status AS ENUM ('pending', 'processed', 'dead_letter');
 
 SELECT pgmq.create('chaos_payment_commands');
-SELECT pgmq.create('chaos_fulfillment_events');
+SELECT pgmq.create('chaos_shipping_events');
 SELECT pgmq.create('chaos_search_events');
 SELECT pgmq.create('chaos_webhooks');
 SELECT pgmq.create('chaos_analytics_deliveries');
@@ -86,7 +86,7 @@ CREATE TABLE integration.provider_webhooks (
     FOREIGN KEY (store_id)
         REFERENCES commerce.stores(id),
     FOREIGN KEY (store_id, provider_account_id)
-        REFERENCES commerce.provider_accounts(store_id, id),
+        REFERENCES commerce.payment_provider_accounts(store_id, id),
     CONSTRAINT provider_webhooks_payload_object_check CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhooks_completion_check CHECK (
         processed_at IS NULL OR failed_at IS NULL
@@ -225,7 +225,7 @@ DECLARE
 BEGIN
     IF queue_name NOT IN (
         'chaos_payment_commands',
-        'chaos_fulfillment_events',
+        'chaos_shipping_events',
         'chaos_search_events'
     ) THEN
         RAISE EXCEPTION 'unsupported outbox queue %', queue_name
@@ -291,7 +291,7 @@ AS $$
            ) AS event;
 $$;
 
-CREATE FUNCTION integration.claim_fulfillment_events(
+CREATE FUNCTION integration.claim_shipping_events(
     batch_size INTEGER
 )
 RETURNS TABLE (
@@ -308,7 +308,7 @@ SET search_path = pg_catalog
 AS $$
     SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
       FROM integration.claim_routed_event_outbox(
-               'chaos_fulfillment_events', batch_size
+               'chaos_shipping_events', batch_size
            ) AS event;
 $$;
 
@@ -517,19 +517,17 @@ CREATE POLICY store_isolation ON integration.event_outbox
 INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES
     ('payment.create_requested', 'chaos_payment_commands',
-     'Dispatches a Payment Attempt command to its configured provider'),
+     'Creates a Stripe Checkout Session for the Order'),
     ('refund.create_requested', 'chaos_payment_commands',
-     'Dispatches a Refund command to its configured provider'),
+     'Creates a Stripe Refund for the Order'),
     ('search.product.changed', 'chaos_search_events',
      'Refreshes the Store-isolated Product search document'),
-    ('fulfillment.shipped', 'chaos_fulfillment_events',
-     'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.delivered', 'chaos_fulfillment_events',
-     'Reconciles Order fulfillment and delivery state'),
-    ('fulfillment.cancelled', 'chaos_fulfillment_events',
-     'Reconciles Order fulfillment and delivery state'),
-    ('return.completed', 'chaos_fulfillment_events',
-     'Coordinates the immutable Return refund');
+    ('shipping.shipped', 'chaos_shipping_events',
+     'Updates the Order shipping state from a provider callback'),
+    ('shipping.delivered', 'chaos_shipping_events',
+     'Updates the Order shipping state from a provider callback'),
+    ('shipping.cancelled', 'chaos_shipping_events',
+     'Updates the Order shipping state from a provider callback');
 
 CREATE TRIGGER event_outbox_enqueue
 BEFORE INSERT ON integration.event_outbox
@@ -553,7 +551,7 @@ REVOKE ALL ON FUNCTION integration.claim_event_outbox(
     INTEGER
 ) FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION integration.claim_fulfillment_events(
+REVOKE ALL ON FUNCTION integration.claim_shipping_events(
     INTEGER
 ) FROM PUBLIC;
 
@@ -574,7 +572,7 @@ GRANT EXECUTE ON FUNCTION integration.claim_event_outbox(
 )
     TO chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION integration.claim_fulfillment_events(
+GRANT EXECUTE ON FUNCTION integration.claim_shipping_events(
     INTEGER
 )
     TO chaos_runtime;
@@ -618,7 +616,7 @@ CREATE INDEX provider_webhooks_provider_account_idx
 
 -- === Analytics workflow ===
 
--- commerce.sales_channels already defines UNIQUE (store_id, id) in
+-- commerce.store_sales_channels already defines UNIQUE (store_id, id) in
 -- 0003_commerce.sql. Keep the composite key there for the cross-store
 -- foreign keys used by commerce tables; do not add it again here.
 
@@ -1057,22 +1055,13 @@ COMMENT ON TABLE integration.analytics_events IS
 COMMENT ON TABLE integration.analytics_deliveries IS
     'Provider delivery observations; remove rows before manually dropping event-log partitions.';
 
--- === Cross-schema reliability constraints ===
-
-ALTER TABLE commerce.order_fulfillment_transitions
-    ADD CONSTRAINT order_fulfillment_transitions_source_event_id_fkey
-    FOREIGN KEY (source_event_id) REFERENCES integration.event_outbox(id);
-
 -- === Runtime hardening ===
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 REVOKE UPDATE, DELETE
-    ON commerce.inventory_transactions,
-       commerce.order_lines,
-       commerce.order_shipping_selections,
-       commerce.order_transitions,
-       commerce.order_fulfillment_transitions
+    ON commerce.order_lines,
+       commerce.order_transitions
     FROM chaos_runtime;
 
 REVOKE DELETE

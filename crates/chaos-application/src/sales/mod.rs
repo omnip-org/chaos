@@ -160,28 +160,15 @@ impl StorefrontSales {
             })
     }
 
-    pub async fn exchange_order_tracking_key(
-        &self,
-        actor: &MachineActor,
-        tracking_key: &secrecy::SecretString,
-        now: OffsetDateTime,
-    ) -> Result<crate::ports::OrderTrackingSession, ApplicationError> {
-        require_storefront_actor(actor)?;
-        self.repository
-            .exchange_order_tracking_key(actor, tracking_key, now)
-            .await?
-            .ok_or(ApplicationError::Forbidden)
-    }
-
     pub async fn get_tracked_order(
         &self,
         actor: &MachineActor,
-        access_token: &secrecy::SecretString,
+        tracking_token: &secrecy::SecretString,
         now: OffsetDateTime,
     ) -> Result<crate::ports::OrderDetail, ApplicationError> {
         require_storefront_actor(actor)?;
         self.repository
-            .get_tracked_order(actor, access_token, now)
+            .get_tracked_order(actor, tracking_token, now)
             .await?
             .ok_or(ApplicationError::Forbidden)
     }

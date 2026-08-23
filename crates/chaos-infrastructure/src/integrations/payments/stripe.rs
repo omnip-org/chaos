@@ -254,7 +254,7 @@ impl StripePaymentGateway for StripeGateway {
                         ("payment_intent".into(), payment_intent),
                         ("amount".into(), command.amount_minor.to_string()),
                         (
-                            "metadata[chaos_refund_id]".into(),
+                            "metadata[chaos_order_id]".into(),
                             command.aggregate_id.to_string(),
                         ),
                     ],
@@ -294,7 +294,7 @@ impl StripePaymentGateway for StripeGateway {
                 checkout_details.automatic_tax.to_string(),
             ),
             (
-                "metadata[chaos_payment_attempt_id]".into(),
+                "metadata[chaos_order_id]".into(),
                 command.aggregate_id.to_string(),
             ),
         ];
@@ -361,7 +361,7 @@ impl StripePaymentGateway for StripeGateway {
                 option.estimated_max_days.to_string(),
             ));
             form.push((
-                format!("{prefix}[metadata][chaos_shipping_service_id]"),
+                format!("{prefix}[metadata][chaos_shipping_rate_id]"),
                 option.service_id.to_string(),
             ));
         }
@@ -554,6 +554,8 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
             payload: serde_json::json!({
                 "aggregate_id": aggregate_id,
                 "object": object_reference,
+                "provider_payment_intent": envelope.data.object.payment_intent,
+                "provider_amount": envelope.data.object.amount,
                 "failure_code": failure_code,
                 "stripe_event": raw,
             }),
@@ -655,6 +657,10 @@ struct StripeEventObject {
     failure_reason: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    amount: Option<i64>,
+    #[serde(default)]
+    payment_intent: Option<String>,
 }
 
 impl StripeEventObject {
@@ -682,32 +688,27 @@ fn map_stripe_event(
                 Some("paid" | "no_payment_required")
             ) =>
         {
-            ("payment.captured", "chaos_payment_attempt_id", "cs_")
+            ("payment.captured", "chaos_order_id", "cs_")
         }
         // "checkout.session.completed" with payment_status == "unpaid" means
         // an async payment method was selected and the checkout form was
         // submitted, but funds have not settled yet. Wait for the
         // async_payment_succeeded/failed follow-up event instead of
         // transitioning state now — falls through to the ignored default.
-        "checkout.session.async_payment_succeeded" => {
-            ("payment.captured", "chaos_payment_attempt_id", "cs_")
-        }
-        "checkout.session.async_payment_failed" => {
-            ("payment.failed", "chaos_payment_attempt_id", "cs_")
-        }
-        "checkout.session.expired" => ("payment.cancelled", "chaos_payment_attempt_id", "cs_"),
-        // Refund events are correlated by metadata written when Chaos creates
-        // the refund. Dashboard-created refunds do not have this local UUID
-        // and therefore require a separate reconciliation path.
+        "checkout.session.async_payment_succeeded" => ("payment.captured", "chaos_order_id", "cs_"),
+        "checkout.session.async_payment_failed" => ("payment.failed", "chaos_order_id", "cs_"),
+        "checkout.session.expired" => ("payment.cancelled", "chaos_order_id", "cs_"),
+        // Refund events created by Chaos carry the order metadata. Dashboard
+        // refunds are correlated later through the PaymentIntent reference.
         "refund.created" | "refund.updated"
             if event.data.object.status.as_deref() == Some("succeeded") =>
         {
-            ("refund.succeeded", "chaos_refund_id", "re_")
+            ("refund.succeeded", "chaos_order_id", "re_")
         }
         "refund.created" | "refund.updated"
             if event.data.object.status.as_deref() == Some("failed") =>
         {
-            ("refund.failed", "chaos_refund_id", "re_")
+            ("refund.failed", "chaos_order_id", "re_")
         }
         _ => return Err(ignored_webhook()),
     };
@@ -720,7 +721,10 @@ fn map_stripe_event(
         .metadata
         .get(metadata_key)
         .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(invalid_webhook)?;
+        .unwrap_or_else(Uuid::nil);
+    if aggregate_id.is_nil() && !event_type.starts_with("refund.") {
+        return Err(invalid_webhook());
+    }
     let failure_code = event.data.object.failure_code();
     if failure_code
         .as_ref()
@@ -1166,7 +1170,7 @@ mod tests {
                 "US"
             );
             assert_eq!(
-                checkout_form["metadata[chaos_payment_attempt_id]"],
+                checkout_form["metadata[chaos_order_id]"],
                 aggregate_id.to_string()
             );
             assert_eq!(requests[1].path, "/v1/checkout/sessions/cs_created");
@@ -1199,7 +1203,7 @@ mod tests {
         assert_eq!(refund_form["payment_intent"], "pi_created");
         assert_eq!(refund_form["amount"], "500");
         assert_eq!(
-            refund_form["metadata[chaos_refund_id]"],
+            refund_form["metadata[chaos_order_id]"],
             refund_id.to_string()
         );
         assert_eq!(refund_request.headers["idempotency-key"], "refund-command");
@@ -1291,10 +1295,7 @@ mod tests {
         assert_eq!(form["line_items[0][quantity]"], "1");
         assert_eq!(form["line_items[0][price_data][currency]"], "usd");
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "1234");
-        assert_eq!(
-            form["metadata[chaos_payment_attempt_id]"],
-            aggregate_id.to_string()
-        );
+        assert_eq!(form["metadata[chaos_order_id]"], aggregate_id.to_string());
         drop(requests);
         server.abort();
     }
@@ -1355,7 +1356,7 @@ mod tests {
             "data": {"object": {
                 "id": "cs_created",
                 "payment_status": "paid",
-                "metadata": {"chaos_payment_attempt_id": aggregate_id}
+                "metadata": {"chaos_order_id": aggregate_id}
             }}
         }))
         .unwrap();
@@ -1417,7 +1418,7 @@ mod tests {
             "data": {"object": {
                 "id": "cs_created",
                 "payment_status": "paid",
-                "metadata": {"chaos_payment_attempt_id": aggregate_id}
+                "metadata": {"chaos_order_id": aggregate_id}
             }}
         }))
         .unwrap();
@@ -1454,7 +1455,7 @@ mod tests {
     ) -> StripeEventEnvelope {
         let mut object = serde_json::json!({
             "id": "cs_created",
-            "metadata": {"chaos_payment_attempt_id": aggregate_id}
+            "metadata": {"chaos_order_id": aggregate_id}
         });
         if let Some(status) = payment_status {
             object["payment_status"] = serde_json::Value::String(status.into());
@@ -1534,7 +1535,7 @@ mod tests {
             "data": {"object": {
                 "id": "re_created",
                 "status": status,
-                "metadata": {"chaos_refund_id": refund_id}
+                "metadata": {"chaos_order_id": refund_id}
             }}
         }))
         .unwrap()

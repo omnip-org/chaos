@@ -2,7 +2,6 @@
 
 mod analytics;
 mod catalog;
-mod fulfillment;
 mod integration;
 mod inventory;
 mod payments;
@@ -10,18 +9,17 @@ mod pricing;
 mod sales;
 mod search;
 mod shared;
-mod shipping;
+mod shipping_events;
 mod store;
 
 pub use analytics::{
     PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
 };
 pub use catalog::{
-    PostgresCatalogLocalizationRepository, PostgresCatalogManagementUnitOfWork,
-    PostgresCatalogProvisioningUnitOfWork, PostgresCatalogReadRepository,
-    PostgresCollectionRepository, PostgresMediaAssetRepository, PostgresReviewRepository,
+    PostgresCatalogManagementUnitOfWork, PostgresCatalogProvisioningUnitOfWork,
+    PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresMediaAssetRepository,
+    PostgresReviewRepository,
 };
-pub use fulfillment::PostgresFulfillmentRepository;
 pub use integration::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
 pub use payments::PostgresPaymentRepository;
@@ -31,9 +29,9 @@ pub use sales::{
     PostgresStorefrontSalesRepository,
 };
 pub use search::PostgresSearchIndexer;
-pub use shipping::PostgresShippingServiceRepository;
+pub use shipping_events::PostgresShippingEventRepository;
 pub use store::{
-    PostgresPublishableKeyRepository, PostgresStoreAdministrationRepository,
-    PostgresStoreMembershipRepository, PostgresStoreProvisioningUnitOfWork,
-    PostgresStoreReadRepository, SecurePublishableKeyMaterialGenerator,
+    DefaultPublishableKeyGenerator, PostgresPublishableKeyRepository,
+    PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
+    PostgresStoreProvisioningUnitOfWork, PostgresStoreReadRepository,
 };

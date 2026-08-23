@@ -14,7 +14,6 @@ use chaos_application::{
 };
 use chaos_domain::{
     catalog::ProductVariantId,
-    fulfillment::ShippingSelection,
     sales::{CartId, OrderId},
 };
 use secrecy::ExposeSecret;
@@ -38,7 +37,6 @@ pub(crate) fn routes() -> Router<ApiState> {
             axum::routing::put(set_cart_line).delete(remove_cart_line),
         )
         .route("/orders/{order_id}", get(get_order))
-        .route("/order-tracking-sessions", post(exchange_tracking_key))
         .route("/order-tracking-orders", post(get_tracked_order))
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
@@ -52,21 +50,8 @@ struct CreateCartBody {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TrackingKeyBody {
-    tracking_key: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TrackingSessionBody {
-    access_token: String,
-}
-
-#[derive(Serialize)]
-struct OrderTrackingSessionData {
-    access_token: String,
-    expires_at: ApiDateTime,
-    order: OrderData,
+struct TrackingTokenBody {
+    tracking_token: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -167,26 +152,37 @@ struct OrderTransitionData {
 pub(super) struct OrderData {
     id: Uuid,
     order_number: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    inventory_reservation_id: Option<Uuid>,
     price_list_id: Uuid,
     currency: String,
     locale: String,
     status: &'static str,
-    fulfillment_status: &'static str,
-    delivery_status: &'static str,
+    payment_status: &'static str,
+    shipping_status: &'static str,
     contact: OrderContactData,
     #[serde(skip_serializing_if = "Option::is_none")]
     billing_address: Option<PostalAddressData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     shipping_address: Option<PostalAddressData>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping: Option<ShippingSelectionData>,
     subtotal_amount_minor: i64,
     discount_amount_minor: i64,
     tax_amount_minor: i64,
     shipping_amount_minor: i64,
     total_amount_minor: i64,
+    refunded_amount_minor: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_checkout_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_payment_intent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stripe_charge_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_provider_reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_tracking_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_tracking_url: Option<String>,
     lines: Vec<OrderLineData>,
     transitions: Vec<OrderTransitionData>,
     created_at: ApiDateTime,
@@ -198,17 +194,6 @@ struct OrderContactData {
     email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     phone: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ShippingSelectionData {
-    service_id: Uuid,
-    code: String,
-    name: String,
-    amount_minor: i64,
-    currency: String,
-    estimated_min_days: u16,
-    estimated_max_days: u16,
 }
 
 #[derive(Serialize)]
@@ -329,36 +314,16 @@ async fn get_order(
     Ok(ApiResponse::ok(order_data(order)?))
 }
 
-async fn exchange_tracking_key(
-    State(state): State<ApiState>,
-    OrderLookupMachine(actor): OrderLookupMachine,
-    ApiJson(body): ApiJson<TrackingKeyBody>,
-) -> Result<ApiResponse<OrderTrackingSessionData>, ApiError> {
-    let session = state
-        .storefront_sales
-        .exchange_order_tracking_key(
-            &actor,
-            &secrecy::SecretString::from(body.tracking_key),
-            state.clock.now(),
-        )
-        .await?;
-    Ok(ApiResponse::created(OrderTrackingSessionData {
-        access_token: session.access_token.expose_secret().to_owned(),
-        expires_at: session.expires_at.into(),
-        order: order_data(session.order)?,
-    }))
-}
-
 async fn get_tracked_order(
     State(state): State<ApiState>,
     OrderLookupMachine(actor): OrderLookupMachine,
-    ApiJson(body): ApiJson<TrackingSessionBody>,
+    ApiJson(body): ApiJson<TrackingTokenBody>,
 ) -> Result<ApiResponse<OrderData>, ApiError> {
     let order = state
         .storefront_sales
         .get_tracked_order(
             &actor,
-            &secrecy::SecretString::from(body.access_token),
+            &secrecy::SecretString::from(body.tracking_token),
             state.clock.now(),
         )
         .await?;
@@ -382,18 +347,6 @@ fn address_data(value: &chaos_domain::sales::PostalAddress) -> PostalAddressData
         administrative_area: value.administrative_area().map(str::to_owned),
         postal_code: value.postal_code().map(str::to_owned),
         country_code: value.country_code().into(),
-    }
-}
-
-fn shipping_data(value: &ShippingSelection) -> ShippingSelectionData {
-    ShippingSelectionData {
-        service_id: value.service_id().as_uuid(),
-        code: value.code().into(),
-        name: value.name().into(),
-        amount_minor: value.amount().amount_minor(),
-        currency: value.amount().currency().as_str().into(),
-        estimated_min_days: value.estimated_min_days(),
-        estimated_max_days: value.estimated_max_days(),
     }
 }
 
@@ -459,22 +412,28 @@ pub(super) fn order_data(order: OrderDetail) -> Result<OrderData, ApplicationErr
     Ok(OrderData {
         id: order.id.as_uuid(),
         order_number: order.order_number.as_str().into(),
-        inventory_reservation_id: order.inventory_reservation_id.map(|id| id.as_uuid()),
         price_list_id: order.price_list_id.as_uuid(),
         currency: order.currency.as_str().to_owned(),
         locale: order.locale.as_str().to_owned(),
         status: order.status.as_str(),
-        fulfillment_status: order.fulfillment_status.as_str(),
-        delivery_status: order.delivery_status.as_str(),
+        payment_status: order.payment_status.as_str(),
+        shipping_status: order.shipping_status.as_str(),
         contact: contact_data(order.identity.contact()),
         billing_address: order.identity.billing_address().map(address_data),
         shipping_address: order.identity.shipping_address().map(address_data),
-        shipping: order.shipping.as_ref().map(shipping_data),
         subtotal_amount_minor: order.subtotal_amount_minor,
         discount_amount_minor: order.discount_amount_minor,
         tax_amount_minor: order.tax_amount_minor,
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
+        refunded_amount_minor: order.refunded_amount_minor,
+        stripe_checkout_session_id: order.stripe_checkout_session_id,
+        stripe_payment_intent_id: order.stripe_payment_intent_id,
+        stripe_charge_id: order.stripe_charge_id,
+        shipping_provider: order.shipping_provider,
+        shipping_provider_reference: order.shipping_provider_reference,
+        shipping_tracking_number: order.shipping_tracking_number,
+        shipping_tracking_url: order.shipping_tracking_url,
         lines: order.lines.into_iter().map(order_line_data).collect(),
         transitions: order
             .transitions

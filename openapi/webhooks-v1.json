@@ -75,11 +75,11 @@
                 "properties": {
                   "id": { "type": "string", "pattern": "^(cs_|re_)[A-Za-z0-9_]+$", "maxLength": 255 },
                   "payment_status": { "type": "string", "enum": ["paid", "no_payment_required", "unpaid"] },
+                  "payment_intent": { "type": "string", "pattern": "^pi_[A-Za-z0-9_]+$" },
                   "metadata": {
                     "type": "object",
                     "properties": {
-                      "chaos_payment_attempt_id": { "type": "string", "format": "uuid", "description": "Required for checkout.session.* events." },
-                      "chaos_refund_id": { "type": "string", "format": "uuid", "description": "Required for refund.created and refund.updated events created by Chaos." }
+                      "chaos_order_id": { "type": "string", "format": "uuid", "description": "Required for checkout.session.* events; present on refunds created by Chaos." }
                     },
                     "additionalProperties": { "type": "string" }
                   },

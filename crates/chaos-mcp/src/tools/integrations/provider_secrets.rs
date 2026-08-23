@@ -18,7 +18,7 @@ use crate::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateProviderSecretParams {
-    /// Secret purpose. For Stripe, use `payment_credential` for a JSON object containing `secret_key` and `publishable_key`, and `payment_webhook` for the raw `whsec_...` signing secret. Other supported kinds are `shipping_credential` and `analytics_credential`.
+    /// Secret purpose. For Stripe, use `payment_credential` for a JSON object containing `secret_key` and `publishable_key`, and `payment_webhook` for the raw `whsec_...` signing secret. The other supported kind is `analytics_credential`.
     pub kind: String,
     /// The secret value to store. It is encrypted immediately and only an opaque `enc://...` reference is returned.
     /// Returned as an opaque reference, never in plaintext, from any read path.
@@ -65,7 +65,7 @@ impl ChaosMcp {
                 return Ok(CallToolResult::structured_error(json!({
                     "code": "invalid_params",
                     "message": "kind must be one of: payment_credential, payment_webhook, \
-                                shipping_credential, analytics_credential",
+                                analytics_credential",
                 })));
             }
         };

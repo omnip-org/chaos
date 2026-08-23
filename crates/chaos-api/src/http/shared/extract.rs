@@ -11,7 +11,7 @@ use chaos_application::{
     store::StoreActor,
 };
 use chaos_domain::{FieldViolation, identity::UserId, store::StoreId};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -91,7 +91,7 @@ impl FromRequestParts<ApiState> for StorefrontMachine {
         let token = bearer_token(&parts.headers)?;
         let actor = state
             .publishable_key_authentication
-            .authenticate(&token)
+            .authenticate(token.expose_secret())
             .await?;
         Ok(Self(actor))
     }
@@ -109,7 +109,7 @@ macro_rules! storefront_machine_extractor {
                 let token = bearer_token(&parts.headers)?;
                 let actor = state
                     .publishable_key_authentication
-                    .authenticate(&token)
+                    .authenticate(token.expose_secret())
                     .await?;
                 Ok(Self(actor))
             }
@@ -132,7 +132,7 @@ macro_rules! storefront_shopper_extractor {
                 let token = bearer_token(&parts.headers)?;
                 let machine = state
                     .publishable_key_authentication
-                    .authenticate(&token)
+                    .authenticate(token.expose_secret())
                     .await?;
                 let credential = shopper_credential(&parts.headers)?;
                 let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
