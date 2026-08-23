@@ -1,5 +1,3 @@
-CREATE SCHEMA commerce;
-
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE commerce.price_lists (
@@ -54,3 +52,8 @@ CREATE POLICY store_isolation ON commerce.price_lists
 CREATE POLICY store_isolation ON commerce.prices
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.price_lists,
+       commerce.prices
+    TO chaos_runtime;

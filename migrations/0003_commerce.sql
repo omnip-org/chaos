@@ -204,3 +204,25 @@ CREATE POLICY store_isolation ON commerce.store_sales_channels
 CREATE POLICY store_isolation ON commerce.store_publishable_keys
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.stores,
+       commerce.store_memberships,
+       commerce.store_locales,
+       commerce.store_currencies,
+       commerce.store_sales_channels,
+       commerce.store_publishable_keys
+    TO chaos_runtime;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
+    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+
+GRANT USAGE ON SCHEMA commerce TO chaos_runtime;

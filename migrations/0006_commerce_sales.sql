@@ -1,5 +1,3 @@
-CREATE SCHEMA commerce;
-
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
@@ -469,31 +467,26 @@ CREATE POLICY store_isolation ON commerce.order_transitions
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.rebuild_store_products(UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_provider_readiness_checks(UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_provider_readiness_checks(UUID, INTEGER, TIMESTAMPTZ, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT) TO chaos_runtime;
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA commerce TO chaos_runtime;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.shoppers,
+       commerce.carts,
+       commerce.cart_lines,
+       commerce.orders,
+       commerce.order_tracking_tokens,
+       commerce.order_lines,
+       commerce.order_transitions,
+       commerce.payment_provider_accounts
+    TO chaos_runtime;
 
 REVOKE DELETE ON commerce.orders FROM chaos_runtime;
-REVOKE DELETE ON commerce.collections FROM chaos_runtime;
-REVOKE DELETE ON commerce.media_assets FROM chaos_runtime;
-REVOKE DELETE ON commerce.reviews FROM chaos_runtime;
-
-GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
+REVOKE UPDATE, DELETE ON commerce.order_lines, commerce.order_transitions FROM chaos_runtime;

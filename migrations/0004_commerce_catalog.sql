@@ -1,5 +1,3 @@
-CREATE SCHEMA commerce;
-
 CREATE TYPE commerce.product_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.variant_status AS ENUM ('active', 'archived');
 CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
@@ -54,7 +52,7 @@ CREATE TABLE commerce.product_option_values (
     created_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ          NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_option_values_store_id_product_id_option_id_value_key      UNIQUE (store_id, product_id, option_id, value),
+    CONSTRAINT product_option_values_store_id_product_id_option_id_value_key       UNIQUE (store_id, product_id, option_id, value),
     CONSTRAINT product_option_values_store_id_product_id_option_id_position_key    UNIQUE (store_id, product_id, option_id, position),
     CONSTRAINT product_option_values_store_id_product_id_option_id_id_key          UNIQUE (store_id, product_id, option_id, id),
     CONSTRAINT product_option_values_store_id_product_id_option_id_fkey            FOREIGN KEY (store_id, product_id, option_id) REFERENCES commerce.product_options(store_id, product_id, id) ON DELETE CASCADE,
@@ -426,3 +424,30 @@ ALTER TABLE commerce.product_documents ENABLE ROW LEVEL SECURITY;
 CREATE POLICY store_isolation ON commerce.product_documents
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+REVOKE ALL ON FUNCTION commerce.rebuild_store_products(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.products,
+       commerce.product_options,
+       commerce.product_option_values,
+       commerce.product_variants,
+       commerce.variant_selected_options,
+       commerce.product_publications,
+       commerce.collections,
+       commerce.collection_products,
+       commerce.collection_publications,
+       commerce.media_assets,
+       commerce.reviews,
+       commerce.product_documents
+    TO chaos_runtime;
+
+REVOKE DELETE
+    ON commerce.collections,
+       commerce.media_assets,
+       commerce.reviews
+    FROM chaos_runtime;
