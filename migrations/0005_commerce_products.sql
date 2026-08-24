@@ -383,9 +383,6 @@ ALTER TABLE commerce.price_lists ADD UNIQUE (store_id, id, currency);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
 
--- A Store trades in exactly one currency (`stores.currency`); every Price
--- List it owns must match, so Cart/Order price resolution never has to
--- choose between Price Lists in different currencies.
 CREATE FUNCTION commerce.check_price_list_currency()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 BEGIN
