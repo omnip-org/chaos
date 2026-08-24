@@ -24,7 +24,6 @@ pub struct CreateProductSelectedOptionInput {
 pub struct CreateProductVariantInput {
     pub title: String,
     pub sku: Option<String>,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub selected_options: Vec<CreateProductSelectedOptionInput>,
     pub metadata: Option<serde_json::Value>,
@@ -94,7 +93,6 @@ fn build_product(input: &CreateProductInput) -> Result<Product, ApplicationError
         product.add_variant(
             variant.title.clone(),
             sku,
-            variant.requires_shipping,
             variant.track_inventory,
             selected_value_ids,
             parse_metadata(variant.metadata.clone())?,
@@ -171,7 +169,6 @@ mod tests {
             variants: vec![CreateProductVariantInput {
                 title: "Blue / M".into(),
                 sku: Some("SHIRT-BLUE-M".into()),
-                requires_shipping: true,
                 track_inventory: true,
                 selected_options: vec![
                     CreateProductSelectedOptionInput {

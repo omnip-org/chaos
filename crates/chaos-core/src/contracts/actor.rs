@@ -31,15 +31,15 @@ impl AdminActor {
         }
     }
 
-    /// User id for RLS/audit `app.user_id` and any audit column that hard-requires
-    /// a real `identity.users` row (e.g. Collection events). For a human this is
-    /// the signed-in member; for a machine it is the Publishable Key's creator
-    /// (`created_by_user_id`) — the most honest stand-in available, since the
-    /// mutation is genuinely attributable to the key that person issued.
-    pub const fn audit_user_id(&self) -> UserId {
+    /// User id for RLS/audit `app.user_id`, when the caller is a signed-in
+    /// human. A Publishable Key has no human behind it at request time, so
+    /// this is `None` for `Machine` — callers that need a real
+    /// `identity.users` row for a mutation must reject `Machine` first via
+    /// [`Self::require_human`].
+    pub const fn audit_user_id(&self) -> Option<UserId> {
         match self {
-            Self::Store(actor) => actor.user_id(),
-            Self::Machine(actor) => actor.created_by_user_id,
+            Self::Store(actor) => Some(actor.user_id()),
+            Self::Machine(_) => None,
         }
     }
 

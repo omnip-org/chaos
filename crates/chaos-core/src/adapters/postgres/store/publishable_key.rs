@@ -3,10 +3,7 @@ use crate::{
     contracts::{AdminActor, GeneratedPublishableKey, MachineActor, PublishableKeyListItem},
     error::database_error,
 };
-use chaos_domain::{
-    identity::UserId,
-    store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId},
-};
+use chaos_domain::store::{PublishableKey, PublishableKeyId, SalesChannelId, StoreId};
 use rand::Rng;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -56,14 +53,13 @@ impl PostgresPublishableKeyRepository {
         require_store(&mut transaction, publishable_key.store_id()).await?;
         sqlx::query(
             "INSERT INTO commerce.store_publishable_keys \
-             (id, store_id, public_key, name, created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5)",
+             (id, store_id, public_key, name) \
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(publishable_key.id().as_uuid())
         .bind(publishable_key.store_id().as_uuid())
         .bind(&generated_key.public_key)
         .bind(publishable_key.name())
-        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -124,13 +120,11 @@ impl PostgresPublishableKeyRepository {
         let result = sqlx::query(
             "UPDATE commerce.store_publishable_keys \
              SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP), \
-                 revoked_by_user_id = COALESCE(revoked_by_user_id, $3), \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
         .bind(publishable_key_id.as_uuid())
-        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -151,8 +145,8 @@ impl PostgresPublishableKeyRepository {
         if !valid_public_key(presented_key) {
             return Ok(None);
         }
-        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>, Uuid)>(
-            "SELECT publishable_key_id, store_id, sales_channel_id, created_by_user_id \
+        let row = sqlx::query_as::<_, (Uuid, Uuid, Option<Uuid>)>(
+            "SELECT publishable_key_id, store_id, sales_channel_id \
              FROM commerce.authenticate_publishable_key($1)",
         )
         .bind(presented_key)
@@ -160,16 +154,13 @@ impl PostgresPublishableKeyRepository {
         .await
         .map_err(database_error)?;
 
-        row.map(
-            |(publishable_key_id, store_id, sales_channel_id, created_by_user_id)| {
-                Ok(MachineActor {
-                    publishable_key_id: PublishableKeyId::from_uuid(publishable_key_id),
-                    store_id: StoreId::from_uuid(store_id),
-                    sales_channel_id: sales_channel_id.map(SalesChannelId::from_uuid),
-                    created_by_user_id: UserId::from_uuid(created_by_user_id),
-                })
-            },
-        )
+        row.map(|(publishable_key_id, store_id, sales_channel_id)| {
+            Ok(MachineActor {
+                publishable_key_id: PublishableKeyId::from_uuid(publishable_key_id),
+                store_id: StoreId::from_uuid(store_id),
+                sales_channel_id: sales_channel_id.map(SalesChannelId::from_uuid),
+            })
+        })
         .transpose()
     }
 }
@@ -180,10 +171,7 @@ async fn set_context(
 ) -> Result<(), ApplicationError> {
     crate::adapters::postgres::database::set_optional_user_context(
         transaction,
-        match actor {
-            AdminActor::Store(_) => Some(actor.audit_user_id()),
-            AdminActor::Machine(_) => None,
-        },
+        actor.audit_user_id(),
     )
     .await
     .map_err(database_error)?;

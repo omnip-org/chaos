@@ -39,7 +39,6 @@ pub struct CatalogProductVariant {
     pub title: String,
     pub sku: Option<String>,
     pub status: VariantStatus,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub selected_options: Vec<CatalogSelectedOption>,
     pub metadata: Option<serde_json::Value>,

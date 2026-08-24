@@ -61,17 +61,7 @@ type CartHeaderRow = (
     OffsetDateTime,
 );
 
-type CartLineRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    Option<String>,
-    bool,
-    bool,
-    i32,
-    i64,
-);
+type CartLineRow = (Uuid, Uuid, String, String, Option<String>, bool, i32, i64);
 type CartMediaRow = (
     Uuid,
     Uuid,

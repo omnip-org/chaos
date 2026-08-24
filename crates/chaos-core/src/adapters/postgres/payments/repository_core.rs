@@ -110,7 +110,7 @@ impl PostgresStripeRepository {
         actor: &AdminActor,
     ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
         self.begin_context(
-            Some(actor.audit_user_id().as_uuid()),
+            actor.audit_user_id().map(|id| id.as_uuid()),
             actor.store_id().as_uuid(),
         )
         .await

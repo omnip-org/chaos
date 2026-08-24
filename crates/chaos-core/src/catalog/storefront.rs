@@ -108,10 +108,7 @@ fn parse_currency(value: Option<&str>) -> Result<Option<CurrencyCode>, Applicati
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use chaos_domain::{
-        identity::UserId,
-        store::{PublishableKeyId, SalesChannelId, StoreId},
-    };
+    use chaos_domain::store::{PublishableKeyId, SalesChannelId, StoreId};
 
     use super::*;
 
@@ -146,7 +143,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            created_by_user_id: UserId::new(),
         }
     }
 

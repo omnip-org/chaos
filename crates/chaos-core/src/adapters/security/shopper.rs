@@ -146,7 +146,6 @@ fn validate_secret(value: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 mod tests {
     use crate::contracts::{MachineActor, ShopperCredentialCodec};
     use chaos_domain::{
-        identity::UserId,
         sales::ShopperId,
         store::{PublishableKeyId, SalesChannelId, StoreId},
     };
@@ -159,7 +158,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id: StoreId::new(),
             sales_channel_id: Some(SalesChannelId::new()),
-            created_by_user_id: UserId::new(),
         }
     }
 

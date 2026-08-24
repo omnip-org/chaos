@@ -30,7 +30,6 @@ pub struct UpdateProductVariantInput {
     pub product_variant_id: ProductVariantId,
     pub title: String,
     pub sku: Option<String>,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub metadata: Option<serde_json::Value>,
 }
@@ -83,7 +82,6 @@ impl CatalogManagement {
         let content = ProductVariantContent::new(
             input.title,
             input.sku.map(Sku::parse).transpose()?,
-            input.requires_shipping,
             input.track_inventory,
             parse_metadata(input.metadata)?,
         )?;

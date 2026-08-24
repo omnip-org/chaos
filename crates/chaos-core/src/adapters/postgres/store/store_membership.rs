@@ -30,7 +30,7 @@ impl PostgresStoreMembershipRepository {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         crate::adapters::postgres::database::set_admin_context(
             &mut transaction,
-            actor.user_id(),
+            Some(actor.user_id()),
             actor.store_id(),
         )
         .await

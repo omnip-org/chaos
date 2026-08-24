@@ -62,8 +62,6 @@ pub struct ProductVariantParams {
     #[serde(default)]
     pub sku: Option<String>,
     #[serde(default = "default_true")]
-    pub requires_shipping: bool,
-    #[serde(default = "default_true")]
     pub track_inventory: bool,
     /// Exactly one value per declared product option, if any options are declared.
     #[serde(default)]
@@ -139,8 +137,6 @@ pub struct UpdateProductVariantParams {
     /// Set to null to remove the SKU.
     #[serde(default)]
     pub sku: Option<String>,
-    #[serde(default = "default_true")]
-    pub requires_shipping: bool,
     #[serde(default = "default_true")]
     pub track_inventory: bool,
     /// Arbitrary JSON (up to 32KB) for automation bookkeeping. Omitting this field clears
@@ -291,7 +287,6 @@ impl ChaosMcp {
                     "title_source": "canonical",
                     "sku": variant.sku,
                     "status": variant.status.as_str(),
-                    "requires_shipping": variant.requires_shipping,
                     "track_inventory": variant.track_inventory,
                     "selected_options": variant.selected_options.into_iter().map(|selection| json!({
                         "option_id": selection.option_id.as_uuid(),
@@ -351,7 +346,6 @@ impl ChaosMcp {
             .map(|variant| CreateProductVariantInput {
                 title: variant.title,
                 sku: variant.sku,
-                requires_shipping: variant.requires_shipping,
                 track_inventory: variant.track_inventory,
                 selected_options: variant
                     .selected_options
@@ -479,7 +473,6 @@ impl ChaosMcp {
                 product_variant_id,
                 title: params.title,
                 sku: params.sku,
-                requires_shipping: params.requires_shipping,
                 track_inventory: params.track_inventory,
                 metadata: params.metadata,
             })

@@ -39,7 +39,6 @@ export interface ProductVariant {
   id: UUID;
   title: string;
   sku?: string;
-  requires_shipping: boolean;
   track_inventory: boolean;
   on_hand_quantity: number;
   price: Price;
@@ -134,7 +133,6 @@ export interface CartLine {
   product_title: string;
   variant_title: string;
   sku?: string;
-  requires_shipping: boolean;
   track_inventory: boolean;
   quantity: number;
   unit_price_amount_minor: number;
@@ -181,7 +179,6 @@ export interface OrderLine {
   product_title: string;
   variant_title: string;
   sku?: string;
-  requires_shipping: boolean;
   track_inventory: boolean;
   quantity: number;
   unit_price_amount_minor: number;

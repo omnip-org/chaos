@@ -117,8 +117,8 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<bool, ApplicationError> {
         let result = sqlx::query(
             "UPDATE commerce.product_variants \
-             SET title = $4, sku = $5, requires_shipping = $6, track_inventory = $7, \
-                 meta = $8::jsonb, updated_at = CURRENT_TIMESTAMP \
+             SET title = $4, sku = $5, track_inventory = $6, \
+                 meta = $7::jsonb, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND product_id = $2 AND id = $3",
         )
         .bind(self.store_id.as_uuid())
@@ -126,7 +126,6 @@ impl PostgresCatalogManagementTransaction {
         .bind(variant_id.as_uuid())
         .bind(content.title())
         .bind(content.sku().map(|sku| sku.as_str()))
-        .bind(content.requires_shipping())
         .bind(content.track_inventory())
         .bind(content.metadata().map(CatalogMetadata::as_str))
         .execute(&mut *self.transaction)
@@ -424,7 +423,6 @@ mod tests {
                 product_variant_id: variant_id,
                 title: "Updated Variant".into(),
                 sku: Some("UPDATED-SKU".into()),
-                requires_shipping: false,
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
             })
@@ -438,15 +436,14 @@ mod tests {
                 product_variant_id: variant_id,
                 title: "Updated Variant".into(),
                 sku: Some("UPDATED-SKU".into()),
-                requires_shipping: false,
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
             })
             .await
             .unwrap();
         assert_eq!(updated_variant, replayed_variant);
-        let stored_variant: (String, String, bool, bool, serde_json::Value) = sqlx::query_as(
-            "SELECT title, sku::text, requires_shipping, track_inventory, meta \
+        let stored_variant: (String, String, bool, serde_json::Value) = sqlx::query_as(
+            "SELECT title, sku::text, track_inventory, meta \
              FROM commerce.product_variants WHERE id = $1",
         )
         .bind(variant_id.as_uuid())
@@ -458,7 +455,6 @@ mod tests {
             (
                 "Updated Variant".into(),
                 "UPDATED-SKU".into(),
-                false,
                 false,
                 serde_json::json!({ "source": "test" }),
             )
@@ -630,7 +626,6 @@ mod tests {
             publishable_key_id: chaos_domain::store::PublishableKeyId::new(),
             store_id,
             sales_channel_id: None,
-            created_by_user_id: owner_id,
         });
 
         assert!(matches!(

@@ -55,7 +55,6 @@ struct StorefrontVariantData {
     title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     sku: Option<String>,
-    requires_shipping: bool,
     track_inventory: bool,
     on_hand_quantity: i64,
     price: StorefrontPriceData,
@@ -238,7 +237,6 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
         id: variant.id.as_uuid(),
         title: variant.title,
         sku: variant.sku,
-        requires_shipping: variant.requires_shipping,
         track_inventory: variant.track_inventory,
         on_hand_quantity: variant.on_hand_quantity,
         price: StorefrontPriceData {
@@ -417,22 +415,17 @@ mod tests {
 
     use super::*;
 
-    async fn insert_publishable_key(
-        pool: &PgPool,
-        store_id: StoreId,
-        user_id: UserId,
-    ) -> GeneratedPublishableKey {
+    async fn insert_publishable_key(pool: &PgPool, store_id: StoreId) -> GeneratedPublishableKey {
         let material = DefaultPublishableKeyGenerator.generate();
         let key_id = PublishableKeyId::new();
         sqlx::query(
             "INSERT INTO commerce.store_publishable_keys \
-             (id, store_id, public_key, name, created_by_user_id) \
-             VALUES ($1, $2, $3, 'Storefront HTTP', $4)",
+             (id, store_id, public_key, name) \
+             VALUES ($1, $2, $3, 'Storefront HTTP')",
         )
         .bind(key_id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(&material.public_key)
-        .bind(user_id.as_uuid())
         .execute(pool)
         .await
         .unwrap();
@@ -538,7 +531,7 @@ mod tests {
         .execute(&owner_pool)
         .await
         .unwrap();
-        let material = insert_publishable_key(&owner_pool, store_id, user_id).await;
+        let material = insert_publishable_key(&owner_pool, store_id).await;
         let state = test_state(&database_url, user_id);
         assert!(
             chaos_core::adapters::postgres::PostgresSearchIndexer::new(

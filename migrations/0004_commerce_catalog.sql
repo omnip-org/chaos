@@ -68,7 +68,6 @@ CREATE TABLE commerce.product_variants (
     title                TEXT                       NOT NULL,
     sku                  extensions.citext,
     status               commerce.variant_status    NOT NULL DEFAULT 'active',
-    requires_shipping    BOOLEAN                    NOT NULL DEFAULT true,
     track_inventory      BOOLEAN                    NOT NULL DEFAULT true,
     on_hand_quantity     BIGINT                     NOT NULL DEFAULT 0,
     meta                 JSONB,
@@ -172,9 +171,6 @@ CREATE TABLE commerce.media_assets (
     position             SMALLINT                    NOT NULL,
     status               commerce.media_asset_status NOT NULL DEFAULT 'pending_upload',
     public_url           TEXT,
-    created_by           UUID                        NOT NULL,
-    ready_by             UUID,
-    archived_by          UUID,
     ready_at             TIMESTAMPTZ,
     archived_at          TIMESTAMPTZ,
     created_at           TIMESTAMPTZ                 NOT NULL,
@@ -183,9 +179,6 @@ CREATE TABLE commerce.media_assets (
     CONSTRAINT media_assets_store_id_id_key                        UNIQUE (store_id, id),
     CONSTRAINT media_assets_store_id_product_fkey                  FOREIGN KEY (store_id, product_id) REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
     CONSTRAINT media_assets_store_id_product_variant_fkey          FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants(store_id, product_id, id),
-    CONSTRAINT media_assets_created_by_fkey                        FOREIGN KEY (created_by) REFERENCES identity.users(id),
-    CONSTRAINT media_assets_ready_by_fkey                          FOREIGN KEY (ready_by) REFERENCES identity.users(id),
-    CONSTRAINT media_assets_archived_by_fkey                       FOREIGN KEY (archived_by) REFERENCES identity.users(id),
     CONSTRAINT media_assets_object_key_check                       CHECK (length(object_key) BETWEEN 20 AND 255 AND object_key ~ '^stores/[0-9a-f-]{36}/media/[0-9a-f-]{36}/original$'),
     CONSTRAINT media_assets_file_name_check                        CHECK (length(trim(file_name)) BETWEEN 1 AND 255 AND file_name !~ '[[:cntrl:]/\\]'),
     CONSTRAINT media_assets_type_kind_check                        CHECK ((media_kind = 'image' AND media_type IN ('image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif') AND byte_size BETWEEN 1 AND 26214400) OR (media_kind = 'video' AND media_type IN ('video/mp4', 'video/webm') AND byte_size BETWEEN 1 AND 524288000)),
@@ -193,7 +186,7 @@ CREATE TABLE commerce.media_assets (
     CONSTRAINT media_assets_alt_text_check                         CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
     CONSTRAINT media_assets_position_check                         CHECK (position BETWEEN 0 AND 99),
     CONSTRAINT media_assets_public_url_check                       CHECK (public_url IS NULL OR (length(public_url) BETWEEN 12 AND 2048 AND public_url ~ '^https://')),
-    CONSTRAINT media_assets_lifecycle_check                        CHECK ((status = 'pending_upload' AND public_url IS NULL AND ready_by IS NULL AND ready_at IS NULL AND archived_by IS NULL AND archived_at IS NULL) OR (status = 'ready' AND public_url IS NOT NULL AND ready_by IS NOT NULL AND ready_at IS NOT NULL AND archived_by IS NULL AND archived_at IS NULL) OR (status = 'archived' AND archived_by IS NOT NULL AND archived_at IS NOT NULL AND ((public_url IS NULL AND ready_by IS NULL AND ready_at IS NULL) OR (public_url IS NOT NULL AND ready_by IS NOT NULL AND ready_at IS NOT NULL))))
+    CONSTRAINT media_assets_lifecycle_check                        CHECK ((status = 'pending_upload' AND public_url IS NULL AND ready_at IS NULL AND archived_at IS NULL) OR (status = 'ready' AND public_url IS NOT NULL AND ready_at IS NOT NULL AND archived_at IS NULL) OR (status = 'archived' AND archived_at IS NOT NULL AND ((public_url IS NULL AND ready_at IS NULL) OR (public_url IS NOT NULL AND ready_at IS NOT NULL))))
 );
 
 CREATE TABLE commerce.reviews (
@@ -209,7 +202,6 @@ CREATE TABLE commerce.reviews (
     status               commerce.review_status   NOT NULL DEFAULT 'pending',
     is_staff_reply       BOOLEAN                  NOT NULL DEFAULT false,
     verified_buyer       BOOLEAN                  NOT NULL DEFAULT false,
-    approved_by_user_id  UUID,
     approved_at          TIMESTAMPTZ,
     created_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -217,12 +209,11 @@ CREATE TABLE commerce.reviews (
     CONSTRAINT reviews_store_id_id_key                    UNIQUE (store_id, id),
     CONSTRAINT reviews_store_id_product_fkey              FOREIGN KEY (store_id, product_id) REFERENCES commerce.products(store_id, id) ON DELETE CASCADE,
     CONSTRAINT reviews_store_id_parent_review_fkey        FOREIGN KEY (store_id, parent_review_id) REFERENCES commerce.reviews(store_id, id) ON DELETE CASCADE,
-    CONSTRAINT reviews_approved_by_user_fkey              FOREIGN KEY (approved_by_user_id) REFERENCES identity.users(id),
     CONSTRAINT reviews_rating_shape_check                 CHECK ((is_staff_reply AND rating IS NULL AND parent_review_id IS NOT NULL) OR (NOT is_staff_reply AND rating IS NOT NULL AND rating BETWEEN 1 AND 5 AND parent_review_id IS NULL)),
     CONSTRAINT reviews_content_length_check               CHECK (length(content) BETWEEN 1 AND 10000),
     CONSTRAINT reviews_title_length_check                 CHECK (title IS NULL OR length(title) <= 255),
     CONSTRAINT reviews_author_name_length_check           CHECK (length(trim(author_name)) BETWEEN 1 AND 120),
-    CONSTRAINT reviews_approval_shape_check               CHECK ((status = 'approved') = (approved_at IS NOT NULL AND approved_by_user_id IS NOT NULL)),
+    CONSTRAINT reviews_approval_shape_check               CHECK ((status = 'approved') = (approved_at IS NOT NULL)),
     CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (NOT verified_buyer OR status = 'approved')
 );
 

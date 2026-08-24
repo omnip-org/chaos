@@ -139,7 +139,6 @@ impl ProductContent {
 pub struct ProductVariantContent {
     title: String,
     sku: Option<Sku>,
-    requires_shipping: bool,
     track_inventory: bool,
     metadata: Option<CatalogMetadata>,
 }
@@ -148,7 +147,6 @@ impl ProductVariantContent {
     pub fn new(
         title: impl Into<String>,
         sku: Option<Sku>,
-        requires_shipping: bool,
         track_inventory: bool,
         metadata: Option<CatalogMetadata>,
     ) -> Result<Self, DomainError> {
@@ -157,7 +155,6 @@ impl ProductVariantContent {
         Ok(Self {
             title,
             sku,
-            requires_shipping,
             track_inventory,
             metadata,
         })
@@ -169,10 +166,6 @@ impl ProductVariantContent {
 
     pub fn sku(&self) -> Option<&Sku> {
         self.sku.as_ref()
-    }
-
-    pub const fn requires_shipping(&self) -> bool {
-        self.requires_shipping
     }
 
     pub const fn track_inventory(&self) -> bool {
@@ -346,7 +339,6 @@ pub struct ProductVariant {
     title: String,
     sku: Option<Sku>,
     status: VariantStatus,
-    requires_shipping: bool,
     track_inventory: bool,
     selected_options: Vec<SelectedOptionValue>,
     metadata: Option<CatalogMetadata>,
@@ -367,10 +359,6 @@ impl ProductVariant {
 
     pub const fn status(&self) -> VariantStatus {
         self.status
-    }
-
-    pub const fn requires_shipping(&self) -> bool {
-        self.requires_shipping
     }
 
     pub const fn track_inventory(&self) -> bool {
@@ -488,7 +476,6 @@ impl Product {
         &mut self,
         title: impl Into<String>,
         sku: Option<Sku>,
-        requires_shipping: bool,
         track_inventory: bool,
         selected_value_ids: Vec<ProductOptionValueId>,
         metadata: Option<CatalogMetadata>,
@@ -547,7 +534,6 @@ impl Product {
             title,
             sku,
             status: VariantStatus::Active,
-            requires_shipping,
             track_inventory,
             selected_options,
             metadata,
@@ -659,7 +645,6 @@ mod tests {
                 "Blue / M",
                 Some(Sku::parse("SHIRT-BLUE-M").unwrap()),
                 true,
-                true,
                 vec![medium, blue],
                 None,
             )
@@ -677,12 +662,12 @@ mod tests {
         let blue = product.add_option_value(color, "Blue").unwrap();
         let medium = product.add_option_value(size, "M").unwrap();
         product
-            .add_variant("Blue / M", None, true, true, vec![blue, medium], None)
+            .add_variant("Blue / M", None, true, vec![blue, medium], None)
             .unwrap();
 
         assert!(
             product
-                .add_variant("Duplicate", None, true, true, vec![medium, blue], None)
+                .add_variant("Duplicate", None, true, vec![medium, blue], None)
                 .is_err()
         );
     }
@@ -693,7 +678,7 @@ mod tests {
         assert!(product.activate().is_err());
 
         product
-            .add_variant("Default", None, true, true, vec![], None)
+            .add_variant("Default", None, true, vec![], None)
             .unwrap();
         product.activate().unwrap();
         assert_eq!(product.status(), ProductStatus::Active);
@@ -726,11 +711,10 @@ mod tests {
 
     #[test]
     fn product_variant_content_reuses_creation_validation_for_updates() {
-        assert!(ProductVariantContent::new("", None, true, true, None).is_err());
+        assert!(ProductVariantContent::new("", None, true, None).is_err());
         let content = ProductVariantContent::new(
             "Updated Variant",
             Some(Sku::parse("UPDATED-SKU").unwrap()),
-            false,
             false,
             Some(CatalogMetadata::parse(r#"{"source":"test"}"#).unwrap()),
         )
@@ -738,7 +722,6 @@ mod tests {
 
         assert_eq!(content.title(), "Updated Variant");
         assert_eq!(content.sku().map(Sku::as_str), Some("UPDATED-SKU"));
-        assert!(!content.requires_shipping());
         assert!(!content.track_inventory());
     }
 
@@ -755,7 +738,7 @@ mod tests {
     fn adding_an_option_after_variants_exist_is_rejected() {
         let mut product = product();
         product
-            .add_variant("Default", None, true, true, vec![], None)
+            .add_variant("Default", None, true, vec![], None)
             .unwrap();
 
         assert!(product.add_option("Color").is_err());

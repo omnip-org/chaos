@@ -39,11 +39,10 @@ async fn resolve_variant(
     channel_id: SalesChannelId,
     price_list_id: PriceListId,
     variant_id: ProductVariantId,
-) -> Result<Option<(Uuid, String, String, Option<String>, bool, bool, i64)>, ApplicationError>
-{
+) -> Result<Option<(Uuid, String, String, Option<String>, bool, i64)>, ApplicationError> {
     sqlx::query_as(
         "SELECT product.id, product.title, variant.title, variant.sku::text, \
-                variant.requires_shipping, variant.track_inventory, price.amount_minor \
+                variant.track_inventory, price.amount_minor \
          FROM commerce.product_variants AS variant \
          INNER JOIN commerce.products AS product \
            ON product.store_id = variant.store_id AND product.id = variant.product_id \
@@ -79,13 +78,12 @@ async fn insert_or_replace_line(
     sqlx::query(
         "INSERT INTO commerce.cart_lines \
          (store_id, cart_id, product_id, product_variant_id, \
-          product_title, variant_title, sku, requires_shipping, track_inventory, quantity, \
+          product_title, variant_title, sku, track_inventory, quantity, \
           unit_price_amount_minor) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          ON CONFLICT (store_id, cart_id, product_variant_id) \
          DO UPDATE SET product_title = EXCLUDED.product_title, \
              variant_title = EXCLUDED.variant_title, sku = EXCLUDED.sku, \
-             requires_shipping = EXCLUDED.requires_shipping, \
              track_inventory = EXCLUDED.track_inventory, quantity = EXCLUDED.quantity, \
              unit_price_amount_minor = EXCLUDED.unit_price_amount_minor, \
              updated_at = CURRENT_TIMESTAMP",
@@ -97,7 +95,6 @@ async fn insert_or_replace_line(
     .bind(line.product_title())
     .bind(line.variant_title())
     .bind(line.sku())
-    .bind(line.requires_shipping())
     .bind(line.track_inventory())
     .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
     .bind(line.unit_price().amount_minor())
@@ -278,7 +275,7 @@ async fn load_cart_line_rows(
 ) -> Result<Vec<CartLineRow>, ApplicationError> {
     sqlx::query_as(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
-                requires_shipping, track_inventory, quantity, unit_price_amount_minor \
+                track_inventory, quantity, unit_price_amount_minor \
          FROM commerce.cart_lines \
          WHERE store_id = $1 AND cart_id = $2 \
          ORDER BY product_variant_id ASC",
@@ -295,18 +292,17 @@ fn cart_line_item(
     currency: CurrencyCode,
     media: &HashMap<(Uuid, Uuid), Vec<StorefrontMediaAsset>>,
 ) -> Result<CartLineItem, ApplicationError> {
-    let quantity = u32::try_from(row.7).map_err(unexpected_conversion)?;
-    let subtotal = Money::new(row.8, currency).checked_mul(u64::from(quantity))?;
+    let quantity = u32::try_from(row.6).map_err(unexpected_conversion)?;
+    let subtotal = Money::new(row.7, currency).checked_mul(u64::from(quantity))?;
     Ok(CartLineItem {
         product_id: ProductId::from_uuid(row.0),
         product_variant_id: ProductVariantId::from_uuid(row.1),
         product_title: row.2,
         variant_title: row.3,
         sku: row.4,
-        requires_shipping: row.5,
-        track_inventory: row.6,
+        track_inventory: row.5,
         quantity,
-        unit_price_amount_minor: row.8,
+        unit_price_amount_minor: row.7,
         subtotal_amount_minor: subtotal.amount_minor(),
         media: media.get(&(row.0, row.1)).cloned().unwrap_or_default(),
     })
@@ -323,7 +319,7 @@ async fn refresh_cart_lines(
     let rows = sqlx::query_as::<_, CartLineRow>(
         "SELECT product.id, variant.id, cart_line.product_title, cart_line.variant_title, \
                 cart_line.sku::text, \
-                variant.requires_shipping, variant.track_inventory, cart_line.quantity, \
+                variant.track_inventory, cart_line.quantity, \
                 price.amount_minor \
          FROM commerce.cart_lines AS cart_line \
          INNER JOIN commerce.product_variants AS variant \
@@ -359,9 +355,8 @@ async fn refresh_cart_lines(
                 row.3,
                 row.4,
                 row.5,
-                row.6,
-                u32::try_from(row.7).map_err(unexpected_conversion)?,
-                Money::new(row.8, currency),
+                u32::try_from(row.6).map_err(unexpected_conversion)?,
+                Money::new(row.7, currency),
             )
             .map_err(ApplicationError::from)
         })

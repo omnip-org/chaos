@@ -87,20 +87,12 @@ type OrderLineRow = (
     String,
     Option<String>,
     bool,
-    bool,
     i32,
     i64,
     i64,
 );
 
-type OrderTransitionRow = (
-    Uuid,
-    Option<String>,
-    String,
-    String,
-    Option<Uuid>,
-    OffsetDateTime,
-);
+type OrderTransitionRow = (Uuid, Option<String>, String, String, OffsetDateTime);
 
 #[derive(sqlx::FromRow)]
 struct OrderIdentityRow {
@@ -161,7 +153,7 @@ pub(crate) async fn load(
     let identity = load_identity(transaction, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
-                requires_shipping, track_inventory, quantity, unit_price_amount_minor, \
+                track_inventory, quantity, unit_price_amount_minor, \
                 subtotal_amount_minor FROM commerce.order_lines \
          WHERE store_id = $1 AND order_id = $2 ORDER BY position",
     )
@@ -171,7 +163,7 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let transitions = sqlx::query_as::<_, OrderTransitionRow>(
-        "SELECT id, from_status::text, to_status::text, kind::text, actor_user_id, occurred_at \
+        "SELECT id, from_status::text, to_status::text, kind::text, occurred_at \
          FROM commerce.order_transitions WHERE store_id = $1 AND order_id = $2 \
          ORDER BY occurred_at, id",
     )
@@ -347,12 +339,11 @@ fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError>
         product_title: row.2,
         variant_title: row.3,
         sku: row.4,
-        requires_shipping: row.5,
-        track_inventory: row.6,
-        quantity: u32::try_from(row.7)
+        track_inventory: row.5,
+        quantity: u32::try_from(row.6)
             .map_err(|error| ApplicationError::Unexpected(error.into()))?,
-        unit_price_amount_minor: row.8,
-        subtotal_amount_minor: row.9,
+        unit_price_amount_minor: row.7,
+        subtotal_amount_minor: row.8,
     })
 }
 
@@ -366,8 +357,7 @@ fn order_transition(row: OrderTransitionRow) -> Result<OrderTransitionItem, Appl
             .transpose()?,
         to_status: OrderStatus::parse(&row.2).ok_or_else(corrupt_state)?,
         kind: row.3,
-        actor_user_id: row.4,
-        occurred_at: row.5,
+        occurred_at: row.4,
     })
 }
 

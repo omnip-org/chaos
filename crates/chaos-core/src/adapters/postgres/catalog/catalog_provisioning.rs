@@ -117,8 +117,8 @@ impl PostgresCatalogProvisioningTransaction {
             sqlx::query(
                 "INSERT INTO commerce.product_variants \
                  (id, store_id, product_id, title, sku, status, \
-                  requires_shipping, track_inventory, meta) \
-                 VALUES ($1, $2, $3, $4, $5, $6::commerce.variant_status, $7, $8, $9::jsonb)",
+                  track_inventory, meta) \
+                 VALUES ($1, $2, $3, $4, $5, $6::commerce.variant_status, $7, $8::jsonb)",
             )
             .bind(variant.id().as_uuid())
             .bind(product.store_id().as_uuid())
@@ -126,7 +126,6 @@ impl PostgresCatalogProvisioningTransaction {
             .bind(variant.title())
             .bind(variant.sku().map(|sku| sku.as_str()))
             .bind(variant.status().as_str())
-            .bind(variant.requires_shipping())
             .bind(variant.track_inventory())
             .bind(variant.metadata().map(CatalogMetadata::as_str))
             .execute(&mut *self.transaction)
@@ -285,7 +284,6 @@ mod tests {
                 variants: vec![CreateProductVariantInput {
                     title: "Blue / M".into(),
                     sku: Some(sku.into()),
-                    requires_shipping: true,
                     track_inventory: true,
                     selected_options: vec![
                         CreateProductSelectedOptionInput {

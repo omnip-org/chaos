@@ -47,10 +47,10 @@ pub(crate) async fn set_shopper_context(
 
 pub(crate) async fn set_admin_context(
     connection: &mut PgConnection,
-    user_id: UserId,
+    user_id: Option<UserId>,
     store_id: StoreId,
 ) -> Result<(), sqlx::Error> {
-    set_user_context(connection, user_id).await?;
+    set_optional_user_context(connection, user_id).await?;
     set_store_context(connection, store_id).await
 }
 

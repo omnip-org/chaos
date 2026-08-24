@@ -93,7 +93,6 @@ pub struct CartLine {
     product_title: String,
     variant_title: String,
     sku: Option<String>,
-    requires_shipping: bool,
     track_inventory: bool,
     quantity: u32,
     unit_price: Money,
@@ -107,7 +106,6 @@ impl CartLine {
         product_title: impl Into<String>,
         variant_title: impl Into<String>,
         sku: Option<String>,
-        requires_shipping: bool,
         track_inventory: bool,
         quantity: u32,
         unit_price: Money,
@@ -133,7 +131,6 @@ impl CartLine {
             product_title,
             variant_title,
             sku,
-            requires_shipping,
             track_inventory,
             quantity,
             unit_price,
@@ -158,10 +155,6 @@ impl CartLine {
 
     pub fn sku(&self) -> Option<&str> {
         self.sku.as_deref()
-    }
-
-    pub const fn requires_shipping(&self) -> bool {
-        self.requires_shipping
     }
 
     pub const fn track_inventory(&self) -> bool {
@@ -346,7 +339,6 @@ mod tests {
             "Product",
             "Variant",
             Some("SKU".into()),
-            true,
             true,
             quantity,
             Money::new(amount, CurrencyCode::USD),

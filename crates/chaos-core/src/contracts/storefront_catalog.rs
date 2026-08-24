@@ -32,7 +32,6 @@ pub struct StorefrontCatalogVariant {
     pub id: ProductVariantId,
     pub title: String,
     pub sku: Option<String>,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub on_hand_quantity: i64,
     pub amount_minor: i64,

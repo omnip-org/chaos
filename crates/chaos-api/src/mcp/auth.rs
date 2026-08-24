@@ -196,7 +196,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(actor.store_id(), store_id);
-        assert_eq!(actor.audit_user_id(), user_id);
+        assert_eq!(actor.audit_user_id(), Some(user_id));
         let AdminActor::Store(store_actor) = actor else {
             unreachable!()
         };

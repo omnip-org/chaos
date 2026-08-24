@@ -58,7 +58,6 @@ impl PostgresStorefrontCatalogRepository {
                 String,
                 Option<String>,
                 bool,
-                bool,
                 i64,
                 i64,
                 String,
@@ -83,7 +82,7 @@ impl PostgresStorefrontCatalogRepository {
                  ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
                  LIMIT 1 \
              ) \
-            SELECT variant.id, variant.title, variant.sku::text, variant.requires_shipping, \
+            SELECT variant.id, variant.title, variant.sku::text, \
                     variant.track_inventory, variant.on_hand_quantity, \
                     price.amount_minor, selected.currency, \
                     variant.meta \
@@ -113,7 +112,6 @@ impl PostgresStorefrontCatalogRepository {
                     id,
                     title,
                     sku,
-                    requires_shipping,
                     track_inventory,
                     on_hand_quantity,
                     amount_minor,
@@ -124,7 +122,6 @@ impl PostgresStorefrontCatalogRepository {
                         id: ProductVariantId::from_uuid(id),
                         title,
                         sku,
-                        requires_shipping,
                         track_inventory,
                         on_hand_quantity,
                         amount_minor,
@@ -506,10 +503,7 @@ async fn variant_selected_options(
 #[cfg(test)]
 mod tests {
     use crate::contracts::{MachineActor, StorefrontCatalogRepository};
-    use chaos_domain::{
-        identity::UserId,
-        store::{PublishableKeyId, SalesChannelId, StoreId},
-    };
+    use chaos_domain::store::{PublishableKeyId, SalesChannelId, StoreId};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
@@ -693,7 +687,6 @@ mod tests {
             publishable_key_id: PublishableKeyId::new(),
             store_id,
             sales_channel_id: Some(channel_id),
-            created_by_user_id: UserId::new(),
         };
         let indexer = crate::adapters::postgres::PostgresSearchIndexer::new(runtime_pool.clone());
         assert!(

@@ -65,7 +65,6 @@ impl PostgresMediaAssetRepository {
         actor: AdminActor,
         record: CreateMediaAssetRecord,
     ) -> Result<PendingMediaUpload, ApplicationError> {
-        let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
         let product_exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2 AND status<>'archived')").bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
         if !product_exists {
@@ -86,8 +85,8 @@ impl PostgresMediaAssetRepository {
             }
         }
         let digest = decode_digest(record.descriptor.sha256_hex())?;
-        sqlx::query("INSERT INTO commerce.media_assets (id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::commerce.media_kind,$9,$10,$11,$12,'pending_upload',$13,$14,$14)")
-            .bind(record.id.as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(audit_user_id).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
+        sqlx::query("INSERT INTO commerce.media_assets (id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::commerce.media_kind,$9,$10,$11,$12,'pending_upload',$13,$13)")
+            .bind(record.id.as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
         let row = load(
             &mut tx,
             &actor,
@@ -155,9 +154,8 @@ impl PostgresMediaAssetRepository {
         mutation: MediaAssetMutation,
         public_url: &str,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
-        let changed=sqlx::query("UPDATE commerce.media_assets SET status='ready',public_url=$4,ready_by=$5,ready_at=$6,updated_at=$6 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status='pending_upload'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
+        let changed=sqlx::query("UPDATE commerce.media_assets SET status='ready',public_url=$4,ready_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status='pending_upload'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
         let row = load(
             &mut tx,
             &actor,
@@ -182,9 +180,8 @@ impl PostgresMediaAssetRepository {
         actor: AdminActor,
         mutation: MediaAssetMutation,
     ) -> Result<MediaAssetItem, ApplicationError> {
-        let audit_user_id = actor.audit_user_id().as_uuid();
         let mut tx = self.begin(&actor).await?;
-        sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_by=$4,archived_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(audit_user_id).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?;
+        sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_at=$4,updated_at=$4 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?;
         let row = load(
             &mut tx,
             &actor,

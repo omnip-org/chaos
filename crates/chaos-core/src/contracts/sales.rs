@@ -19,7 +19,6 @@ pub struct CartLineItem {
     pub product_title: String,
     pub variant_title: String,
     pub sku: Option<String>,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub quantity: u32,
     pub unit_price_amount_minor: i64,
@@ -54,7 +53,6 @@ pub struct OrderLineItem {
     pub product_title: String,
     pub variant_title: String,
     pub sku: Option<String>,
-    pub requires_shipping: bool,
     pub track_inventory: bool,
     pub quantity: u32,
     pub unit_price_amount_minor: i64,
@@ -66,7 +64,6 @@ pub struct OrderTransitionItem {
     pub from_status: Option<OrderStatus>,
     pub to_status: OrderStatus,
     pub kind: String,
-    pub actor_user_id: Option<uuid::Uuid>,
     pub occurred_at: OffsetDateTime,
 }
 

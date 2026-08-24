@@ -154,13 +154,12 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO commerce.store_publishable_keys \
-                 (id, store_id, public_key, name, created_by_user_id) \
-                 VALUES ($1, $2, $3, 'RLS test key', $4)",
+                 (id, store_id, public_key, name) \
+                 VALUES ($1, $2, $3, 'RLS test key')",
             )
             .bind(key_id)
             .bind(store_id)
             .bind(public_key)
-            .bind(user_id)
             .execute(&pool)
             .await
             .unwrap();

@@ -58,19 +58,14 @@ CREATE TABLE commerce.store_publishable_keys (
     sales_channel_id     UUID,
     public_key           TEXT                      NOT NULL UNIQUE,
     name                 TEXT                      NOT NULL,
-    created_by_user_id   UUID                      NOT NULL,
-    revoked_by_user_id   UUID,
     revoked_at           TIMESTAMPTZ,
     created_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at           TIMESTAMPTZ               NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT store_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
     CONSTRAINT store_publishable_keys_sales_channel_fkey    FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels(id),
-    CONSTRAINT store_publishable_keys_created_by_fkey       FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id),
-    CONSTRAINT store_publishable_keys_revoked_by_fkey       FOREIGN KEY (revoked_by_user_id) REFERENCES identity.users(id),
     CONSTRAINT store_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
-    CONSTRAINT store_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80),
-    CONSTRAINT store_publishable_keys_revocation_check      CHECK ((revoked_at IS NULL AND revoked_by_user_id IS NULL) OR (revoked_at IS NOT NULL AND revoked_by_user_id IS NOT NULL))
+    CONSTRAINT store_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
 );
 
 -- A Store's shipping range is an explicit set, independent of `stores.region`
@@ -98,8 +93,7 @@ CREATE FUNCTION commerce.authenticate_publishable_key(presented_public_key TEXT)
 RETURNS TABLE (
     publishable_key_id   UUID,
     store_id             UUID,
-    sales_channel_id     UUID,
-    created_by_user_id   UUID
+    sales_channel_id     UUID
 )
 LANGUAGE SQL
 STABLE
@@ -108,8 +102,7 @@ SET search_path = pg_catalog
 AS $$
     SELECT publishable_key.id,
            publishable_key.store_id,
-           sales_channel.id,
-           publishable_key.created_by_user_id
+           sales_channel.id
     FROM commerce.store_publishable_keys AS publishable_key
     INNER JOIN commerce.stores AS store
         ON store.id = publishable_key.store_id

@@ -158,13 +158,12 @@ impl PostgresCatalogReadRepository {
                 Option<String>,
                 String,
                 bool,
-                bool,
                 Option<serde_json::Value>,
                 OffsetDateTime,
                 OffsetDateTime,
             ),
         >(
-            "SELECT id, title, sku::text, status::text, requires_shipping, track_inventory, \
+            "SELECT id, title, sku::text, status::text, track_inventory, \
                     meta, created_at, updated_at \
              FROM commerce.product_variants \
              WHERE store_id = $1 AND product_id = $2 \
@@ -224,23 +223,12 @@ impl PostgresCatalogReadRepository {
         let mut variants = variant_rows
             .into_iter()
             .map(
-                |(
-                    id,
-                    title,
-                    sku,
-                    status,
-                    requires_shipping,
-                    track_inventory,
-                    metadata,
-                    created_at,
-                    updated_at,
-                )| {
+                |(id, title, sku, status, track_inventory, metadata, created_at, updated_at)| {
                     Ok(CatalogProductVariant {
                         id: ProductVariantId::from_uuid(id),
                         title,
                         sku,
                         status: parse_variant_status(&status)?,
-                        requires_shipping,
                         track_inventory,
                         selected_options: Vec::new(),
                         metadata,

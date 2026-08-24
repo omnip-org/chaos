@@ -114,7 +114,6 @@ impl PostgresOrderManagementRepository {
         if target_status == OrderStatus::Pending {
             return Err(invalid_target());
         }
-        let audit_user_id = actor.audit_user_id().as_uuid();
         let mut transaction = self.begin_for_admin(&actor).await?;
         let row = sqlx::query_scalar::<_, String>(
             "SELECT status::text FROM commerce.orders \
@@ -147,10 +146,9 @@ impl PostgresOrderManagementRepository {
         .map_err(database_error)?;
         sqlx::query(
             "INSERT INTO commerce.order_transitions \
-             (id, store_id, order_id, from_status, to_status, kind, \
-              actor_user_id, occurred_at) \
+             (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
              VALUES ($1, $2, $3, $4::commerce.order_status, $5::commerce.order_status, \
-                     $6::commerce.order_transition_kind, $7, $8)",
+                     $6::commerce.order_transition_kind, $7)",
         )
         .bind(transition_id)
         .bind(store_id.as_uuid())
@@ -158,7 +156,6 @@ impl PostgresOrderManagementRepository {
         .bind(transition.from_status.map(OrderStatus::as_str))
         .bind(transition.to_status.as_str())
         .bind(transition.kind.as_str())
-        .bind(audit_user_id)
         .bind(now)
         .execute(&mut *transaction)
         .await

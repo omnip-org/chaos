@@ -244,7 +244,6 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
             "product_title": line.product_title,
             "variant_title": line.variant_title,
             "sku": line.sku,
-            "requires_shipping": line.requires_shipping,
             "track_inventory": line.track_inventory,
             "quantity": line.quantity,
             "unit_price_amount_minor": line.unit_price_amount_minor,

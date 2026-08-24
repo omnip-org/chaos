@@ -40,7 +40,6 @@ struct OrderLineData {
     variant_title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     sku: Option<String>,
-    requires_shipping: bool,
     track_inventory: bool,
     quantity: u32,
     unit_price_amount_minor: i64,
@@ -394,7 +393,6 @@ fn order_line_data(line: OrderLineItem) -> OrderLineData {
         product_title: line.product_title,
         variant_title: line.variant_title,
         sku: line.sku,
-        requires_shipping: line.requires_shipping,
         track_inventory: line.track_inventory,
         quantity: line.quantity,
         unit_price_amount_minor: line.unit_price_amount_minor,

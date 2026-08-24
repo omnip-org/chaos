@@ -194,7 +194,6 @@ impl PostgresReviewRepository {
              SET status=$3::commerce.review_status, \
                  verified_buyer=$4, \
                  approved_at=CASE WHEN $3::commerce.review_status='approved' THEN $5 ELSE NULL END, \
-                 approved_by_user_id=CASE WHEN $3::commerce.review_status='approved' THEN $6 ELSE NULL END, \
                  updated_at=$5 \
              WHERE store_id=$1 AND id=$2 AND status='pending'",
         )
@@ -203,7 +202,6 @@ impl PostgresReviewRepository {
         .bind(status.as_str())
         .bind(approved && verified_buyer)
         .bind(now)
-        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(database_error)?
@@ -244,9 +242,9 @@ impl PostgresReviewRepository {
         sqlx::query(
             "INSERT INTO commerce.reviews \
              (id, store_id, product_id, parent_review_id, content, \
-              author_name, status, is_staff_reply, approved_at, approved_by_user_id, \
+              author_name, status, is_staff_reply, approved_at, \
               created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,'Altapano','approved',true,$6,$7,$6,$6)",
+             VALUES ($1,$2,$3,$4,$5,'Altapano','approved',true,$6,$6,$6)",
         )
         .bind(reply_id.as_uuid())
         .bind(store_id.as_uuid())
@@ -254,7 +252,6 @@ impl PostgresReviewRepository {
         .bind(parent_review_id.as_uuid())
         .bind(content.as_str())
         .bind(now)
-        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(map_review_write_error)?;

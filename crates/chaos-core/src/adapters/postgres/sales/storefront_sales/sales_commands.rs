@@ -119,7 +119,7 @@ impl PostgresStorefrontSalesRepository {
         )
         .await?
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
-        if row.5 {
+        if row.4 {
             let available: Option<i64> = sqlx::query_scalar(
                 "SELECT on_hand_quantity \
                  FROM commerce.product_variants \
@@ -141,9 +141,8 @@ impl PostgresStorefrontSalesRepository {
             row.2,
             row.3,
             row.4,
-            row.5,
             quantity,
-            Money::new(row.6, currency),
+            Money::new(row.5, currency),
         )?;
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
@@ -421,9 +420,9 @@ async fn insert_order_lines(
         sqlx::query(
             "INSERT INTO commerce.order_lines \
              (store_id, order_id, position, product_id, product_variant_id, product_title, \
-              variant_title, sku, requires_shipping, track_inventory, quantity, \
+              variant_title, sku, track_inventory, quantity, \
               unit_price_amount_minor, subtotal_amount_minor, created_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
         )
         .bind(actor.store_id.as_uuid())
         .bind(order_id.as_uuid())
@@ -433,7 +432,6 @@ async fn insert_order_lines(
         .bind(line.product_title())
         .bind(line.variant_title())
         .bind(line.sku())
-        .bind(line.requires_shipping())
         .bind(line.track_inventory())
         .bind(i32::try_from(line.quantity()).map_err(unexpected_conversion)?)
         .bind(line.unit_price().amount_minor())

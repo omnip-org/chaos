@@ -152,9 +152,8 @@ impl PostgresStripeRepository {
         let id = refund.id();
         sqlx::query(
             "INSERT INTO commerce.refunds \
-             (id, store_id, payment_attempt_id, order_id, currency, status, amount_minor, \
-              created_by_user_id) \
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)",
+             (id, store_id, payment_attempt_id, order_id, currency, status, amount_minor) \
+             VALUES ($1, $2, $3, $4, $5, 'pending', $6)",
         )
         .bind(id.as_uuid())
         .bind(store_id.as_uuid())
@@ -162,7 +161,6 @@ impl PostgresStripeRepository {
         .bind(order_id)
         .bind(currency.as_str())
         .bind(amount_minor)
-        .bind(actor.audit_user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -416,9 +414,9 @@ impl PostgresStripeRepository {
                     })
                 })
                 .transpose()?;
-            let line_rows = sqlx::query_as::<_, (String, String, Option<String>, i32, i64, bool)>(
+            let line_rows = sqlx::query_as::<_, (String, String, Option<String>, i32, i64)>(
                 "SELECT product_title, variant_title, sku, quantity, \
-                        unit_price_amount_minor, requires_shipping \
+                        unit_price_amount_minor \
                  FROM commerce.order_lines WHERE store_id = $1 AND order_id = $2 \
                  ORDER BY position",
             )
@@ -427,7 +425,6 @@ impl PostgresStripeRepository {
             .fetch_all(&mut *transaction)
             .await
             .map_err(database_error)?;
-            let has_shippable_items = line_rows.iter().any(|line| line.5);
             let line_items = line_rows
                 .into_iter()
                 .map(|line| {
@@ -445,19 +442,15 @@ impl PostgresStripeRepository {
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
             // The Store's explicit shipping range is the only allowed
             // destination. Stripe collects the destination in Checkout and
-            // uses it for tax.
-            let shipping_countries = if has_shippable_items {
-                sqlx::query_scalar::<_, String>(
-                    "SELECT country_code::text FROM commerce.store_shipping_countries \
-                     WHERE store_id = $1 AND enabled ORDER BY country_code",
-                )
-                .bind(job.store_id)
-                .fetch_all(&mut *transaction)
-                .await
-                .map_err(database_error)?
-            } else {
-                Vec::new()
-            };
+            // uses it for tax. Every Order ships, so this always runs.
+            let shipping_countries = sqlx::query_scalar::<_, String>(
+                "SELECT country_code::text FROM commerce.store_shipping_countries \
+                 WHERE store_id = $1 AND enabled ORDER BY country_code",
+            )
+            .bind(job.store_id)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(database_error)?;
             // Shipping rates and destination rules belong to Stripe Checkout.
             // Chaos only stores the address and the provider's final shipping amount.
             let shipping_options = Vec::new();

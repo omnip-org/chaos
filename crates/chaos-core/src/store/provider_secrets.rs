@@ -54,7 +54,10 @@ impl ProviderSecretManagement {
         self.writer
             .create(
                 input.store_id,
-                input.actor.audit_user_id(),
+                input
+                    .actor
+                    .audit_user_id()
+                    .expect("require_provider_secret_writer rejects Machine actors above"),
                 input.kind,
                 &input.value,
             )

@@ -49,7 +49,6 @@ CREATE TABLE commerce.cart_lines (
     product_title           TEXT        NOT NULL,
     variant_title           TEXT        NOT NULL,
     sku                     TEXT,
-    requires_shipping       BOOLEAN     NOT NULL,
     track_inventory         BOOLEAN     NOT NULL,
     quantity                INTEGER     NOT NULL,
     unit_price_amount_minor BIGINT      NOT NULL,
@@ -157,7 +156,6 @@ CREATE TABLE commerce.order_lines (
     product_title            TEXT        NOT NULL,
     variant_title            TEXT        NOT NULL,
     sku                      TEXT,
-    requires_shipping        BOOLEAN     NOT NULL,
     track_inventory          BOOLEAN     NOT NULL,
     quantity                 INTEGER     NOT NULL,
     unit_price_amount_minor  BIGINT      NOT NULL,
@@ -182,12 +180,10 @@ CREATE TABLE commerce.order_transitions (
     from_status          commerce.order_status,
     to_status            commerce.order_status            NOT NULL,
     kind                 commerce.order_transition_kind   NOT NULL,
-    actor_user_id        UUID,
     occurred_at          TIMESTAMPTZ                      NOT NULL,
 
     CONSTRAINT order_transitions_store_id_order_id_id_key UNIQUE (store_id, order_id, id),
     CONSTRAINT order_transitions_store_id_order_fkey      FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
-    CONSTRAINT order_transitions_actor_user_fkey          FOREIGN KEY (actor_user_id) REFERENCES identity.users(id),
     CONSTRAINT order_transitions_shape_check              CHECK ((kind = 'created' AND from_status IS NULL AND to_status = 'pending') OR (kind = 'confirmed' AND from_status = 'pending' AND to_status = 'confirmed') OR (kind = 'cancelled' AND from_status = 'pending' AND to_status = 'cancelled'))
 );
 
