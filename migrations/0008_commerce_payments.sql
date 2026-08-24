@@ -129,11 +129,11 @@ AS $$
        AND account.webhook_secret_reference IS NOT NULL;
 $$;
 
--- order_id is filled in once the webhook is processed and its Order is
--- known (a Payment Attempt or Refund always belongs to exactly one Order);
--- it stays NULL for a webhook that fails before that resolution. This lets
--- support/debugging pull "every raw provider event for this Order" without
--- correlating payload contents against payment_attempts/refunds by hand.
+-- order_id is filled in when a webhook is mapped to or resolved against its
+-- Order (a payment or refund belongs to exactly one Order). It can remain
+-- NULL for an ignored provider event or a webhook that fails before that
+-- resolution. This lets support/debugging pull "every raw provider event for
+-- this Order" without correlating payload contents against refunds by hand.
 CREATE TABLE commerce.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,

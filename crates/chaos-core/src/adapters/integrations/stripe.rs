@@ -733,9 +733,12 @@ fn map_stripe_event(event: &StripeEventEnvelope) -> Result<MappedStripeEvent, Ap
         {
             ("refund.failed", "re_")
         }
-        _ => return Err(ignored_webhook()),
+        // A verified provider event that Chaos does not act on is still a
+        // successful delivery. Persist it as an ignored inbox item so Stripe
+        // does not retry it forever and support can inspect the raw payload.
+        _ => ("webhook.ignored", ""),
     };
-    if !valid_stripe_identifier(&event.data.object.id, object_prefix) {
+    if !object_prefix.is_empty() && !valid_stripe_identifier(&event.data.object.id, object_prefix) {
         return Err(invalid_webhook());
     }
     let order_id = event
@@ -948,15 +951,6 @@ fn invalid_webhook() -> ApplicationError {
         violations: vec![chaos_domain::FieldViolation {
             field: "payload",
             reason: "must be a valid Stripe webhook event".into(),
-        }],
-    }
-}
-
-fn ignored_webhook() -> ApplicationError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field: "payload",
-            reason: "contains an unsupported Stripe event type".into(),
         }],
     }
 }
@@ -1536,7 +1530,22 @@ mod tests {
         let aggregate_id = Uuid::now_v7();
         let event =
             checkout_session_event("checkout.session.completed", Some("unpaid"), aggregate_id);
-        assert!(map_stripe_event(&event).is_err());
+        let (event_type, order_id, refund_id, failure_code) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "webhook.ignored");
+        assert_eq!(order_id, Some(aggregate_id));
+        assert_eq!(refund_id, None);
+        assert_eq!(failure_code, None);
+    }
+
+    #[test]
+    fn authenticated_unhandled_events_are_recorded_as_ignored() {
+        let aggregate_id = Uuid::now_v7();
+        let event = checkout_session_event("charge.succeeded", None, aggregate_id);
+        let (event_type, order_id, refund_id, failure_code) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type, "webhook.ignored");
+        assert_eq!(order_id, Some(aggregate_id));
+        assert_eq!(refund_id, None);
+        assert_eq!(failure_code, None);
     }
 
     #[test]

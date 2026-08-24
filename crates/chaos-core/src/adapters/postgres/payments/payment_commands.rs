@@ -206,7 +206,7 @@ impl PostgresStripeRepository {
             .get("failure_code")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if job.event_type.starts_with("payment.") {
+        let resolved_order_id = if job.event_type.starts_with("payment.") {
             let order_id = job
                 .payload
                 .get("order_id")
@@ -214,7 +214,7 @@ impl PostgresStripeRepository {
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(OrderId::from_uuid)
                 .ok_or_else(corrupt_webhook_payload)?;
-            apply_payment_event(
+            Some(apply_payment_event(
                 &mut transaction,
                 StoreId::from_uuid(job.store_id),
                 order_id,
@@ -223,7 +223,7 @@ impl PostgresStripeRepository {
                 &job.payload,
                 now,
             )
-            .await?;
+            .await?)
         } else if job.event_type.starts_with("refund.") {
             let stripe_object_id = job
                 .payload
@@ -237,7 +237,7 @@ impl PostgresStripeRepository {
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(RefundId::from_uuid);
-            apply_refund_event(
+            Some(apply_refund_event(
                 &mut transaction,
                 StoreId::from_uuid(job.store_id),
                 refund_id,
@@ -247,10 +247,25 @@ impl PostgresStripeRepository {
                 &job.payload,
                 now,
             )
-            .await?;
+            .await?)
+        } else if job.event_type == "webhook.ignored" {
+            None
         } else {
             return Err(corrupt_webhook_payload());
         };
+        if let Some(order_id) = resolved_order_id {
+            let updated: bool = sqlx::query_scalar(
+                "SELECT commerce.set_webhook_order_id($1, $2)",
+            )
+            .bind(job.id)
+            .bind(order_id.as_uuid())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if !updated {
+                return Err(corrupt_webhook_payload());
+            }
+        }
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
