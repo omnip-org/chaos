@@ -185,27 +185,22 @@ export interface OrderLine {
   subtotal_amount_minor: number;
 }
 
-/** One attempt to pay an Order. A retry after a decline is a new attempt
- * with its own id, not an overwrite of the previous one. */
+/** The current payment state exposed for an Order. */
 export interface OrderPaymentAttempt {
-  id: UUID;
   status: "pending" | "authorized" | "captured" | "failed" | "cancelled";
   amount_minor: number;
-  stripe_checkout_session_id?: string;
-  stripe_payment_intent_id?: string;
-  stripe_charge_id?: string;
+  provider_reference_id?: string;
   failure_code?: string;
   created_at: string;
   updated_at: string;
 }
 
-/** One Refund against one Payment Attempt. An Order may have more than one. */
+/** One Refund recorded against an Order. An Order may have more than one. */
 export interface OrderRefund {
   id: UUID;
-  payment_attempt_id: UUID;
   status: "pending" | "succeeded" | "failed";
   amount_minor: number;
-  stripe_refund_id?: string;
+  provider_reference_id?: string;
   failure_code?: string;
   created_at: string;
   updated_at: string;
@@ -215,7 +210,6 @@ export interface OrderRefund {
  * concurrently active (non-cancelled) Fulfillment for split shipments. */
 export interface OrderFulfillment {
   id: UUID;
-  shipping_provider_account_id: UUID;
   status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   tracking_number?: string;
   tracking_url?: string;
@@ -244,6 +238,10 @@ export interface Order {
   status: "pending" | "confirmed" | "cancelled";
   payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
   shipping_status: "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  payment_provider?: "stripe";
+  payment_provider_reference_id?: string;
+  shipping_provider?: "manual";
+  shipping_provider_reference_id?: string;
   contact: OrderContact;
   billing_address?: PostalAddress;
   shipping_address?: PostalAddress;
@@ -254,7 +252,7 @@ export interface Order {
   total_amount_minor: number;
   refunded_amount_minor: number;
   lines: OrderLine[];
-  payment_attempts: OrderPaymentAttempt[];
+  payment_attempt?: OrderPaymentAttempt;
   refunds: OrderRefund[];
   fulfillments: OrderFulfillment[];
   created_at: string;

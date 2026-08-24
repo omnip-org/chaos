@@ -82,8 +82,8 @@ not in application use cases.
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
 - `migrations/0001_platform.sql`, `0002_identity.sql`,
   `0003_commerce_stores.sql`, `0004_commerce_catalog.sql`,
-  `0005_commerce_pricing.sql`, `0006_commerce_sales.sql`,
-  `0007_integration_idempotency.sql`, `0008_commerce_payments.sql`,
+  `0005_integration_core.sql`, `0006_integration_providers.sql`,
+  `0007_commerce_sales.sql`, `0008_commerce_payments.sql`,
   `0009_integration_analytics.sql`, and `0010_commerce_fulfillment.sql`
   are the fresh bootstrap schema. The commerce
   schema persists one `commerce.shoppers` identity per website visit; cart,

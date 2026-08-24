@@ -9,7 +9,12 @@ Payment Attempts already reference Provider account records, but those rows were
 
 ## Decision
 
-A Payment Provider account is a Store-owned aggregate. A Store may configure at most one account for a canonical provider name. The provider name and Chaos-generated account UUID become immutable after creation because Payment Attempts and verified webhooks depend on that identity mapping. The initial supported provider is `stripe_checkout`.
+A Payment Provider account is a Store-owned aggregate in the `integration`
+schema. A Store may configure at most one account for a typed provider. The
+provider and Chaos-generated account UUID become immutable after creation
+because Orders and verified webhooks depend on that identity mapping. The
+initial supported provider is `stripe`; Embedded Checkout is the initial Stripe
+payment flow, not a separate provider type.
 
 Owners administer Provider accounts through MCP tools, as established by ADR 0025. Other Store roles may read non-sensitive configuration according to the current membership policy but cannot change it. Administration supports:
 

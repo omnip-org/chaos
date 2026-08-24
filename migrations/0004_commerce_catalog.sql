@@ -313,121 +313,11 @@ RETURNS VOID LANGUAGE SQL SECURITY DEFINER SET search_path = pg_catalog AS $$
         SET document = EXCLUDED.document, indexed_at = EXCLUDED.indexed_at;
 $$;
 
-CREATE FUNCTION commerce.capture_product_change()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-BEGIN
-    INSERT INTO integration.event_outbox (
-        id, store_id, aggregate_type, aggregate_id, event_type, payload
-    ) VALUES (
-        uuidv7(), NEW.store_id, 'product', NEW.id,
-        'search.product.changed', jsonb_build_object('product_id', NEW.id)
-    );
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION commerce.capture_variant_change()
-RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE
-    owning_store_id UUID;
-    changed_product_id UUID;
-BEGIN
-    IF TG_OP = 'DELETE' THEN
-        owning_store_id := OLD.store_id;
-        changed_product_id := OLD.product_id;
-    ELSE
-        owning_store_id := NEW.store_id;
-        changed_product_id := NEW.product_id;
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM commerce.stores
-         WHERE id = owning_store_id
-    ) THEN
-        INSERT INTO integration.event_outbox (
-            id, store_id, aggregate_type, aggregate_id, event_type, payload
-        ) VALUES (
-            uuidv7(), owning_store_id, 'product', changed_product_id,
-            'search.product.changed', jsonb_build_object('product_id', changed_product_id)
-        );
-    END IF;
-    IF TG_OP = 'DELETE' THEN
-        RETURN OLD;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-
-CREATE FUNCTION commerce.rebuild_store_products(UUID)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE product_id UUID; rebuilt BIGINT := 0;
-BEGIN
-    DELETE FROM commerce.product_documents WHERE store_id = $1;
-    FOR product_id IN SELECT id FROM commerce.products
-        WHERE store_id = $1
-    LOOP
-        PERFORM commerce.refresh_product_document($1, product_id);
-        rebuilt := rebuilt + 1;
-    END LOOP;
-    RETURN rebuilt;
-END;
-$$;
-
-CREATE FUNCTION commerce.process_events(
-    batch_size INTEGER,
-    max_attempts INTEGER,
-    finished_at TIMESTAMPTZ
-)
-RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
-DECLARE event RECORD; processed BIGINT := 0;
-BEGIN
-    FOR event IN
-        SELECT outbox.id,
-               outbox.store_id,
-               outbox.aggregate_id,
-               outbox.attempts
-          FROM integration.claim_routed_event_outbox(
-                   'chaos_search_events', $1
-               ) AS outbox
-    LOOP
-        BEGIN
-            PERFORM commerce.refresh_product_document(
-                event.store_id, event.aggregate_id
-            );
-            PERFORM integration.finish_event_outbox(
-               event.id, event.attempts, true, '', $2, $3
-            );
-            processed := processed + 1;
-        EXCEPTION WHEN OTHERS THEN
-            PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, false, SQLERRM, $2, $3
-            );
-        END;
-    END LOOP;
-    RETURN processed;
-END;
-$$;
-
-CREATE TRIGGER products_search_change
-    AFTER INSERT OR UPDATE OF handle, title, description ON commerce.products
-    FOR EACH ROW
-    EXECUTE FUNCTION commerce.capture_product_change();
-
-CREATE TRIGGER variants_search_change
-    AFTER INSERT OR UPDATE OF title, sku OR DELETE ON commerce.product_variants
-    FOR EACH ROW
-    EXECUTE FUNCTION commerce.capture_variant_change();
-
 ALTER TABLE commerce.product_documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.product_documents
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
-REVOKE ALL ON FUNCTION commerce.rebuild_store_products(UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.products,
@@ -449,3 +339,83 @@ REVOKE DELETE
        commerce.media_assets,
        commerce.reviews
     FROM chaos_runtime;
+
+CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
+
+CREATE TABLE commerce.price_lists (
+    id                   UUID                         NOT NULL PRIMARY KEY,
+    store_id             UUID                         NOT NULL,
+    code                 extensions.citext            NOT NULL,
+    name                 TEXT                         NOT NULL,
+    currency             CHAR(3)                      NOT NULL,
+    status               commerce.price_list_status   NOT NULL DEFAULT 'draft',
+    starts_at            TIMESTAMPTZ,
+    ends_at              TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT price_lists_store_id_code_key            UNIQUE (store_id, code),
+    CONSTRAINT price_lists_store_id_id_key              UNIQUE (store_id, id),
+    CONSTRAINT price_lists_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
+    CONSTRAINT price_lists_code_format_check            CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'),
+    CONSTRAINT price_lists_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT price_lists_currency_format_check        CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT price_lists_validity_window_check        CHECK (starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at)
+);
+
+CREATE TABLE commerce.prices (
+    id                   UUID         NOT NULL PRIMARY KEY,
+    store_id             UUID         NOT NULL,
+    price_list_id        UUID         NOT NULL,
+    product_variant_id   UUID         NOT NULL,
+    amount_minor         BIGINT       NOT NULL,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT prices_store_id_price_list_id_product_variant_id_key    UNIQUE (store_id, price_list_id, product_variant_id),
+    CONSTRAINT prices_store_id_price_list_fkey                         FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists(store_id, id) ON DELETE CASCADE,
+    CONSTRAINT prices_store_id_product_variant_fkey                    FOREIGN KEY (store_id, product_variant_id) REFERENCES commerce.product_variants(store_id, id),
+    CONSTRAINT prices_amount_nonnegative_check                         CHECK (amount_minor >= 0)
+);
+
+ALTER TABLE commerce.price_lists ADD UNIQUE (store_id, id, currency);
+
+CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
+CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
+
+-- A Store trades in exactly one currency (`stores.currency`); every Price
+-- List it owns must match, so Cart/Order price resolution never has to
+-- choose between Price Lists in different currencies.
+CREATE FUNCTION commerce.check_price_list_currency()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    IF NEW.currency <> (SELECT store.currency FROM commerce.stores AS store WHERE store.id = NEW.store_id) THEN
+        RAISE EXCEPTION 'price list currency must match the store currency'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER price_lists_currency_matches_store
+    BEFORE INSERT OR UPDATE OF currency, store_id ON commerce.price_lists
+    FOR EACH ROW
+    EXECUTE FUNCTION commerce.check_price_list_currency();
+
+REVOKE ALL ON FUNCTION commerce.check_price_list_currency() FROM PUBLIC;
+
+ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY store_isolation ON commerce.price_lists
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.prices
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.price_lists,
+       commerce.prices
+    TO chaos_runtime;

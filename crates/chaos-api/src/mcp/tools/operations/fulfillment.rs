@@ -92,7 +92,7 @@ impl ChaosMcp {
             Ok(accounts) => Ok(text_result(json!({
                 "items": accounts.into_iter().map(|account| json!({
                     "id": account.id.as_uuid(),
-                    "provider": account.provider,
+                    "provider": account.provider.as_str(),
                     "display_name": account.display_name,
                     "enabled": account.enabled,
                     "created_at": format_time(account.created_at),

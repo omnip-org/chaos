@@ -124,9 +124,9 @@ mod tests {
         }
         for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(
-                "INSERT INTO commerce.payment_provider_accounts \
+                "INSERT INTO integration.payment_provider_accounts \
                  (id, store_id, provider) \
-                 VALUES ($1, $2, 'stripe_checkout')",
+                 VALUES ($1, $2, 'stripe')",
             )
             .bind(id)
             .bind(store_id)
@@ -169,7 +169,7 @@ mod tests {
                 .await
                 .unwrap();
         let visible_provider_account_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM commerce.payment_provider_accounts ORDER BY id")
+            sqlx::query_scalar("SELECT id FROM integration.payment_provider_accounts ORDER BY id")
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
-        sqlx::query("DELETE FROM commerce.payment_provider_accounts WHERE store_id = ANY($1)")
+        sqlx::query("DELETE FROM integration.payment_provider_accounts WHERE store_id = ANY($1)")
             .bind(vec![store_a, store_b])
             .execute(&pool)
             .await

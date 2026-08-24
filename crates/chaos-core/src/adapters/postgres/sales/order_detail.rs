@@ -9,6 +9,7 @@ use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
     fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
+    integration::{PaymentProvider, ShippingProvider},
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -36,8 +37,11 @@ struct OrderHeaderRow {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    stripe_payment_intent_id: Option<String>,
+    payment_provider: Option<String>,
+    payment_provider_reference_id: Option<String>,
     payment_failure_code: Option<String>,
+    shipping_provider: Option<String>,
+    shipping_provider_reference_id: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -47,7 +51,7 @@ struct RefundRow {
     id: Uuid,
     status: String,
     amount_minor: i64,
-    stripe_refund_id: Option<String>,
+    provider_reference_id: Option<String>,
     failure_code: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -113,7 +117,8 @@ pub(crate) async fn load(
                 shipping_status::text AS shipping_status, subtotal_amount_minor, \
                 discount_amount_minor, tax_amount_minor, \
                 shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
-                stripe_payment_intent_id, payment_failure_code, \
+                payment_provider::text, payment_provider_reference_id, payment_failure_code, \
+                shipping_provider::text, shipping_provider_reference_id, \
                 created_at, updated_at \
          FROM commerce.orders \
          WHERE store_id = $1 AND ($2::uuid IS NULL OR sales_channel_id = $2) AND id = $3",
@@ -149,7 +154,7 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let refunds = sqlx::query_as::<_, RefundRow>(
-        "SELECT id, status::text, amount_minor, stripe_refund_id, \
+        "SELECT id, status::text, amount_minor, payment_provider_reference_id, \
                 failure_code, created_at, updated_at \
          FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",
@@ -181,6 +186,18 @@ pub(crate) async fn load(
         payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
         shipping_status: OrderShippingStatus::parse(&row.shipping_status)
             .ok_or_else(corrupt_state)?,
+        payment_provider: row
+            .payment_provider
+            .as_deref()
+            .map(|value| PaymentProvider::parse(value).ok_or_else(corrupt_state))
+            .transpose()?,
+        payment_provider_reference_id: row.payment_provider_reference_id.clone(),
+        shipping_provider: row
+            .shipping_provider
+            .as_deref()
+            .map(|value| ShippingProvider::parse(value).ok_or_else(corrupt_state))
+            .transpose()?,
+        shipping_provider_reference_id: row.shipping_provider_reference_id.clone(),
         identity,
         subtotal_amount_minor: row.subtotal_amount_minor,
         discount_amount_minor: row.discount_amount_minor,
@@ -305,12 +322,12 @@ fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError>
 }
 
 /// The Order's payment attempt exists once checkout has actually produced a
-/// Stripe reference or a failure — a still-`pending` Order with neither is
+/// Provider reference or a failure — a still-`pending` Order with neither is
 /// one whose checkout was never started.
 fn payment_attempt_item(
     row: &OrderHeaderRow,
 ) -> Result<Option<OrderPaymentAttemptItem>, ApplicationError> {
-    if row.stripe_payment_intent_id.is_none() && row.payment_failure_code.is_none() {
+    if row.payment_provider_reference_id.is_none() && row.payment_failure_code.is_none() {
         return Ok(None);
     }
     let status = match row.payment_status.as_str() {
@@ -321,7 +338,7 @@ fn payment_attempt_item(
     Ok(Some(OrderPaymentAttemptItem {
         status,
         amount_minor: row.total_amount_minor,
-        stripe_payment_intent_id: row.stripe_payment_intent_id.clone(),
+        provider_reference_id: row.payment_provider_reference_id.clone(),
         failure_code: row.payment_failure_code.clone(),
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -333,7 +350,7 @@ fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
         id: RefundId::from_uuid(row.id),
         status: RefundStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         amount_minor: row.amount_minor,
-        stripe_refund_id: row.stripe_refund_id,
+        provider_reference_id: row.provider_reference_id,
         failure_code: row.failure_code,
         created_at: row.created_at,
         updated_at: row.updated_at,

@@ -8,9 +8,9 @@ impl StripeWebhookConfigurationRepository for PostgresStripeRepository {
     ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError> {
         sqlx::query_as::<_, (Uuid, String)>(
             "SELECT provider_account_id, secret_reference \
-             FROM commerce.resolve_provider_webhook_secret_references($1, $2)",
+             FROM commerce.resolve_provider_webhook_secret_references($1::integration.payment_provider, $2)",
         )
-        .bind("stripe_checkout")
+        .bind("stripe")
         .bind(provider_account_id.as_uuid())
         .fetch_all(&self.pool)
         .await

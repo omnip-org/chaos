@@ -1,31 +1,6 @@
 SELECT pgmq.create('chaos_payment_commands');
 SELECT pgmq.create('chaos_webhooks');
 
-CREATE TABLE commerce.payment_provider_accounts (
-    id                                 UUID        NOT NULL PRIMARY KEY,
-    store_id                           UUID        NOT NULL,
-    provider                           TEXT        NOT NULL,
-    display_name                       TEXT        NOT NULL DEFAULT 'Payment provider',
-    credential_secret_reference        TEXT,
-    webhook_secret_reference           TEXT,
-    readiness                          JSONB       NOT NULL DEFAULT '{"status": "unchecked"}',
-    enabled                            BOOLEAN     NOT NULL DEFAULT false,
-    created_at                         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT payment_provider_accounts_store_id_id_key                     UNIQUE (store_id, id),
-    CONSTRAINT payment_provider_accounts_store_provider_key                  UNIQUE (store_id, provider),
-    CONSTRAINT payment_provider_accounts_store_id_fkey                       FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
-    CONSTRAINT payment_provider_accounts_provider_length_check               CHECK (provider ~ '^[a-z0-9_]{1,64}$'),
-    CONSTRAINT payment_provider_accounts_stripe_only_check                   CHECK (provider = 'stripe_checkout'),
-    CONSTRAINT payment_provider_accounts_display_name_length_check           CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
-    CONSTRAINT payment_provider_accounts_credential_reference_check          CHECK (credential_secret_reference IS NULL OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(credential_secret_reference) <= 32768 AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
-    CONSTRAINT payment_provider_accounts_webhook_reference_check             CHECK (webhook_secret_reference IS NULL OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(webhook_secret_reference) <= 32768 AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
-    CONSTRAINT payment_provider_accounts_readiness_object_check              CHECK (jsonb_typeof(readiness) = 'object' AND pg_column_size(readiness) <= 8192)
-);
-
-CREATE INDEX payment_provider_accounts_store_created_idx ON commerce.payment_provider_accounts (store_id, created_at DESC, id DESC);
-
 CREATE TYPE commerce.refund_status AS ENUM ('pending', 'succeeded', 'failed');
 
 CREATE TABLE commerce.refunds (
@@ -35,22 +10,28 @@ CREATE TABLE commerce.refunds (
     currency               CHAR(3)                  NOT NULL,
     status                 commerce.refund_status   NOT NULL DEFAULT 'pending',
     amount_minor           BIGINT                   NOT NULL,
-    stripe_refund_id       TEXT,
+    payment_provider       integration.payment_provider,
+    payment_provider_account_id UUID,
+    payment_provider_reference_id TEXT,
     failure_code           TEXT,
     created_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT refunds_store_id_id_key                  UNIQUE (store_id, id),
     CONSTRAINT refunds_store_id_order_currency_fkey      FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders(store_id, id, currency),
-    CONSTRAINT refunds_store_id_stripe_refund_key        UNIQUE (store_id, stripe_refund_id),
+    CONSTRAINT refunds_payment_provider_account_fkey     FOREIGN KEY (store_id, payment_provider_account_id, payment_provider) REFERENCES integration.payment_provider_accounts(store_id, id, provider),
     CONSTRAINT refunds_amount_positive_check             CHECK (amount_minor > 0),
     CONSTRAINT refunds_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_stripe_refund_check               CHECK (stripe_refund_id IS NULL OR stripe_refund_id ~ '^re_[A-Za-z0-9]+$'),
+    CONSTRAINT refunds_payment_provider_account_pair_check CHECK ((payment_provider IS NULL AND payment_provider_account_id IS NULL) OR (payment_provider IS NOT NULL AND payment_provider_account_id IS NOT NULL)),
+    CONSTRAINT refunds_payment_provider_reference_check CHECK (payment_provider_reference_id IS NULL OR (payment_provider IS NOT NULL AND length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255)),
     CONSTRAINT refunds_failure_code_check                CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
     CONSTRAINT refunds_failure_code_shape_check          CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
 CREATE INDEX refunds_order_created_idx ON commerce.refunds (store_id, order_id, created_at DESC);
+CREATE UNIQUE INDEX refunds_payment_provider_reference_key
+    ON commerce.refunds (store_id, payment_provider_account_id, payment_provider_reference_id)
+    WHERE payment_provider_reference_id IS NOT NULL;
 
 CREATE FUNCTION commerce.claim_event_outbox(
     batch_size INTEGER
@@ -74,7 +55,7 @@ AS $$
 $$;
 
 CREATE FUNCTION commerce.resolve_provider_account(
-    requested_provider             TEXT,
+    requested_provider             integration.payment_provider,
     requested_provider_account_id  UUID
 )
 RETURNS TABLE (
@@ -87,14 +68,14 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id
-      FROM commerce.payment_provider_accounts AS account
+      FROM integration.payment_provider_accounts AS account
      WHERE account.provider = requested_provider
        AND account.id = requested_provider_account_id
        AND account.enabled;
 $$;
 
 CREATE FUNCTION commerce.resolve_provider_webhook_secret_references(
-    requested_provider             TEXT,
+    requested_provider             integration.payment_provider,
     requested_provider_account_id  UUID
 )
 RETURNS TABLE (
@@ -107,7 +88,7 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.webhook_secret_reference
-      FROM commerce.payment_provider_accounts AS account
+      FROM integration.payment_provider_accounts AS account
      WHERE account.provider = requested_provider
        AND account.id = requested_provider_account_id
        AND account.enabled
@@ -117,7 +98,7 @@ $$;
 CREATE TABLE commerce.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
-    provider             TEXT        NOT NULL,
+    provider             integration.payment_provider NOT NULL,
     provider_account_id  UUID        NOT NULL,
     provider_event_id    TEXT        NOT NULL,
     event_type           TEXT        NOT NULL,
@@ -132,7 +113,7 @@ CREATE TABLE commerce.provider_webhooks (
 
     CONSTRAINT provider_webhooks_provider_account_id_provider_event_id_key    UNIQUE (provider_account_id, provider_event_id),
     CONSTRAINT provider_webhooks_store_id_fkey                                FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
-    CONSTRAINT provider_webhooks_store_id_provider_account_fkey               FOREIGN KEY (store_id, provider_account_id) REFERENCES commerce.payment_provider_accounts(store_id, id),
+    CONSTRAINT provider_webhooks_store_id_provider_account_fkey               FOREIGN KEY (store_id, provider_account_id, provider) REFERENCES integration.payment_provider_accounts(store_id, id, provider),
     CONSTRAINT provider_webhooks_store_id_order_fkey                          FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
     CONSTRAINT provider_webhooks_payload_object_check                         CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhooks_completion_check                             CHECK (processed_at IS NULL OR failed_at IS NULL)
@@ -203,7 +184,7 @@ BEGIN
 
         id := target.id;
         store_id := target.store_id;
-        provider := target.provider;
+        provider := target.provider::text;
         event_type := target.event_type;
         payload := target.payload;
         attempts := message.read_ct;
@@ -280,13 +261,8 @@ $$;
 
 CREATE INDEX provider_webhooks_provider_account_idx ON commerce.provider_webhooks (provider_account_id, created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 
-ALTER TABLE commerce.payment_provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.provider_webhooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.refunds ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY store_isolation ON commerce.payment_provider_accounts
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_isolation ON commerce.provider_webhooks
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -305,24 +281,23 @@ INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES
     ('refund.create_requested', 'chaos_payment_commands', 'Creates a Stripe Refund for the Order');
 
-REVOKE ALL ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.resolve_provider_account(integration.payment_provider, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_event_outbox(INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.resolve_provider_webhook_secret_references(integration.payment_provider, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.enqueue_webhook_event() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_webhook_events(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.set_webhook_order_id(UUID, UUID) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(integration.payment_provider, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_event_outbox(INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.resolve_provider_webhook_secret_references(TEXT, UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.resolve_provider_webhook_secret_references(integration.payment_provider, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_webhook_events(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.set_webhook_order_id(UUID, UUID) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
-    ON commerce.payment_provider_accounts,
-       commerce.provider_webhooks,
+    ON commerce.provider_webhooks,
        commerce.refunds
     TO chaos_runtime;
 

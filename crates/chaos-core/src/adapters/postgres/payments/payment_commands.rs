@@ -83,8 +83,9 @@ impl PostgresStripeRepository {
         amount_minor: i64,
     ) -> Result<RefundDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
-        let row = sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT total_amount_minor, currency::text, payment_status::text \
+        let row = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<Uuid>)>(
+            "SELECT total_amount_minor, currency::text, payment_status::text, \
+                    payment_provider::text, payment_provider_account_id \
              FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -94,6 +95,8 @@ impl PostgresStripeRepository {
         .map_err(database_error)?
         .ok_or_else(|| order_not_found(order_id))?;
         let currency = CurrencyCode::parse(&row.1)?;
+        let payment_provider = row.3.as_deref().ok_or_else(provider_unavailable)?;
+        let payment_provider_account_id = row.4.ok_or_else(provider_unavailable)?;
         // The captured amount available to refund against is the Order's
         // total — only an Order that has been paid (in full, or already
         // partially refunded) is eligible for a further refund.
@@ -123,14 +126,17 @@ impl PostgresStripeRepository {
         let id = refund.id();
         sqlx::query(
             "INSERT INTO commerce.refunds \
-             (id, store_id, order_id, currency, status, amount_minor) \
-             VALUES ($1, $2, $3, $4, 'pending', $5)",
+             (id, store_id, order_id, currency, status, amount_minor, \
+              payment_provider, payment_provider_account_id) \
+             VALUES ($1, $2, $3, $4, 'pending', $5, $6::integration.payment_provider, $7)",
         )
         .bind(id.as_uuid())
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(currency.as_str())
         .bind(amount_minor)
+        .bind(payment_provider)
+        .bind(payment_provider_account_id)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -151,7 +157,7 @@ impl PostgresStripeRepository {
             amount_minor,
             currency,
             status: RefundStatus::Pending,
-            stripe_refund_id: None,
+            provider_reference_id: None,
             failure_code: None,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
@@ -164,7 +170,7 @@ impl PostgresStripeRepository {
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         let account = sqlx::query_as::<_, (Uuid, Uuid)>(
             "SELECT provider_account_id, store_id \
-             FROM commerce.resolve_provider_account('stripe_checkout', $1)",
+             FROM commerce.resolve_provider_account('stripe'::integration.payment_provider, $1)",
         )
         .bind(event.stripe_account_id)
         .fetch_optional(&mut *transaction)
@@ -181,7 +187,7 @@ impl PostgresStripeRepository {
         )
         .bind(Uuid::now_v7())
         .bind(account.1)
-        .bind("stripe_checkout")
+        .bind("stripe")
         .bind(event.stripe_account_id)
         .bind(&event.stripe_event_id)
         .bind(&event.event_type)
@@ -206,6 +212,13 @@ impl PostgresStripeRepository {
             .get("failure_code")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let provider_account_id: Uuid = sqlx::query_scalar(
+            "SELECT provider_account_id FROM commerce.provider_webhooks WHERE id = $1",
+        )
+        .bind(job.id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         let resolved_order_id = if job.event_type.starts_with("payment.") {
             let order_id = job
                 .payload
@@ -218,6 +231,7 @@ impl PostgresStripeRepository {
                 &mut transaction,
                 StoreId::from_uuid(job.store_id),
                 order_id,
+                provider_account_id,
                 &job.event_type,
                 failure_code,
                 &job.payload,
@@ -241,6 +255,7 @@ impl PostgresStripeRepository {
                 &mut transaction,
                 StoreId::from_uuid(job.store_id),
                 refund_id,
+                provider_account_id,
                 &job.event_type,
                 stripe_object_id,
                 failure_code,
@@ -296,15 +311,16 @@ impl PostgresStripeRepository {
             sqlx::query_as(
                 "SELECT refund.amount_minor, refund.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        sales_order.stripe_payment_intent_id, \
+                        sales_order.payment_provider_reference_id, \
                         sales_order.shopper_id, sales_order.sales_channel_id, \
                         sales_order.order_number, sales_order.id, refund.id \
                  FROM commerce.refunds AS refund \
                  INNER JOIN commerce.orders AS sales_order \
                    ON sales_order.store_id = refund.store_id AND sales_order.id = refund.order_id \
-                 INNER JOIN commerce.payment_provider_accounts AS account \
+                 INNER JOIN integration.payment_provider_accounts AS account \
                    ON account.store_id = refund.store_id \
-                  AND account.provider = 'stripe_checkout' AND account.enabled \
+                  AND account.id = refund.payment_provider_account_id \
+                  AND account.provider = 'stripe' AND account.enabled \
                   AND account.readiness->>'status' = 'ready' \
                  WHERE refund.store_id = $1 AND refund.id = $2 \
                    AND account.credential_secret_reference IS NOT NULL \
@@ -320,17 +336,18 @@ impl PostgresStripeRepository {
             sqlx::query_as(
                 "SELECT sales_order.subtotal_amount_minor, sales_order.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        sales_order.stripe_payment_intent_id, \
+                        sales_order.payment_provider_reference_id, \
                         sales_order.shopper_id, sales_order.sales_channel_id, \
                         sales_order.order_number, sales_order.id, NULL::uuid \
                  FROM commerce.orders AS sales_order \
-                 INNER JOIN commerce.payment_provider_accounts AS account \
+                 INNER JOIN integration.payment_provider_accounts AS account \
                    ON account.store_id = sales_order.store_id \
-                  AND account.provider = 'stripe_checkout' AND account.enabled \
+                  AND (sales_order.payment_provider_account_id IS NULL OR account.id = sales_order.payment_provider_account_id) \
+                  AND account.provider = 'stripe' AND account.enabled \
                   AND account.readiness->>'status' = 'ready' \
                  WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
                    AND account.credential_secret_reference IS NOT NULL \
-                 ORDER BY account.id LIMIT 1",
+                 ORDER BY (sales_order.payment_provider_account_id IS NULL), account.id LIMIT 1",
             )
             .bind(job.store_id)
             .bind(aggregate_id)
@@ -339,6 +356,26 @@ impl PostgresStripeRepository {
             .map_err(database_error)?
             .ok_or_else(provider_unavailable)?
         };
+        if !is_refund {
+            let provider_bound = sqlx::query(
+                "UPDATE commerce.orders \
+                 SET payment_provider = 'stripe'::integration.payment_provider, \
+                     payment_provider_account_id = $3, updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id = $1 AND id = $2 \
+                   AND (payment_provider IS NULL AND payment_provider_account_id IS NULL \
+                        OR (payment_provider = 'stripe'::integration.payment_provider \
+                            AND payment_provider_account_id = $3))",
+            )
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .bind(row.2)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            if provider_bound.rows_affected() != 1 {
+                return Err(provider_unavailable());
+            }
+        }
         let command_amount = row.0;
         if !is_refund && (command_amount != outbox_amount(job)? || row.1 != outbox_currency(job)?) {
             return Err(invalid_outbox_payload());
@@ -348,8 +385,8 @@ impl PostgresStripeRepository {
         }
         if is_refund && row.4.is_none() {
             return Err(ApplicationError::Conflict {
-                code: "stripe_payment_reference_missing",
-                message: "the Order has no Stripe payment reference",
+                code: "payment_provider_reference_missing",
+                message: "the Order has no payment provider reference",
             });
         }
         let checkout_details = if !is_refund {
@@ -513,10 +550,10 @@ impl PostgresStripeRepository {
         } else if job.event_type == "refund.create_requested" {
             sqlx::query(
                 "UPDATE commerce.refunds \
-                 SET stripe_refund_id = COALESCE(stripe_refund_id, $3), \
-                     updated_at = CASE WHEN stripe_refund_id IS NULL THEN $4 ELSE updated_at END \
+                 SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
+                     updated_at = CASE WHEN payment_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
                  WHERE store_id = $1 AND id = $2 \
-                   AND (stripe_refund_id IS NULL OR stripe_refund_id = $3)",
+                   AND (payment_provider_reference_id IS NULL OR payment_provider_reference_id = $3)",
             )
             .bind(job.store_id)
             .bind(aggregate_id)

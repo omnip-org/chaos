@@ -51,7 +51,7 @@ struct PaymentAttemptData {
     status: &'static str,
     amount_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_payment_intent_id: Option<String>,
+    provider_reference_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
     created_at: ApiDateTime,
@@ -64,7 +64,7 @@ struct RefundData {
     status: &'static str,
     amount_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_refund_id: Option<String>,
+    provider_reference_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
     created_at: ApiDateTime,
@@ -114,6 +114,14 @@ struct OrderData {
     status: &'static str,
     payment_status: &'static str,
     shipping_status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payment_provider: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payment_provider_reference_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_provider: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipping_provider_reference_id: Option<String>,
     contact: OrderContactData,
     #[serde(skip_serializing_if = "Option::is_none")]
     billing_address: Option<PostalAddressData>,
@@ -242,6 +250,10 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
         status: order.status.as_str(),
         payment_status: order.payment_status.as_str(),
         shipping_status: order.shipping_status.as_str(),
+        payment_provider: order.payment_provider.map(|value| value.as_str()),
+        payment_provider_reference_id: order.payment_provider_reference_id,
+        shipping_provider: order.shipping_provider.map(|value| value.as_str()),
+        shipping_provider_reference_id: order.shipping_provider_reference_id,
         contact: contact_data(order.identity.contact()),
         billing_address: order.identity.billing_address().map(address_data),
         shipping_address: order.identity.shipping_address().map(address_data),
@@ -296,7 +308,7 @@ fn payment_attempt_data(item: OrderPaymentAttemptItem) -> PaymentAttemptData {
     PaymentAttemptData {
         status: item.status.as_str(),
         amount_minor: item.amount_minor,
-        stripe_payment_intent_id: item.stripe_payment_intent_id,
+        provider_reference_id: item.provider_reference_id,
         failure_code: item.failure_code,
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),
@@ -308,7 +320,7 @@ fn refund_data(item: OrderRefundItem) -> RefundData {
         id: item.id.as_uuid(),
         status: item.status.as_str(),
         amount_minor: item.amount_minor,
-        stripe_refund_id: item.stripe_refund_id,
+        provider_reference_id: item.provider_reference_id,
         failure_code: item.failure_code,
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),

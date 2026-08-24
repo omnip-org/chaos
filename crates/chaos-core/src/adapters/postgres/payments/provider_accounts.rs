@@ -10,12 +10,12 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountPage, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
-            "SELECT id, provider, display_name, enabled, \
+            "SELECT id, provider::text, display_name, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
                     readiness->>'status', (readiness->>'checked_at')::timestamptz, \
                     COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
                     created_at, updated_at \
-             FROM commerce.payment_provider_accounts \
+             FROM integration.payment_provider_accounts \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
@@ -58,7 +58,7 @@ impl PostgresStripeRepository {
         let mut transaction = self.begin_human(actor).await?;
         let readiness = configuration.readiness.as_ref();
         sqlx::query(
-            "INSERT INTO commerce.payment_provider_accounts \
+            "INSERT INTO integration.payment_provider_accounts \
              (id, store_id, provider, display_name, \
               credential_secret_reference, webhook_secret_reference, \
               readiness, enabled) \
@@ -66,7 +66,7 @@ impl PostgresStripeRepository {
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
-        .bind("stripe_checkout")
+        .bind("stripe")
         .bind(account.display_name())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
@@ -96,7 +96,7 @@ impl PostgresStripeRepository {
         // whenever the credential changes, or is replaced outright when the
         // caller passed a freshly-computed result ($7 non-NULL).
         let result = sqlx::query(
-            "UPDATE commerce.payment_provider_accounts SET display_name = $3, \
+            "UPDATE integration.payment_provider_accounts SET display_name = $3, \
                     credential_secret_reference = $4, \
                     webhook_secret_reference = $5, \
                     readiness = CASE \

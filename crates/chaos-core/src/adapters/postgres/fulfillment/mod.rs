@@ -7,6 +7,7 @@ use crate::{
 };
 use chaos_domain::{
     fulfillment::{Fulfillment, FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
+    integration::ShippingProvider,
     sales::OrderId,
     store::StoreId,
 };
@@ -71,8 +72,8 @@ impl PostgresFulfillmentRepository {
     ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
         let rows = sqlx::query_as::<_, ShippingProviderAccountRow>(
-            "SELECT id, provider, display_name, enabled, created_at, updated_at \
-             FROM commerce.shipping_provider_accounts \
+            "SELECT id, provider::text, display_name, enabled, created_at, updated_at \
+             FROM integration.shipping_provider_accounts \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
         .bind(store_id.as_uuid())
@@ -80,10 +81,9 @@ impl PostgresFulfillmentRepository {
         .await
         .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(shipping_provider_account_detail)
-            .collect())
+            .collect::<Result<Vec<_>, _>>()
     }
 
     pub(crate) async fn create_fulfillment(
@@ -107,20 +107,17 @@ impl PostgresFulfillmentRepository {
         if !order_exists {
             return Err(order_not_found(order_id));
         }
-        let provider_account_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.shipping_provider_accounts \
-             WHERE store_id = $1 AND id = $2 AND enabled)",
+        let provider: Option<String> = sqlx::query_scalar(
+            "SELECT provider::text FROM integration.shipping_provider_accounts \
+             WHERE store_id = $1 AND id = $2 AND enabled",
         )
         .bind(store_id.as_uuid())
         .bind(shipping_provider_account_id.as_uuid())
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if !provider_account_exists {
-            return Err(shipping_provider_account_not_found(
-                shipping_provider_account_id,
-            ));
-        }
+        let provider = provider
+            .ok_or_else(|| shipping_provider_account_not_found(shipping_provider_account_id))?;
         let fulfillment = Fulfillment::create(
             order_id,
             shipping_provider_account_id,
@@ -142,6 +139,29 @@ impl PostgresFulfillmentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+        let order_provider_bound = sqlx::query(
+            "UPDATE commerce.orders \
+             SET shipping_provider = $3::integration.shipping_provider, \
+             shipping_provider_account_id = $4, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2 \
+               AND (shipping_provider IS NULL AND shipping_provider_account_id IS NULL \
+                    OR (shipping_provider = $3::integration.shipping_provider \
+                        AND shipping_provider_account_id = $4))",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(&provider)
+        .bind(shipping_provider_account_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if order_provider_bound.rows_affected() != 1 {
+            return Err(ApplicationError::Conflict {
+                code: "shipping_provider_mismatch",
+                message: "the Order is already assigned to another shipping provider account",
+            });
+        }
         recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, fulfillment.id())
             .await?
@@ -361,15 +381,15 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
 
 fn shipping_provider_account_detail(
     row: ShippingProviderAccountRow,
-) -> ShippingProviderAccountDetail {
-    ShippingProviderAccountDetail {
+) -> Result<ShippingProviderAccountDetail, ApplicationError> {
+    Ok(ShippingProviderAccountDetail {
         id: ShippingProviderAccountId::from_uuid(row.id),
-        provider: row.provider,
+        provider: ShippingProvider::parse(&row.provider).ok_or_else(corrupt_state)?,
         display_name: row.display_name,
         enabled: row.enabled,
         created_at: row.created_at,
         updated_at: row.updated_at,
-    }
+    })
 }
 
 fn order_not_found(order_id: OrderId) -> ApplicationError {

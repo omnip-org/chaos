@@ -223,5 +223,115 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES 
 
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;
 
+CREATE FUNCTION commerce.capture_product_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    INSERT INTO integration.event_outbox (
+        id, store_id, aggregate_type, aggregate_id, event_type, payload
+    ) VALUES (
+        uuidv7(), NEW.store_id, 'product', NEW.id,
+        'search.product.changed', jsonb_build_object('product_id', NEW.id)
+    );
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION commerce.capture_variant_change()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+    owning_store_id UUID;
+    changed_product_id UUID;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        owning_store_id := OLD.store_id;
+        changed_product_id := OLD.product_id;
+    ELSE
+        owning_store_id := NEW.store_id;
+        changed_product_id := NEW.product_id;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM commerce.stores
+         WHERE id = owning_store_id
+    ) THEN
+        INSERT INTO integration.event_outbox (
+            id, store_id, aggregate_type, aggregate_id, event_type, payload
+        ) VALUES (
+            uuidv7(), owning_store_id, 'product', changed_product_id,
+            'search.product.changed', jsonb_build_object('product_id', changed_product_id)
+        );
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION commerce.rebuild_store_products(UUID)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE product_id UUID; rebuilt BIGINT := 0;
+BEGIN
+    DELETE FROM commerce.product_documents WHERE store_id = $1;
+    FOR product_id IN SELECT id FROM commerce.products
+        WHERE store_id = $1
+    LOOP
+        PERFORM commerce.refresh_product_document($1, product_id);
+        rebuilt := rebuilt + 1;
+    END LOOP;
+    RETURN rebuilt;
+END;
+$$;
+
+CREATE FUNCTION commerce.process_events(
+    batch_size INTEGER,
+    max_attempts INTEGER,
+    finished_at TIMESTAMPTZ
+)
+RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE event RECORD; processed BIGINT := 0;
+BEGIN
+    FOR event IN
+        SELECT outbox.id,
+               outbox.store_id,
+               outbox.aggregate_id,
+               outbox.attempts
+          FROM integration.claim_routed_event_outbox(
+                   'chaos_search_events', $1
+               ) AS outbox
+    LOOP
+        BEGIN
+            PERFORM commerce.refresh_product_document(
+                event.store_id, event.aggregate_id
+            );
+            PERFORM integration.finish_event_outbox(
+               event.id, event.attempts, true, '', $2, $3
+            );
+            processed := processed + 1;
+        EXCEPTION WHEN OTHERS THEN
+            PERFORM integration.finish_event_outbox(
+                event.id, event.attempts, false, SQLERRM, $2, $3
+            );
+        END;
+    END LOOP;
+    RETURN processed;
+END;
+$$;
+
+CREATE TRIGGER products_search_change
+    AFTER INSERT OR UPDATE OF handle, title, description ON commerce.products
+    FOR EACH ROW
+    EXECUTE FUNCTION commerce.capture_product_change();
+
+CREATE TRIGGER variants_search_change
+    AFTER INSERT OR UPDATE OF title, sku OR DELETE ON commerce.product_variants
+    FOR EACH ROW
+    EXECUTE FUNCTION commerce.capture_variant_change();
+
+REVOKE ALL ON FUNCTION commerce.rebuild_store_products(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

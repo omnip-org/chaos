@@ -3,17 +3,6 @@ CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'partially_refunded', 'refunded');
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
-CREATE TABLE commerce.shoppers (
-    id               UUID                  NOT NULL PRIMARY KEY,
-    store_id         UUID                  NOT NULL,
-    last_seen_at     TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT shoppers_store_id_id_key    UNIQUE (store_id, id),
-    CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
-);
-
 CREATE TABLE commerce.carts (
     id                   UUID                    NOT NULL PRIMARY KEY,
     store_id             UUID                    NOT NULL,
@@ -70,9 +59,14 @@ CREATE TABLE commerce.orders (
     currency                     CHAR(3)                            NOT NULL,
     status                       commerce.order_status              NOT NULL DEFAULT 'pending',
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
-    stripe_payment_intent_id     TEXT,
+    payment_provider             integration.payment_provider,
+    payment_provider_account_id UUID,
+    payment_provider_reference_id TEXT,
     payment_failure_code         TEXT,
     shipping_status              commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
+    shipping_provider            integration.shipping_provider,
+    shipping_provider_account_id UUID,
+    shipping_provider_reference_id TEXT,
     refunded_amount_minor        BIGINT                             NOT NULL DEFAULT 0,
     subtotal_amount_minor        BIGINT                             NOT NULL,
     discount_amount_minor        BIGINT                             NOT NULL,
@@ -108,6 +102,8 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers(store_id, id),
     CONSTRAINT orders_sales_channel_fkey                FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels(id),
     CONSTRAINT orders_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists(store_id, id, currency),
+    CONSTRAINT orders_payment_provider_account_fkey     FOREIGN KEY (store_id, payment_provider_account_id, payment_provider) REFERENCES integration.payment_provider_accounts(store_id, id, provider),
+    CONSTRAINT orders_shipping_provider_account_fkey    FOREIGN KEY (store_id, shipping_provider_account_id, shipping_provider) REFERENCES integration.shipping_provider_accounts(store_id, id, provider),
     CONSTRAINT orders_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_request_id_not_nil_check           CHECK (request_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT orders_order_number_check                CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
@@ -116,8 +112,10 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
     CONSTRAINT orders_billing_country_code_check        CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
     CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_store_id_payment_intent_key       UNIQUE (store_id, stripe_payment_intent_id),
-    CONSTRAINT orders_payment_intent_check              CHECK (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'),
+    CONSTRAINT orders_payment_provider_account_pair_check CHECK ((payment_provider IS NULL AND payment_provider_account_id IS NULL) OR (payment_provider IS NOT NULL AND payment_provider_account_id IS NOT NULL)),
+    CONSTRAINT orders_payment_provider_reference_check CHECK (payment_provider_reference_id IS NULL OR (payment_provider IS NOT NULL AND length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255)),
+    CONSTRAINT orders_shipping_provider_account_pair_check CHECK ((shipping_provider IS NULL AND shipping_provider_account_id IS NULL) OR (shipping_provider IS NOT NULL AND shipping_provider_account_id IS NOT NULL)),
+    CONSTRAINT orders_shipping_provider_reference_check CHECK (shipping_provider_reference_id IS NULL OR (shipping_provider IS NOT NULL AND length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255)),
     CONSTRAINT orders_payment_failure_code_check        CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000)
 );
 
@@ -164,17 +162,16 @@ CREATE TABLE commerce.order_lines (
 
 ALTER TABLE commerce.orders ADD UNIQUE (store_id, id, currency);
 
-CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 CREATE INDEX carts_channel_updated_idx ON commerce.carts (store_id, sales_channel_id, status, updated_at DESC, id DESC);
 CREATE INDEX cart_lines_variant_lookup_idx ON commerce.cart_lines (store_id, product_variant_id, cart_id);
 CREATE INDEX orders_channel_created_idx ON commerce.orders (store_id, sales_channel_id, created_at DESC, id DESC);
 CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
-ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY store_isolation ON commerce.shoppers
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+CREATE UNIQUE INDEX orders_payment_provider_reference_key
+    ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id)
+    WHERE payment_provider_reference_id IS NOT NULL;
+CREATE UNIQUE INDEX orders_shipping_provider_reference_key
+    ON commerce.orders (store_id, shipping_provider_account_id, shipping_provider_reference_id)
+    WHERE shipping_provider_reference_id IS NOT NULL;
 
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
@@ -203,8 +200,7 @@ CREATE POLICY store_isolation ON commerce.order_lines
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 GRANT SELECT, INSERT, UPDATE, DELETE
-    ON commerce.shoppers,
-       commerce.carts,
+    ON commerce.carts,
        commerce.cart_lines,
        commerce.orders,
        commerce.order_tracking_tokens,

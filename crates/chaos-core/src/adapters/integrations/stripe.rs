@@ -203,7 +203,7 @@ impl StripeGateway {
 #[async_trait]
 impl StripePaymentGateway for StripeGateway {
     fn name(&self) -> &'static str {
-        "stripe_checkout"
+        "stripe"
     }
 
     async fn execute(
@@ -489,7 +489,7 @@ fn append_shipping_address(
 #[async_trait]
 impl StripeAccountReadiness for StripeGateway {
     fn name(&self) -> &'static str {
-        "stripe_checkout"
+        "stripe"
     }
 
     async fn check_readiness(
@@ -521,7 +521,7 @@ impl StripeWebhookVerifier {
 #[async_trait]
 impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
     fn name(&self) -> &'static str {
-        "stripe_checkout"
+        "stripe"
     }
 
     async fn verify(
@@ -1272,7 +1272,7 @@ mod tests {
             secrets,
         )
         .unwrap();
-        assert_eq!(StripePaymentGateway::name(&provider), "stripe_checkout");
+        assert_eq!(StripePaymentGateway::name(&provider), "stripe");
         let aggregate_id = Uuid::now_v7();
         let created = provider
             .execute(StripeCommand {

@@ -188,11 +188,11 @@ async fn load_stripe_account(
     id: StripeAccountId,
 ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
-        "SELECT id, provider, display_name, enabled, \
+        "SELECT id, provider::text, display_name, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
                 readiness->>'status', (readiness->>'checked_at')::timestamptz, \
                 COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
-                created_at, updated_at FROM commerce.payment_provider_accounts \
+                created_at, updated_at FROM integration.payment_provider_accounts \
          WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())

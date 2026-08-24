@@ -73,7 +73,7 @@ impl ChaosMcp {
                 "amount_minor": detail.amount_minor,
                 "currency": detail.currency.as_str(),
                 "status": detail.status.as_str(),
-                "stripe_refund_id": detail.stripe_refund_id,
+                "provider_reference_id": detail.provider_reference_id,
                 "failure_code": detail.failure_code,
                 "created_at": format_time(detail.created_at),
                 "updated_at": format_time(detail.updated_at),

@@ -23,6 +23,17 @@ CREATE TABLE commerce.stores (
     CONSTRAINT stores_meta_is_object_check        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
+CREATE TABLE commerce.shoppers (
+    id               UUID                  NOT NULL PRIMARY KEY,
+    store_id         UUID                  NOT NULL,
+    last_seen_at     TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT shoppers_store_id_id_key    UNIQUE (store_id, id),
+    CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
+);
+
 CREATE TABLE commerce.store_memberships (
     store_id    UUID                    NOT NULL,
     user_id     UUID                    NOT NULL,
@@ -83,6 +94,7 @@ CREATE TABLE commerce.store_shipping_countries (
 );
 
 CREATE INDEX stores_status_idx ON commerce.stores (status);
+CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
 CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
 CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
@@ -125,6 +137,8 @@ AS $$
 $$;
 
 ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_sales_channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.store_publishable_keys ENABLE ROW LEVEL SECURITY;
@@ -133,6 +147,10 @@ ALTER TABLE commerce.store_shipping_countries ENABLE ROW LEVEL SECURITY;
 CREATE POLICY store_isolation ON commerce.stores
     USING (id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.shoppers
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 CREATE POLICY store_directory ON commerce.stores
     FOR SELECT
@@ -170,6 +188,7 @@ GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key(TEXT) TO chaos_r
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.stores,
+       commerce.shoppers,
        commerce.store_memberships,
        commerce.store_sales_channels,
        commerce.store_publishable_keys,

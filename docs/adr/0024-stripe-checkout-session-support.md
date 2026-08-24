@@ -32,7 +32,8 @@ therefore cannot be used as the routing identity.
 
 ## Decision
 
-The initial deployment supports only `stripe_checkout`:
+The initial deployment supports the typed `stripe` payment provider through
+its Embedded Checkout flow:
 
 - creates Checkout Sessions with `mode=payment` and `ui_mode=embedded`;
 - requires a secure or loopback `return_url` from the storefront;
@@ -123,6 +124,6 @@ becomes the authoritative business snapshot after webhook reconciliation.
   Test/Live mode guidance.
 - Stripe Dashboard must use the Provider-account Webhook URL before the new
   deployment receives events.
-- The fresh bootstrap keeps the Stripe-only provider constraint and unified
-  Order model in `migrations/0006_commerce_sales.sql`; it does not carry a legacy
+- The fresh bootstrap keeps the typed Stripe provider constraint and unified
+  Order model in `migrations/0007_commerce_sales.sql`; it does not carry a legacy
   provider-account conversion path.

@@ -4,9 +4,9 @@
 
 PostgreSQL schemas represent data ownership, not individual users, Stores, Rust modules, or deployment units. Current business schemas are `identity`, `commerce`, and `integration`. Utility extension objects live in `extensions`; `public` contains no business tables.
 
-`commerce` owns Stores, Store memberships, Sales Channels, Store locales, public Storefront Keys, catalogs, pricing, inventory, sales, Stripe payment account configuration, payment readiness, payment commands, and the verified Stripe webhook inbox. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
+`commerce` owns Stores, Store memberships, Sales Channels, Store locales, public Storefront Keys, catalogs, pricing, inventory, sales, payment state, refunds, and the verified Provider webhook inbox. `integration` owns typed Provider accounts, Provider readiness, and generic event routing. There is no merchant-account schema or aggregate. A User-owned trusted-client credential is stored in `identity.access_keys`; a Storefront public key is stored as plaintext in `commerce.store_publishable_keys` because it is intentionally safe to embed in frontend code.
 
-Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains all Store-owned catalog, inventory, sales, payment, and rebuildable Storefront read models. `integration` contains outbox/event routing and analytical processing state.
+Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains Store-owned catalog, inventory, sales, payment state, and rebuildable Storefront read models. `integration` contains external Provider configuration, typed Provider identities, outbox/event routing, and analytical processing state.
 
 Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
 
@@ -75,13 +75,13 @@ Migration files use zero-padded sequence numbers and concise English names. Befo
 
 The bootstrap uses one file for identity and multiple capability files for
 commerce: `0002_identity.sql`, `0003_commerce_stores.sql`,
-`0004_commerce_catalog.sql`, `0005_commerce_pricing.sql`, and
-`0006_commerce_sales.sql`. Integration follows them as
-`0007_integration_idempotency.sql` and `0009_integration_analytics.sql`, with
-the Stripe payment capability in `0008_commerce_payments.sql` and fulfillment
-in `0010_commerce_fulfillment.sql`.
-Catalog, pricing, inventory, and sales capability files use the existing
-`commerce` schema. Within
+`0004_commerce_catalog.sql`, `0007_commerce_sales.sql`, and
+`0008_commerce_payments.sql`. Integration uses
+`0005_integration_core.sql`, `0006_integration_providers.sql`, and
+`0009_integration_analytics.sql`; fulfillment is in
+`0010_commerce_fulfillment.sql`. Catalog, pricing, inventory, and sales
+capability files use the existing `commerce` schema, while Provider accounts
+and Provider enums use `integration`. Within
 each file, define objects in dependency order: types, tables, indexes, routines,
 triggers, row-level security, policies, and grants.
 

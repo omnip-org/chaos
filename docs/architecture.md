@@ -106,14 +106,14 @@ Carts, Orders, Payments, and Analytics events carry the same `shopper_id`; there
 is no Customer entity or visitor-to-Customer association table. An Order-bearing
 Shopper is the buyer for all commerce and analytics purposes.
 
-Store-owned data, including Stripe payment state, remains in the `commerce`
-schema so Store-scoped foreign keys and RLS stay simple. Payment credentials,
-readiness, payment queues, and verified webhook ingestion are logical modules,
-not separate PostgreSQL schemas. The `commerce` migration is organized into logical modules: Store foundation,
-Catalog, Pricing, Inventory, Search read model, Sales, Fulfillment configuration,
-and Fulfillment execution. Event routing and analytics delivery remain in the
-`integration` schema. Checkout request deduplication is owned by the Order row in
-`commerce`, through its request UUID and database unique constraint.
+Store-owned business state, including Orders, refunds, and verified payment
+webhook ingestion, remains in the `commerce` schema so Store-scoped foreign
+keys and RLS stay simple. External Provider configuration, credentials,
+readiness, and provider enums live in the `integration` schema. The migrations
+are organized into Store foundation, Catalog and Pricing, Integration core,
+Provider accounts, Sales, Payments, Analytics, and Fulfillment. Checkout
+request deduplication is owned by the Order row in `commerce`, through its
+request UUID and database unique constraint.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
 creates a pending Order and reserves tracked inventory while leaving the Cart
@@ -133,9 +133,11 @@ lowercase snake-case identifier, not as a database enum, so new behaviors do
 not require a migration. Provider delivery is an optional retryable projection
 of stored events through destination and delivery records. See ADR 0026.
 
-The `commerce` schema owns `payment_provider_accounts`, `provider_webhooks`,
-payment readiness routines, and payment queue routines.
-The Integration schema keeps one concise name for each generic responsibility:
+The `integration` schema owns `payment_provider_accounts`,
+`shipping_provider_accounts`, Provider enums, event consumers, and event
+outbox routing. The `commerce` schema owns `provider_webhooks`, refunds, and
+payment state transitions. The Integration schema keeps one concise name for
+each generic responsibility:
 `event_consumers`, `event_outbox`, `analytics_events`,
 `analytics_destinations`, and `analytics_deliveries`. The last three form one chain: an internal Analytics
 event is scheduled for a configured destination, then its delivery observation
