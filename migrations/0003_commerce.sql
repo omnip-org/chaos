@@ -79,8 +79,6 @@ CREATE TABLE commerce.store_publishable_keys (
     CONSTRAINT store_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
 );
 
--- A Store's shipping range is an explicit set, independent of `stores.region`
--- (which stays the Store's home/business region for tax and display context).
 CREATE TABLE commerce.store_shipping_countries (
     store_id             UUID        NOT NULL,
     country_code         CHAR(2)     NOT NULL,
