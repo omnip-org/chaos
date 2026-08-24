@@ -1,4 +1,4 @@
-use crate::ApplicationError;
+use crate::{ApplicationError, contracts::MAX_INTEGRATION_ATTEMPTS};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
@@ -17,8 +17,9 @@ impl PostgresSearchIndexer {
         limit: u16,
         now: OffsetDateTime,
     ) -> Result<u64, ApplicationError> {
-        let processed: i64 = sqlx::query_scalar("SELECT commerce.process_events($1, $2)")
+        let processed: i64 = sqlx::query_scalar("SELECT commerce.process_events($1, $2, $3)")
             .bind(i32::from(limit.clamp(1, 100)))
+            .bind(MAX_INTEGRATION_ATTEMPTS)
             .bind(now)
             .fetch_one(&self.pool)
             .await

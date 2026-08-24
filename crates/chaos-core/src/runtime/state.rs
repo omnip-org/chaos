@@ -4,10 +4,7 @@ use anyhow::Context;
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
-use crate::{
-    adapters::postgres::database::store_context::StoreTransaction, runtime::config::Settings,
-};
-use chaos_domain::store::StoreId;
+use crate::runtime::config::Settings;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -115,13 +112,6 @@ impl AppState {
 
     pub fn analytics_pool(&self) -> PgPool {
         self.analytics_postgres.clone()
-    }
-
-    pub async fn begin_store_transaction(
-        &self,
-        store_id: StoreId,
-    ) -> anyhow::Result<StoreTransaction<'_>> {
-        StoreTransaction::begin(&self.postgres, store_id).await
     }
 
     pub async fn check_dependencies(&self) -> anyhow::Result<()> {

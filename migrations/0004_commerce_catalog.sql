@@ -372,7 +372,11 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ)
+CREATE FUNCTION commerce.process_events(
+    batch_size INTEGER,
+    max_attempts INTEGER,
+    finished_at TIMESTAMPTZ
+)
 RETURNS BIGINT LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE event RECORD; processed BIGINT := 0;
 BEGIN
@@ -390,12 +394,12 @@ BEGIN
                 event.store_id, event.aggregate_id
             );
             PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, true, '', 8, $2
+               event.id, event.attempts, true, '', $2, $3
             );
             processed := processed + 1;
         EXCEPTION WHEN OTHERS THEN
             PERFORM integration.finish_event_outbox(
-                event.id, event.attempts, false, SQLERRM, 8, $2
+                event.id, event.attempts, false, SQLERRM, $2, $3
             );
         END;
     END LOOP;
@@ -420,10 +424,10 @@ CREATE POLICY store_isolation ON commerce.product_documents
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 REVOKE ALL ON FUNCTION commerce.rebuild_store_products(UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products(UUID) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_events(INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.products,

@@ -1,9 +1,22 @@
 //! Database transaction contexts and database-specific infrastructure helpers.
 
-pub mod store_context;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+#[cfg(test)]
+mod store_context;
 
 use chaos_domain::{identity::UserId, sales::ShopperId, store::StoreId};
+use rand::Rng;
+use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
+
+pub(crate) const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
+
+pub(crate) fn generate_order_tracking_digest() -> [u8; 32] {
+    let mut secret = [0_u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
+    Sha256::digest(plaintext.as_bytes()).into()
+}
 
 pub(crate) async fn set_user_context(
     connection: &mut PgConnection,

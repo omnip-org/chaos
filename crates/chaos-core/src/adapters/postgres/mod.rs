@@ -10,7 +10,6 @@ mod payments;
 mod pricing;
 mod sales;
 mod search;
-mod shared;
 mod store;
 
 pub use analytics::{

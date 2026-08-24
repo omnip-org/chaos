@@ -662,9 +662,7 @@ dependencies = [
  "base64 0.23.1",
  "chaos-core",
  "chaos-domain",
- "hmac 0.13.0",
  "http 1.5.0",
- "redis",
  "reqwest",
  "rmcp",
  "rustls 0.23.43",
@@ -724,7 +722,6 @@ name = "chaos-domain"
 version = "0.0.13"
 dependencies = [
  "email_address",
- "language-tags",
  "serde_json",
  "thiserror",
  "time",
@@ -1993,12 +1990,6 @@ dependencies = [
  "signature",
  "zeroize",
 ]
-
-[[package]]
-name = "language-tags"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4345964bb142484797b161f473a503a434de77149dd8c7427788c6e13379388"
 
 [[package]]
 name = "lazy_static"

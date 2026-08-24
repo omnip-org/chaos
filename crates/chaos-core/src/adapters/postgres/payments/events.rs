@@ -638,7 +638,7 @@ async fn confirm_paid_order(
         .await
         .map_err(database_error)?;
     }
-    let (_, tracking_digest) = generate_order_tracking_token();
+    let tracking_digest = generate_order_tracking_digest();
     sqlx::query(
         "INSERT INTO commerce.order_tracking_tokens \
          (store_id,order_id,token_digest,expires_at,created_at) \

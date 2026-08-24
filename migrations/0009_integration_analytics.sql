@@ -209,6 +209,7 @@ $$;
 CREATE FUNCTION integration.finish_analytics_event_delivery(
     delivery_id UUID,
     attempts INTEGER,
+    max_attempts INTEGER,
     succeeded BOOLEAN,
     retryable BOOLEAN,
     provider_reference TEXT,
@@ -233,7 +234,7 @@ BEGIN
     IF message_id IS NULL THEN
         RETURN false;
     END IF;
-    IF succeeded OR NOT retryable OR attempts >= 8 THEN
+    IF succeeded OR NOT retryable OR attempts >= greatest(max_attempts, 1) THEN
         UPDATE integration.analytics_deliveries AS delivery
            SET delivery_status = CASE WHEN succeeded THEN 'processed'::integration.delivery_status ELSE 'dead_letter'::integration.delivery_status END,
                delivered_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
@@ -275,12 +276,12 @@ CREATE POLICY store_isolation ON integration.analytics_deliveries
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 REVOKE ALL ON FUNCTION integration.claim_analytics_deliveries(INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.finish_analytics_event_delivery(UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.finish_analytics_event_delivery(UUID, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_analytics_event_delivery() FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION integration.configure_analytics_destination(UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, UUID, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_analytics_deliveries(INTEGER) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.finish_analytics_event_delivery(UUID, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.finish_analytics_event_delivery(UUID, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) TO chaos_runtime;
 
 CREATE FUNCTION integration.schedule_analytics_deliveries(
     batch_size INTEGER

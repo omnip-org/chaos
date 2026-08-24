@@ -1,6 +1,6 @@
 use crate::{
     ApplicationError,
-    contracts::{IntegrationQueue, QueueJob},
+    contracts::{IntegrationQueue, MAX_INTEGRATION_ATTEMPTS, QueueJob},
     error::database_error,
 };
 use async_trait::async_trait;
@@ -8,8 +8,6 @@ use serde_json::Value;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-const MAX_QUEUE_ATTEMPTS: i32 = 8;
 
 /// PostgreSQL-backed leasing for integration outbox and webhook jobs.
 /// Provider-specific payload interpretation stays in the owning application
@@ -89,7 +87,7 @@ async fn finish_webhook_job(
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)
             .bind(&failure)
-            .bind(MAX_QUEUE_ATTEMPTS)
+            .bind(MAX_INTEGRATION_ATTEMPTS)
             .bind(now)
             .fetch_one(pool)
             .await
@@ -115,7 +113,7 @@ async fn finish_outbox_job(
             .bind(i32::try_from(attempts).unwrap_or(i32::MAX))
             .bind(succeeded)
             .bind(&failure)
-            .bind(MAX_QUEUE_ATTEMPTS)
+            .bind(MAX_INTEGRATION_ATTEMPTS)
             .bind(now)
             .fetch_one(pool)
             .await

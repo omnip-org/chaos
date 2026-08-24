@@ -37,8 +37,6 @@ CREATE TABLE commerce.refunds (
     amount_minor           BIGINT                   NOT NULL,
     stripe_refund_id       TEXT,
     failure_code           TEXT,
-    reason                 TEXT,
-    provider_snapshot      JSONB,
     created_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -49,10 +47,7 @@ CREATE TABLE commerce.refunds (
     CONSTRAINT refunds_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT refunds_stripe_refund_check               CHECK (stripe_refund_id IS NULL OR stripe_refund_id ~ '^re_[A-Za-z0-9]+$'),
     CONSTRAINT refunds_failure_code_check                CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
-    CONSTRAINT refunds_failure_code_shape_check          CHECK (status = 'failed' OR failure_code IS NULL),
-    CONSTRAINT refunds_reason_length_check               CHECK (reason IS NULL OR length(trim(reason)) BETWEEN 1 AND 2000),
-    CONSTRAINT refunds_snapshot_size_check               CHECK (provider_snapshot IS NULL OR pg_column_size(provider_snapshot) <= 32768),
-    CONSTRAINT refunds_snapshot_is_object_check          CHECK (provider_snapshot IS NULL OR jsonb_typeof(provider_snapshot) = 'object')
+    CONSTRAINT refunds_failure_code_shape_check          CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
 CREATE INDEX refunds_order_created_idx ON commerce.refunds (store_id, order_id, created_at DESC);

@@ -74,11 +74,12 @@ Identity access uses the non-owner `chaos_identity` role. It can access only the
 Migration files use zero-padded sequence numbers and concise English names. Before `1.0`, bootstrap migrations may be rewritten only when every environment using them contains disposable data and the release includes a coordinated database recreation or migration-history reset. Otherwise, applied migrations are immutable and changes fix forward.
 
 The bootstrap uses one file for identity and multiple capability files for
-commerce: `0002_identity.sql`, `0003_commerce.sql`,
+commerce: `0002_identity.sql`, `0003_commerce_stores.sql`,
 `0004_commerce_catalog.sql`, `0005_commerce_pricing.sql`, and
 `0006_commerce_sales.sql`. Integration follows them as
-`0007_integration.sql` and `0008_integration_analytics.sql`, with the Stripe
-payment capability in `0009_commerce_payments.sql`.
+`0007_integration_idempotency.sql` and `0009_integration_analytics.sql`, with
+the Stripe payment capability in `0008_commerce_payments.sql` and fulfillment
+in `0010_commerce_fulfillment.sql`.
 Catalog, pricing, inventory, and sales capability files use the existing
 `commerce` schema. Within
 each file, define objects in dependency order: types, tables, indexes, routines,

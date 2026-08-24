@@ -3,11 +3,9 @@ CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'partially_refunded', 'refunded');
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
--- TODO: remove first_seen_at
 CREATE TABLE commerce.shoppers (
     id               UUID                  NOT NULL PRIMARY KEY,
     store_id         UUID                  NOT NULL,
-    first_seen_at    TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at     TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMPTZ           NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::ApplicationError;
 
-pub const MAX_INTEGRATION_ATTEMPTS: u32 = 8;
+/// Maximum number of delivery attempts for every durable integration queue.
+pub const MAX_INTEGRATION_ATTEMPTS: i32 = 8;
 
 /// A durable outbound or inbound integration job projected from PostgreSQL.
 /// The business worker owns the payload semantics; Integration owns leasing

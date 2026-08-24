@@ -1,60 +1,10 @@
-use anyhow::Context;
-use chaos_domain::store::StoreId;
-use sqlx::{PgPool, Postgres, Transaction};
-
-use super::set_store_context;
-
-#[cfg(test)]
-use sqlx::PgConnection;
-
-pub struct StoreTransaction<'a> {
-    inner: Transaction<'a, Postgres>,
-    store_id: StoreId,
-}
-
-impl<'a> StoreTransaction<'a> {
-    pub(crate) async fn begin(pool: &'a PgPool, store_id: StoreId) -> anyhow::Result<Self> {
-        let mut inner = pool
-            .begin()
-            .await
-            .context("failed to begin store transaction")?;
-        set_store_context(&mut inner, store_id)
-            .await
-            .context("failed to establish PostgreSQL store context")?;
-
-        Ok(Self { inner, store_id })
-    }
-
-    pub const fn store_id(&self) -> StoreId {
-        self.store_id
-    }
-
-    #[cfg(test)]
-    pub(crate) fn connection(&mut self) -> &mut PgConnection {
-        &mut self.inner
-    }
-
-    pub async fn commit(self) -> anyhow::Result<()> {
-        self.inner
-            .commit()
-            .await
-            .context("failed to commit store transaction")
-    }
-
-    pub async fn rollback(self) -> anyhow::Result<()> {
-        self.inner
-            .rollback()
-            .await
-            .context("failed to roll back store transaction")
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use chaos_domain::store::StoreId;
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
-    use super::*;
+    use super::super::set_store_context;
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL with migrations applied"]
@@ -185,41 +135,42 @@ mod tests {
             .unwrap();
         }
 
-        let mut transaction = StoreTransaction::begin(&pool, StoreId::from_uuid(store_a))
+        let mut transaction = pool.begin().await.unwrap();
+        set_store_context(&mut transaction, StoreId::from_uuid(store_a))
             .await
             .unwrap();
         sqlx::query("SET LOCAL ROLE chaos_runtime")
-            .execute(transaction.connection())
+            .execute(&mut *transaction)
             .await
             .unwrap();
         let visible_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.stores ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_key_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.store_publishable_keys ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_channel_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.store_sales_channels ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_product_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.products ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_shopper_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.shoppers ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         let visible_provider_account_ids: Vec<Uuid> =
             sqlx::query_scalar("SELECT id FROM commerce.payment_provider_accounts ORDER BY id")
-                .fetch_all(transaction.connection())
+                .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
         transaction.rollback().await.unwrap();

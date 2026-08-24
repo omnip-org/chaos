@@ -451,10 +451,11 @@ impl PostgresAnalyticsDeliveryStore {
             Err(error) => (false, None, Some(error.message), error.retryable),
         };
         let finished: Option<bool> = sqlx::query_scalar(
-            "SELECT integration.finish_analytics_event_delivery($1,$2,$3,$4,$5,$6,$7)",
+            "SELECT integration.finish_analytics_event_delivery($1,$2,$3,$4,$5,$6,$7,$8)",
         )
         .bind(job.id)
         .bind(i32::try_from(job.attempts).unwrap_or(i32::MAX))
+        .bind(MAX_INTEGRATION_ATTEMPTS)
         .bind(succeeded)
         .bind(retryable)
         .bind(reference)

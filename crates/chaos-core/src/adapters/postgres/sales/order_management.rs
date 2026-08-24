@@ -1,28 +1,16 @@
 use crate::{
     ApplicationError,
+    adapters::postgres::database::{ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_digest},
     contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
     error::database_error,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_domain::{
     sales::{Order, OrderId, OrderStatus},
     store::StoreId,
 };
-use rand::Rng;
-use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
-
-fn generate_order_tracking_token() -> (String, [u8; 32]) {
-    let mut secret = [0_u8; 32];
-    rand::rng().fill_bytes(&mut secret);
-    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
-    let digest = Sha256::digest(plaintext.as_bytes()).into();
-    (plaintext, digest)
-}
 
 #[derive(Clone)]
 pub struct PostgresOrderManagementRepository {
@@ -144,7 +132,7 @@ impl PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            let (_, tracking_digest) = generate_order_tracking_token();
+            let tracking_digest = generate_order_tracking_digest();
             sqlx::query(
                 "INSERT INTO commerce.order_tracking_tokens \
                  (store_id,order_id,token_digest,expires_at,created_at) \

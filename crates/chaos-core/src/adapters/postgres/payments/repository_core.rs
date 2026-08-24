@@ -1,12 +1,11 @@
 // Payment repository core wiring, provider implementations, and shared imports.
 
 use async_trait::async_trait;
-use base64::{
-    Engine,
-    engine::general_purpose::URL_SAFE_NO_PAD,
-};
 use crate::{
     ApplicationError,
+    adapters::postgres::database::{
+        ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_digest,
+    },
     error::database_error,
     contracts::{
         AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
@@ -28,9 +27,7 @@ use chaos_domain::{
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
     store::{SalesChannelId, StoreId},
 };
-use rand::Rng;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -39,15 +36,6 @@ use crate::adapters::postgres::{
     analytics::{AnalyticsEventToAppend, append_event},
 };
 
-const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
-
-fn generate_order_tracking_token() -> (String, [u8; 32]) {
-    let mut secret = [0_u8; 32];
-    rand::rng().fill_bytes(&mut secret);
-    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
-    let digest = Sha256::digest(plaintext.as_bytes()).into();
-    (plaintext, digest)
-}
 type ProviderAccountRow = (
     Uuid,
     String,

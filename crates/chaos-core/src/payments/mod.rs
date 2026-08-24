@@ -5,7 +5,7 @@ use chaos_domain::{
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
@@ -358,11 +358,6 @@ impl PaymentWorkers {
             .await?;
         Ok(())
     }
-}
-
-pub fn retry_at(now: OffsetDateTime, attempts: u32) -> OffsetDateTime {
-    let exponent = attempts.saturating_sub(1).min(8);
-    now + Duration::seconds(2_i64.pow(exponent))
 }
 
 fn require_checkout_key(actor: &MachineActor) -> Result<(), ApplicationError> {

@@ -29,6 +29,4 @@ uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
-hmac.workspace = true
-redis.workspace = true
 tower.workspace = true
