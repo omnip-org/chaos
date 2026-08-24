@@ -4,6 +4,7 @@ mod catalog_management;
 mod catalog_read;
 mod clock;
 mod collection;
+mod fulfillment;
 mod identity;
 mod integration;
 mod inventory;
@@ -13,7 +14,6 @@ mod provider_secret;
 mod publishable_key;
 mod review;
 mod sales;
-mod shipping_events;
 mod store;
 mod store_administration;
 mod storefront_catalog;
@@ -37,6 +37,7 @@ pub use collection::{
     CollectionDetail, CollectionListItem, CollectionProductItem, CollectionPublicationRecord,
     CreateCollectionRecord, StorefrontCollectionItem,
 };
+pub use fulfillment::{FulfillmentDetail, ShippingProviderAccountDetail};
 pub use identity::{
     AccessKeyListItem, AccessKeyMaterialGenerator, AccessKeyRepository, AccessTokenCodec,
     AccessTokenGrant, ExternalIdentityVerifier, GeneratedAccessKeyMaterial, IdentityAuthentication,
@@ -53,10 +54,9 @@ pub use provider_secret::{ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyListItem};
 pub use review::{ReviewSummary, SubmitReviewRecord};
 pub use sales::{
-    CartDetail, CartLineItem, OrderDetail, OrderLineItem, OrderListFilter, OrderPage,
-    OrderPaymentAttemptItem, OrderRefundItem, OrderTransitionItem, StripeCheckoutDraft,
+    CartDetail, CartLineItem, OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderListFilter,
+    OrderPage, OrderPaymentAttemptItem, OrderRefundItem, OrderTransitionItem, StripeCheckoutDraft,
 };
-pub use shipping_events::{ShippingEventJob, ShippingEventQueue};
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,
 };

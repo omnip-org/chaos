@@ -13,11 +13,6 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
-    let shipping_event_worker = tokio::spawn(shipping_event_worker_loop(
-        runtime.shipping_event_workers.clone(),
-        runtime.clock.clone(),
-        lifecycle.clone(),
-    ));
     let analytics_worker = tokio::spawn(analytics_worker_loop(
         runtime.analytics_delivery_worker.clone(),
         runtime.clock.clone(),
@@ -32,11 +27,6 @@ pub async fn run(
     shutdown_signal(lifecycle).await;
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
-        drain_worker(
-            "shipping-events",
-            shipping_event_worker,
-            worker_shutdown_timeout
-        ),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
     );
@@ -160,26 +150,6 @@ async fn payment_worker_loop(
             Ok(count) => processed += count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
-            }
-        }
-        tokio::time::sleep(backoff.observe(processed)).await;
-    }
-}
-
-async fn shipping_event_worker_loop(
-    workers: std::sync::Arc<chaos_core::sales::ShippingEventWorkers>,
-    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
-    lifecycle: Lifecycle,
-) {
-    let worker_id = Uuid::now_v7();
-    let mut backoff = PollBackoff::new();
-    while lifecycle.is_accepting_traffic() {
-        let now = clock.now();
-        let mut processed = 0usize;
-        match workers.run_batch(now, 50).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "shipping event batch failed");
             }
         }
         tokio::time::sleep(backoff.observe(processed)).await;

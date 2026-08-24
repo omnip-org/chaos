@@ -1,7 +1,3 @@
-mod shipping_events;
-
-pub use shipping_events::PostgresShippingEventRepository;
-
 use crate::{
     ApplicationError,
     contracts::{IntegrationQueue, QueueJob},

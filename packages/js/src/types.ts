@@ -189,6 +189,31 @@ export interface OrderRefund {
   updated_at: string;
 }
 
+/** One shipment against an Order. An Order has at most one active
+ * (non-cancelled) Fulfillment at a time. */
+export interface OrderFulfillment {
+  id: UUID;
+  shipping_provider_account_id: UUID;
+  status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  tracking_number?: string;
+  tracking_url?: string;
+  shipped_at?: string;
+  delivered_at?: string;
+  cancelled_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The subset of a Fulfillment exposed on the order-tracking view: shipping
+ * progress and carrier tracking, without the internal Store provider-account id. */
+export interface TrackedOrderFulfillment {
+  status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  tracking_number?: string;
+  tracking_url?: string;
+  shipped_at?: string;
+  delivered_at?: string;
+}
+
 export interface Order {
   id: UUID;
   order_number: string;
@@ -196,7 +221,7 @@ export interface Order {
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
   payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
-  shipping_status: "pending" | "shipped" | "delivered" | "cancelled";
+  shipping_status: "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   contact: OrderContact;
   billing_address?: PostalAddress;
   shipping_address?: PostalAddress;
@@ -206,14 +231,11 @@ export interface Order {
   shipping_amount_minor: number;
   total_amount_minor: number;
   refunded_amount_minor: number;
-  shipping_provider?: string;
-  shipping_provider_reference?: string;
-  shipping_tracking_number?: string;
-  shipping_tracking_url?: string;
   lines: OrderLine[];
   transitions: OrderTransition[];
   payment_attempts: OrderPaymentAttempt[];
   refunds: OrderRefund[];
+  fulfillments: OrderFulfillment[];
   created_at: string;
   updated_at: string;
 }
@@ -229,7 +251,7 @@ export interface TrackedOrder {
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
   payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
-  shipping_status: "pending" | "shipped" | "delivered" | "cancelled";
+  shipping_status: "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
   shipping_country_code?: string;
   subtotal_amount_minor: number;
@@ -238,9 +260,7 @@ export interface TrackedOrder {
   shipping_amount_minor: number;
   total_amount_minor: number;
   refunded_amount_minor: number;
-  shipping_provider?: string;
-  shipping_tracking_number?: string;
-  shipping_tracking_url?: string;
+  fulfillments: TrackedOrderFulfillment[];
   lines: OrderLine[];
   transitions: OrderTransition[];
   created_at: string;

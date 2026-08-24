@@ -1,13 +1,15 @@
 use crate::{
     ApplicationError,
     contracts::{
-        OrderDetail, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem, OrderTransitionItem,
+        OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem,
+        OrderTransitionItem,
     },
     error::database_error,
 };
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
     payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -35,10 +37,6 @@ struct OrderHeaderRow {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    shipping_provider: Option<String>,
-    shipping_provider_reference: Option<String>,
-    shipping_tracking_number: Option<String>,
-    shipping_tracking_url: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -64,6 +62,20 @@ struct RefundRow {
     amount_minor: i64,
     stripe_refund_id: Option<String>,
     failure_code: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
+
+#[derive(sqlx::FromRow)]
+struct FulfillmentRow {
+    id: Uuid,
+    shipping_provider_account_id: Uuid,
+    status: String,
+    tracking_number: Option<String>,
+    tracking_url: Option<String>,
+    shipped_at: Option<OffsetDateTime>,
+    delivered_at: Option<OffsetDateTime>,
+    cancelled_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -124,8 +136,7 @@ pub(crate) async fn load(
                 shipping_status::text AS shipping_status, subtotal_amount_minor, \
                 discount_amount_minor, tax_amount_minor, \
                 shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
-                shipping_provider, shipping_provider_reference, shipping_tracking_number, \
-                shipping_tracking_url, created_at, updated_at \
+                created_at, updated_at \
          FROM commerce.orders \
          WHERE store_id = $1 AND ($2::uuid IS NULL OR sales_channel_id = $2) AND id = $3",
     )
@@ -192,6 +203,17 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
+        "SELECT id, shipping_provider_account_id, status::text, tracking_number, \
+                tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
+         FROM commerce.fulfillments WHERE store_id = $1 AND order_id = $2 \
+         ORDER BY created_at, id",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
 
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.id),
@@ -210,10 +232,6 @@ pub(crate) async fn load(
         shipping_amount_minor: row.shipping_amount_minor,
         total_amount_minor: row.total_amount_minor,
         refunded_amount_minor: row.refunded_amount_minor,
-        shipping_provider: row.shipping_provider,
-        shipping_provider_reference: row.shipping_provider_reference,
-        shipping_tracking_number: row.shipping_tracking_number,
-        shipping_tracking_url: row.shipping_tracking_url,
         lines: lines
             .into_iter()
             .map(order_line_item)
@@ -229,6 +247,10 @@ pub(crate) async fn load(
         refunds: refunds
             .into_iter()
             .map(refund_item)
+            .collect::<Result<_, _>>()?,
+        fulfillments: fulfillments
+            .into_iter()
+            .map(fulfillment_item)
             .collect::<Result<_, _>>()?,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -373,6 +395,23 @@ fn refund_item(row: RefundRow) -> Result<OrderRefundItem, ApplicationError> {
         amount_minor: row.amount_minor,
         stripe_refund_id: row.stripe_refund_id,
         failure_code: row.failure_code,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn fulfillment_item(row: FulfillmentRow) -> Result<OrderFulfillmentItem, ApplicationError> {
+    Ok(OrderFulfillmentItem {
+        id: FulfillmentId::from_uuid(row.id),
+        shipping_provider_account_id: ShippingProviderAccountId::from_uuid(
+            row.shipping_provider_account_id,
+        ),
+        status: FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
+        tracking_number: row.tracking_number,
+        tracking_url: row.tracking_url,
+        shipped_at: row.shipped_at,
+        delivered_at: row.delivered_at,
+        cancelled_at: row.cancelled_at,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })

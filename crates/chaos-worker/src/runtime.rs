@@ -6,7 +6,7 @@ use chaos_core::{
     adapters::integrations::{analytics::meta::MetaConversionsDestination, stripe::StripeGateway},
     adapters::postgres::{
         PostgresAnalyticsDeliveryStore, PostgresIntegrationQueue, PostgresSearchIndexer,
-        PostgresShippingEventRepository, PostgresStripeRepository,
+        PostgresStripeRepository,
     },
     adapters::security::provider_secrets::DynamicSecretResolver,
     runtime::{clock::SystemClock, config::Settings, state::AppState},
@@ -18,14 +18,12 @@ use chaos_core::{
         StripePaymentGateway,
     },
     payments::PaymentWorkers,
-    sales::ShippingEventWorkers,
 };
 
 /// Dependencies used by durable polling loops, without HTTP or MCP state.
 #[derive(Clone)]
 pub struct WorkerRuntime {
     pub payment_workers: Arc<PaymentWorkers>,
-    pub shipping_event_workers: Arc<ShippingEventWorkers>,
     pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
     pub clock: Arc<dyn Clock>,
@@ -67,14 +65,8 @@ impl WorkerRuntime {
             payment_onboarding,
         );
 
-        let shipping_event_repository = Arc::new(PostgresShippingEventRepository::new(
-            infrastructure.runtime_pool(),
-        ));
-        let shipping_event_workers = ShippingEventWorkers::new(shipping_event_repository);
-
         Ok(Self {
             payment_workers: Arc::new(payment_workers),
-            shipping_event_workers: Arc::new(shipping_event_workers),
             analytics_delivery_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
             clock: Arc::new(SystemClock),

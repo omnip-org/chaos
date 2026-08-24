@@ -28,7 +28,6 @@ pub struct Settings {
     pub apple_client_id: Option<String>,
     pub storefront_public_base_url: Url,
     pub stripe_api_base_url: Url,
-    pub easypost_api_base_url: Url,
     pub analytics_meta_api_base_url: Url,
     pub provider_secret_key: SecretKey,
     pub media_storage: Option<MediaStorageSettings>,
@@ -121,7 +120,6 @@ impl Settings {
             apple_client_id: optional("APPLE_CLIENT_ID"),
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
-            easypost_api_base_url: parse_or("EASYPOST_API_BASE_URL", "https://api.easypost.com/")?,
             analytics_meta_api_base_url: parse_or(
                 "ANALYTICS_META_API_BASE_URL",
                 "https://graph.facebook.com/v24.0/",

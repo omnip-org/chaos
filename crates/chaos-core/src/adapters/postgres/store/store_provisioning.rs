@@ -4,6 +4,7 @@ use chaos_domain::{
     store::{SalesChannel, Store, StoreMembership},
 };
 use sqlx::{PgPool, Postgres, Transaction};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct PostgresStoreProvisioningRepository {
@@ -60,6 +61,17 @@ impl PostgresStoreProvisioningTransaction {
         )
         .bind(store.id().as_uuid())
         .bind(store.region().as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(database_error)?;
+        // Every Store can mark Orders shipped/delivered from day one, without
+        // any carrier integration or credential setup.
+        sqlx::query(
+            "INSERT INTO commerce.shipping_provider_accounts (id, store_id, provider, display_name) \
+             VALUES ($1, $2, 'manual', 'Manual fulfillment')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(store.id().as_uuid())
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;

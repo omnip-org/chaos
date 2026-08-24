@@ -371,7 +371,14 @@ impl StripeCheckoutSnapshot {
             return Err(corrupt_webhook_payload());
         }
         let customer_details = object.get("customer_details");
-        let shipping_details = object.get("shipping_details");
+        // Newer Stripe API versions report the collected shipping address
+        // under `collected_information.shipping_details` rather than the
+        // session object's own top-level `shipping_details`.
+        let shipping_details = object
+            .get("collected_information")
+            .and_then(|value| value.get("shipping_details"))
+            .filter(|value| !value.is_null())
+            .or_else(|| object.get("shipping_details"));
         let email = customer_details
             .and_then(|value| value.get("email"))
             .and_then(Value::as_str)

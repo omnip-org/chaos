@@ -1,6 +1,7 @@
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
+    fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
     payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
@@ -97,6 +98,22 @@ pub struct OrderRefundItem {
     pub updated_at: OffsetDateTime,
 }
 
+/// One shipment against an Order. Kept as its own row (rather than flat
+/// columns on `orders`) so the shipping history is a real timeline — see
+/// `commerce.fulfillments`.
+pub struct OrderFulfillmentItem {
+    pub id: FulfillmentId,
+    pub shipping_provider_account_id: ShippingProviderAccountId,
+    pub status: FulfillmentStatus,
+    pub tracking_number: Option<String>,
+    pub tracking_url: Option<String>,
+    pub shipped_at: Option<OffsetDateTime>,
+    pub delivered_at: Option<OffsetDateTime>,
+    pub cancelled_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
 pub struct OrderDetail {
     pub id: OrderId,
     pub order_number: chaos_domain::sales::OrderNumber,
@@ -113,14 +130,11 @@ pub struct OrderDetail {
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
     pub refunded_amount_minor: i64,
-    pub shipping_provider: Option<String>,
-    pub shipping_provider_reference: Option<String>,
-    pub shipping_tracking_number: Option<String>,
-    pub shipping_tracking_url: Option<String>,
     pub lines: Vec<OrderLineItem>,
     pub transitions: Vec<OrderTransitionItem>,
     pub payment_attempts: Vec<OrderPaymentAttemptItem>,
     pub refunds: Vec<OrderRefundItem>,
+    pub fulfillments: Vec<OrderFulfillmentItem>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

@@ -115,6 +115,7 @@ impl OrderPaymentStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrderShippingStatus {
     Pending,
+    AwaitingPickup,
     Shipped,
     Delivered,
     Cancelled,
@@ -124,6 +125,7 @@ impl OrderShippingStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::AwaitingPickup => "awaiting_pickup",
             Self::Shipped => "shipped",
             Self::Delivered => "delivered",
             Self::Cancelled => "cancelled",
@@ -133,6 +135,7 @@ impl OrderShippingStatus {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending" => Some(Self::Pending),
+            "awaiting_pickup" => Some(Self::AwaitingPickup),
             "shipped" => Some(Self::Shipped),
             "delivered" => Some(Self::Delivered),
             "cancelled" => Some(Self::Cancelled),

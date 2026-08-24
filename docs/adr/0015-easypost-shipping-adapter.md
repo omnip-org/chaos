@@ -1,6 +1,9 @@
 # ADR 0015: Use EasyPost as the First Shipping Provider Adapter
 
-- Status: Accepted
+- Status: Superseded (2026-08-24) — Chaos does not integrate EasyPost or any
+  carrier API. Fulfillment tracking is manual-only, recorded through MCP
+  tools against `commerce.fulfillments` and `commerce.shipping_provider_accounts`.
+  All EasyPost-specific code has been removed. Kept for historical context.
 - Date: 2026-08-16
 
 ## Context

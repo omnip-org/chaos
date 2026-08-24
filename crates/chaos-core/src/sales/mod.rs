@@ -14,9 +14,7 @@ use crate::{
 };
 
 mod order_management;
-mod shipping_events;
 pub use order_management::{ChangeOrderStatusInput, OrderManagement};
-pub use shipping_events::ShippingEventWorkers;
 
 pub struct CreateCartInput {
     pub actor: ShopperActor,

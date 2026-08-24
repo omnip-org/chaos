@@ -1,6 +1,5 @@
 CREATE SCHEMA integration;
 
-SELECT pgmq.create('chaos_shipping_events');
 SELECT pgmq.create('chaos_search_events');
 
 CREATE TABLE integration.event_consumers (
@@ -97,7 +96,6 @@ DECLARE
 BEGIN
     IF queue_name NOT IN (
         'chaos_payment_commands',
-        'chaos_shipping_events',
         'chaos_search_events'
     ) THEN
         RAISE EXCEPTION 'unsupported outbox queue %', queue_name
@@ -140,27 +138,6 @@ BEGIN
         RETURN NEXT;
     END LOOP;
 END;
-$$;
-
-CREATE FUNCTION integration.claim_shipping_events(
-    batch_size INTEGER
-)
-RETURNS TABLE (
-    id UUID,
-    store_id UUID,
-    event_type TEXT,
-    payload JSONB,
-    attempts INTEGER
-)
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    SELECT event.id, event.store_id, event.event_type, event.payload, event.attempts
-      FROM integration.claim_routed_event_outbox(
-               'chaos_shipping_events', batch_size
-           ) AS event;
 $$;
 
 CREATE FUNCTION integration.finish_event_outbox(
@@ -222,10 +199,7 @@ CREATE POLICY store_isolation ON integration.event_outbox
 
 INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES
-    ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document'),
-    ('shipping.shipped', 'chaos_shipping_events', 'Updates the Order shipping state from a provider callback'),
-    ('shipping.delivered', 'chaos_shipping_events', 'Updates the Order shipping state from a provider callback'),
-    ('shipping.cancelled', 'chaos_shipping_events', 'Updates the Order shipping state from a provider callback');
+    ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document');
 
 CREATE TRIGGER event_outbox_enqueue
     BEFORE INSERT ON integration.event_outbox
@@ -235,10 +209,8 @@ CREATE TRIGGER event_outbox_enqueue
 REVOKE ALL ON FUNCTION integration.event_queue_name(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_event_outbox() FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_routed_event_outbox(TEXT, INTEGER) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.claim_shipping_events(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_event_outbox(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.claim_shipping_events(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_event_outbox(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;

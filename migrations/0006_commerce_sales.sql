@@ -2,7 +2,7 @@ CREATE TYPE commerce.cart_status AS ENUM ('active', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'partially_refunded', 'refunded');
-CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'shipped', 'delivered', 'cancelled');
+CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
 -- TODO: remove first_seen_at
 CREATE TABLE commerce.shoppers (
@@ -84,12 +84,11 @@ CREATE TABLE commerce.orders (
     -- retried attempt or a second partial refund gets its own identity
     -- instead of overwriting the previous one in place.
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
+    -- shipping_status is likewise a projection derived from
+    -- commerce.fulfillments; the shipment's own provider, tracking number,
+    -- and tracking URL live on that table, one row per shipment.
     shipping_status              commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
     refunded_amount_minor        BIGINT                             NOT NULL DEFAULT 0,
-    shipping_provider            TEXT,
-    shipping_provider_reference  TEXT,
-    shipping_tracking_number     TEXT,
-    shipping_tracking_url        TEXT,
     subtotal_amount_minor        BIGINT                             NOT NULL,
     discount_amount_minor        BIGINT                             NOT NULL,
     tax_amount_minor             BIGINT                             NOT NULL,
@@ -131,11 +130,7 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_contact_email_length_check        CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
     CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
     CONSTRAINT orders_billing_country_code_check        CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_shipping_provider_check           CHECK (shipping_provider IS NULL OR length(trim(shipping_provider)) BETWEEN 1 AND 64),
-    CONSTRAINT orders_shipping_reference_check          CHECK (shipping_provider_reference IS NULL OR length(trim(shipping_provider_reference)) BETWEEN 1 AND 255),
-    CONSTRAINT orders_shipping_tracking_number_check    CHECK (shipping_tracking_number IS NULL OR length(trim(shipping_tracking_number)) BETWEEN 1 AND 255),
-    CONSTRAINT orders_shipping_tracking_url_check       CHECK (shipping_tracking_url IS NULL OR (length(shipping_tracking_url) BETWEEN 9 AND 2048 AND shipping_tracking_url ~ '^https://'))
+    CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$')
 );
 
 CREATE TABLE commerce.order_tracking_tokens (

@@ -4,6 +4,7 @@ pub mod adapters;
 pub mod analytics;
 pub mod catalog;
 pub mod contracts;
+pub mod fulfillment;
 pub mod identity;
 pub mod inventory;
 pub mod payments;

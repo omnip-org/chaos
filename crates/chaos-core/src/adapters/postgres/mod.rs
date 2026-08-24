@@ -3,6 +3,7 @@
 mod analytics;
 mod catalog;
 pub(crate) mod database;
+mod fulfillment;
 mod integrations;
 mod inventory;
 mod payments;
@@ -20,7 +21,8 @@ pub use catalog::{
     PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresMediaAssetRepository,
     PostgresReviewRepository,
 };
-pub use integrations::{PostgresIntegrationQueue, PostgresShippingEventRepository};
+pub use fulfillment::PostgresFulfillmentRepository;
+pub use integrations::PostgresIntegrationQueue;
 pub use inventory::PostgresInventoryRepository;
 pub use payments::PostgresStripeRepository;
 pub use pricing::{PostgresPricingManagementRepository, PostgresPricingProvisioningRepository};

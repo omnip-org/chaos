@@ -370,7 +370,7 @@ impl PostgresAnalyticsDeliveryStore {
     pub(crate) async fn schedule_deliveries(&self, limit: u16) -> Result<usize, ApplicationError> {
         let scheduled: Option<i64> =
             sqlx::query_scalar("SELECT integration.schedule_analytics_deliveries($1)")
-                .bind(i64::from(limit))
+                .bind(i32::from(limit))
                 .fetch_one(&self.pool)
                 .await
                 .map_err(db)?;

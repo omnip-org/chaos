@@ -3,7 +3,9 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use chaos_core::contracts::{OrderDetail, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem};
+use chaos_core::contracts::{
+    OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem,
+};
 use chaos_domain::sales::OrderId;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -87,6 +89,40 @@ struct RefundData {
 }
 
 #[derive(Serialize)]
+struct FulfillmentData {
+    id: Uuid,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracking_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracking_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipped_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivered_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cancelled_at: Option<ApiDateTime>,
+    created_at: ApiDateTime,
+    updated_at: ApiDateTime,
+}
+
+/// The subset of a Fulfillment safe to expose on the order-tracking view:
+/// shipping progress and carrier tracking, without the internal Store
+/// provider-account id.
+#[derive(Serialize)]
+struct TrackedFulfillmentData {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracking_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracking_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shipped_at: Option<ApiDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivered_at: Option<ApiDateTime>,
+}
+
+#[derive(Serialize)]
 struct OrderData {
     id: Uuid,
     order_number: String,
@@ -106,18 +142,11 @@ struct OrderData {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_provider_reference: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_tracking_number: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_tracking_url: Option<String>,
     lines: Vec<OrderLineData>,
     transitions: Vec<OrderTransitionData>,
     payment_attempts: Vec<PaymentAttemptData>,
     refunds: Vec<RefundData>,
+    fulfillments: Vec<FulfillmentData>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -144,12 +173,7 @@ struct TrackedOrderData {
     shipping_amount_minor: i64,
     total_amount_minor: i64,
     refunded_amount_minor: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_tracking_number: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shipping_tracking_url: Option<String>,
+    fulfillments: Vec<TrackedFulfillmentData>,
     lines: Vec<OrderLineData>,
     transitions: Vec<OrderTransitionData>,
     created_at: ApiDateTime,
@@ -245,10 +269,6 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
         refunded_amount_minor: order.refunded_amount_minor,
-        shipping_provider: order.shipping_provider,
-        shipping_provider_reference: order.shipping_provider_reference,
-        shipping_tracking_number: order.shipping_tracking_number,
-        shipping_tracking_url: order.shipping_tracking_url,
         lines: order.lines.into_iter().map(order_line_data).collect(),
         transitions: order
             .transitions
@@ -261,6 +281,11 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
             .map(payment_attempt_data)
             .collect(),
         refunds: order.refunds.into_iter().map(refund_data).collect(),
+        fulfillments: order
+            .fulfillments
+            .into_iter()
+            .map(fulfillment_data)
+            .collect(),
         created_at: order.created_at.into(),
         updated_at: order.updated_at.into(),
     })
@@ -283,9 +308,11 @@ fn tracked_order_data(order: OrderDetail) -> TrackedOrderData {
         shipping_amount_minor: order.shipping_amount_minor,
         total_amount_minor: order.total_amount_minor,
         refunded_amount_minor: order.refunded_amount_minor,
-        shipping_provider: order.shipping_provider,
-        shipping_tracking_number: order.shipping_tracking_number,
-        shipping_tracking_url: order.shipping_tracking_url,
+        fulfillments: order
+            .fulfillments
+            .into_iter()
+            .map(tracked_fulfillment_data)
+            .collect(),
         lines: order.lines.into_iter().map(order_line_data).collect(),
         transitions: order
             .transitions
@@ -333,6 +360,30 @@ fn refund_data(item: OrderRefundItem) -> RefundData {
         failure_code: item.failure_code,
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),
+    }
+}
+
+fn fulfillment_data(item: OrderFulfillmentItem) -> FulfillmentData {
+    FulfillmentData {
+        id: item.id.as_uuid(),
+        status: item.status.as_str(),
+        tracking_number: item.tracking_number,
+        tracking_url: item.tracking_url,
+        shipped_at: item.shipped_at.map(Into::into),
+        delivered_at: item.delivered_at.map(Into::into),
+        cancelled_at: item.cancelled_at.map(Into::into),
+        created_at: item.created_at.into(),
+        updated_at: item.updated_at.into(),
+    }
+}
+
+fn tracked_fulfillment_data(item: OrderFulfillmentItem) -> TrackedFulfillmentData {
+    TrackedFulfillmentData {
+        status: item.status.as_str(),
+        tracking_number: item.tracking_number,
+        tracking_url: item.tracking_url,
+        shipped_at: item.shipped_at.map(Into::into),
+        delivered_at: item.delivered_at.map(Into::into),
     }
 }
 

@@ -31,7 +31,7 @@ impl ChaosMcp {
         router
     }
 
-    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 14] {
+    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 15] {
         [
             Self::products_tool_router(),
             Self::stores_tool_router(),
@@ -47,6 +47,7 @@ impl ChaosMcp {
             Self::publishable_keys_tool_router(),
             Self::analytics_tool_router(),
             Self::provider_secrets_tool_router(),
+            Self::fulfillment_tool_router(),
         ]
     }
 

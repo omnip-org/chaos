@@ -14,13 +14,14 @@ use chaos_core::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
         PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
         PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresOrderManagementRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningRepository, PostgresPublishableKeyRepository,
-        PostgresReviewRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreMembershipRepository, PostgresStoreProvisioningRepository,
-        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresStripeRepository,
+        PostgresCollectionRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
+        PostgresMediaAssetRepository, PostgresOrderManagementRepository,
+        PostgresPricingManagementRepository, PostgresPricingProvisioningRepository,
+        PostgresPublishableKeyRepository, PostgresReviewRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
+        PostgresStoreProvisioningRepository, PostgresStoreReadRepository,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresStripeRepository,
     },
     adapters::security::{
         identity::{
@@ -44,6 +45,7 @@ use chaos_core::{
         MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
     },
     contracts::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
+    fulfillment::FulfillmentManagement,
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
     payments::{PaymentService, StripeAccountAdministration},
@@ -101,6 +103,7 @@ pub struct ApiState {
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub stripe_account_administration: Arc<StripeAccountAdministration>,
+    pub fulfillment_management: Arc<FulfillmentManagement>,
     pub clock: Arc<dyn Clock>,
     pub shopper_credentials: Arc<dyn ShopperCredentialCodec>,
 }
@@ -285,6 +288,9 @@ impl ApiState {
         );
         let stripe_account_administration =
             StripeAccountAdministration::new(payment_repository.clone(), payment_onboarding);
+        let fulfillment_management = FulfillmentManagement::new(Arc::new(
+            PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
+        ));
         let shopper_credentials = HmacShopperCredentialCodec::new(
             settings.shopper_token_active_key_id.clone(),
             settings.shopper_token_active_secret.as_bytes().to_vec(),
@@ -326,6 +332,7 @@ impl ApiState {
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             stripe_account_administration: Arc::new(stripe_account_administration),
+            fulfillment_management: Arc::new(fulfillment_management),
             clock: Arc::new(SystemClock),
             shopper_credentials: Arc::new(shopper_credentials),
         })
@@ -400,7 +407,6 @@ mod tests {
             apple_client_id: None,
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
-            easypost_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             provider_secret_key: chaos_core::runtime::config::SecretKey::from_base64(
                 "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",
