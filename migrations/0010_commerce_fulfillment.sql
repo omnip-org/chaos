@@ -1,8 +1,5 @@
 CREATE TYPE commerce.fulfillment_status AS ENUM ('awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
--- 'manual' needs no credential and is seeded for every Store at creation, so
--- a Store can mark Orders shipped/delivered from day one. A real carrier
--- integration is a later, additive provider value on this same table.
 CREATE TABLE commerce.shipping_provider_accounts (
     id                            UUID        NOT NULL PRIMARY KEY,
     store_id                      UUID        NOT NULL,
@@ -23,14 +20,6 @@ CREATE TABLE commerce.shipping_provider_accounts (
 
 CREATE INDEX shipping_provider_accounts_store_created_idx ON commerce.shipping_provider_accounts (store_id, created_at DESC, id DESC);
 
--- Each shipment against an Order is its own row, so an Order's shipping
--- history is a real, queryable timeline instead of a handful of columns
--- overwritten in place every time something changes. An Order may have any
--- number of concurrently active (non-cancelled) Fulfillments — split
--- shipments are a normal case, not an error — but this table does not yet
--- say which Order line/quantity went into which Fulfillment; adding a
--- `fulfillment_lines` table later is additive and does not require
--- reshaping this one.
 CREATE TABLE commerce.fulfillments (
     id                              UUID                          NOT NULL PRIMARY KEY,
     store_id                        UUID                          NOT NULL,

@@ -16,10 +16,6 @@ CREATE TABLE commerce.shoppers (
     CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE
 );
 
--- A Cart has no currency of its own: a Store trades in exactly one currency
--- (`stores.currency`), and every Price List row a Cart can bind to already
--- carries that same currency. Readers resolve display currency through
--- `price_list_id`, not through a redundant column here.
 CREATE TABLE commerce.carts (
     id                   UUID                    NOT NULL PRIMARY KEY,
     store_id             UUID                    NOT NULL,
@@ -75,19 +71,9 @@ CREATE TABLE commerce.orders (
     price_list_id                UUID                               NOT NULL,
     currency                     CHAR(3)                            NOT NULL,
     status                       commerce.order_status              NOT NULL DEFAULT 'pending',
-    -- payment_status and refunded_amount_minor are projections recomputed
-    -- from commerce.refunds on every refund event; stripe_payment_intent_id
-    -- and payment_failure_code are the Order's own payment reference — a
-    -- failed or expired Stripe Checkout Session always cancels the Order
-    -- rather than allowing a retry, so there is only ever one attempt to
-    -- track per Order and it lives directly on this row. Partial refunds
-    -- still get their own identity — see commerce.refunds.
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
     stripe_payment_intent_id     TEXT,
     payment_failure_code         TEXT,
-    -- shipping_status is likewise a projection derived from
-    -- commerce.fulfillments; the shipment's own provider, tracking number,
-    -- and tracking URL live on that table, one row per shipment.
     shipping_status              commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
     refunded_amount_minor        BIGINT                             NOT NULL DEFAULT 0,
     subtotal_amount_minor        BIGINT                             NOT NULL,

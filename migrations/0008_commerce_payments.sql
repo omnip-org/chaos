@@ -1,13 +1,6 @@
 SELECT pgmq.create('chaos_payment_commands');
 SELECT pgmq.create('chaos_webhooks');
 
--- readiness holds the onboarding-check result ({status, snapshot,
--- checked_at}), checked synchronously when the account is created or
--- updated — there is no background re-check, so the shape stays small.
--- Changing a credential or webhook secret takes effect immediately — there
--- is no rotation grace window, so an operator-initiated change can fail
--- signature verification for webhook deliveries already in flight under the
--- old secret.
 CREATE TABLE commerce.payment_provider_accounts (
     id                                 UUID        NOT NULL PRIMARY KEY,
     store_id                           UUID        NOT NULL,
@@ -35,9 +28,6 @@ CREATE INDEX payment_provider_accounts_store_created_idx ON commerce.payment_pro
 
 CREATE TYPE commerce.refund_status AS ENUM ('pending', 'succeeded', 'failed');
 
--- Each Refund is its own row against the Order it draws from, so a captured
--- Order can be partially refunded more than once with a full, queryable
--- history instead of one column being overwritten per call.
 CREATE TABLE commerce.refunds (
     id                     UUID                     NOT NULL PRIMARY KEY,
     store_id               UUID                     NOT NULL,
@@ -129,11 +119,6 @@ AS $$
        AND account.webhook_secret_reference IS NOT NULL;
 $$;
 
--- order_id is filled in when a webhook is mapped to or resolved against its
--- Order (a payment or refund belongs to exactly one Order). It can remain
--- NULL for an ignored provider event or a webhook that fails before that
--- resolution. This lets support/debugging pull "every raw provider event for
--- this Order" without correlating payload contents against refunds by hand.
 CREATE TABLE commerce.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
@@ -280,11 +265,6 @@ BEGIN
 END;
 $$;
 
--- provider_webhooks is otherwise append-only for chaos_runtime (INSERT and
--- SELECT only; see the REVOKE below): a raw webhook snapshot must not be
--- editable by application code beyond what a handful of controlled
--- functions allow. This narrow function is the only path to backfill the
--- Order a webhook resolved to, once that Order is known.
 CREATE FUNCTION commerce.set_webhook_order_id(
     event_id UUID,
     resolved_order_id UUID
