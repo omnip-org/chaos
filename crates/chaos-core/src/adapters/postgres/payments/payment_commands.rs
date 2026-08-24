@@ -243,7 +243,7 @@ impl PostgresStripeRepository {
             .get("failure_code")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if job.event_type.starts_with("payment.") {
+        let order_id = if job.event_type.starts_with("payment.") {
             let aggregate_id = job
                 .payload
                 .get("aggregate_id")
@@ -261,7 +261,7 @@ impl PostgresStripeRepository {
                 &job.payload,
                 now,
             )
-            .await?;
+            .await?
         } else if job.event_type.starts_with("refund.") {
             let refund_id = job
                 .payload
@@ -280,10 +280,23 @@ impl PostgresStripeRepository {
                 &job.payload,
                 now,
             )
-            .await?;
+            .await?
         } else {
             return Err(corrupt_webhook_payload());
-        }
+        };
+        // Backfills the raw webhook snapshot's Order link now that the
+        // event has been resolved to one; a webhook that fails before this
+        // point leaves provider_webhooks.order_id NULL.
+        sqlx::query(
+            "UPDATE commerce.provider_webhooks SET order_id = $3 \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(job.store_id)
+        .bind(job.id)
+        .bind(order_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }

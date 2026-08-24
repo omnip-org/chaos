@@ -27,12 +27,12 @@ CREATE INDEX shipping_provider_accounts_store_created_idx ON commerce.shipping_p
 
 -- Each shipment against an Order is its own row, so an Order's shipping
 -- history is a real, queryable timeline instead of a handful of columns
--- overwritten in place every time something changes. Splitting one Order
--- across several Fulfillments (partial shipments) is deliberately out of
--- scope here; adding a `fulfillment_lines` table later is additive and does
--- not require reshaping this one. The partial unique index below enforces
--- today's one-active-fulfillment-per-order assumption so that scope limit
--- fails loudly instead of silently.
+-- overwritten in place every time something changes. An Order may have any
+-- number of concurrently active (non-cancelled) Fulfillments — split
+-- shipments are a normal case, not an error — but this table does not yet
+-- say which Order line/quantity went into which Fulfillment; adding a
+-- `fulfillment_lines` table later is additive and does not require
+-- reshaping this one.
 CREATE TABLE commerce.fulfillments (
     id                              UUID                          NOT NULL PRIMARY KEY,
     store_id                        UUID                          NOT NULL,
@@ -61,7 +61,6 @@ CREATE TABLE commerce.fulfillments (
 );
 
 CREATE INDEX fulfillments_order_created_idx ON commerce.fulfillments (store_id, order_id, created_at DESC);
-CREATE UNIQUE INDEX fulfillments_one_active_per_order_idx ON commerce.fulfillments (store_id, order_id) WHERE status <> 'cancelled';
 
 ALTER TABLE commerce.shipping_provider_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.fulfillments ENABLE ROW LEVEL SECURITY;

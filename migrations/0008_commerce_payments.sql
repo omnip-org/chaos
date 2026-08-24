@@ -351,6 +351,11 @@ AS $$
     RETURNING true;
 $$;
 
+-- order_id is filled in once the webhook is processed and its Order is
+-- known (a Payment Attempt or Refund always belongs to exactly one Order);
+-- it stays NULL for a webhook that fails before that resolution. This lets
+-- support/debugging pull "every raw provider event for this Order" without
+-- correlating payload contents against payment_attempts/refunds by hand.
 CREATE TABLE commerce.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
@@ -359,6 +364,7 @@ CREATE TABLE commerce.provider_webhooks (
     provider_event_id    TEXT        NOT NULL,
     event_type           TEXT        NOT NULL,
     payload              JSONB       NOT NULL,
+    order_id             UUID,
     pgmq_message_id      BIGINT      NOT NULL UNIQUE,
     processed_at         TIMESTAMPTZ,
     failed_at            TIMESTAMPTZ,
@@ -368,11 +374,13 @@ CREATE TABLE commerce.provider_webhooks (
     CONSTRAINT provider_webhooks_provider_account_id_provider_event_id_key    UNIQUE (provider_account_id, provider_event_id),
     CONSTRAINT provider_webhooks_store_id_fkey                                FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
     CONSTRAINT provider_webhooks_store_id_provider_account_fkey               FOREIGN KEY (store_id, provider_account_id) REFERENCES commerce.payment_provider_accounts(store_id, id),
+    CONSTRAINT provider_webhooks_store_id_order_fkey                          FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
     CONSTRAINT provider_webhooks_payload_object_check                         CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhooks_completion_check                             CHECK (processed_at IS NULL OR failed_at IS NULL)
 );
 
 CREATE INDEX provider_webhooks_claim_idx ON commerce.provider_webhooks (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
+CREATE INDEX provider_webhooks_order_idx ON commerce.provider_webhooks (store_id, order_id, created_at DESC) WHERE order_id IS NOT NULL;
 CREATE FUNCTION commerce.enqueue_webhook_event()
 RETURNS TRIGGER
 LANGUAGE plpgsql

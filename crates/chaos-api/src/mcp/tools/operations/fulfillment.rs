@@ -105,8 +105,9 @@ impl ChaosMcp {
 
     #[tool(
         description = "Create a Fulfillment for an order in the selected Store, starting in \
-                        awaiting_pickup status. An order may only have one active (non-cancelled) \
-                        Fulfillment at a time. Requires confirm: true."
+                        awaiting_pickup status. An order may have more than one concurrently \
+                        active Fulfillment for split shipments; call this again with a different \
+                        tracking number for each package. Requires confirm: true."
     )]
     async fn create_fulfillment(
         &self,

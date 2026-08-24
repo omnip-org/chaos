@@ -141,7 +141,7 @@ impl PostgresFulfillmentRepository {
         .bind(fulfillment.tracking_url())
         .execute(&mut *transaction)
         .await
-        .map_err(map_fulfillment_write_error)?;
+        .map_err(database_error)?;
         recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, fulfillment.id())
             .await?
@@ -250,21 +250,39 @@ impl PostgresFulfillmentRepository {
 /// Fulfillments, not an independent source of truth. Recomputing it from the
 /// current Fulfillment rows (rather than patching it incrementally) keeps it
 /// correct under concurrent or out-of-order Fulfillment writes.
+///
+/// An Order may have several concurrently active (non-cancelled)
+/// Fulfillments — split shipments are normal, not an error — so the
+/// projection takes the weakest link across them: `awaiting_pickup` <
+/// `shipped` < `delivered`. The Order is not `delivered` until every active
+/// Fulfillment is delivered, but becomes `shipped` as soon as any of them
+/// has moved past `awaiting_pickup`.
 async fn recompute_order_shipping_status(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
-    let active_status: Option<String> = sqlx::query_scalar(
+    let active_statuses: Vec<String> = sqlx::query_scalar(
         "SELECT status::text FROM commerce.fulfillments \
          WHERE store_id = $1 AND order_id = $2 AND status <> 'cancelled'",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
+    .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let shipping_status = active_status.as_deref().unwrap_or("pending");
+    let shipping_status = if active_statuses.is_empty() {
+        "pending"
+    } else if active_statuses.iter().all(|status| status == "delivered") {
+        "delivered"
+    } else if active_statuses
+        .iter()
+        .any(|status| status == "shipped" || status == "delivered")
+    {
+        "shipped"
+    } else {
+        "awaiting_pickup"
+    };
     sqlx::query(
         "UPDATE commerce.orders SET shipping_status = $3::commerce.order_shipping_status \
          WHERE store_id = $1 AND id = $2",
@@ -352,18 +370,6 @@ fn shipping_provider_account_detail(
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
-}
-
-fn map_fulfillment_write_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(database) = &error
-        && database.constraint() == Some("fulfillments_one_active_per_order_idx")
-    {
-        return ApplicationError::Conflict {
-            code: "fulfillment_already_active",
-            message: "the Order already has an active Fulfillment",
-        };
-    }
-    database_error(error)
 }
 
 fn order_not_found(order_id: OrderId) -> ApplicationError {

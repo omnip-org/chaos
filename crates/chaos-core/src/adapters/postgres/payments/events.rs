@@ -175,7 +175,7 @@ async fn apply_payment_event(
     failure_code: Option<String>,
     provider_payload: &Value,
     now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
+) -> Result<OrderId, ApplicationError> {
     let attempt_order_id: Uuid = sqlx::query_scalar(
         "SELECT order_id FROM commerce.payment_attempts \
          WHERE store_id = $1 AND id = $2 FOR UPDATE",
@@ -219,7 +219,7 @@ async fn apply_payment_event(
         .rows_affected()
             == 1;
         if !applied {
-            return Ok(());
+            return Ok(order_id);
         }
         let mut event_amount: i64 = sqlx::query_scalar(
             "SELECT amount_minor FROM commerce.payment_attempts WHERE store_id = $1 AND id = $2",
@@ -282,13 +282,13 @@ async fn apply_payment_event(
         .rows_affected()
             == 1;
         if !applied {
-            return Ok(());
+            return Ok(order_id);
         }
         update_order_payment_status(transaction, store_id, order_id, &["pending"], "failed", now)
             .await?;
         cancel_pending_order(transaction, store_id, order_id, &order_status, now).await?;
     }
-    Ok(())
+    Ok(order_id)
 }
 
 struct StripeCheckoutSnapshot {
@@ -769,7 +769,7 @@ async fn apply_refund_event(
     failure_code: Option<String>,
     provider_payload: &Value,
     now: OffsetDateTime,
-) -> Result<(), ApplicationError> {
+) -> Result<OrderId, ApplicationError> {
     let object = provider_payload
         .get("stripe_event")
         .and_then(|event| event.get("data"))
@@ -864,7 +864,7 @@ async fn apply_refund_event(
         .rows_affected()
             == 1;
         if !applied {
-            return Ok(());
+            return Ok(OrderId::from_uuid(order_id));
         }
         recompute_order_refund_summary(transaction, store_id, OrderId::from_uuid(order_id), now)
             .await?;
@@ -910,5 +910,5 @@ async fn apply_refund_event(
         .await
         .map_err(database_error)?;
     }
-    Ok(())
+    Ok(OrderId::from_uuid(order_id))
 }
