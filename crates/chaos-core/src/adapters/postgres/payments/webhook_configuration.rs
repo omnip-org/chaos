@@ -1,4 +1,4 @@
-// Provider webhook configuration and readiness queue persistence.
+// Payment provider webhook configuration persistence.
 
 #[async_trait]
 impl StripeWebhookConfigurationRepository for PostgresStripeRepository {

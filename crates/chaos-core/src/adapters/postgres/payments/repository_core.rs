@@ -11,7 +11,6 @@ use crate::{
         AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
         PaymentCheckoutDetails, PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
-        StripeReadiness, StripeReadinessStatus,
         PaymentShippingAddress,
         StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
         StripeCommandResult, QueueJob, RefundDetail, ShopperActor,
@@ -39,12 +38,7 @@ use crate::adapters::postgres::{
 type ProviderAccountRow = (
     Uuid,
     String,
-    String,
     bool,
-    bool,
-    String,
-    Option<OffsetDateTime>,
-    Value,
     OffsetDateTime,
     OffsetDateTime,
 );
@@ -188,12 +182,10 @@ async fn load_stripe_account(
     id: StripeAccountId,
 ) -> Result<Option<StripeAccountDetail>, ApplicationError> {
     sqlx::query_as::<_, ProviderAccountRow>(
-        "SELECT id, provider::text, display_name, enabled, \
+        "SELECT id, display_name, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                readiness->>'status', (readiness->>'checked_at')::timestamptz, \
-                COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
                 created_at, updated_at FROM integration.payment_provider_accounts \
-         WHERE store_id = $1 AND id = $2",
+         WHERE store_id = $1 AND id = $2 AND provider = 'stripe'",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
@@ -210,50 +202,12 @@ fn stripe_account_detail(
     Ok(StripeAccountDetail {
         account: StripeAccount::rehydrate(
             StripeAccountId::from_uuid(row.0),
-            row.2,
-            row.3,
+            row.1,
         )?,
-        credentials_configured: row.4,
-        readiness_status: match row.5.as_str() {
-            "unchecked" => StripeReadinessStatus::Unchecked,
-            "ready" => StripeReadinessStatus::Ready,
-            "action_required" => StripeReadinessStatus::ActionRequired,
-            _ => return Err(corrupt_state()),
-        },
-        readiness_checked_at: row.6,
-        readiness_blocker_codes: serde_json::from_value(row.7).map_err(|_| corrupt_state())?,
-        created_at: row.8,
-        updated_at: row.9,
+        credentials_configured: row.2,
+        created_at: row.3,
+        updated_at: row.4,
     })
-}
-
-fn readiness_status(readiness: &StripeReadiness) -> StripeReadinessStatus {
-    if readiness.ready {
-        StripeReadinessStatus::Ready
-    } else {
-        StripeReadinessStatus::ActionRequired
-    }
-}
-
-/// Builds the `payment_provider_accounts.readiness` JSONB value for a fresh
-/// INSERT. Keys are omitted rather than written as an explicit JSON `null`
-/// so `readiness->>'key' IS NULL` reads the same way for "never checked" as
-/// for "checked, but this field doesn't apply" — a JSONB `null` value is not
-/// SQL NULL under `->`, only under `->>`, so building this by hand (instead
-/// of via `json!` on `Option` fields) avoids that trap for object-valued keys.
-fn readiness_json(readiness: Option<&StripeReadiness>) -> Value {
-    let mut object = serde_json::Map::new();
-    let Some(readiness) = readiness else {
-        object.insert("status".into(), json!(StripeReadinessStatus::Unchecked.as_str()));
-        return Value::Object(object);
-    };
-    object.insert(
-        "status".into(),
-        json!(readiness_status(readiness).as_str()),
-    );
-    object.insert("snapshot".into(), readiness.configuration.clone());
-    object.insert("checked_at".into(), json!(readiness.checked_at));
-    Value::Object(object)
 }
 
 fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
@@ -286,7 +240,7 @@ fn corrupt_state() -> ApplicationError {
 fn provider_unavailable() -> ApplicationError {
     ApplicationError::Conflict {
         code: "payment_provider_unavailable",
-        message: "no enabled Payment Provider account is available",
+        message: "no configured Payment Provider account is available",
     }
 }
 

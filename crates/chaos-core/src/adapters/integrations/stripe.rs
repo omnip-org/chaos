@@ -3,9 +3,9 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     ApplicationError,
     contracts::{
-        PaymentClientAction, PaymentSecretResolver, PaymentShippingAddress, StripeAccountReadiness,
-        StripeCommand, StripeCommandResult, StripePaymentGateway, StripeReadiness,
-        StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
+        PaymentClientAction, PaymentSecretResolver, PaymentShippingAddress, StripeCommand,
+        StripeCommandResult, StripePaymentGateway, StripeWebhookConfigurationRepository,
+        StripeWebhookEvent, StripeWebhookSignatureVerifier,
     },
 };
 use async_trait::async_trait;
@@ -121,67 +121,6 @@ impl StripeHttp {
             .map_err(provider_network_error)?;
         parse_stripe_response(response).await
     }
-
-    async fn get_account(&self, secret_key: &str) -> Result<StripeAccount, ApplicationError> {
-        let response = self
-            .client
-            .get(self.endpoint("v1/account")?)
-            .headers(stripe_account_headers(secret_key)?)
-            .send()
-            .await
-            .map_err(provider_network_error)?;
-        parse_stripe_account_response(response).await
-    }
-}
-
-/// Stripe account readiness for the direct Stripe account owning the supplied
-/// API key. Stripe Connect is not supported.
-async fn stripe_account_readiness(
-    http: &StripeHttp,
-    credential_secret_reference: &PaymentSecretReference,
-    checked_at: OffsetDateTime,
-) -> Result<StripeReadiness, ApplicationError> {
-    let credentials = http.credentials(credential_secret_reference).await?;
-    let account = http
-        .get_account(credentials.secret_key.expose_secret())
-        .await?;
-    let card_payments = account.capabilities.card_payments.as_deref();
-    let requirements_due =
-        account.requirements.currently_due.len() + account.requirements.past_due.len();
-    let mut blocker_codes = Vec::new();
-    if !account.charges_enabled {
-        blocker_codes.push("charges_disabled".into());
-    }
-    if !account.payouts_enabled {
-        blocker_codes.push("payouts_disabled".into());
-    }
-    if !account.details_submitted {
-        blocker_codes.push("details_incomplete".into());
-    }
-    if card_payments != Some("active") {
-        blocker_codes.push("card_payments_inactive".into());
-    }
-    if requirements_due != 0 || account.requirements.disabled_reason.is_some() {
-        blocker_codes.push("requirements_due".into());
-    }
-    let ready = blocker_codes.is_empty();
-    let configuration = serde_json::json!({
-        "stripe_account_id": account.id,
-        "ready": ready,
-        "blocker_codes": &blocker_codes,
-        "accepts_payments": account.charges_enabled,
-        "supports_payouts": account.payouts_enabled,
-        "details_submitted": account.details_submitted,
-        "card_payments": card_payments,
-        "requirements_due": requirements_due,
-        "disabled_reason": account.requirements.disabled_reason,
-    });
-    Ok(StripeReadiness {
-        ready,
-        blocker_codes,
-        configuration,
-        checked_at,
-    })
 }
 
 pub struct StripeGateway {
@@ -486,21 +425,6 @@ fn append_shipping_address(
     }
 }
 
-#[async_trait]
-impl StripeAccountReadiness for StripeGateway {
-    fn name(&self) -> &'static str {
-        "stripe"
-    }
-
-    async fn check_readiness(
-        &self,
-        credential_secret_reference: &PaymentSecretReference,
-        checked_at: OffsetDateTime,
-    ) -> Result<StripeReadiness, ApplicationError> {
-        stripe_account_readiness(&self.http, credential_secret_reference, checked_at).await
-    }
-}
-
 pub struct StripeWebhookVerifier {
     configurations: Arc<dyn StripeWebhookConfigurationRepository>,
     secrets: Arc<dyn PaymentSecretResolver>,
@@ -617,37 +541,6 @@ struct StripeObject {
     client_secret: Option<String>,
     #[serde(default)]
     payment_intent: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct StripeAccount {
-    id: String,
-    #[serde(default)]
-    charges_enabled: bool,
-    #[serde(default)]
-    payouts_enabled: bool,
-    #[serde(default)]
-    details_submitted: bool,
-    #[serde(default)]
-    capabilities: StripeAccountCapabilities,
-    #[serde(default)]
-    requirements: StripeAccountRequirements,
-}
-
-#[derive(Default, Deserialize)]
-struct StripeAccountCapabilities {
-    #[serde(default)]
-    card_payments: Option<String>,
-}
-
-#[derive(Default, Deserialize)]
-struct StripeAccountRequirements {
-    #[serde(default)]
-    currently_due: Vec<Value>,
-    #[serde(default)]
-    past_due: Vec<Value>,
-    #[serde(default)]
-    disabled_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -790,19 +683,6 @@ fn stripe_headers(
     Ok(headers)
 }
 
-fn stripe_account_headers(secret_key: &str) -> Result<HeaderMap, ApplicationError> {
-    let mut authorization =
-        HeaderValue::from_str(&format!("Bearer {secret_key}")).map_err(|_| secret_unavailable())?;
-    authorization.set_sensitive(true);
-    let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, authorization);
-    headers.insert(
-        "stripe-version",
-        HeaderValue::from_static(STRIPE_API_VERSION),
-    );
-    Ok(headers)
-}
-
 async fn parse_stripe_response(
     response: reqwest::Response,
 ) -> Result<StripeObject, ApplicationError> {
@@ -827,33 +707,6 @@ async fn parse_stripe_response(
         Err(ApplicationError::Conflict {
             code: "stripe_request_rejected",
             message: "Stripe rejected the payment operation",
-        })
-    }
-}
-
-async fn parse_stripe_account_response(
-    response: reqwest::Response,
-) -> Result<StripeAccount, ApplicationError> {
-    let status = response.status();
-    if status.is_success() {
-        let account = response
-            .json::<StripeAccount>()
-            .await
-            .map_err(|_| stripe_invalid_response())?;
-        if !valid_stripe_identifier(&account.id, "acct_") {
-            return Err(stripe_invalid_response());
-        }
-        return Ok(account);
-    }
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-        Err(ApplicationError::Unavailable {
-            service: "stripe",
-            source: anyhow::anyhow!("Stripe returned HTTP {status}"),
-        })
-    } else {
-        Err(ApplicationError::Conflict {
-            code: "stripe_account_rejected",
-            message: "Stripe rejected the account lookup",
         })
     }
 }
@@ -1091,9 +944,6 @@ mod tests {
             ("GET", "/v1/payment_intents/pi_created") => {
                 r#"{"id":"pi_created","client_secret":"pi_created_secret_value"}"#
             }
-            ("GET", "/v1/account") => {
-                r#"{"id":"acct_platform","charges_enabled":true,"payouts_enabled":true,"details_submitted":true,"capabilities":{"card_payments":"active"},"requirements":{"currently_due":[],"past_due":[],"disabled_reason":null}}"#
-            }
             ("POST", "/v1/refunds") => r#"{"id":"re_created"}"#,
             ("POST", "/v1/checkout/sessions") => {
                 r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
@@ -1107,7 +957,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stripe_checkout_adapter_executes_payment_and_readiness_over_http() {
+    async fn stripe_checkout_adapter_executes_payment_over_http() {
         let state = MockState(Arc::new(Mutex::new(Vec::new())));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1156,18 +1006,9 @@ mod tests {
             action.client_token.expose_secret(),
             "cs_created_secret_value"
         );
-        let checked_at = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
-        let readiness = provider
-            .check_readiness(&reference, checked_at)
-            .await
-            .unwrap();
-        assert!(readiness.ready);
-        assert!(readiness.blocker_codes.is_empty());
-        assert_eq!(readiness.checked_at, checked_at);
-
         {
             let requests = state.0.lock().unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].method, "POST");
             assert_eq!(requests[0].path, "/v1/checkout/sessions");
             assert!(requests[0].headers.get("stripe-account").is_none());
@@ -1203,7 +1044,6 @@ mod tests {
                 checkout_form["metadata[chaos_order_id]"],
                 aggregate_id.to_string()
             );
-            assert_eq!(requests[1].path, "/v1/account");
             drop(checkout_form);
         }
         let refund_order_id = Uuid::now_v7();
@@ -1298,17 +1138,10 @@ mod tests {
             action.client_token.expose_secret(),
             "cs_created_secret_value"
         );
-        let readiness = provider
-            .check_readiness(&reference, OffsetDateTime::now_utc())
-            .await
-            .unwrap();
-        assert!(readiness.ready);
-
         let requests = state.0.lock().unwrap();
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].path, "/v1/checkout/sessions");
         assert!(requests[0].headers.get("stripe-account").is_none());
-        assert_eq!(requests[1].path, "/v1/account");
         let form: HashMap<_, _> =
             url::form_urlencoded::parse(requests[0].body.as_bytes()).collect();
         assert_eq!(form["mode"], "payment");

@@ -274,8 +274,6 @@ impl ApiState {
         )?);
         let payment_provider =
             stripe_gateway.clone() as Arc<dyn chaos_core::contracts::StripePaymentGateway>;
-        let payment_onboarding =
-            stripe_gateway.clone() as Arc<dyn chaos_core::contracts::StripeAccountReadiness>;
         let webhook_verifier = Arc::new(StripeWebhookVerifier::new(
             payment_repository.clone(),
             payment_secrets,
@@ -287,7 +285,7 @@ impl ApiState {
             payment_provider,
         );
         let stripe_account_administration =
-            StripeAccountAdministration::new(payment_repository.clone(), payment_onboarding);
+            StripeAccountAdministration::new(payment_repository.clone());
         let fulfillment_management = FulfillmentManagement::new(Arc::new(
             PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
         ));

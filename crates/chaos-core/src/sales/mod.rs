@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     FieldViolation,
     catalog::ProductVariantId,
+    integration::PaymentProvider,
     sales::{CartId, OrderContact, OrderId},
 };
 use time::{Duration, OffsetDateTime};
@@ -37,7 +38,15 @@ pub struct CreateStripeCheckoutInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
     pub email: String,
+    pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
+    pub request_id: uuid::Uuid,
+}
+
+pub(crate) struct StripeCheckoutRequest {
+    pub payment_provider: PaymentProvider,
+    pub now: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
     pub request_id: uuid::Uuid,
 }
 
@@ -117,9 +126,12 @@ impl StorefrontSales {
                 &input.actor,
                 input.cart_id,
                 contact.email(),
-                input.now,
-                input.now + Duration::minutes(30),
-                input.request_id,
+                StripeCheckoutRequest {
+                    payment_provider: input.payment_provider,
+                    now: input.now,
+                    expires_at: input.now + Duration::minutes(30),
+                    request_id: input.request_id,
+                },
             )
             .await
     }

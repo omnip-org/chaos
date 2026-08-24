@@ -9,7 +9,6 @@ pub struct ShippingProviderAccountDetail {
     pub id: ShippingProviderAccountId,
     pub provider: ShippingProvider,
     pub display_name: String,
-    pub enabled: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

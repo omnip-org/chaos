@@ -6,6 +6,6 @@
 
 include!("repository_core.rs");
 include!("provider_accounts.rs");
-include!("readiness.rs");
+include!("webhook_configuration.rs");
 include!("payment_commands.rs");
 include!("events.rs");

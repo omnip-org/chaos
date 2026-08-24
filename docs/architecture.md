@@ -108,8 +108,8 @@ Shopper is the buyer for all commerce and analytics purposes.
 
 Store-owned business state, including Orders, refunds, and verified payment
 webhook ingestion, remains in the `commerce` schema so Store-scoped foreign
-keys and RLS stay simple. External Provider configuration, credentials,
-readiness, and provider enums live in the `integration` schema. The migrations
+keys and RLS stay simple. External Provider configuration, credentials, and
+provider enums live in the `integration` schema. The migrations
 are organized into Store foundation, Catalog and Pricing, Integration core,
 Provider accounts, Sales, Payments, Analytics, and Fulfillment. Checkout
 request deduplication is owned by the Order row in `commerce`, through its

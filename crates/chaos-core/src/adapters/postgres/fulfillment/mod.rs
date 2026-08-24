@@ -20,7 +20,6 @@ struct ShippingProviderAccountRow {
     id: Uuid,
     provider: String,
     display_name: String,
-    enabled: bool,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -72,7 +71,7 @@ impl PostgresFulfillmentRepository {
     ) -> Result<Vec<ShippingProviderAccountDetail>, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
         let rows = sqlx::query_as::<_, ShippingProviderAccountRow>(
-            "SELECT id, provider::text, display_name, enabled, created_at, updated_at \
+            "SELECT id, provider::text, display_name, created_at, updated_at \
              FROM integration.shipping_provider_accounts \
              WHERE store_id = $1 ORDER BY created_at, id",
         )
@@ -107,16 +106,16 @@ impl PostgresFulfillmentRepository {
         if !order_exists {
             return Err(order_not_found(order_id));
         }
-        let provider: Option<String> = sqlx::query_scalar(
+        let account_exists: Option<String> = sqlx::query_scalar(
             "SELECT provider::text FROM integration.shipping_provider_accounts \
-             WHERE store_id = $1 AND id = $2 AND enabled",
+             WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
         .bind(shipping_provider_account_id.as_uuid())
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let provider = provider
+        account_exists
             .ok_or_else(|| shipping_provider_account_not_found(shipping_provider_account_id))?;
         let fulfillment = Fulfillment::create(
             order_id,
@@ -141,17 +140,14 @@ impl PostgresFulfillmentRepository {
         .map_err(database_error)?;
         let order_provider_bound = sqlx::query(
             "UPDATE commerce.orders \
-             SET shipping_provider = $3::integration.shipping_provider, \
-             shipping_provider_account_id = $4, \
+             SET shipping_provider_account_id = $3, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2 \
-               AND (shipping_provider IS NULL AND shipping_provider_account_id IS NULL \
-                    OR (shipping_provider = $3::integration.shipping_provider \
-                        AND shipping_provider_account_id = $4))",
+               AND (shipping_provider_account_id IS NULL \
+                    OR shipping_provider_account_id = $3)",
         )
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
-        .bind(&provider)
         .bind(shipping_provider_account_id.as_uuid())
         .execute(&mut *transaction)
         .await
@@ -386,7 +382,6 @@ fn shipping_provider_account_detail(
         id: ShippingProviderAccountId::from_uuid(row.id),
         provider: ShippingProvider::parse(&row.provider).ok_or_else(corrupt_state)?,
         display_name: row.display_name,
-        enabled: row.enabled,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })

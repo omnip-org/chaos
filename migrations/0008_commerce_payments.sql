@@ -10,8 +10,7 @@ CREATE TABLE commerce.refunds (
     currency               CHAR(3)                  NOT NULL,
     status                 commerce.refund_status   NOT NULL DEFAULT 'pending',
     amount_minor           BIGINT                   NOT NULL,
-    payment_provider       integration.payment_provider,
-    payment_provider_account_id UUID,
+    payment_provider_account_id UUID                     NOT NULL,
     payment_provider_reference_id TEXT,
     failure_code           TEXT,
     created_at             TIMESTAMPTZ              NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -19,11 +18,10 @@ CREATE TABLE commerce.refunds (
 
     CONSTRAINT refunds_store_id_id_key                  UNIQUE (store_id, id),
     CONSTRAINT refunds_store_id_order_currency_fkey      FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders(store_id, id, currency),
-    CONSTRAINT refunds_payment_provider_account_fkey     FOREIGN KEY (store_id, payment_provider_account_id, payment_provider) REFERENCES integration.payment_provider_accounts(store_id, id, provider),
+    CONSTRAINT refunds_payment_provider_account_fkey     FOREIGN KEY (payment_provider_account_id) REFERENCES integration.payment_provider_accounts(id),
     CONSTRAINT refunds_amount_positive_check             CHECK (amount_minor > 0),
     CONSTRAINT refunds_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_payment_provider_account_pair_check CHECK ((payment_provider IS NULL AND payment_provider_account_id IS NULL) OR (payment_provider IS NOT NULL AND payment_provider_account_id IS NOT NULL)),
-    CONSTRAINT refunds_payment_provider_reference_check CHECK (payment_provider_reference_id IS NULL OR (payment_provider IS NOT NULL AND length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255)),
+    CONSTRAINT refunds_payment_provider_reference_check CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
     CONSTRAINT refunds_failure_code_check                CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
     CONSTRAINT refunds_failure_code_shape_check          CHECK (status = 'failed' OR failure_code IS NULL)
 );
@@ -68,10 +66,9 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
     SELECT account.id, account.store_id
-      FROM integration.payment_provider_accounts AS account
+     FROM integration.payment_provider_accounts AS account
      WHERE account.provider = requested_provider
-       AND account.id = requested_provider_account_id
-       AND account.enabled;
+       AND account.id = requested_provider_account_id;
 $$;
 
 CREATE FUNCTION commerce.resolve_provider_webhook_secret_references(
@@ -91,14 +88,12 @@ AS $$
       FROM integration.payment_provider_accounts AS account
      WHERE account.provider = requested_provider
        AND account.id = requested_provider_account_id
-       AND account.enabled
        AND account.webhook_secret_reference IS NOT NULL;
 $$;
 
 CREATE TABLE commerce.provider_webhooks (
     id                   UUID        NOT NULL PRIMARY KEY,
     store_id             UUID        NOT NULL,
-    provider             integration.payment_provider NOT NULL,
     provider_account_id  UUID        NOT NULL,
     provider_event_id    TEXT        NOT NULL,
     event_type           TEXT        NOT NULL,
@@ -113,7 +108,7 @@ CREATE TABLE commerce.provider_webhooks (
 
     CONSTRAINT provider_webhooks_provider_account_id_provider_event_id_key    UNIQUE (provider_account_id, provider_event_id),
     CONSTRAINT provider_webhooks_store_id_fkey                                FOREIGN KEY (store_id) REFERENCES commerce.stores(id),
-    CONSTRAINT provider_webhooks_store_id_provider_account_fkey               FOREIGN KEY (store_id, provider_account_id, provider) REFERENCES integration.payment_provider_accounts(store_id, id, provider),
+    CONSTRAINT provider_webhooks_provider_account_fkey                         FOREIGN KEY (provider_account_id) REFERENCES integration.payment_provider_accounts(id),
     CONSTRAINT provider_webhooks_store_id_order_fkey                          FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
     CONSTRAINT provider_webhooks_payload_object_check                         CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhooks_completion_check                             CHECK (processed_at IS NULL OR failed_at IS NULL)
@@ -144,7 +139,6 @@ CREATE FUNCTION commerce.claim_webhook_events(
 RETURNS TABLE (
     id UUID,
     store_id UUID,
-    provider TEXT,
     event_type TEXT,
     payload JSONB,
     attempts INTEGER
@@ -169,7 +163,6 @@ BEGIN
     LOOP
         SELECT event.id,
                event.store_id,
-               event.provider,
                event.event_type,
                event.payload
           INTO target
@@ -184,7 +177,6 @@ BEGIN
 
         id := target.id;
         store_id := target.store_id;
-        provider := target.provider::text;
         event_type := target.event_type;
         payload := target.payload;
         attempts := message.read_ct;

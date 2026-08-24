@@ -39,8 +39,8 @@ impl IntegrationQueue for PostgresIntegrationQueue {
     }
 
     async fn claim_webhooks(&self, limit: u16) -> Result<Vec<QueueJob>, ApplicationError> {
-        sqlx::query_as::<_, (Uuid, Uuid, String, String, Value, i32)>(
-            "SELECT id, store_id, provider, event_type, payload, attempts \
+        sqlx::query_as::<_, (Uuid, Uuid, String, Value, i32)>(
+            "SELECT id, store_id, event_type, payload, attempts \
              FROM commerce.claim_webhook_events($1)",
         )
         .bind(i32::from(limit.clamp(1, 100)))
@@ -48,7 +48,7 @@ impl IntegrationQueue for PostgresIntegrationQueue {
         .await
         .map_err(database_error)?
         .into_iter()
-        .map(|row| queue_job((row.0, row.1, row.3, row.4, row.5)))
+        .map(|row| queue_job((row.0, row.1, row.2, row.3, row.4)))
         .collect()
     }
 

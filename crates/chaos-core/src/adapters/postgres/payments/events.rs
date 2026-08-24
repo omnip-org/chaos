@@ -207,12 +207,9 @@ async fn apply_payment_event(
 
     let provider_bound = sqlx::query(
         "UPDATE commerce.orders \
-         SET payment_provider = 'stripe'::integration.payment_provider, \
-             payment_provider_account_id = $3, updated_at = $4 \
+         SET updated_at = $4 \
          WHERE store_id = $1 AND id = $2 \
-           AND (payment_provider IS NULL AND payment_provider_account_id IS NULL \
-                OR (payment_provider = 'stripe'::integration.payment_provider \
-                    AND payment_provider_account_id = $3))",
+           AND payment_provider_account_id = $3",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -760,7 +757,6 @@ async fn apply_refund_event(
         Some(id) => sqlx::query_as(
             "SELECT id, order_id FROM commerce.refunds \
              WHERE store_id = $1 AND id = $2 \
-               AND payment_provider = 'stripe'::integration.payment_provider \
                AND payment_provider_account_id = $3 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -779,7 +775,6 @@ async fn apply_refund_event(
             let order: (Uuid, String) = sqlx::query_as(
                 "SELECT id, currency::text FROM commerce.orders \
                  WHERE store_id = $1 \
-                   AND payment_provider = 'stripe'::integration.payment_provider \
                    AND payment_provider_account_id = $3 \
                    AND payment_provider_reference_id = $2 FOR UPDATE",
             )
@@ -793,9 +788,8 @@ async fn apply_refund_event(
             sqlx::query(
                 "INSERT INTO commerce.refunds \
                  (id, store_id, order_id, currency, status, amount_minor, \
-                  payment_provider, payment_provider_account_id, payment_provider_reference_id) \
-                 VALUES ($1, $2, $3, $4, 'pending', $5, \
-                         'stripe'::integration.payment_provider, $6, $7) \
+                  payment_provider_account_id, payment_provider_reference_id) \
+                 VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7) \
                  ON CONFLICT (store_id, payment_provider_account_id, payment_provider_reference_id) DO NOTHING",
             )
             .bind(Uuid::now_v7())
@@ -825,7 +819,6 @@ async fn apply_refund_event(
     if succeeded {
         let applied = sqlx::query(
             "UPDATE commerce.refunds SET status = 'succeeded', \
-                    payment_provider = 'stripe'::integration.payment_provider, \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = NULL, updated_at = $5 \
              WHERE store_id = $1 AND id = $2 AND status <> 'succeeded'",
@@ -874,7 +867,6 @@ async fn apply_refund_event(
     } else if failed {
         sqlx::query(
             "UPDATE commerce.refunds SET status = 'failed', \
-                    payment_provider = 'stripe'::integration.payment_provider, \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = $5, updated_at = $6 \
              WHERE store_id = $1 AND id = $2 AND status = 'pending'",

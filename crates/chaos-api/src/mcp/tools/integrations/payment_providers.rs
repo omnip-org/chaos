@@ -40,8 +40,6 @@ pub struct CreateStripeAccountParams {
     pub credential_secret_reference: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`, containing the Stripe endpoint signing secret (`whsec_...`).
     pub webhook_secret_reference: String,
-    /// Set true only after the Stripe keys and webhook endpoint are ready. A failed readiness check keeps the account disabled.
-    pub enabled: bool,
     pub confirm: bool,
 }
 
@@ -53,8 +51,6 @@ pub struct UpdateStripeAccountParams {
     pub credential_secret_reference: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_webhook`.
     pub webhook_secret_reference: String,
-    /// Set true only after the Stripe keys and webhook endpoint are ready. A failed readiness check keeps the account disabled.
-    pub enabled: bool,
     pub confirm: bool,
 }
 
@@ -141,7 +137,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create and readiness-check the selected Store's direct Stripe account for Embedded Checkout. Stripe Connect and Stripe-Account headers are not used. Store Stripe credentials with create_provider_secret first. The result includes the exact per-Store Webhook Endpoint URL and the events to enable in Stripe Dashboard. If readiness fails, the account remains disabled. Requires confirmation."
+        description = "Create the selected Store's direct Stripe account for Embedded Checkout. Stripe Connect and Stripe-Account headers are not used. Store Stripe credentials with create_provider_secret first. The result includes the exact per-Store Webhook Endpoint URL and the events to enable in Stripe Dashboard. Requires confirmation."
     )]
     async fn create_stripe_account(
         &self,
@@ -165,8 +161,6 @@ impl ChaosMcp {
                 display_name: params.display_name,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
-                enabled: params.enabled,
-                checked_at: self.state.clock.now(),
             })
             .await
         {
@@ -179,7 +173,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update and re-check the selected Store's direct Stripe Embedded Checkout account. Stripe Connect, Stripe-Account headers, and platform labels are not supported. The credential and webhook values must be opaque secret references, not plaintext keys. A configured account is not necessarily enabled: inspect readiness_status and readiness_blocker_codes before using it. The exact per-Store Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
+        description = "Update the selected Store's direct Stripe Embedded Checkout account. Stripe Connect, Stripe-Account headers, and platform labels are not supported. The credential and webhook values must be opaque secret references, not plaintext keys. The exact per-Store Webhook Endpoint URL and required Stripe events are returned in the result. Requires confirmation."
     )]
     async fn update_stripe_account(
         &self,
@@ -208,8 +202,6 @@ impl ChaosMcp {
                 display_name: params.display_name,
                 credential_secret_reference: params.credential_secret_reference,
                 webhook_secret_reference: params.webhook_secret_reference,
-                enabled: params.enabled,
-                checked_at: self.state.clock.now(),
             })
             .await
         {
@@ -241,11 +233,7 @@ fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> ser
         "id": id,
         "account_type": "direct_stripe_account",
         "display_name": value.account.display_name(),
-        "enabled": value.account.enabled(),
         "credentials_configured": value.credentials_configured,
-        "readiness_status": value.readiness_status.as_str(),
-        "readiness_checked_at": value.readiness_checked_at.map(|v| v.to_string()),
-        "readiness_blocker_codes": value.readiness_blocker_codes,
         "stripe_setup": {
             "account_model": "direct_stripe_account_using_the_configured_api_keys",
             "webhook_url": webhook_url,

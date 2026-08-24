@@ -94,7 +94,6 @@ impl ChaosMcp {
                     "id": account.id.as_uuid(),
                     "provider": account.provider.as_str(),
                     "display_name": account.display_name,
-                    "enabled": account.enabled,
                     "created_at": format_time(account.created_at),
                     "updated_at": format_time(account.updated_at),
                 })).collect::<Vec<_>>(),

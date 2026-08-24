@@ -52,6 +52,7 @@ await chaos.cart.addLine(cart.id, product.variants[0].id);
 // The return URL must be HTTPS outside local loopback development.
 const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
   email: "shopper@example.com",
+  payment_provider: "stripe",
   return_url: "https://shop.example.com/checkout/success",
 });
 const action = session.client_action;

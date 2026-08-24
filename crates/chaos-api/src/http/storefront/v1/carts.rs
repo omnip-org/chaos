@@ -11,7 +11,7 @@ use chaos_core::{
     sales::CreateStripeCheckoutInput,
     sales::{CreateCartInput, RemoveCartLineInput, SetCartLineInput},
 };
-use chaos_domain::{catalog::ProductVariantId, sales::CartId};
+use chaos_domain::{catalog::ProductVariantId, integration::PaymentProvider, sales::CartId};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -194,6 +194,7 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
 struct CreateEmbeddedCheckoutBody {
     email: String,
     return_url: String,
+    payment_provider: String,
 }
 
 #[derive(Serialize)]
@@ -217,6 +218,12 @@ async fn create_embedded_checkout(
     ApiJson(body): ApiJson<CreateEmbeddedCheckoutBody>,
 ) -> Result<ApiResponse<EmbeddedCheckoutData>, ApiError> {
     validate_return_url(&body.return_url)?;
+    let payment_provider = PaymentProvider::parse(&body.payment_provider).ok_or_else(|| {
+        invalid_value(
+            "payment_provider",
+            "must be a supported payment provider such as stripe",
+        )
+    })?;
     let request_id = headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
@@ -229,6 +236,7 @@ async fn create_embedded_checkout(
             actor: actor.clone(),
             cart_id: CartId::from_uuid(path.cart_id),
             email: body.email.clone(),
+            payment_provider,
             now: state.clock.now(),
             request_id,
         })

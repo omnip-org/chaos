@@ -19,26 +19,43 @@ payment flow, not a separate provider type.
 Owners administer Provider accounts through MCP tools, as established by ADR 0025. Other Store roles may read non-sensitive configuration according to the current membership policy but cannot change it. Administration supports:
 
 - a bounded display name;
-- enabled or disabled lifecycle state;
 - one provider API credential reference;
 - one webhook verification secret reference.
 
-Creation and update explicitly request the enabled state. Disabled configuration can be stored before external onboarding is complete. Enabling invokes the configured provider's onboarding-readiness port before persistence. A ready assessment is stored with its check time and a bounded normalized provider snapshot. An unsuccessful assessment stores stable blocker codes and leaves the account disabled. Provider-specific response types and identity data never enter this aggregate or its public response.
+There is no separate enabled flag or provider health/readiness state. An account
+is available for checkout when its required credentials are configured. Live
+provider health verification and onboarding-specific state are deferred until a
+provider needs them; they are not part of the account aggregate or checkout
+routing decision.
 
 The references identify values through the infrastructure secret resolver. They are not plaintext credentials and never appear in response DTOs, logs, events, or persistence snapshots. The current resolver stores AES-256-GCM-encrypted values as opaque `enc://` references in PostgreSQL; only the deployment encryption key remains outside the database. Responses expose only `credentials_configured`.
 
-Storefront Payment Attempt creation continues to accept a provider choice, but succeeds only when the current Store has exactly one enabled matching Provider account. Payment Attempts retain the Provider account foreign key. Webhook tenant resolution uses the immutable provider and Chaos account UUID from the endpoint path, and currently requires the Provider account to remain enabled. Operators must keep an account enabled until its in-flight financial callbacks have converged.
+Storefront checkout accepts a typed provider choice, currently `stripe`, but
+never accepts an account UUID from the browser. The backend resolves the one
+matching account by `(store_id, provider)` and writes its immutable account UUID
+to the Order when the Order is created. Payment attempts, refunds, commands, and
+webhooks retain or resolve that same account UUID; workers never choose a
+fallback account. Webhook tenant resolution uses the account UUID from the
+endpoint path and the configured webhook secret.
 
-Updating a Provider account replaces its two secret references atomically and may enable or disable new payment creation. A changed outbound credential and webhook secret become active immediately; the previous references are not retained and there is no verification overlap or rollback deadline. Operators must coordinate provider-side changes with the account update so in-flight requests and callbacks are signed with the current references.
+Updating a Provider account replaces its two secret references atomically. A
+changed outbound credential and webhook secret become active immediately; the
+previous references are not retained and there is no verification overlap or
+rollback deadline. Operators must coordinate provider-side changes with the
+account update so in-flight requests and callbacks use the current references.
 
-Disabling blocks new Payment Attempts and webhook ingestion for that Provider account. Existing Payment Attempts keep their Provider account relationship, but outstanding callbacks must be drained before disabling. Secret replacement takes effect immediately, so callbacks signed with a retired webhook secret are no longer accepted. Provider-specific onboarding state belongs to later provider-integration increments.
+An account without the required credential is unavailable for new checkout
+Orders. Existing Orders keep their Provider account relationship even if the
+configuration is later changed. Secret replacement takes effect immediately, so
+callbacks signed with a retired webhook secret are no longer accepted.
 
 ## Consequences
 
 - Provider configuration is explicit, Store-isolated, RLS-protected, idempotent, and auditable through its creator and timestamps.
-- Checkout cannot dispatch to an unconfigured or disabled provider.
+- Checkout cannot dispatch to an unconfigured provider.
 - Historical Provider identity cannot drift through administrative updates.
 - API and webhook secret values are never persisted in plaintext; only an opaque reference is stored, which may itself be an AES-256-GCM-encrypted value kept in PostgreSQL rather than an external secret manager.
 - Credential rotation is explicit and immediate; deployments must coordinate replacement credentials and webhook endpoints.
-- Live traffic cannot be enabled from an unchecked or action-required provider assessment.
+- Provider health and onboarding checks can be added later without changing the
+  Order's account binding model.
 - A production adapter must resolve references through a dedicated infrastructure port and must never place resolved values in application or domain types.

@@ -29,26 +29,20 @@ impl Default for StripeAccountId {
 pub struct StripeAccount {
     id: StripeAccountId,
     display_name: String,
-    enabled: bool,
 }
 
 impl StripeAccount {
-    pub fn create(display_name: impl Into<String>, enabled: bool) -> Result<Self, DomainError> {
-        Self::rehydrate(StripeAccountId::new(), display_name, enabled)
+    pub fn create(display_name: impl Into<String>) -> Result<Self, DomainError> {
+        Self::rehydrate(StripeAccountId::new(), display_name)
     }
 
     pub fn rehydrate(
         id: StripeAccountId,
         display_name: impl Into<String>,
-        enabled: bool,
     ) -> Result<Self, DomainError> {
         let display_name = display_name.into();
         validate_printable(&display_name, 120)?;
-        Ok(Self {
-            id,
-            display_name,
-            enabled,
-        })
+        Ok(Self { id, display_name })
     }
 
     pub const fn id(&self) -> StripeAccountId {
@@ -59,19 +53,13 @@ impl StripeAccount {
         &self.display_name
     }
 
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-
     pub fn update_administration(
         &mut self,
         display_name: impl Into<String>,
-        enabled: bool,
     ) -> Result<(), DomainError> {
         let display_name = display_name.into();
         validate_printable(&display_name, 120)?;
         self.display_name = display_name;
-        self.enabled = enabled;
         Ok(())
     }
 }
@@ -121,7 +109,7 @@ mod tests {
 
     #[test]
     fn stripe_accounts_validate_names_and_opaque_secret_references() {
-        assert!(StripeAccount::create("Stripe", false).is_ok());
+        assert!(StripeAccount::create("Stripe").is_ok());
         assert!(
             PaymentSecretReference::new("credential_secret_reference", "enc://c3RyaXBlLWxpdmU")
                 .is_ok()

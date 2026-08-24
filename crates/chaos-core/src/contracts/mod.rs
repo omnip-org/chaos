@@ -70,7 +70,6 @@ pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
     PaymentLineItem, PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption,
     RefundDetail, StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage,
-    StripeAccountReadiness, StripeCommand, StripeCommandResult, StripePaymentGateway,
-    StripeReadiness, StripeReadinessStatus, StripeWebhookConfiguration,
+    StripeCommand, StripeCommandResult, StripePaymentGateway, StripeWebhookConfiguration,
     StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };

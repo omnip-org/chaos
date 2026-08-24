@@ -282,6 +282,7 @@ test("payments create an embedded Checkout session in one request", async () => 
 
   const session = await client.payments.createEmbeddedCheckout("cart-1", {
     email: "shopper@example.com",
+    payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   }, "order-request-1");
 
@@ -289,6 +290,7 @@ test("payments create an embedded Checkout session in one request", async () => 
   assert.equal(requests[1]?.headers.get("x-request-id"), "order-request-1");
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
     email: "shopper@example.com",
+    payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
   assert.deepEqual(session.data.client_action, {

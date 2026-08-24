@@ -12,42 +12,14 @@ use uuid::Uuid;
 
 use crate::ApplicationError;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StripeReadinessStatus {
-    Unchecked,
-    Ready,
-    ActionRequired,
-}
-
-impl StripeReadinessStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unchecked => "unchecked",
-            Self::Ready => "ready",
-            Self::ActionRequired => "action_required",
-        }
-    }
-}
-
-pub struct StripeReadiness {
-    pub ready: bool,
-    pub blocker_codes: Vec<String>,
-    pub configuration: Value,
-    pub checked_at: OffsetDateTime,
-}
-
 pub struct StripeAccountConfiguration {
     pub credential_secret_reference: PaymentSecretReference,
     pub webhook_secret_reference: PaymentSecretReference,
-    pub readiness: Option<StripeReadiness>,
 }
 
 pub struct StripeAccountDetail {
     pub account: StripeAccount,
     pub credentials_configured: bool,
-    pub readiness_status: StripeReadinessStatus,
-    pub readiness_checked_at: Option<OffsetDateTime>,
-    pub readiness_blocker_codes: Vec<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -195,17 +167,6 @@ pub trait StripePaymentGateway: Send + Sync {
         &self,
         command: StripeCommand,
     ) -> Result<StripeCommandResult, ApplicationError>;
-}
-
-#[async_trait]
-pub trait StripeAccountReadiness: Send + Sync {
-    fn name(&self) -> &'static str;
-
-    async fn check_readiness(
-        &self,
-        credential_secret_reference: &PaymentSecretReference,
-        checked_at: OffsetDateTime,
-    ) -> Result<StripeReadiness, ApplicationError>;
 }
 
 #[async_trait]

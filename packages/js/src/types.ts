@@ -287,6 +287,8 @@ export interface TrackedOrder {
 
 export interface CreateEmbeddedCheckoutRequest {
   email: string;
+  /** Supported payment provider selected for this checkout. */
+  payment_provider: "stripe";
   /** Stripe appends the order ID to this URL before redirecting the shopper. */
   return_url: string;
 }

@@ -14,8 +14,7 @@ use crate::{
     contracts::{
         AdminActor, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentClientAction,
         QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration, StripeAccountDetail,
-        StripeAccountPage, StripeAccountReadiness, StripePaymentGateway,
-        StripeWebhookSignatureVerifier,
+        StripeAccountPage, StripePaymentGateway, StripeWebhookSignatureVerifier,
     },
     store::StoreActor,
 };
@@ -46,8 +45,6 @@ pub struct CreateStripeAccountInput {
     pub display_name: String,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
-    pub enabled: bool,
-    pub checked_at: OffsetDateTime,
 }
 
 pub struct UpdateStripeAccountInput {
@@ -57,24 +54,15 @@ pub struct UpdateStripeAccountInput {
     pub display_name: String,
     pub credential_secret_reference: String,
     pub webhook_secret_reference: String,
-    pub enabled: bool,
-    pub checked_at: OffsetDateTime,
 }
 
 pub struct StripeAccountAdministration {
     repository: Arc<PostgresStripeRepository>,
-    onboarding: Arc<dyn StripeAccountReadiness>,
 }
 
 impl StripeAccountAdministration {
-    pub fn new(
-        repository: Arc<PostgresStripeRepository>,
-        onboarding: Arc<dyn StripeAccountReadiness>,
-    ) -> Self {
-        Self {
-            repository,
-            onboarding,
-        }
+    pub fn new(repository: Arc<PostgresStripeRepository>) -> Self {
+        Self { repository }
     }
 
     pub async fn list(
@@ -104,7 +92,7 @@ impl StripeAccountAdministration {
         input: CreateStripeAccountInput,
     ) -> Result<StripeAccountDetail, ApplicationError> {
         require_stripe_account_administrator(input.actor)?;
-        let mut account = StripeAccount::create(input.display_name, input.enabled)?;
+        let account = StripeAccount::create(input.display_name)?;
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
             input.credential_secret_reference,
@@ -113,16 +101,10 @@ impl StripeAccountAdministration {
             "webhook_secret_reference",
             input.webhook_secret_reference,
         )?;
-        let configuration = self
-            .configuration(&account, credential, webhook, input.checked_at)
-            .await?;
-        if configuration
-            .readiness
-            .as_ref()
-            .is_some_and(|readiness| !readiness.ready)
-        {
-            account.update_administration(account.display_name().to_owned(), false)?;
-        }
+        let configuration = StripeAccountConfiguration {
+            credential_secret_reference: credential,
+            webhook_secret_reference: webhook,
+        };
         self.repository
             .create(input.actor, input.store_id, &account, &configuration)
             .await
@@ -138,9 +120,7 @@ impl StripeAccountAdministration {
             .get(input.actor, input.store_id, input.id)
             .await?
             .ok_or_else(|| stripe_account_not_found(input.id))?;
-        detail
-            .account
-            .update_administration(input.display_name, input.enabled)?;
+        detail.account.update_administration(input.display_name)?;
         let credential = PaymentSecretReference::new(
             "credential_secret_reference",
             input.credential_secret_reference,
@@ -149,44 +129,13 @@ impl StripeAccountAdministration {
             "webhook_secret_reference",
             input.webhook_secret_reference,
         )?;
-        let configuration = self
-            .configuration(&detail.account, credential, webhook, input.checked_at)
-            .await?;
-        if configuration
-            .readiness
-            .as_ref()
-            .is_some_and(|readiness| !readiness.ready)
-        {
-            detail
-                .account
-                .update_administration(detail.account.display_name().to_owned(), false)?;
-        }
+        let configuration = StripeAccountConfiguration {
+            credential_secret_reference: credential,
+            webhook_secret_reference: webhook,
+        };
         self.repository
             .update(input.actor, input.store_id, &detail.account, &configuration)
             .await
-    }
-
-    async fn configuration(
-        &self,
-        account: &StripeAccount,
-        credential_secret_reference: PaymentSecretReference,
-        webhook_secret_reference: PaymentSecretReference,
-        checked_at: OffsetDateTime,
-    ) -> Result<StripeAccountConfiguration, ApplicationError> {
-        let readiness = if account.enabled() {
-            let readiness = self
-                .onboarding
-                .check_readiness(&credential_secret_reference, checked_at)
-                .await?;
-            Some(readiness)
-        } else {
-            None
-        };
-        Ok(StripeAccountConfiguration {
-            credential_secret_reference,
-            webhook_secret_reference,
-            readiness,
-        })
     }
 }
 

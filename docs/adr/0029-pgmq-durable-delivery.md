@@ -62,8 +62,8 @@ Worker normally finishes a sequential batch before another Worker can reclaim
 it. Stable idempotency still protects the crash boundary and unusual latency.
 
 Scheduled reconciliation derived from authoritative current state, such as
-payment-account readiness, shipment tracking, cancellation, and checkout expiry,
-continues to use short `FOR UPDATE SKIP LOCKED` row leases. Creating synthetic
+shipment tracking, cancellation, and checkout expiry, continues to use short
+`FOR UPDATE SKIP LOCKED` row leases. Creating synthetic
 queue messages for every future due time would add state without improving the
 invariant.
 

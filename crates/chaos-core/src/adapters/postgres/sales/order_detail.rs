@@ -112,16 +112,24 @@ pub(crate) async fn load(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT id, shopper_id, price_list_id, currency::text AS currency, \
-                status::text AS status, payment_status::text AS payment_status, \
-                shipping_status::text AS shipping_status, subtotal_amount_minor, \
-                discount_amount_minor, tax_amount_minor, \
-                shipping_amount_minor, total_amount_minor, refunded_amount_minor, \
-                payment_provider::text, payment_provider_reference_id, payment_failure_code, \
-                shipping_provider::text, shipping_provider_reference_id, \
-                created_at, updated_at \
-         FROM commerce.orders \
-         WHERE store_id = $1 AND ($2::uuid IS NULL OR sales_channel_id = $2) AND id = $3",
+        "SELECT order_row.id, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
+                order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
+                order_row.shipping_status::text AS shipping_status, order_row.subtotal_amount_minor, \
+                order_row.discount_amount_minor, order_row.tax_amount_minor, \
+                order_row.shipping_amount_minor, order_row.total_amount_minor, order_row.refunded_amount_minor, \
+                payment_account.provider::text, order_row.payment_provider_reference_id, order_row.payment_failure_code, \
+                shipping_account.provider::text, order_row.shipping_provider_reference_id, \
+                order_row.created_at, order_row.updated_at \
+         FROM commerce.orders AS order_row \
+         INNER JOIN integration.payment_provider_accounts AS payment_account \
+           ON payment_account.id = order_row.payment_provider_account_id \
+          AND payment_account.store_id = order_row.store_id \
+         LEFT JOIN integration.shipping_provider_accounts AS shipping_account \
+           ON shipping_account.id = order_row.shipping_provider_account_id \
+          AND shipping_account.store_id = order_row.store_id \
+         WHERE order_row.store_id = $1 \
+           AND ($2::uuid IS NULL OR order_row.sales_channel_id = $2) \
+           AND order_row.id = $3",
     )
     .bind(store_id.as_uuid())
     .bind(sales_channel_id.map(SalesChannelId::as_uuid))

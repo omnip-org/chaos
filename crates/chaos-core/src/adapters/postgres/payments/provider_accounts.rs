@@ -1,4 +1,4 @@
-// Payment provider account configuration and onboarding persistence.
+// Payment provider account configuration persistence.
 
 impl PostgresStripeRepository {
     pub(crate) async fn list(
@@ -10,13 +10,11 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountPage, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
-            "SELECT id, provider::text, display_name, enabled, \
+            "SELECT id, display_name, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                    readiness->>'status', (readiness->>'checked_at')::timestamptz, \
-                    COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
-                    created_at, updated_at \
+             created_at, updated_at \
              FROM integration.payment_provider_accounts \
-             WHERE store_id = $1 \
+             WHERE store_id = $1 AND provider = 'stripe' \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
         )
@@ -56,13 +54,11 @@ impl PostgresStripeRepository {
         configuration: &StripeAccountConfiguration,
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        let readiness = configuration.readiness.as_ref();
         sqlx::query(
             "INSERT INTO integration.payment_provider_accounts \
              (id, store_id, provider, display_name, \
-              credential_secret_reference, webhook_secret_reference, \
-              readiness, enabled) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+              credential_secret_reference, webhook_secret_reference) \
+             VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -70,8 +66,6 @@ impl PostgresStripeRepository {
         .bind(account.display_name())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
-        .bind(readiness_json(readiness))
-        .bind(account.enabled())
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
@@ -90,24 +84,11 @@ impl PostgresStripeRepository {
         configuration: &StripeAccountConfiguration,
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
-        let readiness = configuration.readiness.as_ref();
-        // A credential or webhook secret change takes effect immediately —
-        // there is no rotation grace window. readiness resets to unchecked
-        // whenever the credential changes, or is replaced outright when the
-        // caller passed a freshly-computed result ($7 non-NULL).
         let result = sqlx::query(
             "UPDATE integration.payment_provider_accounts SET display_name = $3, \
                     credential_secret_reference = $4, \
                     webhook_secret_reference = $5, \
-                    readiness = CASE \
-                        WHEN $7::text IS NOT NULL THEN jsonb_build_object( \
-                            'status', $7::text, 'snapshot', $8::jsonb, \
-                            'checked_at', to_jsonb($9::timestamptz) \
-                        ) \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN jsonb_build_object('status', 'unchecked') \
-                        ELSE readiness END, \
-                    enabled = $6, updated_at = CURRENT_TIMESTAMP \
+                    updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(store_id.as_uuid())
@@ -119,10 +100,6 @@ impl PostgresStripeRepository {
                 .expose_reference(),
         )
         .bind(configuration.webhook_secret_reference.expose_reference())
-        .bind(account.enabled())
-        .bind(readiness.map(|value| readiness_status(value).as_str()))
-        .bind(readiness.map(|value| &value.configuration))
-        .bind(readiness.map(|value| value.checked_at))
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;

@@ -10,6 +10,7 @@ use crate::{
         ShopperActor, StorefrontMediaAsset,
         StripeCheckoutDraft,
     },
+    sales::StripeCheckoutRequest,
 };
 use chaos_domain::{
     CurrencyCode,
@@ -173,6 +174,20 @@ fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationEr
 
 fn parse_currency(value: &str) -> Result<CurrencyCode, ApplicationError> {
     CurrencyCode::parse(value).map_err(ApplicationError::from)
+}
+
+fn payment_provider_unavailable() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "payment_provider_unavailable",
+        message: "no configured Payment Provider account is available",
+    }
+}
+
+fn payment_provider_mismatch() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "payment_provider_mismatch",
+        message: "the idempotent checkout request selected another Payment Provider",
+    }
 }
 
 fn unexpected_conversion(

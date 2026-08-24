@@ -210,9 +210,7 @@ impl PostgresStorefrontSalesRepository {
         shopper: &ShopperActor,
         cart_id: CartId,
         email: &str,
-        now: OffsetDateTime,
-        expires_at: OffsetDateTime,
-        request_id: Uuid,
+        request: StripeCheckoutRequest,
     ) -> Result<StripeCheckoutDraft, ApplicationError> {
         let actor = &shopper.machine;
         let channel_id = require_channel(actor)?;
@@ -228,7 +226,7 @@ impl PostgresStorefrontSalesRepository {
             actor,
             PriceListId::from_uuid(header.1),
             currency,
-            now,
+            request.now,
         )
         .await?;
         let lines = refresh_cart_lines(
@@ -266,14 +264,27 @@ impl PostgresStorefrontSalesRepository {
         ensure_inventory_available(&mut transaction, actor, &cart).await?;
         let requested_order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
-        let order_number = generate_order_number(now)?;
+        let order_number = generate_order_number(request.now)?;
+        let payment_provider_account_id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM integration.payment_provider_accounts \
+             WHERE store_id = $1 \
+               AND provider = $2::integration.payment_provider \
+               AND credential_secret_reference IS NOT NULL \
+               AND webhook_secret_reference IS NOT NULL",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(request.payment_provider.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(payment_provider_unavailable)?;
         let inserted_order_id: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, request_id, \
-              price_list_id, currency, contact_email, \
+              price_list_id, currency, payment_provider_account_id, contact_email, \
               subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
               shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,0,0,$12,$12) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,0,0,0,$13,$13) \
              ON CONFLICT (store_id, sales_channel_id, shopper_id, request_id) DO NOTHING \
              RETURNING id",
         )
@@ -283,38 +294,46 @@ impl PostgresStorefrontSalesRepository {
         .bind(channel_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
-        .bind(request_id)
+        .bind(request.request_id)
         .bind(header.1)
         .bind(currency.as_str())
+        .bind(payment_provider_account_id)
         .bind(email)
         .bind(subtotal)
-        .bind(now)
+        .bind(request.now)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
         let Some(_) = inserted_order_id else {
-            let existing = sqlx::query_as::<_, (Uuid, String, i64)>(
-                "SELECT id, currency::text, subtotal_amount_minor FROM commerce.orders \
-                 WHERE store_id = $1 AND sales_channel_id = $2 AND shopper_id = $3 \
-                   AND request_id = $4",
+            let existing = sqlx::query_as::<_, (Uuid, String, i64, String)>(
+                "SELECT order_row.id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text \
+                 FROM commerce.orders AS order_row \
+                 INNER JOIN integration.payment_provider_accounts AS account \
+                   ON account.id = order_row.payment_provider_account_id \
+                  AND account.store_id = order_row.store_id \
+                 WHERE order_row.store_id = $1 AND order_row.sales_channel_id = $2 \
+                   AND order_row.shopper_id = $3 AND order_row.request_id = $4",
             )
             .bind(actor.store_id.as_uuid())
             .bind(channel_id.as_uuid())
             .bind(shopper.shopper_id.as_uuid())
-            .bind(request_id)
+            .bind(request.request_id)
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
+            if existing.3 != request.payment_provider.as_str() {
+                return Err(payment_provider_mismatch());
+            }
             transaction.commit().await.map_err(database_error)?;
             return Ok(StripeCheckoutDraft {
                 order_id: OrderId::from_uuid(existing.0),
                 currency: parse_currency(&existing.1)?,
                 subtotal_amount_minor: existing.2,
-                expires_at,
+                expires_at: request.expires_at,
             });
         };
         let order_id = requested_order_id;
-        insert_order_lines(&mut transaction, actor, order_id, &cart, now).await?;
+        insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
         append_event(
             &mut transaction,
             AnalyticsEventToAppend {
@@ -328,8 +347,8 @@ impl PostgresStorefrontSalesRepository {
                     "order_id": order_id.as_uuid(),
                     "payment_ui": "stripe_embedded_checkout",
                 }),
-                occurred_at: now,
-                received_at: now,
+                occurred_at: request.now,
+                received_at: request.now,
             },
         )
         .await?;
@@ -337,7 +356,7 @@ impl PostgresStorefrontSalesRepository {
             order_id,
             currency,
             subtotal_amount_minor: subtotal,
-            expires_at,
+            expires_at: request.expires_at,
         };
         transaction.commit().await.map_err(database_error)?;
         Ok(draft)

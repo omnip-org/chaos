@@ -16,7 +16,7 @@ CREATE TABLE commerce.fulfillments (
 
     CONSTRAINT fulfillments_store_id_id_key                    UNIQUE (store_id, id),
     CONSTRAINT fulfillments_store_id_order_fkey                FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
-    CONSTRAINT fulfillments_store_id_provider_account_fkey     FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.shipping_provider_accounts(store_id, id),
+    CONSTRAINT fulfillments_provider_account_fkey              FOREIGN KEY (shipping_provider_account_id) REFERENCES integration.shipping_provider_accounts(id),
     CONSTRAINT fulfillments_tracking_number_check              CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_url_check                 CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
     CONSTRAINT fulfillments_shape_check                        CHECK (
