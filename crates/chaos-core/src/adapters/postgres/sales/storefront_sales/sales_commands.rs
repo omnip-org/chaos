@@ -315,18 +315,6 @@ impl PostgresStorefrontSalesRepository {
         };
         let order_id = requested_order_id;
         insert_order_lines(&mut transaction, actor, order_id, &cart, now).await?;
-        sqlx::query(
-            "INSERT INTO commerce.order_transitions \
-             (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-             VALUES ($1, $2, $3, NULL, 'pending', 'created', $4)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(actor.store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         append_event(
             &mut transaction,
             AnalyticsEventToAppend {

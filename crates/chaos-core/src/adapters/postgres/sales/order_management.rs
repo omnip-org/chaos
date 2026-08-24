@@ -127,12 +127,11 @@ impl PostgresOrderManagementRepository {
         .ok_or_else(|| order_not_found(order_id))?;
         let current_status = OrderStatus::parse(&row).ok_or_else(corrupt_state)?;
         let mut order = Order::rehydrate(order_id, current_status);
-        let transition = match target_status {
-            OrderStatus::Confirmed => order.confirm(now)?,
-            OrderStatus::Cancelled => order.cancel(now)?,
+        match target_status {
+            OrderStatus::Confirmed => order.confirm()?,
+            OrderStatus::Cancelled => order.cancel()?,
             OrderStatus::Pending => return Err(invalid_target()),
         };
-        let transition_id = Uuid::now_v7();
         sqlx::query(
             "UPDATE commerce.orders SET status = $3::commerce.order_status, updated_at = $4 \
              WHERE store_id = $1 AND id = $2",
@@ -140,22 +139,6 @@ impl PostgresOrderManagementRepository {
         .bind(store_id.as_uuid())
         .bind(order_id.as_uuid())
         .bind(target_status.as_str())
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        sqlx::query(
-            "INSERT INTO commerce.order_transitions \
-             (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-             VALUES ($1, $2, $3, $4::commerce.order_status, $5::commerce.order_status, \
-                     $6::commerce.order_transition_kind, $7)",
-        )
-        .bind(transition_id)
-        .bind(store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(transition.from_status.map(OrderStatus::as_str))
-        .bind(transition.to_status.as_str())
-        .bind(transition.kind.as_str())
         .bind(now)
         .execute(&mut *transaction)
         .await

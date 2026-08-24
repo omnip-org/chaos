@@ -185,14 +185,6 @@ export interface OrderLine {
   subtotal_amount_minor: number;
 }
 
-export interface OrderTransition {
-  id: UUID;
-  from_status?: "pending" | "confirmed" | "cancelled";
-  to_status: "pending" | "confirmed" | "cancelled";
-  kind: "created" | "confirmed" | "cancelled";
-  occurred_at: string;
-}
-
 /** One attempt to pay an Order. A retry after a decline is a new attempt
  * with its own id, not an overwrite of the previous one. */
 export interface OrderPaymentAttempt {
@@ -262,7 +254,6 @@ export interface Order {
   total_amount_minor: number;
   refunded_amount_minor: number;
   lines: OrderLine[];
-  transitions: OrderTransition[];
   payment_attempts: OrderPaymentAttempt[];
   refunds: OrderRefund[];
   fulfillments: OrderFulfillment[];
@@ -292,7 +283,6 @@ export interface TrackedOrder {
   refunded_amount_minor: number;
   fulfillments: TrackedOrderFulfillment[];
   lines: OrderLine[];
-  transitions: OrderTransition[];
   created_at: string;
   updated_at: string;
 }

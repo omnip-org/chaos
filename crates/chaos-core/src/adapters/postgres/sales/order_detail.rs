@@ -2,7 +2,6 @@ use crate::{
     ApplicationError,
     contracts::{
         OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderPaymentAttemptItem, OrderRefundItem,
-        OrderTransitionItem,
     },
     error::database_error,
 };
@@ -80,8 +79,6 @@ type OrderLineRow = (
     i64,
 );
 
-type OrderTransitionRow = (Uuid, Option<String>, String, String, OffsetDateTime);
-
 #[derive(sqlx::FromRow)]
 struct OrderIdentityRow {
     contact_email: Option<String>,
@@ -151,16 +148,6 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let transitions = sqlx::query_as::<_, OrderTransitionRow>(
-        "SELECT id, from_status::text, to_status::text, kind::text, occurred_at \
-         FROM commerce.order_transitions WHERE store_id = $1 AND order_id = $2 \
-         ORDER BY occurred_at, id",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(database_error)?;
     let refunds = sqlx::query_as::<_, RefundRow>(
         "SELECT id, status::text, amount_minor, stripe_refund_id, \
                 failure_code, created_at, updated_at \
@@ -204,10 +191,6 @@ pub(crate) async fn load(
         lines: lines
             .into_iter()
             .map(order_line_item)
-            .collect::<Result<_, _>>()?,
-        transitions: transitions
-            .into_iter()
-            .map(order_transition)
             .collect::<Result<_, _>>()?,
         payment_attempt: payment_attempt_item(&row)?,
         refunds: refunds
@@ -318,20 +301,6 @@ fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError>
             .map_err(|error| ApplicationError::Unexpected(error.into()))?,
         unit_price_amount_minor: row.7,
         subtotal_amount_minor: row.8,
-    })
-}
-
-fn order_transition(row: OrderTransitionRow) -> Result<OrderTransitionItem, ApplicationError> {
-    Ok(OrderTransitionItem {
-        id: row.0,
-        from_status: row
-            .1
-            .as_deref()
-            .map(|status| OrderStatus::parse(status).ok_or_else(corrupt_state))
-            .transpose()?,
-        to_status: OrderStatus::parse(&row.2).ok_or_else(corrupt_state)?,
-        kind: row.3,
-        occurred_at: row.4,
     })
 }
 

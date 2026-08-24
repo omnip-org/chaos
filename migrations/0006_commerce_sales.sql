@@ -1,6 +1,5 @@
 CREATE TYPE commerce.cart_status AS ENUM ('active', 'completed', 'abandoned');
 CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
-CREATE TYPE commerce.order_transition_kind AS ENUM ('created', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'partially_refunded', 'refunded');
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
@@ -179,20 +178,6 @@ CREATE TABLE commerce.order_lines (
     CONSTRAINT order_lines_amounts_check                 CHECK (unit_price_amount_minor >= 0 AND subtotal_amount_minor = unit_price_amount_minor * quantity AND subtotal_amount_minor >= 0)
 );
 
-CREATE TABLE commerce.order_transitions (
-    id                   UUID                             NOT NULL PRIMARY KEY,
-    store_id             UUID                             NOT NULL,
-    order_id             UUID                             NOT NULL,
-    from_status          commerce.order_status,
-    to_status            commerce.order_status            NOT NULL,
-    kind                 commerce.order_transition_kind   NOT NULL,
-    occurred_at          TIMESTAMPTZ                      NOT NULL,
-
-    CONSTRAINT order_transitions_store_id_order_id_id_key UNIQUE (store_id, order_id, id),
-    CONSTRAINT order_transitions_store_id_order_fkey      FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders(store_id, id),
-    CONSTRAINT order_transitions_shape_check              CHECK ((kind = 'created' AND from_status IS NULL AND to_status = 'pending') OR (kind = 'confirmed' AND from_status = 'pending' AND to_status = 'confirmed') OR (kind = 'cancelled' AND from_status = 'pending' AND to_status = 'cancelled'))
-);
-
 ALTER TABLE commerce.orders ADD UNIQUE (store_id, id, currency);
 
 CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_at DESC, id DESC);
@@ -200,7 +185,6 @@ CREATE INDEX carts_channel_updated_idx ON commerce.carts (store_id, sales_channe
 CREATE INDEX cart_lines_variant_lookup_idx ON commerce.cart_lines (store_id, product_variant_id, cart_id);
 CREATE INDEX orders_channel_created_idx ON commerce.orders (store_id, sales_channel_id, created_at DESC, id DESC);
 CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
-CREATE INDEX order_transitions_order_time_idx ON commerce.order_transitions (store_id, order_id, occurred_at, id);
 ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
 
@@ -213,7 +197,6 @@ ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_tracking_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.order_transitions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.carts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -235,19 +218,14 @@ CREATE POLICY store_isolation ON commerce.order_lines
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.order_transitions
-    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
-    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
-
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.shoppers,
        commerce.carts,
        commerce.cart_lines,
        commerce.orders,
        commerce.order_tracking_tokens,
-       commerce.order_lines,
-       commerce.order_transitions
+       commerce.order_lines
     TO chaos_runtime;
 
 REVOKE DELETE ON commerce.orders FROM chaos_runtime;
-REVOKE UPDATE, DELETE ON commerce.order_lines, commerce.order_transitions FROM chaos_runtime;
+REVOKE UPDATE, DELETE ON commerce.order_lines FROM chaos_runtime;

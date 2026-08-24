@@ -55,7 +55,7 @@ pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyL
 pub use review::{ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderListFilter,
-    OrderPage, OrderPaymentAttemptItem, OrderRefundItem, OrderTransitionItem, StripeCheckoutDraft,
+    OrderPage, OrderPaymentAttemptItem, OrderRefundItem, StripeCheckoutDraft,
 };
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,

@@ -579,26 +579,13 @@ async fn cancel_pending_order(
         return Ok(());
     }
     let mut order = Order::rehydrate(order_id, status);
-    let transition = order.cancel(now)?;
+    order.cancel()?;
     sqlx::query(
         "UPDATE commerce.orders SET status = 'cancelled', updated_at = $3 \
          WHERE store_id = $1 AND id = $2 AND status = 'pending'",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    sqlx::query(
-        "INSERT INTO commerce.order_transitions \
-         (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-         VALUES ($1, $2, $3, $4::commerce.order_status, 'cancelled', 'cancelled', $5)",
-    )
-    .bind(Uuid::now_v7())
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(transition.from_status.map(OrderStatus::as_str))
     .bind(now)
     .execute(&mut **transaction)
     .await
@@ -619,7 +606,7 @@ async fn confirm_paid_order(
         return Ok(());
     }
     let mut order = Order::rehydrate(order_id, status);
-    let transition = order.confirm(now)?;
+    order.confirm()?;
     consume_order_inventory(transaction, store_id, order_id).await?;
     sqlx::query(
         "UPDATE commerce.orders SET status = 'confirmed', updated_at = $3 \
@@ -651,20 +638,6 @@ async fn confirm_paid_order(
         .await
         .map_err(database_error)?;
     }
-    let transition_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO commerce.order_transitions \
-         (id, store_id, order_id, from_status, to_status, kind, occurred_at) \
-         VALUES ($1, $2, $3, $4::commerce.order_status, 'confirmed', 'confirmed', $5)",
-    )
-    .bind(transition_id)
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(transition.from_status.map(OrderStatus::as_str))
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
     let (_, tracking_digest) = generate_order_tracking_token();
     sqlx::query(
         "INSERT INTO commerce.order_tracking_tokens \

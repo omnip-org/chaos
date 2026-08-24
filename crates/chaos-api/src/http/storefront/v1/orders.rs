@@ -47,16 +47,6 @@ struct OrderLineData {
 }
 
 #[derive(Serialize)]
-struct OrderTransitionData {
-    id: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    from_status: Option<&'static str>,
-    to_status: &'static str,
-    kind: String,
-    occurred_at: ApiDateTime,
-}
-
-#[derive(Serialize)]
 struct PaymentAttemptData {
     status: &'static str,
     amount_minor: i64,
@@ -136,7 +126,6 @@ struct OrderData {
     total_amount_minor: i64,
     refunded_amount_minor: i64,
     lines: Vec<OrderLineData>,
-    transitions: Vec<OrderTransitionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
     payment_attempt: Option<PaymentAttemptData>,
     refunds: Vec<RefundData>,
@@ -169,7 +158,6 @@ struct TrackedOrderData {
     refunded_amount_minor: i64,
     fulfillments: Vec<TrackedFulfillmentData>,
     lines: Vec<OrderLineData>,
-    transitions: Vec<OrderTransitionData>,
     created_at: ApiDateTime,
     updated_at: ApiDateTime,
 }
@@ -264,11 +252,6 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
         total_amount_minor: order.total_amount_minor,
         refunded_amount_minor: order.refunded_amount_minor,
         lines: order.lines.into_iter().map(order_line_data).collect(),
-        transitions: order
-            .transitions
-            .into_iter()
-            .map(order_transition_data)
-            .collect(),
         payment_attempt: order.payment_attempt.map(payment_attempt_data),
         refunds: order.refunds.into_iter().map(refund_data).collect(),
         fulfillments: order
@@ -304,25 +287,8 @@ fn tracked_order_data(order: OrderDetail) -> TrackedOrderData {
             .map(tracked_fulfillment_data)
             .collect(),
         lines: order.lines.into_iter().map(order_line_data).collect(),
-        transitions: order
-            .transitions
-            .into_iter()
-            .map(order_transition_data)
-            .collect(),
         created_at: order.created_at.into(),
         updated_at: order.updated_at.into(),
-    }
-}
-
-fn order_transition_data(
-    transition: chaos_core::contracts::OrderTransitionItem,
-) -> OrderTransitionData {
-    OrderTransitionData {
-        id: transition.id,
-        from_status: transition.from_status.map(|status| status.as_str()),
-        to_status: transition.to_status.as_str(),
-        kind: transition.kind,
-        occurred_at: transition.occurred_at.into(),
     }
 }
 

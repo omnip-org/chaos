@@ -1,4 +1,3 @@
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
@@ -144,31 +143,6 @@ impl OrderShippingStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OrderTransitionKind {
-    Created,
-    Confirmed,
-    Cancelled,
-}
-
-impl OrderTransitionKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Confirmed => "confirmed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OrderTransition {
-    pub from_status: Option<OrderStatus>,
-    pub to_status: OrderStatus,
-    pub kind: OrderTransitionKind,
-    pub occurred_at: OffsetDateTime,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Order {
     id: OrderId,
@@ -195,28 +169,15 @@ impl Order {
         self.status
     }
 
-    pub fn confirm(&mut self, occurred_at: OffsetDateTime) -> Result<OrderTransition, DomainError> {
-        self.transition(
-            OrderStatus::Confirmed,
-            OrderTransitionKind::Confirmed,
-            occurred_at,
-        )
+    pub fn confirm(&mut self) -> Result<(), DomainError> {
+        self.transition(OrderStatus::Confirmed)
     }
 
-    pub fn cancel(&mut self, occurred_at: OffsetDateTime) -> Result<OrderTransition, DomainError> {
-        self.transition(
-            OrderStatus::Cancelled,
-            OrderTransitionKind::Cancelled,
-            occurred_at,
-        )
+    pub fn cancel(&mut self) -> Result<(), DomainError> {
+        self.transition(OrderStatus::Cancelled)
     }
 
-    fn transition(
-        &mut self,
-        to_status: OrderStatus,
-        kind: OrderTransitionKind,
-        occurred_at: OffsetDateTime,
-    ) -> Result<OrderTransition, DomainError> {
+    fn transition(&mut self, to_status: OrderStatus) -> Result<(), DomainError> {
         if self.status != OrderStatus::Pending {
             return Err(DomainError::Validation(vec![FieldViolation {
                 field: "order_status",
@@ -227,14 +188,8 @@ impl Order {
                 ),
             }]));
         }
-        let from_status = self.status;
         self.status = to_status;
-        Ok(OrderTransition {
-            from_status: Some(from_status),
-            to_status,
-            kind,
-            occurred_at,
-        })
+        Ok(())
     }
 }
 
@@ -243,27 +198,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn order_allows_one_terminal_transition_and_records_it() {
-        let now = OffsetDateTime::now_utc();
+    fn order_allows_one_terminal_transition() {
         let mut order = Order::create();
 
-        let transition = order.confirm(now).unwrap();
+        order.confirm().unwrap();
 
-        assert_eq!(transition.from_status, Some(OrderStatus::Pending));
-        assert_eq!(transition.to_status, OrderStatus::Confirmed);
-        assert_eq!(transition.kind, OrderTransitionKind::Confirmed);
-        assert!(order.cancel(now).is_err());
+        assert_eq!(order.status(), OrderStatus::Confirmed);
+        assert!(order.cancel().is_err());
     }
 
     #[test]
     fn cancelled_order_cannot_be_confirmed() {
-        let now = OffsetDateTime::now_utc();
         let mut order = Order::create();
 
-        order.cancel(now).unwrap();
+        order.cancel().unwrap();
 
         assert_eq!(order.status(), OrderStatus::Cancelled);
-        assert!(order.confirm(now).is_err());
+        assert!(order.confirm().is_err());
     }
 
     #[test]

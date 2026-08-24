@@ -59,14 +59,6 @@ pub struct OrderLineItem {
     pub subtotal_amount_minor: i64,
 }
 
-pub struct OrderTransitionItem {
-    pub id: uuid::Uuid,
-    pub from_status: Option<OrderStatus>,
-    pub to_status: OrderStatus,
-    pub kind: String,
-    pub occurred_at: OffsetDateTime,
-}
-
 /// The Order's payment state, if checkout has started. A failed or expired
 /// attempt cancels the whole Order rather than allowing a retry, so this is
 /// tracked directly on `commerce.orders` — there is never a second attempt
@@ -125,7 +117,6 @@ pub struct OrderDetail {
     pub total_amount_minor: i64,
     pub refunded_amount_minor: i64,
     pub lines: Vec<OrderLineItem>,
-    pub transitions: Vec<OrderTransitionItem>,
     pub payment_attempt: Option<OrderPaymentAttemptItem>,
     pub refunds: Vec<OrderRefundItem>,
     pub fulfillments: Vec<OrderFulfillmentItem>,
