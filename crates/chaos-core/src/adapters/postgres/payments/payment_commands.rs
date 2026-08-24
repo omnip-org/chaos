@@ -140,7 +140,7 @@ impl PostgresStripeRepository {
         // so a second concurrent request cannot double-spend it before the
         // first one confirms via webhook.
         let already_refunded: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(amount_minor), 0) FROM commerce.refunds \
+            "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM commerce.refunds \
              WHERE store_id = $1 AND payment_attempt_id = $2 AND status IN ('pending', 'succeeded')",
         )
         .bind(store_id.as_uuid())

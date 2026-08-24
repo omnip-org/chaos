@@ -131,7 +131,7 @@ async fn recompute_order_refund_summary(
         "SELECT COALESCE((SELECT SUM(refund.amount_minor) FROM commerce.refunds AS refund \
                            WHERE refund.store_id = sales_order.store_id \
                              AND refund.order_id = sales_order.id \
-                             AND refund.status = 'succeeded'), 0), \
+                             AND refund.status = 'succeeded'), 0)::bigint, \
                 sales_order.total_amount_minor \
          FROM commerce.orders AS sales_order \
          WHERE sales_order.store_id = $1 AND sales_order.id = $2",
