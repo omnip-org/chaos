@@ -286,17 +286,15 @@ impl PostgresStripeRepository {
         };
         // Backfills the raw webhook snapshot's Order link now that the
         // event has been resolved to one; a webhook that fails before this
-        // point leaves provider_webhooks.order_id NULL.
-        sqlx::query(
-            "UPDATE commerce.provider_webhooks SET order_id = $3 \
-             WHERE store_id = $1 AND id = $2",
-        )
-        .bind(job.store_id)
-        .bind(job.id)
-        .bind(order_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        // point leaves provider_webhooks.order_id NULL. provider_webhooks is
+        // otherwise append-only for chaos_runtime, so this goes through a
+        // narrow SECURITY DEFINER function rather than a direct UPDATE.
+        sqlx::query_scalar::<_, bool>("SELECT commerce.set_webhook_order_id($1, $2)")
+            .bind(job.id)
+            .bind(order_id.as_uuid())
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }

@@ -501,6 +501,29 @@ BEGIN
 END;
 $$;
 
+-- provider_webhooks is otherwise append-only for chaos_runtime (INSERT and
+-- SELECT only; see the REVOKE below): a raw webhook snapshot must not be
+-- editable by application code beyond what a handful of controlled
+-- functions allow. This narrow function is the only path to backfill the
+-- Order a webhook resolved to, once that Order is known.
+CREATE FUNCTION commerce.set_webhook_order_id(
+    event_id UUID,
+    resolved_order_id UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    UPDATE commerce.provider_webhooks
+       SET order_id = resolved_order_id
+     WHERE id = event_id;
+    RETURN FOUND;
+END;
+$$;
+
 CREATE INDEX provider_webhooks_provider_account_idx ON commerce.provider_webhooks (provider_account_id, created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 
 ALTER TABLE commerce.payment_provider_accounts ENABLE ROW LEVEL SECURITY;
@@ -542,6 +565,7 @@ REVOKE ALL ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOL
 REVOKE ALL ON FUNCTION commerce.enqueue_webhook_event() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.claim_webhook_events(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.set_webhook_order_id(UUID, UUID) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION commerce.resolve_provider_account(TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_event_outbox(INTEGER) TO chaos_runtime;
@@ -551,6 +575,7 @@ GRANT EXECUTE ON FUNCTION commerce.claim_provider_readiness_checks(UUID, INTEGER
 GRANT EXECUTE ON FUNCTION commerce.finish_provider_readiness_check(UUID, UUID, BOOLEAN, BOOLEAN, JSONB, TIMESTAMPTZ, TEXT) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.claim_webhook_events(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.finish_webhook_event(UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.set_webhook_order_id(UUID, UUID) TO chaos_runtime;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.payment_provider_accounts,
