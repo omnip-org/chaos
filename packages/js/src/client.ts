@@ -4,6 +4,7 @@ import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
+import { ReviewsResource } from "./resources/reviews.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
 import type { ShopperSession } from "./types.js";
 
@@ -50,6 +51,7 @@ export class ChaosStorefrontClient {
   readonly cart: CartResource;
   readonly orders: OrdersResource;
   readonly payments: PaymentsResource;
+  readonly reviews: ReviewsResource;
   readonly analytics?: ChaosStorefrontAnalytics;
 
   constructor(options: ClientOptions) {
@@ -86,6 +88,7 @@ export class ChaosStorefrontClient {
     this.cart = new CartResource(this);
     this.orders = new OrdersResource(this);
     this.payments = new PaymentsResource(this);
+    this.reviews = new ReviewsResource(this);
     const analyticsOptions = options.analytics === false ? undefined : options.analytics;
     const analyticsDocument = analyticsOptions?.document ?? globalThis.document;
     if (options.analytics !== false && analyticsDocument) {

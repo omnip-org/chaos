@@ -75,6 +75,39 @@ export interface Collection {
   title: string;
   description: string;
   product_count: number;
+  metadata?: unknown;
+}
+
+export interface SubmitReviewRequest {
+  /** 1-5. */
+  rating: number;
+  title?: string;
+  content: string;
+  author_name: string;
+  author_email?: string;
+}
+
+/**
+ * An approved Review, or a staff reply nested under one via `replies`.
+ * Replies carry no `rating`. list_product_reviews only ever returns
+ * approved reviews, so `status` is always "approved" there.
+ */
+export interface Review {
+  id: UUID;
+  product_id: UUID;
+  parent_id?: UUID;
+  author_name: string;
+  author_email?: string;
+  rating?: number;
+  title?: string;
+  content: string;
+  images: string[];
+  status: "approved";
+  is_staff_reply: boolean;
+  verified_buyer: boolean;
+  created_at: string;
+  updated_at: string;
+  replies?: Review[];
 }
 
 export interface Page {
@@ -189,8 +222,8 @@ export interface OrderRefund {
   updated_at: string;
 }
 
-/** One shipment against an Order. An Order has at most one active
- * (non-cancelled) Fulfillment at a time. */
+/** One shipment against an Order. An Order may have more than one
+ * concurrently active (non-cancelled) Fulfillment for split shipments. */
 export interface OrderFulfillment {
   id: UUID;
   shipping_provider_account_id: UUID;
