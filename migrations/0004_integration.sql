@@ -10,12 +10,9 @@ CREATE TABLE integration.event_consumers (
     queue_name  TEXT NOT NULL,
     description TEXT NOT NULL,
 
-    CONSTRAINT event_consumers_event_type_check
-        CHECK (event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
-    CONSTRAINT event_consumers_queue_name_check
-        CHECK (queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
-    CONSTRAINT event_consumers_description_check
-        CHECK (length(trim(description)) BETWEEN 1 AND 255)
+    CONSTRAINT event_consumers_event_type_check        CHECK (event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
+    CONSTRAINT event_consumers_queue_name_check        CHECK (queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
+    CONSTRAINT event_consumers_description_check       CHECK (length(trim(description)) BETWEEN 1 AND 255)
 );
 
 CREATE TABLE integration.event_outbox (
@@ -32,18 +29,12 @@ CREATE TABLE integration.event_outbox (
     last_error      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT event_outbox_queue_name_pgmq_message_id_key
-        UNIQUE (queue_name, pgmq_message_id),
-    CONSTRAINT event_outbox_store_id_fkey
-        FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT event_outbox_event_type_fkey
-        FOREIGN KEY (event_type) REFERENCES integration.event_consumers (event_type),
-    CONSTRAINT event_outbox_payload_object_check
-        CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT event_outbox_queue_name_check
-        CHECK (queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
-    CONSTRAINT event_outbox_completion_check
-        CHECK (processed_at IS NULL OR failed_at IS NULL)
+    CONSTRAINT event_outbox_queue_name_pgmq_message_id_key   UNIQUE (queue_name, pgmq_message_id),
+    CONSTRAINT event_outbox_store_id_fkey                    FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT event_outbox_event_type_fkey                  FOREIGN KEY (event_type) REFERENCES integration.event_consumers (event_type),
+    CONSTRAINT event_outbox_payload_object_check             CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT event_outbox_queue_name_check                 CHECK (queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
+    CONSTRAINT event_outbox_completion_check                 CHECK (processed_at IS NULL OR failed_at IS NULL)
 );
 
 CREATE TABLE integration.payment_provider_accounts (
@@ -57,36 +48,14 @@ CREATE TABLE integration.payment_provider_accounts (
     created_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT payment_provider_accounts_store_provider_key
-        UNIQUE (store_id, provider),
-    CONSTRAINT payment_provider_accounts_store_id_fkey
-        FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT payment_provider_accounts_display_name_length_check
-        CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
-    CONSTRAINT payment_provider_accounts_credential_reference_check
-        CHECK (
-            credential_secret_reference IS NULL
-            OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
-            OR (
-                char_length(credential_secret_reference) <= 32768
-                AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-            )
-        ),
-    CONSTRAINT payment_provider_accounts_webhook_reference_check
-        CHECK (
-            webhook_secret_reference IS NULL
-            OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
-            OR (
-                char_length(webhook_secret_reference) <= 32768
-                AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-            )
-        ),
-    CONSTRAINT payment_provider_accounts_meta_object_check
-        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
-    CONSTRAINT payment_provider_accounts_meta_size_check
-        CHECK (meta IS NULL OR pg_column_size(meta) <= 32768)
+    CONSTRAINT payment_provider_accounts_store_provider_key          UNIQUE (store_id, provider),
+    CONSTRAINT payment_provider_accounts_store_id_fkey               FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT payment_provider_accounts_display_name_length_check   CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
+    CONSTRAINT payment_provider_accounts_credential_reference_check  CHECK (credential_secret_reference IS NULL OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(credential_secret_reference) <= 32768 AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT payment_provider_accounts_webhook_reference_check     CHECK (webhook_secret_reference IS NULL OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(webhook_secret_reference) <= 32768 AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT payment_provider_accounts_meta_object_check           CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    CONSTRAINT payment_provider_accounts_meta_size_check             CHECK (meta IS NULL OR pg_column_size(meta) <= 32768)
 );
-
 
 CREATE TABLE integration.shipping_provider_accounts (
     id                           UUID                          NOT NULL PRIMARY KEY,
@@ -99,34 +68,13 @@ CREATE TABLE integration.shipping_provider_accounts (
     created_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT shipping_provider_accounts_store_provider_key
-        UNIQUE (store_id, provider),
-    CONSTRAINT shipping_provider_accounts_store_id_fkey
-        FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT shipping_provider_accounts_display_name_length_check
-        CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
-    CONSTRAINT shipping_provider_accounts_credential_reference_check
-        CHECK (
-            credential_secret_reference IS NULL
-            OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
-            OR (
-                char_length(credential_secret_reference) <= 32768
-                AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-            )
-        ),
-    CONSTRAINT shipping_provider_accounts_webhook_reference_check
-        CHECK (
-            webhook_secret_reference IS NULL
-            OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$'
-            OR (
-                char_length(webhook_secret_reference) <= 32768
-                AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$'
-            )
-        ),
-    CONSTRAINT shipping_provider_accounts_meta_object_check
-        CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
-    CONSTRAINT shipping_provider_accounts_meta_size_check
-        CHECK (meta IS NULL OR pg_column_size(meta) <= 32768)
+    CONSTRAINT shipping_provider_accounts_store_provider_key          UNIQUE (store_id, provider),
+    CONSTRAINT shipping_provider_accounts_store_id_fkey               FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT shipping_provider_accounts_display_name_length_check   CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
+    CONSTRAINT shipping_provider_accounts_credential_reference_check  CHECK (credential_secret_reference IS NULL OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(credential_secret_reference) <= 32768 AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT shipping_provider_accounts_webhook_reference_check     CHECK (webhook_secret_reference IS NULL OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(webhook_secret_reference) <= 32768 AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT shipping_provider_accounts_meta_object_check           CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    CONSTRAINT shipping_provider_accounts_meta_size_check             CHECK (meta IS NULL OR pg_column_size(meta) <= 32768)
 );
 
 CREATE INDEX event_outbox_pending_idx
@@ -139,7 +87,6 @@ CREATE INDEX payment_provider_accounts_store_created_idx
 CREATE INDEX shipping_provider_accounts_store_created_idx
     ON integration.shipping_provider_accounts (store_id, created_at DESC, id DESC);
 
-
 CREATE FUNCTION integration.event_queue_name (event_type TEXT)
 RETURNS TEXT
 LANGUAGE SQL
@@ -151,7 +98,6 @@ AS $$
     FROM integration.event_consumers AS registry
     WHERE registry.event_type = event_queue_name.event_type;
 $$;
-
 
 CREATE FUNCTION integration.enqueue_event_outbox ()
 RETURNS TRIGGER
@@ -179,7 +125,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 CREATE FUNCTION integration.claim_routed_event_outbox (
     queue_name TEXT,
@@ -248,7 +193,6 @@ BEGIN
     END LOOP;
 END;
 $$;
-
 
 CREATE FUNCTION integration.finish_event_outbox (
     event_id      UUID,
@@ -458,14 +402,12 @@ CREATE POLICY store_isolation ON integration.shipping_provider_accounts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-
 INSERT INTO integration.event_consumers (event_type, queue_name, description)
 VALUES (
     'search.product.changed',
     'chaos_search_events',
     'Refreshes the Store-isolated Product search document'
 );
-
 
 CREATE TRIGGER event_outbox_enqueue
     BEFORE INSERT ON integration.event_outbox
