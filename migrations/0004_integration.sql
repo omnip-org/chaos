@@ -2,6 +2,7 @@ CREATE SCHEMA integration;
 
 SELECT pgmq.create('chaos_search_events');
 
+CREATE TYPE integration.email_provider AS ENUM ('resend');
 CREATE TYPE integration.payment_provider AS ENUM ('stripe');
 CREATE TYPE integration.shipping_provider AS ENUM ('manual');
 
@@ -35,6 +36,26 @@ CREATE TABLE integration.event_outbox (
     CONSTRAINT event_outbox_payload_object_check             CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT event_outbox_queue_name_check                 CHECK (queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
     CONSTRAINT event_outbox_completion_check                 CHECK (processed_at IS NULL OR failed_at IS NULL)
+);
+
+CREATE TABLE integration.email_provider_accounts (
+    id                           UUID                          NOT NULL PRIMARY KEY,
+    store_id                     UUID                          NOT NULL,
+    provider                     integration.payment_provider  NOT NULL,
+    display_name                 TEXT                          NOT NULL DEFAULT 'Email Provider',
+    credential_secret_reference  TEXT,
+    webhook_secret_reference     TEXT,
+    meta                         JSONB,
+    created_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                   TIMESTAMPTZ                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT email_provider_accounts_store_provider_key          UNIQUE (store_id, provider),
+    CONSTRAINT email_provider_accounts_store_id_fkey               FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT email_provider_accounts_display_name_length_check   CHECK (length(trim(display_name)) BETWEEN 1 AND 120),
+    CONSTRAINT email_provider_accounts_credential_reference_check  CHECK (credential_secret_reference IS NULL OR credential_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(credential_secret_reference) <= 32768 AND credential_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT email_provider_accounts_webhook_reference_check     CHECK (webhook_secret_reference IS NULL OR webhook_secret_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$' OR (char_length(webhook_secret_reference) <= 32768 AND webhook_secret_reference ~ '^enc://[A-Za-z0-9_-]+$')),
+    CONSTRAINT email_provider_accounts_meta_object_check           CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    CONSTRAINT email_provider_accounts_meta_size_check             CHECK (meta IS NULL OR pg_column_size(meta) <= 32768)
 );
 
 CREATE TABLE integration.payment_provider_accounts (
