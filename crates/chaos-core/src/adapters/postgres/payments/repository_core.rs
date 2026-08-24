@@ -9,10 +9,10 @@ use crate::{
     ApplicationError,
     error::database_error,
     contracts::{
-        AdminActor, MachineActor, PaymentAttemptDetail, PaymentCheckoutDetails,
-        PaymentLineItem, StripeAccountConfiguration,
+        AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
+        PaymentCheckoutDetails, PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
-        StripeReadiness, StripeReadinessJob, StripeReadinessQueue, StripeReadinessStatus,
+        StripeReadiness, StripeReadinessStatus,
         PaymentShippingAddress,
         StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
         StripeCommandResult, QueueJob, RefundDetail, ShopperActor,
@@ -22,9 +22,7 @@ use crate::{
 };
 use chaos_domain::{
     CurrencyCode,
-    payments::{
-        PaymentAttempt, PaymentAttemptId, PaymentAttemptStatus, Refund, RefundId, RefundStatus,
-    },
+    payments::{PaymentAttemptStatus, Refund, RefundId, RefundStatus},
     pricing::Money,
     sales::{Order, OrderId, OrderStatus},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
@@ -58,10 +56,7 @@ type ProviderAccountRow = (
     bool,
     String,
     Option<OffsetDateTime>,
-    Option<OffsetDateTime>,
     Value,
-    Option<OffsetDateTime>,
-    Option<OffsetDateTime>,
     OffsetDateTime,
     OffsetDateTime,
 );
@@ -199,13 +194,6 @@ fn order_not_found(order_id: OrderId) -> ApplicationError {
     }
 }
 
-fn attempt_not_found(attempt_id: PaymentAttemptId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "payment_attempt",
-        id: attempt_id.as_uuid().to_string(),
-    }
-}
-
 async fn load_stripe_account(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
@@ -214,9 +202,8 @@ async fn load_stripe_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, provider, display_name, enabled, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                readiness_status, readiness_checked_at, readiness_valid_until, \
-                COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
-                credential_rotation_expires_at, webhook_rotation_expires_at, \
+                readiness->>'status', (readiness->>'checked_at')::timestamptz, \
+                COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
                 created_at, updated_at FROM commerce.payment_provider_accounts \
          WHERE store_id = $1 AND id = $2",
     )
@@ -246,12 +233,9 @@ fn stripe_account_detail(
             _ => return Err(corrupt_state()),
         },
         readiness_checked_at: row.6,
-        readiness_valid_until: row.7,
-        readiness_blocker_codes: serde_json::from_value(row.8).map_err(|_| corrupt_state())?,
-        credential_rotation_expires_at: row.9,
-        webhook_rotation_expires_at: row.10,
-        created_at: row.11,
-        updated_at: row.12,
+        readiness_blocker_codes: serde_json::from_value(row.7).map_err(|_| corrupt_state())?,
+        created_at: row.8,
+        updated_at: row.9,
     })
 }
 
@@ -261,6 +245,27 @@ fn readiness_status(readiness: &StripeReadiness) -> StripeReadinessStatus {
     } else {
         StripeReadinessStatus::ActionRequired
     }
+}
+
+/// Builds the `payment_provider_accounts.readiness` JSONB value for a fresh
+/// INSERT. Keys are omitted rather than written as an explicit JSON `null`
+/// so `readiness->>'key' IS NULL` reads the same way for "never checked" as
+/// for "checked, but this field doesn't apply" — a JSONB `null` value is not
+/// SQL NULL under `->`, only under `->>`, so building this by hand (instead
+/// of via `json!` on `Option` fields) avoids that trap for object-valued keys.
+fn readiness_json(readiness: Option<&StripeReadiness>) -> Value {
+    let mut object = serde_json::Map::new();
+    let Some(readiness) = readiness else {
+        object.insert("status".into(), json!(StripeReadinessStatus::Unchecked.as_str()));
+        return Value::Object(object);
+    };
+    object.insert(
+        "status".into(),
+        json!(readiness_status(readiness).as_str()),
+    );
+    object.insert("snapshot".into(), readiness.configuration.clone());
+    object.insert("checked_at".into(), json!(readiness.checked_at));
+    Value::Object(object)
 }
 
 fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
@@ -326,11 +331,4 @@ fn corrupt_payment_state() -> ApplicationError {
 
 fn corrupt_webhook_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("verified webhook payload is invalid"))
-}
-
-fn queue_job_not_found() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "queue_lease_lost",
-        message: "the queue job is no longer leased by this worker",
-    }
 }

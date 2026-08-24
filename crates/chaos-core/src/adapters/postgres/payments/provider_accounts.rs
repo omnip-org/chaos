@@ -12,9 +12,8 @@ impl PostgresStripeRepository {
         let rows = sqlx::query_as::<_, ProviderAccountRow>(
             "SELECT id, provider, display_name, enabled, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                    readiness_status, readiness_checked_at, readiness_valid_until, \
-                    COALESCE(readiness_snapshot->'blocker_codes', '[]'::jsonb), \
-                    credential_rotation_expires_at, webhook_rotation_expires_at, \
+                    readiness->>'status', (readiness->>'checked_at')::timestamptz, \
+                    COALESCE(readiness->'snapshot'->'blocker_codes', '[]'::jsonb), \
                     created_at, updated_at \
              FROM commerce.payment_provider_accounts \
              WHERE store_id = $1 \
@@ -62,10 +61,8 @@ impl PostgresStripeRepository {
             "INSERT INTO commerce.payment_provider_accounts \
              (id, store_id, provider, display_name, \
               credential_secret_reference, webhook_secret_reference, \
-              readiness_status, readiness_snapshot, readiness_checked_at, \
-              readiness_valid_until, readiness_reconcile_at, \
-              enabled, created_by_user_id) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+              readiness, enabled) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -73,24 +70,8 @@ impl PostgresStripeRepository {
         .bind(account.display_name())
         .bind(configuration.credential_secret_reference.expose_reference())
         .bind(configuration.webhook_secret_reference.expose_reference())
-        .bind(readiness.map_or(
-            StripeReadinessStatus::Unchecked.as_str(),
-            |value| readiness_status(value).as_str(),
-        ))
-        .bind(readiness.map(|value| &value.configuration))
-        .bind(readiness.map(|value| value.checked_at))
-        .bind(
-            readiness
-                .filter(|value| value.ready)
-                .map(|value| value.checked_at + time::Duration::hours(24)),
-        )
-        .bind(
-            readiness
-                .filter(|value| value.ready)
-                .map(|value| value.checked_at + time::Duration::hours(6)),
-        )
+        .bind(readiness_json(readiness))
         .bind(account.enabled())
-        .bind(actor.user_id().as_uuid())
         .execute(&mut *transaction)
         .await
         .map_err(map_provider_account_write_error)?;
@@ -110,65 +91,22 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let readiness = configuration.readiness.as_ref();
+        // A credential or webhook secret change takes effect immediately —
+        // there is no rotation grace window. readiness resets to unchecked
+        // whenever the credential changes, or is replaced outright when the
+        // caller passed a freshly-computed result ($7 non-NULL).
         let result = sqlx::query(
             "UPDATE commerce.payment_provider_accounts SET display_name = $3, \
-                    previous_credential_secret_reference = CASE \
-                        WHEN credential_secret_reference IS NOT NULL \
-                             AND credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN credential_secret_reference ELSE previous_credential_secret_reference END, \
-                    credential_rotation_expires_at = CASE \
-                        WHEN credential_secret_reference IS NOT NULL \
-                             AND credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE credential_rotation_expires_at END, \
                     credential_secret_reference = $4, \
-                    previous_webhook_secret_reference = CASE \
-                        WHEN webhook_secret_reference IS NOT NULL \
-                             AND webhook_secret_reference IS DISTINCT FROM $5 \
-                        THEN webhook_secret_reference ELSE previous_webhook_secret_reference END, \
-                    webhook_rotation_expires_at = CASE \
-                        WHEN webhook_secret_reference IS NOT NULL \
-                             AND webhook_secret_reference IS DISTINCT FROM $5 \
-                        THEN CURRENT_TIMESTAMP + INTERVAL '24 hours' ELSE webhook_rotation_expires_at END, \
                     webhook_secret_reference = $5, \
-                    readiness_status = CASE \
-                        WHEN $7::text IS NOT NULL THEN $7 \
+                    readiness = CASE \
+                        WHEN $7::text IS NOT NULL THEN jsonb_build_object( \
+                            'status', $7::text, 'snapshot', $8::jsonb, \
+                            'checked_at', to_jsonb($9::timestamptz) \
+                        ) \
                         WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN 'unchecked' \
-                        ELSE readiness_status END, \
-                    readiness_snapshot = CASE \
-                        WHEN $7::text IS NOT NULL THEN $8::jsonb \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL \
-                        ELSE readiness_snapshot END, \
-                    readiness_checked_at = CASE \
-                        WHEN $7::text IS NOT NULL THEN $9::timestamptz \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL \
-                        ELSE readiness_checked_at END, \
-                    readiness_valid_until = CASE \
-                        WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '24 hours' \
-                        WHEN $7::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL \
-                        ELSE readiness_valid_until END, \
-                    readiness_reconcile_at = CASE \
-                        WHEN $7::text = 'ready' THEN $9::timestamptz + INTERVAL '6 hours' \
-                        WHEN $7::text IS NOT NULL THEN NULL \
-                        WHEN credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL \
-                        ELSE readiness_reconcile_at END, \
-                    readiness_locked_by = CASE \
-                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL ELSE readiness_locked_by END, \
-                    readiness_locked_at = CASE \
-                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL ELSE readiness_locked_at END, \
-                    readiness_reconcile_attempts = CASE \
-                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN 0 ELSE readiness_reconcile_attempts END, \
-                    readiness_last_error = CASE \
-                        WHEN $7::text IS NOT NULL OR credential_secret_reference IS DISTINCT FROM $4 \
-                        THEN NULL ELSE readiness_last_error END, \
+                        THEN jsonb_build_object('status', 'unchecked') \
+                        ELSE readiness END, \
                     enabled = $6, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )

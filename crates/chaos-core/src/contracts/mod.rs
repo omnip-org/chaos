@@ -67,10 +67,10 @@ pub use storefront_catalog::{
     StorefrontProductOptionValue, StorefrontSelectedOption,
 };
 pub use stripe::{
-    PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
-    PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption, RefundDetail,
-    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeAccountReadiness,
-    StripeCommand, StripeCommandResult, StripePaymentGateway, StripeReadiness, StripeReadinessJob,
-    StripeReadinessQueue, StripeReadinessStatus, StripeWebhookConfiguration,
+    OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
+    PaymentLineItem, PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption,
+    RefundDetail, StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage,
+    StripeAccountReadiness, StripeCommand, StripeCommandResult, StripePaymentGateway,
+    StripeReadiness, StripeReadinessStatus, StripeWebhookConfiguration,
     StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
 };

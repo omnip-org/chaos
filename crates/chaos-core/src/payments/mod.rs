@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    payments::PaymentAttemptId,
     sales::OrderId,
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
@@ -9,15 +8,13 @@ use chaos_domain::{
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-const WORKER_LEASE_TIMEOUT: Duration = Duration::minutes(1);
-
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
         AdminActor, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentClientAction,
         QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration, StripeAccountDetail,
-        StripeAccountPage, StripeAccountReadiness, StripePaymentGateway, StripeReadinessQueue,
+        StripeAccountPage, StripeAccountReadiness, StripePaymentGateway,
         StripeWebhookSignatureVerifier,
     },
     store::StoreActor,
@@ -39,7 +36,7 @@ pub struct EmbeddedCheckoutResult {
 pub struct CreateRefundInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
-    pub payment_attempt_id: PaymentAttemptId,
+    pub order_id: OrderId,
     pub amount_minor: i64,
 }
 
@@ -227,22 +224,21 @@ impl PaymentService {
                         reason: "return_url is required for Stripe Embedded Checkout".into(),
                     }],
                 })?;
-        let attempt = self
-            .repository
+        self.repository
             .create_attempt(&input.actor, input.order_id)
             .await?;
         let command = self
             .repository
             .prepare_checkout_command(
                 &input.actor,
-                attempt.id,
+                input.order_id,
                 return_url,
                 &input.request_id.to_string(),
             )
             .await?;
         let result = self.stripe_gateway.execute(command).await?;
         self.repository
-            .record_checkout_result(&input.actor, attempt.id, &result, input.now)
+            .record_checkout_result(&input.actor, input.order_id, &result, input.now)
             .await?;
         let client_action = result
             .client_action
@@ -252,11 +248,11 @@ impl PaymentService {
             })?;
         let attempt = self
             .repository
-            .get_attempt(&input.actor, attempt.id)
+            .get_attempt(&input.actor, input.order_id)
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
-                resource: "payment_attempt",
-                id: attempt.id.as_uuid().to_string(),
+                resource: "order",
+                id: input.order_id.as_uuid().to_string(),
             })?;
         Ok(EmbeddedCheckoutResult {
             attempt,
@@ -273,7 +269,7 @@ impl PaymentService {
             .create_refund(
                 input.actor,
                 input.store_id,
-                input.payment_attempt_id,
+                input.order_id,
                 input.amount_minor,
             )
             .await
@@ -281,14 +277,14 @@ impl PaymentService {
 
     pub async fn receive_webhook(
         &self,
-        store_id: StoreId,
+        provider_account_id: StripeAccountId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<bool, ApplicationError> {
         let event = self
             .verifier
-            .verify(store_id, signature, payload, received_at)
+            .verify(provider_account_id, signature, payload, received_at)
             .await?;
         self.repository.ingest_webhook(&event).await
     }
@@ -296,26 +292,20 @@ impl PaymentService {
 
 pub struct PaymentWorkers {
     queue: Arc<dyn IntegrationQueue>,
-    readiness_queue: Arc<dyn StripeReadinessQueue>,
     repository: Arc<PostgresStripeRepository>,
     stripe_gateway: Arc<dyn StripePaymentGateway>,
-    onboarding: Arc<dyn StripeAccountReadiness>,
 }
 
 impl PaymentWorkers {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
-        readiness_queue: Arc<dyn StripeReadinessQueue>,
         repository: Arc<PostgresStripeRepository>,
         stripe_gateway: Arc<dyn StripePaymentGateway>,
-        onboarding: Arc<dyn StripeAccountReadiness>,
     ) -> Self {
         Self {
             queue,
-            readiness_queue,
             repository,
             stripe_gateway,
-            onboarding,
         }
     }
 
@@ -351,29 +341,6 @@ impl PaymentWorkers {
                 .map_err(|error| error.to_string());
             self.queue
                 .finish_webhook(job.id, job.attempts, result, now)
-                .await?;
-        }
-        Ok(jobs.len())
-    }
-
-    pub async fn run_readiness_batch(
-        &self,
-        worker_id: Uuid,
-        now: OffsetDateTime,
-        limit: u16,
-    ) -> Result<usize, ApplicationError> {
-        let jobs = self
-            .readiness_queue
-            .claim_stripe_readiness(worker_id, limit, now, now - WORKER_LEASE_TIMEOUT)
-            .await?;
-        for job in &jobs {
-            let result = self
-                .onboarding
-                .check_readiness(&job.credential_secret_reference, now)
-                .await
-                .map_err(|error| error.to_string());
-            self.readiness_queue
-                .finish_stripe_readiness(worker_id, job.stripe_account_id, result, now)
                 .await?;
         }
         Ok(jobs.len())

@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use chaos_domain::{
     CurrencyCode,
-    payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
+    payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     sales::OrderId,
-    store::StoreId,
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
 };
 use secrecy::SecretString;
@@ -48,10 +47,7 @@ pub struct StripeAccountDetail {
     pub credentials_configured: bool,
     pub readiness_status: StripeReadinessStatus,
     pub readiness_checked_at: Option<OffsetDateTime>,
-    pub readiness_valid_until: Option<OffsetDateTime>,
     pub readiness_blocker_codes: Vec<String>,
-    pub credential_rotation_expires_at: Option<OffsetDateTime>,
-    pub webhook_rotation_expires_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
@@ -62,12 +58,11 @@ pub struct StripeAccountPage {
 }
 
 pub struct PaymentAttemptDetail {
-    pub id: PaymentAttemptId,
     pub order_id: OrderId,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub status: PaymentAttemptStatus,
-    pub stripe_checkout_session_id: Option<String>,
+    pub stripe_payment_intent_id: Option<String>,
     pub failure_code: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -75,7 +70,7 @@ pub struct PaymentAttemptDetail {
 
 pub struct RefundDetail {
     pub id: RefundId,
-    pub payment_attempt_id: PaymentAttemptId,
+    pub order_id: OrderId,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub status: RefundStatus,
@@ -90,6 +85,12 @@ pub struct StripeWebhookEvent {
     pub stripe_event_id: String,
     pub event_type: String,
     pub object_reference: String,
+    pub order_id: Option<Uuid>,
+    /// Present only for `refund.*` events Chaos itself created — resolves
+    /// which Refund row this event confirms when an Order has more than one
+    /// in flight. Absent for a refund created outside Chaos (e.g. the
+    /// Stripe Dashboard), which is instead resolved via the PaymentIntent.
+    pub refund_id: Option<Uuid>,
     pub failure_code: Option<String>,
     pub payload: Value,
     pub verified_at: OffsetDateTime,
@@ -98,13 +99,6 @@ pub struct StripeWebhookEvent {
 pub struct StripeWebhookConfiguration {
     pub stripe_account_id: Uuid,
     pub secret_reference: PaymentSecretReference,
-}
-
-pub struct StripeReadinessJob {
-    pub stripe_account_id: StripeAccountId,
-    pub store_id: StoreId,
-    pub credential_secret_reference: PaymentSecretReference,
-    pub attempts: u32,
 }
 
 pub struct PaymentCheckoutDetails {
@@ -147,7 +141,15 @@ pub struct PaymentShippingAddress {
 pub struct StripeCommand {
     pub stripe_account_id: StripeAccountId,
     pub event_type: String,
+    /// The Order this command acts on — always present, and what
+    /// `chaos_order_id` in Stripe metadata carries.
     pub aggregate_id: Uuid,
+    /// The specific Refund row this command creates — only set for
+    /// `refund.create_requested`. An Order can have more than one refund in
+    /// flight at once, so the webhook confirming a refund needs this (via
+    /// `chaos_refund_id` metadata) to know which row to update; order_id
+    /// alone cannot disambiguate.
+    pub refund_id: Option<Uuid>,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
@@ -157,6 +159,19 @@ pub struct StripeCommand {
     /// commands that do not create a Checkout Session.
     pub checkout_details: Option<PaymentCheckoutDetails>,
     pub return_url: Option<String>,
+    /// Written into the Stripe object's metadata purely so an operator
+    /// reading the object in the Stripe Dashboard sees full Chaos context
+    /// without switching back to the admin tooling. Not read back from any
+    /// webhook — order_id/refund_id alone drive webhook processing.
+    pub order_context: OrderMetadataContext,
+}
+
+#[derive(Clone)]
+pub struct OrderMetadataContext {
+    pub store_id: Uuid,
+    pub shopper_id: Uuid,
+    pub sales_channel_id: Uuid,
+    pub order_number: String,
 }
 
 pub struct StripeCommandResult {
@@ -194,31 +209,12 @@ pub trait StripeAccountReadiness: Send + Sync {
 }
 
 #[async_trait]
-pub trait StripeReadinessQueue: Send + Sync {
-    async fn claim_stripe_readiness(
-        &self,
-        worker_id: Uuid,
-        limit: u16,
-        now: OffsetDateTime,
-        stale_before: OffsetDateTime,
-    ) -> Result<Vec<StripeReadinessJob>, ApplicationError>;
-
-    async fn finish_stripe_readiness(
-        &self,
-        worker_id: Uuid,
-        stripe_account_id: StripeAccountId,
-        result: Result<StripeReadiness, String>,
-        now: OffsetDateTime,
-    ) -> Result<(), ApplicationError>;
-}
-
-#[async_trait]
 pub trait StripeWebhookSignatureVerifier: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn verify(
         &self,
-        store_id: StoreId,
+        provider_account_id: StripeAccountId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -227,9 +223,9 @@ pub trait StripeWebhookSignatureVerifier: Send + Sync {
 
 #[async_trait]
 pub trait StripeWebhookConfigurationRepository: Send + Sync {
-    async fn webhook_configurations(
+    async fn webhook_configuration(
         &self,
-        store_id: StoreId,
+        provider_account_id: StripeAccountId,
     ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError>;
 }
 

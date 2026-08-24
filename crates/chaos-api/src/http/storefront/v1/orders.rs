@@ -58,15 +58,10 @@ struct OrderTransitionData {
 
 #[derive(Serialize)]
 struct PaymentAttemptData {
-    id: Uuid,
     status: &'static str,
     amount_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_checkout_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     stripe_payment_intent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stripe_charge_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
     created_at: ApiDateTime,
@@ -76,7 +71,6 @@ struct PaymentAttemptData {
 #[derive(Serialize)]
 struct RefundData {
     id: Uuid,
-    payment_attempt_id: Uuid,
     status: &'static str,
     amount_minor: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,7 +137,8 @@ struct OrderData {
     refunded_amount_minor: i64,
     lines: Vec<OrderLineData>,
     transitions: Vec<OrderTransitionData>,
-    payment_attempts: Vec<PaymentAttemptData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payment_attempt: Option<PaymentAttemptData>,
     refunds: Vec<RefundData>,
     fulfillments: Vec<FulfillmentData>,
     created_at: ApiDateTime,
@@ -274,11 +269,7 @@ fn order_data(order: OrderDetail) -> Result<OrderData, chaos_core::ApplicationEr
             .into_iter()
             .map(order_transition_data)
             .collect(),
-        payment_attempts: order
-            .payment_attempts
-            .into_iter()
-            .map(payment_attempt_data)
-            .collect(),
+        payment_attempt: order.payment_attempt.map(payment_attempt_data),
         refunds: order.refunds.into_iter().map(refund_data).collect(),
         fulfillments: order
             .fulfillments
@@ -337,12 +328,9 @@ fn order_transition_data(
 
 fn payment_attempt_data(item: OrderPaymentAttemptItem) -> PaymentAttemptData {
     PaymentAttemptData {
-        id: item.id.as_uuid(),
         status: item.status.as_str(),
         amount_minor: item.amount_minor,
-        stripe_checkout_session_id: item.stripe_checkout_session_id,
         stripe_payment_intent_id: item.stripe_payment_intent_id,
-        stripe_charge_id: item.stripe_charge_id,
         failure_code: item.failure_code,
         created_at: item.created_at.into(),
         updated_at: item.updated_at.into(),
@@ -352,7 +340,6 @@ fn payment_attempt_data(item: OrderPaymentAttemptItem) -> PaymentAttemptData {
 fn refund_data(item: OrderRefundItem) -> RefundData {
     RefundData {
         id: item.id.as_uuid(),
-        payment_attempt_id: item.payment_attempt_id.as_uuid(),
         status: item.status.as_str(),
         amount_minor: item.amount_minor,
         stripe_refund_id: item.stripe_refund_id,

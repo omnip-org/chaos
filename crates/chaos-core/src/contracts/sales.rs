@@ -2,7 +2,7 @@ use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductVariantId},
     fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
-    payments::{PaymentAttemptId, PaymentAttemptStatus, RefundId, RefundStatus},
+    payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
         CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderShippingStatus,
@@ -67,26 +67,23 @@ pub struct OrderTransitionItem {
     pub occurred_at: OffsetDateTime,
 }
 
-/// One real attempt to pay an Order. Each retry after a decline is its own
-/// row with its own Stripe references, so history is never overwritten in
-/// place — see `commerce.payment_attempts`.
+/// The Order's payment state, if checkout has started. A failed or expired
+/// attempt cancels the whole Order rather than allowing a retry, so this is
+/// tracked directly on `commerce.orders` — there is never a second attempt
+/// to reconcile against the first.
 pub struct OrderPaymentAttemptItem {
-    pub id: PaymentAttemptId,
     pub status: PaymentAttemptStatus,
     pub amount_minor: i64,
-    pub stripe_checkout_session_id: Option<String>,
     pub stripe_payment_intent_id: Option<String>,
-    pub stripe_charge_id: Option<String>,
     pub failure_code: Option<String>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
-/// One Refund against one Payment Attempt. An Order may have more than one
-/// across one or more captured attempts — see `commerce.refunds`.
+/// One Refund against an Order. An Order may have more than one across
+/// partial refunds — see `commerce.refunds`.
 pub struct OrderRefundItem {
     pub id: RefundId,
-    pub payment_attempt_id: PaymentAttemptId,
     pub status: RefundStatus,
     pub amount_minor: i64,
     pub stripe_refund_id: Option<String>,
@@ -129,7 +126,7 @@ pub struct OrderDetail {
     pub refunded_amount_minor: i64,
     pub lines: Vec<OrderLineItem>,
     pub transitions: Vec<OrderTransitionItem>,
-    pub payment_attempts: Vec<OrderPaymentAttemptItem>,
+    pub payment_attempt: Option<OrderPaymentAttemptItem>,
     pub refunds: Vec<OrderRefundItem>,
     pub fulfillments: Vec<OrderFulfillmentItem>,
     pub created_at: OffsetDateTime,

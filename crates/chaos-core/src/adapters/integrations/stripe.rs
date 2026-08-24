@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use async_trait::async_trait;
-use chaos_domain::{store::StoreId, stripe::PaymentSecretReference};
+use chaos_domain::stripe::{PaymentSecretReference, StripeAccountId};
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{
     Client, StatusCode,
@@ -256,6 +256,29 @@ impl StripePaymentGateway for StripeGateway {
                             "metadata[chaos_order_id]".into(),
                             command.aggregate_id.to_string(),
                         ),
+                        (
+                            "metadata[chaos_refund_id]".into(),
+                            command
+                                .refund_id
+                                .ok_or_else(stripe_invalid_response)?
+                                .to_string(),
+                        ),
+                        (
+                            "metadata[chaos_store_id]".into(),
+                            command.order_context.store_id.to_string(),
+                        ),
+                        (
+                            "metadata[chaos_shopper_id]".into(),
+                            command.order_context.shopper_id.to_string(),
+                        ),
+                        (
+                            "metadata[chaos_sales_channel_id]".into(),
+                            command.order_context.sales_channel_id.to_string(),
+                        ),
+                        (
+                            "metadata[chaos_order_number]".into(),
+                            command.order_context.order_number.clone(),
+                        ),
                     ],
                 )
                 .await?;
@@ -296,6 +319,22 @@ impl StripePaymentGateway for StripeGateway {
             (
                 "metadata[chaos_order_id]".into(),
                 command.aggregate_id.to_string(),
+            ),
+            (
+                "metadata[chaos_store_id]".into(),
+                command.order_context.store_id.to_string(),
+            ),
+            (
+                "metadata[chaos_shopper_id]".into(),
+                command.order_context.shopper_id.to_string(),
+            ),
+            (
+                "metadata[chaos_sales_channel_id]".into(),
+                command.order_context.sales_channel_id.to_string(),
+            ),
+            (
+                "metadata[chaos_order_number]".into(),
+                command.order_context.order_number.clone(),
             ),
         ];
         for (index, line) in checkout_details.line_items.iter().enumerate() {
@@ -487,7 +526,7 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
 
     async fn verify(
         &self,
-        store_id: StoreId,
+        provider_account_id: StripeAccountId,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
@@ -501,7 +540,10 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
         if envelope.account.is_some() {
             return Err(invalid_webhook());
         }
-        let configurations = self.configurations.webhook_configurations(store_id).await?;
+        let configurations = self
+            .configurations
+            .webhook_configuration(provider_account_id)
+            .await?;
         if configurations.is_empty() {
             return Err(ApplicationError::Unauthorized);
         }
@@ -519,16 +561,19 @@ impl StripeWebhookSignatureVerifier for StripeWebhookVerifier {
             }
         }
         let stripe_account_id = verified_account_id.ok_or(ApplicationError::Unauthorized)?;
-        let (event_type, aggregate_id, failure_code) = map_stripe_event(&envelope)?;
+        let (event_type, order_id, refund_id, failure_code) = map_stripe_event(&envelope)?;
         let object_reference = envelope.data.object.id.clone();
         Ok(StripeWebhookEvent {
             stripe_account_id,
             stripe_event_id: envelope.id,
             event_type,
             object_reference: object_reference.clone(),
+            order_id,
+            refund_id,
             failure_code: failure_code.clone(),
             payload: serde_json::json!({
-                "aggregate_id": aggregate_id,
+                "order_id": order_id,
+                "refund_id": refund_id,
                 "object": object_reference,
                 "provider_payment_intent": envelope.data.object.payment_intent,
                 "provider_amount": envelope.data.object.amount,
@@ -654,53 +699,62 @@ struct StripeFailure {
     code: Option<String>,
 }
 
-fn map_stripe_event(
-    event: &StripeEventEnvelope,
-) -> Result<(String, Uuid, Option<String>), ApplicationError> {
-    let (event_type, metadata_key, object_prefix) = match event.event_type.as_str() {
+/// (event_type, order_id, refund_id, failure_code)
+type MappedStripeEvent = (String, Option<Uuid>, Option<Uuid>, Option<String>);
+
+fn map_stripe_event(event: &StripeEventEnvelope) -> Result<MappedStripeEvent, ApplicationError> {
+    let (event_type, object_prefix) = match event.event_type.as_str() {
         "checkout.session.completed"
             if matches!(
                 event.data.object.payment_status.as_deref(),
                 Some("paid" | "no_payment_required")
             ) =>
         {
-            ("payment.captured", "chaos_order_id", "cs_")
+            ("payment.captured", "cs_")
         }
         // "checkout.session.completed" with payment_status == "unpaid" means
         // an async payment method was selected and the checkout form was
         // submitted, but funds have not settled yet. Wait for the
         // async_payment_succeeded/failed follow-up event instead of
         // transitioning state now — falls through to the ignored default.
-        "checkout.session.async_payment_succeeded" => ("payment.captured", "chaos_order_id", "cs_"),
-        "checkout.session.async_payment_failed" => ("payment.failed", "chaos_order_id", "cs_"),
-        "checkout.session.expired" => ("payment.cancelled", "chaos_order_id", "cs_"),
+        "checkout.session.async_payment_succeeded" => ("payment.captured", "cs_"),
+        "checkout.session.async_payment_failed" => ("payment.failed", "cs_"),
+        "checkout.session.expired" => ("payment.cancelled", "cs_"),
         // Refund events created by Chaos carry the order metadata. Dashboard
-        // refunds are correlated later through the PaymentIntent reference.
+        // refunds (no chaos_order_id metadata) are correlated later through
+        // the PaymentIntent reference — order_id is None for those here.
         "refund.created" | "refund.updated"
             if event.data.object.status.as_deref() == Some("succeeded") =>
         {
-            ("refund.succeeded", "chaos_order_id", "re_")
+            ("refund.succeeded", "re_")
         }
         "refund.created" | "refund.updated"
             if event.data.object.status.as_deref() == Some("failed") =>
         {
-            ("refund.failed", "chaos_order_id", "re_")
+            ("refund.failed", "re_")
         }
         _ => return Err(ignored_webhook()),
     };
     if !valid_stripe_identifier(&event.data.object.id, object_prefix) {
         return Err(invalid_webhook());
     }
-    let aggregate_id = event
+    let order_id = event
         .data
         .object
         .metadata
-        .get(metadata_key)
+        .get("chaos_order_id")
         .and_then(|value| Uuid::parse_str(value).ok())
-        .unwrap_or_else(Uuid::nil);
-    if aggregate_id.is_nil() && !event_type.starts_with("refund.") {
+        .filter(|value| !value.is_nil());
+    if order_id.is_none() && !event_type.starts_with("refund.") {
         return Err(invalid_webhook());
     }
+    let refund_id = event
+        .data
+        .object
+        .metadata
+        .get("chaos_refund_id")
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|value| !value.is_nil());
     let failure_code = event.data.object.failure_code();
     if failure_code
         .as_ref()
@@ -708,7 +762,7 @@ fn map_stripe_event(
     {
         return Err(invalid_webhook());
     }
-    Ok((event_type.into(), aggregate_id, failure_code))
+    Ok((event_type.into(), order_id, refund_id, failure_code))
 }
 
 fn stripe_headers(
@@ -912,8 +966,8 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::contracts::{
-        PaymentCheckoutDetails, PaymentLineItem, PaymentShippingAddress, PaymentShippingOption,
-        StripeWebhookConfiguration,
+        OrderMetadataContext, PaymentCheckoutDetails, PaymentLineItem, PaymentShippingAddress,
+        PaymentShippingOption, StripeWebhookConfiguration,
     };
     use axum::{
         Router,
@@ -922,12 +976,11 @@ mod tests {
         http::{Request, Response},
         routing::any,
     };
-    use chaos_domain::{CurrencyCode, stripe::StripeAccountId};
+    use chaos_domain::CurrencyCode;
 
     use super::*;
 
     const TEST_PROVIDER_ACCOUNT_ID: Uuid = Uuid::from_u128(1);
-    const TEST_STORE_ID: Uuid = Uuid::from_u128(2);
 
     fn checkout_details() -> PaymentCheckoutDetails {
         PaymentCheckoutDetails {
@@ -962,6 +1015,15 @@ mod tests {
         }
     }
 
+    fn order_metadata_context() -> OrderMetadataContext {
+        OrderMetadataContext {
+            store_id: Uuid::from_u128(3),
+            shopper_id: Uuid::from_u128(4),
+            sales_channel_id: Uuid::from_u128(5),
+            order_number: "W-20260101-ABCDEFGH".into(),
+        }
+    }
+
     struct StaticSecrets(HashMap<String, String>);
 
     #[async_trait]
@@ -982,11 +1044,11 @@ mod tests {
 
     #[async_trait]
     impl StripeWebhookConfigurationRepository for StaticWebhookConfiguration {
-        async fn webhook_configurations(
+        async fn webhook_configuration(
             &self,
-            store_id: StoreId,
+            provider_account_id: StripeAccountId,
         ) -> Result<Vec<StripeWebhookConfiguration>, ApplicationError> {
-            if store_id.as_uuid() != TEST_STORE_ID {
+            if provider_account_id.as_uuid() != TEST_PROVIDER_ACCOUNT_ID {
                 return Ok(Vec::new());
             }
             Ok(self
@@ -1080,6 +1142,7 @@ mod tests {
             .execute(StripeCommand {
                 event_type: "payment.create_requested".into(),
                 aggregate_id,
+                refund_id: None,
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "payment-command".into(),
@@ -1088,6 +1151,7 @@ mod tests {
                 stripe_payment_reference: None,
                 checkout_details: Some(checkout_details()),
                 return_url: Some("https://shop.example.com/success".into()),
+                order_context: order_metadata_context(),
             })
             .await
             .unwrap();
@@ -1148,11 +1212,13 @@ mod tests {
             assert_eq!(requests[1].path, "/v1/account");
             drop(checkout_form);
         }
+        let refund_order_id = Uuid::now_v7();
         let refund_id = Uuid::now_v7();
         let refunded = provider
             .execute(StripeCommand {
                 event_type: "refund.create_requested".into(),
-                aggregate_id: refund_id,
+                aggregate_id: refund_order_id,
+                refund_id: Some(refund_id),
                 amount_minor: 500,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "refund-command".into(),
@@ -1161,6 +1227,7 @@ mod tests {
                 stripe_payment_reference: Some("pi_created".into()),
                 checkout_details: None,
                 return_url: None,
+                order_context: order_metadata_context(),
             })
             .await
             .unwrap();
@@ -1175,6 +1242,10 @@ mod tests {
         assert_eq!(refund_form["amount"], "500");
         assert_eq!(
             refund_form["metadata[chaos_order_id]"],
+            refund_order_id.to_string()
+        );
+        assert_eq!(
+            refund_form["metadata[chaos_refund_id]"],
             refund_id.to_string()
         );
         assert_eq!(refund_request.headers["idempotency-key"], "refund-command");
@@ -1213,6 +1284,7 @@ mod tests {
             .execute(StripeCommand {
                 event_type: "payment.create_requested".into(),
                 aggregate_id,
+                refund_id: None,
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "checkout-command".into(),
@@ -1221,6 +1293,7 @@ mod tests {
                 stripe_payment_reference: None,
                 checkout_details: Some(checkout_details()),
                 return_url: Some("https://shop.example.com/success".into()),
+                order_context: order_metadata_context(),
             })
             .await
             .unwrap();
@@ -1280,6 +1353,7 @@ mod tests {
             .execute(StripeCommand {
                 event_type: "payment.create_requested".into(),
                 aggregate_id: Uuid::now_v7(),
+                refund_id: None,
                 amount_minor: 1234,
                 currency: CurrencyCode::parse("USD").unwrap(),
                 idempotency_key: "checkout-command".into(),
@@ -1288,13 +1362,14 @@ mod tests {
                 stripe_payment_reference: None,
                 checkout_details: Some(checkout_details()),
                 return_url: None,
+                order_context: order_metadata_context(),
             })
             .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn stripe_checkout_webhook_routes_by_store_id() {
+    async fn stripe_checkout_webhook_routes_by_provider_account_id() {
         let active_reference =
             PaymentSecretReference::new("webhook", "test://webhook-active").unwrap();
         let previous_reference =
@@ -1339,7 +1414,7 @@ mod tests {
             .collect::<String>();
         let event = verifier
             .verify(
-                StoreId::from_uuid(TEST_STORE_ID),
+                StripeAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                 &format!("t={},v1={signature}", received_at.unix_timestamp()),
                 &payload,
                 received_at,
@@ -1349,12 +1424,13 @@ mod tests {
         assert_eq!(event.event_type, "payment.captured");
         assert_eq!(event.object_reference, "cs_created");
         assert_eq!(event.stripe_account_id, TEST_PROVIDER_ACCOUNT_ID);
-        assert_eq!(event.payload["aggregate_id"], aggregate_id.to_string());
+        assert_eq!(event.order_id, Some(aggregate_id));
+        assert_eq!(event.payload["order_id"], aggregate_id.to_string());
 
         assert!(
             verifier
                 .verify(
-                    StoreId::from_uuid(Uuid::from_u128(3)),
+                    StripeAccountId::from_uuid(Uuid::from_u128(3)),
                     &format!("t={},v1={signature}", received_at.unix_timestamp()),
                     &payload,
                     received_at,
@@ -1365,7 +1441,7 @@ mod tests {
         assert!(
             verifier
                 .verify(
-                    StoreId::from_uuid(TEST_STORE_ID),
+                    StripeAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                     &format!("t={},v1={signature}", received_at.unix_timestamp()),
                     &payload,
                     received_at + time::Duration::minutes(6),
@@ -1401,7 +1477,7 @@ mod tests {
         assert!(
             verifier
                 .verify(
-                    StoreId::from_uuid(TEST_STORE_ID),
+                    StripeAccountId::from_uuid(TEST_PROVIDER_ACCOUNT_ID),
                     &format!("t={},v1={connect_signature}", received_at.unix_timestamp()),
                     &connect_payload,
                     received_at,
@@ -1436,9 +1512,10 @@ mod tests {
         let aggregate_id = Uuid::now_v7();
         let event =
             checkout_session_event("checkout.session.completed", Some("paid"), aggregate_id);
-        let (event_type, resolved_id, failure_code) = map_stripe_event(&event).unwrap();
+        let (event_type, order_id, refund_id, failure_code) = map_stripe_event(&event).unwrap();
         assert_eq!(event_type, "payment.captured");
-        assert_eq!(resolved_id, aggregate_id);
+        assert_eq!(order_id, Some(aggregate_id));
+        assert_eq!(refund_id, None);
         assert_eq!(failure_code, None);
     }
 
@@ -1491,14 +1568,19 @@ mod tests {
         assert_eq!(event_type, "payment.cancelled");
     }
 
-    fn refund_event(event_type: &str, status: &str, refund_id: Uuid) -> StripeEventEnvelope {
+    fn refund_event(
+        event_type: &str,
+        status: &str,
+        order_id: Uuid,
+        refund_id: Uuid,
+    ) -> StripeEventEnvelope {
         serde_json::from_value(serde_json::json!({
             "id": "evt_refund",
             "type": event_type,
             "data": {"object": {
                 "id": "re_created",
                 "status": status,
-                "metadata": {"chaos_order_id": refund_id}
+                "metadata": {"chaos_order_id": order_id, "chaos_refund_id": refund_id}
             }}
         }))
         .unwrap()
@@ -1506,21 +1588,27 @@ mod tests {
 
     #[test]
     fn refund_created_succeeded_is_applied_to_the_local_refund() {
+        let order_id = Uuid::now_v7();
         let refund_id = Uuid::now_v7();
-        let event = refund_event("refund.created", "succeeded", refund_id);
-        let (event_type, resolved_id, failure_code) = map_stripe_event(&event).unwrap();
+        let event = refund_event("refund.created", "succeeded", order_id, refund_id);
+        let (event_type, resolved_order_id, resolved_refund_id, failure_code) =
+            map_stripe_event(&event).unwrap();
         assert_eq!(event_type, "refund.succeeded");
-        assert_eq!(resolved_id, refund_id);
+        assert_eq!(resolved_order_id, Some(order_id));
+        assert_eq!(resolved_refund_id, Some(refund_id));
         assert_eq!(failure_code, None);
     }
 
     #[test]
     fn refund_updated_failed_is_applied_to_the_local_refund() {
+        let order_id = Uuid::now_v7();
         let refund_id = Uuid::now_v7();
-        let event = refund_event("refund.updated", "failed", refund_id);
-        let (event_type, resolved_id, failure_code) = map_stripe_event(&event).unwrap();
+        let event = refund_event("refund.updated", "failed", order_id, refund_id);
+        let (event_type, resolved_order_id, resolved_refund_id, failure_code) =
+            map_stripe_event(&event).unwrap();
         assert_eq!(event_type, "refund.failed");
-        assert_eq!(resolved_id, refund_id);
+        assert_eq!(resolved_order_id, Some(order_id));
+        assert_eq!(resolved_refund_id, Some(refund_id));
         assert_eq!(failure_code, None);
     }
 }

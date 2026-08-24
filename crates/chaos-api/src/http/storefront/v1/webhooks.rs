@@ -13,12 +13,12 @@ use crate::http::{ApiPath, ApiResponse, ApiState};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
-    Router::new().route("/webhooks/stripe/{store_id}", post(receive_webhook))
+    Router::new().route("/webhooks/stripe/{provider_account_id}", post(receive_webhook))
 }
 
 #[derive(serde::Deserialize)]
 struct WebhookPath {
-    store_id: Uuid,
+    provider_account_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -39,7 +39,7 @@ async fn receive_webhook(
     let accepted = state
         .payment_service
         .receive_webhook(
-            chaos_domain::store::StoreId::from_uuid(path.store_id),
+            chaos_domain::stripe::StripeAccountId::from_uuid(path.provider_account_id),
             signature,
             &body,
             state.clock.now(),

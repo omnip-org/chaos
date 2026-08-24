@@ -10,14 +10,12 @@ CREATE TABLE commerce.shipping_provider_accounts (
     display_name                  TEXT        NOT NULL DEFAULT 'Shipping provider',
     credential_secret_reference   TEXT,
     enabled                       BOOLEAN     NOT NULL DEFAULT true,
-    created_by_user_id            UUID,
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT shipping_provider_accounts_store_id_id_key         UNIQUE (store_id, id),
     CONSTRAINT shipping_provider_accounts_store_provider_key      UNIQUE (store_id, provider),
     CONSTRAINT shipping_provider_accounts_store_id_fkey           FOREIGN KEY (store_id) REFERENCES commerce.stores(id) ON DELETE CASCADE,
-    CONSTRAINT shipping_provider_accounts_created_by_fkey         FOREIGN KEY (created_by_user_id) REFERENCES identity.users(id) ON DELETE SET NULL,
     CONSTRAINT shipping_provider_accounts_provider_check          CHECK (provider = 'manual'),
     CONSTRAINT shipping_provider_accounts_manual_no_credential_check CHECK (provider <> 'manual' OR credential_secret_reference IS NULL),
     CONSTRAINT shipping_provider_accounts_display_name_length_check CHECK (length(trim(display_name)) BETWEEN 1 AND 120)

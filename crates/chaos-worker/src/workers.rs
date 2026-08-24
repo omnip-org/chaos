@@ -146,12 +146,6 @@ async fn payment_worker_loop(
                 tracing::warn!(%worker_id, %error, "payment webhook batch failed");
             }
         }
-        match workers.run_readiness_batch(worker_id, now, 25).await {
-            Ok(count) => processed += count,
-            Err(error) => {
-                tracing::warn!(%worker_id, %error, "Payment Provider readiness batch failed");
-            }
-        }
         tokio::time::sleep(backoff.observe(processed)).await;
     }
 }

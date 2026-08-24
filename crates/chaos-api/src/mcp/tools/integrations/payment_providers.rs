@@ -2,7 +2,7 @@ use chaos_core::{
     contracts::StripeAccountDetail,
     payments::{CreateStripeAccountInput, UpdateStripeAccountInput},
 };
-use chaos_domain::{store::StoreId, stripe::StripeAccountId};
+use chaos_domain::stripe::StripeAccountId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -91,7 +91,7 @@ impl ChaosMcp {
                 let items = page
                     .items
                     .into_iter()
-                    .map(|value| stripe_account_json(value, store_id, &self.state.public_base_url))
+                    .map(|value| stripe_account_json(value, &self.state.public_base_url))
                     .collect::<Vec<_>>();
                 let next_cursor = page
                     .has_more
@@ -134,7 +134,6 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
-                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -173,7 +172,6 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
-                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -217,7 +215,6 @@ impl ChaosMcp {
         {
             Ok(value) => Ok(text_result(stripe_account_json(
                 value,
-                store_id,
                 &self.state.public_base_url,
             ))),
             Err(error) => Ok(tool_error(error)),
@@ -232,13 +229,9 @@ fn invalid_id(field: &'static str) -> CallToolResult {
     }))
 }
 
-fn stripe_account_json(
-    value: StripeAccountDetail,
-    store_id: StoreId,
-    public_base_url: &str,
-) -> serde_json::Value {
+fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> serde_json::Value {
     let id = value.account.id().as_uuid();
-    let webhook_path = format!("/storefront/v1/webhooks/stripe/{}", store_id.as_uuid());
+    let webhook_path = format!("/storefront/v1/webhooks/stripe/{id}");
     let webhook_url = format!(
         "{}/{}",
         public_base_url.trim_end_matches('/'),
@@ -252,10 +245,7 @@ fn stripe_account_json(
         "credentials_configured": value.credentials_configured,
         "readiness_status": value.readiness_status.as_str(),
         "readiness_checked_at": value.readiness_checked_at.map(|v| v.to_string()),
-        "readiness_valid_until": value.readiness_valid_until.map(|v| v.to_string()),
         "readiness_blocker_codes": value.readiness_blocker_codes,
-        "credential_rotation_expires_at": value.credential_rotation_expires_at.map(|v| v.to_string()),
-        "webhook_rotation_expires_at": value.webhook_rotation_expires_at.map(|v| v.to_string()),
         "stripe_setup": {
             "account_model": "direct_stripe_account_using_the_configured_api_keys",
             "webhook_url": webhook_url,

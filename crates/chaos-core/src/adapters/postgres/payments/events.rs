@@ -38,12 +38,11 @@ async fn load_attempt(
     store_id: StoreId,
     channel_id: Option<SalesChannelId>,
     shopper_id: Option<Uuid>,
-    attempt_id: PaymentAttemptId,
+    order_id: OrderId,
 ) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
     let row = sqlx::query_as::<
         _,
         (
-            Uuid,
             Uuid,
             i64,
             String,
@@ -54,38 +53,52 @@ async fn load_attempt(
             OffsetDateTime,
         ),
     >(
-        "SELECT attempt.id, attempt.order_id, attempt.amount_minor, \
-                attempt.currency::text, attempt.status::text, \
-                attempt.stripe_checkout_session_id, attempt.failure_code, \
-                attempt.created_at, attempt.updated_at \
-         FROM commerce.payment_attempts AS attempt \
-         INNER JOIN commerce.orders AS sales_order \
-           ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
-         WHERE attempt.store_id = $1 AND attempt.id = $2 \
+        "SELECT sales_order.id, sales_order.total_amount_minor, \
+                sales_order.currency::text, sales_order.payment_status::text, \
+                sales_order.stripe_payment_intent_id, sales_order.payment_failure_code, \
+                sales_order.created_at, sales_order.updated_at \
+         FROM commerce.orders AS sales_order \
+         WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
            AND ($3::uuid IS NULL OR sales_order.sales_channel_id = $3) \
            AND ($4::uuid IS NULL OR sales_order.shopper_id = $4)",
     )
     .bind(store_id.as_uuid())
-    .bind(attempt_id.as_uuid())
+    .bind(order_id.as_uuid())
     .bind(channel_id.map(SalesChannelId::as_uuid))
     .bind(shopper_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(database_error)?;
-    row.map(|row| {
-        Ok(PaymentAttemptDetail {
-            id: PaymentAttemptId::from_uuid(row.0),
-            order_id: OrderId::from_uuid(row.1),
-            amount_minor: row.2,
-            currency: CurrencyCode::parse(&row.3)?,
-            status: PaymentAttemptStatus::parse(&row.4).ok_or_else(corrupt_payment_state)?,
-            stripe_checkout_session_id: row.5,
-            failure_code: row.6,
-            created_at: row.7,
-            updated_at: row.8,
-        })
+    row.map(payment_attempt_detail).transpose()
+}
+
+fn payment_attempt_detail(
+    row: (
+        Uuid,
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        OffsetDateTime,
+        OffsetDateTime,
+    ),
+) -> Result<PaymentAttemptDetail, ApplicationError> {
+    Ok(PaymentAttemptDetail {
+        order_id: OrderId::from_uuid(row.0),
+        amount_minor: row.1,
+        currency: CurrencyCode::parse(&row.2)?,
+        status: match row.3.as_str() {
+            "pending" => PaymentAttemptStatus::Pending,
+            "paid" | "partially_refunded" | "refunded" => PaymentAttemptStatus::Captured,
+            "failed" => PaymentAttemptStatus::Failed,
+            _ => return Err(corrupt_payment_state()),
+        },
+        stripe_payment_intent_id: row.4,
+        failure_code: row.5,
+        created_at: row.6,
+        updated_at: row.7,
     })
-    .transpose()
 }
 
 /// Updates the Order's `payment_status` summary only when it still matches
@@ -165,28 +178,15 @@ async fn recompute_order_refund_summary(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn apply_payment_event(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
-    attempt_id: PaymentAttemptId,
+    order_id: OrderId,
     event_type: &str,
-    stripe_checkout_session_id: String,
     failure_code: Option<String>,
     provider_payload: &Value,
     now: OffsetDateTime,
 ) -> Result<OrderId, ApplicationError> {
-    let attempt_order_id: Uuid = sqlx::query_scalar(
-        "SELECT order_id FROM commerce.payment_attempts \
-         WHERE store_id = $1 AND id = $2 FOR UPDATE",
-    )
-    .bind(store_id.as_uuid())
-    .bind(attempt_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(|| attempt_not_found(attempt_id))?;
-    let order_id = OrderId::from_uuid(attempt_order_id);
     let captured = matches!(event_type, "payment.authorized" | "payment.captured");
     let failed = matches!(event_type, "payment.failed" | "payment.cancelled");
     if !captured && !failed {
@@ -194,48 +194,17 @@ async fn apply_payment_event(
     }
     let (order_status, shopper_id, currency): (String, Uuid, String) = sqlx::query_as(
         "SELECT status::text, shopper_id, currency::text \
-         FROM commerce.orders WHERE store_id = $1 AND id = $2",
+         FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(database_error)?;
+    .map_err(database_error)?
+    .ok_or_else(|| order_not_found(order_id))?;
 
     if captured {
-        let applied = sqlx::query(
-            "UPDATE commerce.payment_attempts SET status = 'captured', failure_code = NULL, \
-                    stripe_checkout_session_id = COALESCE($3, stripe_checkout_session_id), \
-                    updated_at = $4 \
-             WHERE store_id = $1 AND id = $2 AND status <> 'captured'",
-        )
-        .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(&stripe_checkout_session_id)
-        .bind(now)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?
-        .rows_affected()
-            == 1;
-        if !applied {
-            return Ok(order_id);
-        }
-        let mut event_amount: i64 = sqlx::query_scalar(
-            "SELECT amount_minor FROM commerce.payment_attempts WHERE store_id = $1 AND id = $2",
-        )
-        .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        if let Some(snapshot) = StripeCheckoutSnapshot::from_payload(provider_payload)? {
-            event_amount = apply_stripe_checkout_snapshot(
-                transaction, store_id, order_id, attempt_id, &snapshot, now,
-            )
-            .await?;
-        }
-        update_order_payment_status(
+        let applied = update_order_payment_status(
             transaction,
             store_id,
             order_id,
@@ -244,18 +213,33 @@ async fn apply_payment_event(
             now,
         )
         .await?;
+        if !applied {
+            return Ok(order_id);
+        }
+        let mut event_amount: i64 = sqlx::query_scalar(
+            "SELECT total_amount_minor FROM commerce.orders WHERE store_id = $1 AND id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if let Some(snapshot) = StripeCheckoutSnapshot::from_payload(provider_payload)? {
+            event_amount =
+                apply_stripe_checkout_snapshot(transaction, store_id, order_id, &snapshot, now)
+                    .await?;
+        }
         confirm_paid_order(transaction, store_id, order_id, &order_status, now).await?;
         append_event(
             transaction,
             AnalyticsEventToAppend {
                 store_id: store_id.as_uuid(),
                 shopper_id,
-                event_id: attempt_id.as_uuid(),
+                event_id: order_id.as_uuid(),
                 event_name: "purchase".into(),
                 properties: json!({
                     "_source": "server",
                     "order_id": order_id.as_uuid(),
-                    "payment_attempt_id": attempt_id.as_uuid(),
                     "value_minor": event_amount,
                     "currency": currency,
                 }),
@@ -265,16 +249,15 @@ async fn apply_payment_event(
         )
         .await?;
     } else if failed {
+        let failure_code = failure_code.unwrap_or_else(|| "provider_failure".into());
         let applied = sqlx::query(
-            "UPDATE commerce.payment_attempts SET status = 'failed', failure_code = $3, \
-                    stripe_checkout_session_id = COALESCE($4, stripe_checkout_session_id), \
-                    updated_at = $5 \
-             WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+            "UPDATE commerce.orders SET payment_status = 'failed', payment_failure_code = $3, \
+                    updated_at = $4 \
+             WHERE store_id = $1 AND id = $2 AND payment_status = 'pending'",
         )
         .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(failure_code.unwrap_or_else(|| "provider_failure".into()))
-        .bind(&stripe_checkout_session_id)
+        .bind(order_id.as_uuid())
+        .bind(&failure_code)
         .bind(now)
         .execute(&mut **transaction)
         .await
@@ -284,8 +267,6 @@ async fn apply_payment_event(
         if !applied {
             return Ok(order_id);
         }
-        update_order_payment_status(transaction, store_id, order_id, &["pending"], "failed", now)
-            .await?;
         cancel_pending_order(transaction, store_id, order_id, &order_status, now).await?;
     }
     Ok(order_id)
@@ -480,7 +461,6 @@ async fn apply_stripe_checkout_snapshot(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
-    attempt_id: PaymentAttemptId,
     snapshot: &StripeCheckoutSnapshot,
     now: OffsetDateTime,
 ) -> Result<i64, ApplicationError> {
@@ -498,7 +478,8 @@ async fn apply_stripe_checkout_snapshot(
     sqlx::query(
         "UPDATE commerce.orders SET subtotal_amount_minor = $3, discount_amount_minor = $4, \
                 tax_amount_minor = $5, shipping_amount_minor = $6, total_amount_minor = $7, \
-                updated_at = $8 WHERE store_id = $1 AND id = $2",
+                stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $8), \
+                updated_at = $9 WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -507,25 +488,11 @@ async fn apply_stripe_checkout_snapshot(
     .bind(snapshot.amount_tax)
     .bind(snapshot.amount_shipping)
     .bind(snapshot.amount_total)
+    .bind(snapshot.payment_intent_id.as_deref())
     .bind(now)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    if let Some(payment_intent_id) = snapshot.payment_intent_id.as_deref() {
-        sqlx::query(
-            "UPDATE commerce.payment_attempts \
-             SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $3), \
-                 updated_at = $4 \
-             WHERE store_id = $1 AND id = $2",
-        )
-        .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(payment_intent_id)
-        .bind(now)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    }
     if let Some(email) = snapshot.email.as_deref() {
         sqlx::query(
             "UPDATE commerce.orders SET contact_email = $3, updated_at = $4 \
@@ -754,11 +721,12 @@ async fn consume_order_inventory(
 }
 
 /// Applies a `refund.` provider event. `refund_id` is `Some` for a refund
-/// Chaos itself initiated (via `create_refund`), whose row already exists.
-/// It is `None` for a refund created outside Chaos (e.g. from the Stripe
-/// Dashboard) — that case is resolved through the PaymentIntent reference
-/// and the Refund row is created here, on first sight, with no
-/// `created_by_user_id`.
+/// Chaos itself initiated (via `create_refund`), whose row already exists —
+/// resolved through `chaos_refund_id` metadata since an Order can have more
+/// than one refund in flight at once. It is `None` for a refund created
+/// outside Chaos (e.g. from the Stripe Dashboard) — that case is resolved
+/// through the PaymentIntent reference and the Refund row is created here,
+/// on first sight.
 #[allow(clippy::too_many_arguments)]
 async fn apply_refund_event(
     transaction: &mut Transaction<'static, Postgres>,
@@ -792,9 +760,9 @@ async fn apply_refund_event(
         return Err(corrupt_webhook_payload());
     }
 
-    let resolved: Option<(Uuid, Uuid, Uuid)> = match refund_id {
+    let resolved: Option<(Uuid, Uuid)> = match refund_id {
         Some(id) => sqlx::query_as(
-            "SELECT id, payment_attempt_id, order_id FROM commerce.refunds \
+            "SELECT id, order_id FROM commerce.refunds \
              WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -805,12 +773,12 @@ async fn apply_refund_event(
         None => None,
     };
 
-    let (refund_row_id, payment_attempt_id, order_id) = match resolved {
+    let (refund_row_id, order_id) = match resolved {
         Some(row) => row,
         None => {
             let payment_intent = payment_intent.ok_or_else(corrupt_webhook_payload)?;
-            let attempt: (Uuid, Uuid, String) = sqlx::query_as(
-                "SELECT id, order_id, currency::text FROM commerce.payment_attempts \
+            let order: (Uuid, String) = sqlx::query_as(
+                "SELECT id, currency::text FROM commerce.orders \
                  WHERE store_id = $1 AND stripe_payment_intent_id = $2 FOR UPDATE",
             )
             .bind(store_id.as_uuid())
@@ -821,23 +789,21 @@ async fn apply_refund_event(
             .ok_or_else(provider_unavailable)?;
             sqlx::query(
                 "INSERT INTO commerce.refunds \
-                 (id, store_id, payment_attempt_id, order_id, currency, status, amount_minor, \
-                  stripe_refund_id) \
-                 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) \
+                 (id, store_id, order_id, currency, status, amount_minor, stripe_refund_id) \
+                 VALUES ($1, $2, $3, $4, 'pending', $5, $6) \
                  ON CONFLICT (store_id, stripe_refund_id) DO NOTHING",
             )
             .bind(Uuid::now_v7())
             .bind(store_id.as_uuid())
-            .bind(attempt.0)
-            .bind(attempt.1)
-            .bind(&attempt.2)
+            .bind(order.0)
+            .bind(&order.1)
             .bind(amount)
             .bind(&stripe_refund_id)
             .execute(&mut **transaction)
             .await
             .map_err(database_error)?;
             sqlx::query_as(
-                "SELECT id, payment_attempt_id, order_id FROM commerce.refunds \
+                "SELECT id, order_id FROM commerce.refunds \
                  WHERE store_id = $1 AND stripe_refund_id = $2 FOR UPDATE",
             )
             .bind(store_id.as_uuid())
@@ -886,7 +852,6 @@ async fn apply_refund_event(
                 properties: json!({
                     "_source": "server",
                     "refund_id": refund_row_id,
-                    "payment_attempt_id": payment_attempt_id,
                     "order_id": order_id,
                     "value_minor": amount,
                 }),

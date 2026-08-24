@@ -29,174 +29,30 @@ macro_rules! payment_id {
     };
 }
 
-payment_id!(PaymentAttemptId);
 payment_id!(RefundId);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentAttemptStatus {
     Pending,
-    Authorized,
     Captured,
     Failed,
-    Cancelled,
 }
 
 impl PaymentAttemptStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::Authorized => "authorized",
             Self::Captured => "captured",
             Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "pending" => Some(Self::Pending),
-            "authorized" => Some(Self::Authorized),
             "captured" => Some(Self::Captured),
             "failed" => Some(Self::Failed),
-            "cancelled" => Some(Self::Cancelled),
             _ => None,
         }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PaymentAttempt {
-    id: PaymentAttemptId,
-    order_id: OrderId,
-    amount: Money,
-    status: PaymentAttemptStatus,
-    provider_reference: Option<String>,
-}
-
-impl PaymentAttempt {
-    pub fn create(order_id: OrderId, amount: Money) -> Result<Self, DomainError> {
-        if amount.amount_minor() <= 0 {
-            return Err(validation("amount", "must be greater than zero"));
-        }
-        Ok(Self {
-            id: PaymentAttemptId::new(),
-            order_id,
-            amount,
-            status: PaymentAttemptStatus::Pending,
-            provider_reference: None,
-        })
-    }
-
-    pub fn rehydrate(
-        id: PaymentAttemptId,
-        order_id: OrderId,
-        amount: Money,
-        status: PaymentAttemptStatus,
-        provider_reference: Option<String>,
-    ) -> Self {
-        Self {
-            id,
-            order_id,
-            amount,
-            status,
-            provider_reference,
-        }
-    }
-
-    pub const fn id(&self) -> PaymentAttemptId {
-        self.id
-    }
-
-    pub const fn order_id(&self) -> OrderId {
-        self.order_id
-    }
-
-    pub const fn amount(&self) -> &Money {
-        &self.amount
-    }
-
-    pub const fn status(&self) -> PaymentAttemptStatus {
-        self.status
-    }
-
-    pub fn provider_reference(&self) -> Option<&str> {
-        self.provider_reference.as_deref()
-    }
-
-    pub fn authorize(&mut self, provider_reference: String) -> Result<bool, DomainError> {
-        self.bind_provider_reference(provider_reference)?;
-        self.advance(PaymentAttemptStatus::Authorized)
-    }
-
-    pub fn capture(&mut self) -> Result<bool, DomainError> {
-        self.advance(PaymentAttemptStatus::Captured)
-    }
-
-    pub fn fail(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
-        if let Some(reference) = provider_reference {
-            self.bind_provider_reference(reference)?;
-        }
-        self.advance(PaymentAttemptStatus::Failed)
-    }
-
-    pub fn cancel(&mut self, provider_reference: Option<String>) -> Result<bool, DomainError> {
-        if let Some(reference) = provider_reference {
-            self.bind_provider_reference(reference)?;
-        }
-        self.advance(PaymentAttemptStatus::Cancelled)
-    }
-
-    fn bind_provider_reference(&mut self, value: String) -> Result<(), DomainError> {
-        if value.trim().is_empty() || value.chars().count() > 255 {
-            return Err(validation(
-                "provider_reference",
-                "must contain 1-255 characters",
-            ));
-        }
-        match &self.provider_reference {
-            Some(existing) if existing != &value => Err(validation(
-                "provider_reference",
-                "is immutable once assigned",
-            )),
-            Some(_) => Ok(()),
-            None => {
-                self.provider_reference = Some(value);
-                Ok(())
-            }
-        }
-    }
-
-    fn advance(&mut self, target: PaymentAttemptStatus) -> Result<bool, DomainError> {
-        if self.status == target {
-            return Ok(false);
-        }
-        let allowed = matches!(
-            (self.status, target),
-            (
-                PaymentAttemptStatus::Pending,
-                PaymentAttemptStatus::Authorized
-            ) | (PaymentAttemptStatus::Pending, PaymentAttemptStatus::Failed)
-                | (
-                    PaymentAttemptStatus::Pending,
-                    PaymentAttemptStatus::Cancelled
-                )
-                | (
-                    PaymentAttemptStatus::Authorized,
-                    PaymentAttemptStatus::Captured
-                )
-                | (
-                    PaymentAttemptStatus::Authorized,
-                    PaymentAttemptStatus::Failed
-                )
-                | (
-                    PaymentAttemptStatus::Authorized,
-                    PaymentAttemptStatus::Cancelled
-                )
-        );
-        if !allowed {
-            return Err(invalid_transition(self.status.as_str(), target.as_str()));
-        }
-        self.status = target;
-        Ok(true)
     }
 }
 
@@ -229,7 +85,7 @@ impl RefundStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Refund {
     id: RefundId,
-    payment_attempt_id: PaymentAttemptId,
+    order_id: OrderId,
     amount: Money,
     status: RefundStatus,
     provider_reference: Option<String>,
@@ -237,22 +93,24 @@ pub struct Refund {
 
 impl Refund {
     pub fn create(
-        payment_attempt: &PaymentAttempt,
+        order_id: OrderId,
+        payment_status: PaymentAttemptStatus,
+        captured_amount: Money,
         amount: Money,
         already_refunded_amount_minor: i64,
     ) -> Result<Self, DomainError> {
-        if payment_attempt.status != PaymentAttemptStatus::Captured {
-            return Err(validation("payment_attempt", "must be captured"));
+        if payment_status != PaymentAttemptStatus::Captured {
+            return Err(validation("order", "payment must be captured"));
         }
-        if amount.currency() != payment_attempt.amount.currency() {
-            return Err(validation("currency", "must match the Payment Attempt"));
+        if amount.currency() != captured_amount.currency() {
+            return Err(validation("currency", "must match the captured payment"));
         }
         if amount.amount_minor() <= 0
             || already_refunded_amount_minor < 0
             || amount
                 .amount_minor()
                 .checked_add(already_refunded_amount_minor)
-                .is_none_or(|total| total > payment_attempt.amount.amount_minor())
+                .is_none_or(|total| total > captured_amount.amount_minor())
         {
             return Err(validation(
                 "amount",
@@ -261,7 +119,7 @@ impl Refund {
         }
         Ok(Self {
             id: RefundId::new(),
-            payment_attempt_id: payment_attempt.id,
+            order_id,
             amount,
             status: RefundStatus::Pending,
             provider_reference: None,
@@ -270,14 +128,14 @@ impl Refund {
 
     pub fn rehydrate(
         id: RefundId,
-        payment_attempt_id: PaymentAttemptId,
+        order_id: OrderId,
         amount: Money,
         status: RefundStatus,
         provider_reference: Option<String>,
     ) -> Self {
         Self {
             id,
-            payment_attempt_id,
+            order_id,
             amount,
             status,
             provider_reference,
@@ -288,8 +146,8 @@ impl Refund {
         self.id
     }
 
-    pub const fn payment_attempt_id(&self) -> PaymentAttemptId {
-        self.payment_attempt_id
+    pub const fn order_id(&self) -> OrderId {
+        self.order_id
     }
 
     pub const fn amount(&self) -> &Money {
@@ -357,40 +215,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn payment_attempt_rejects_out_of_order_and_changed_provider_events() {
-        let usd = CurrencyCode::parse("USD").unwrap();
-        let mut attempt = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
-
-        assert!(attempt.capture().is_err());
-        assert!(attempt.authorize("provider-payment-1".into()).unwrap());
-        assert!(!attempt.authorize("provider-payment-1".into()).unwrap());
-        assert!(attempt.authorize("provider-payment-2".into()).is_err());
-        assert!(attempt.capture().unwrap());
-        assert!(attempt.fail(None).is_err());
-
-        let mut cancelled = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
-        assert!(
-            cancelled
-                .cancel(Some("provider-cancelled-1".into()))
-                .unwrap()
-        );
-        assert_eq!(cancelled.provider_reference(), Some("provider-cancelled-1"));
-        assert!(
-            cancelled
-                .cancel(Some("provider-cancelled-2".into()))
-                .is_err()
-        );
-    }
-
-    #[test]
     fn refunds_are_currency_safe_and_cannot_exceed_capture() {
         let usd = CurrencyCode::parse("USD").unwrap();
-        let mut attempt = PaymentAttempt::create(OrderId::new(), Money::new(2_500, usd)).unwrap();
-        attempt.authorize("payment".into()).unwrap();
-        attempt.capture().unwrap();
+        let order_id = OrderId::new();
+        let captured = Money::new(2_500, usd);
 
-        assert!(Refund::create(&attempt, Money::new(1_500, usd), 1_001).is_err());
-        let mut refund = Refund::create(&attempt, Money::new(1_500, usd), 1_000).unwrap();
+        assert!(
+            Refund::create(
+                order_id,
+                PaymentAttemptStatus::Pending,
+                captured.clone(),
+                Money::new(1_500, usd),
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            Refund::create(
+                order_id,
+                PaymentAttemptStatus::Captured,
+                captured.clone(),
+                Money::new(1_500, usd),
+                1_001,
+            )
+            .is_err()
+        );
+        let mut refund = Refund::create(
+            order_id,
+            PaymentAttemptStatus::Captured,
+            captured,
+            Money::new(1_500, usd),
+            1_000,
+        )
+        .unwrap();
         assert!(refund.succeed("refund".into()).unwrap());
         assert!(!refund.succeed("refund".into()).unwrap());
         assert!(refund.fail("other".into()).is_err());

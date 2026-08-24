@@ -76,13 +76,16 @@ CREATE TABLE commerce.orders (
     price_list_id                UUID                               NOT NULL,
     currency                     CHAR(3)                            NOT NULL,
     status                       commerce.order_status              NOT NULL DEFAULT 'pending',
-    -- payment_status and refunded_amount_minor are projections derived from
-    -- commerce.payment_attempts and commerce.refunds; every real Stripe
-    -- reference (checkout session, payment intent, charge, refund id) and
-    -- failure detail lives on those tables, keyed by their own row, so a
-    -- retried attempt or a second partial refund gets its own identity
-    -- instead of overwriting the previous one in place.
+    -- payment_status and refunded_amount_minor are projections recomputed
+    -- from commerce.refunds on every refund event; stripe_payment_intent_id
+    -- and payment_failure_code are the Order's own payment reference — a
+    -- failed or expired Stripe Checkout Session always cancels the Order
+    -- rather than allowing a retry, so there is only ever one attempt to
+    -- track per Order and it lives directly on this row. Partial refunds
+    -- still get their own identity — see commerce.refunds.
     payment_status               commerce.order_payment_status      NOT NULL DEFAULT 'pending',
+    stripe_payment_intent_id     TEXT,
+    payment_failure_code         TEXT,
     -- shipping_status is likewise a projection derived from
     -- commerce.fulfillments; the shipment's own provider, tracking number,
     -- and tracking URL live on that table, one row per shipment.
@@ -129,7 +132,10 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_contact_email_length_check        CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
     CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
     CONSTRAINT orders_billing_country_code_check        CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$')
+    CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT orders_store_id_payment_intent_key       UNIQUE (store_id, stripe_payment_intent_id),
+    CONSTRAINT orders_payment_intent_check              CHECK (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id ~ '^pi_[A-Za-z0-9]+$'),
+    CONSTRAINT orders_payment_failure_code_check        CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000)
 );
 
 CREATE TABLE commerce.order_tracking_tokens (

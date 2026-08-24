@@ -13,10 +13,7 @@ use chaos_core::{
 };
 use chaos_core::{
     analytics::AnalyticsDeliveryWorker,
-    contracts::{
-        AnalyticsEventDestination, Clock, IntegrationQueue, StripeAccountReadiness,
-        StripePaymentGateway,
-    },
+    contracts::{AnalyticsEventDestination, Clock, IntegrationQueue, StripePaymentGateway},
     payments::PaymentWorkers,
 };
 
@@ -55,15 +52,9 @@ impl WorkerRuntime {
             settings.dependency_timeout,
             dynamic_secrets.clone(),
         )?);
-        let payment_provider = stripe_gateway.clone() as Arc<dyn StripePaymentGateway>;
-        let payment_onboarding = stripe_gateway as Arc<dyn StripeAccountReadiness>;
-        let payment_workers = PaymentWorkers::new(
-            integration_queue,
-            payment_repository.clone(),
-            payment_repository,
-            payment_provider,
-            payment_onboarding,
-        );
+        let payment_provider = stripe_gateway as Arc<dyn StripePaymentGateway>;
+        let payment_workers =
+            PaymentWorkers::new(integration_queue, payment_repository, payment_provider);
 
         Ok(Self {
             payment_workers: Arc::new(payment_workers),

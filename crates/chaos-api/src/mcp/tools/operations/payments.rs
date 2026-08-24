@@ -1,5 +1,5 @@
 use chaos_core::payments::CreateRefundInput;
-use chaos_domain::payments::PaymentAttemptId;
+use chaos_domain::sales::OrderId;
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -19,8 +19,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateRefundParams {
-    /// The payment attempt's UUID.
-    pub payment_attempt_id: String,
+    /// The Order's UUID.
+    pub order_id: String,
     /// The refund amount in the payment's smallest currency unit (e.g. cents for USD).
     pub amount_minor: i64,
     /// Must be explicitly set to true. This action affects live store data.
@@ -30,8 +30,8 @@ pub struct CreateRefundParams {
 #[tool_router(router = payments_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Refund some or all of a payment attempt in the selected Store. Requires \
-                        confirm: true."
+        description = "Refund some or all of an Order's captured payment in the selected Store. \
+                        Requires confirm: true."
     )]
     async fn create_refund(
         &self,
@@ -52,25 +52,24 @@ impl ChaosMcp {
             return Ok(result);
         }
         let store_id = actor.store_id();
-        let payment_attempt_id =
-            match parse_uuid_field(&params.payment_attempt_id, "payment_attempt_id") {
-                Ok(id) => PaymentAttemptId::from_uuid(id),
-                Err(result) => return Ok(result),
-            };
+        let order_id = match parse_uuid_field(&params.order_id, "order_id") {
+            Ok(id) => OrderId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
         match self
             .state
             .payment_service
             .create_refund(CreateRefundInput {
                 actor,
                 store_id,
-                payment_attempt_id,
+                order_id,
                 amount_minor: params.amount_minor,
             })
             .await
         {
             Ok(detail) => Ok(text_result(json!({
                 "id": detail.id.as_uuid(),
-                "payment_attempt_id": detail.payment_attempt_id.as_uuid(),
+                "order_id": detail.order_id.as_uuid(),
                 "amount_minor": detail.amount_minor,
                 "currency": detail.currency.as_str(),
                 "status": detail.status.as_str(),

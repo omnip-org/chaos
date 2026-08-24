@@ -199,7 +199,6 @@ struct CreateEmbeddedCheckoutBody {
 #[derive(Serialize)]
 struct EmbeddedCheckoutData {
     order_id: Uuid,
-    payment_attempt_id: Uuid,
     client_action: PaymentClientActionData,
 }
 
@@ -251,7 +250,6 @@ async fn create_embedded_checkout(
         .await?;
     Ok(ApiResponse::created(EmbeddedCheckoutData {
         order_id: draft.order_id.as_uuid(),
-        payment_attempt_id: checkout.attempt.id.as_uuid(),
         client_action: client_action_data(checkout.client_action),
     }))
 }

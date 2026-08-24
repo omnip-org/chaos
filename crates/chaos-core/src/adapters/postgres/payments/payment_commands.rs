@@ -9,66 +9,32 @@ impl PostgresStripeRepository {
         let actor = &shopper.machine;
         let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
         let mut transaction = self.begin_shopper(shopper).await?;
-        // total_amount_minor is not yet known here: it is a Stripe-reported
-        // fact filled in by the checkout webhook once Stripe applies tax and
-        // shipping. subtotal_amount_minor is the pre-tax reference amount
-        // Chaos already knows at checkout start.
-        let order = sqlx::query_as::<_, (i64, String, String, String)>(
-            "SELECT subtotal_amount_minor, currency::text, status::text, payment_status::text \
-                    FROM commerce.orders \
-             WHERE store_id = $1 AND sales_channel_id = $2 \
-               AND id = $3 AND shopper_id = $4 FOR UPDATE",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| order_not_found(order_id))?;
-        if order.2 != "pending" || matches!(order.3.as_str(), "paid" | "partially_refunded" | "refunded") {
-            return Err(payment_order_not_pending());
-        }
-        let currency = CurrencyCode::parse(&order.1)?;
-        let attempt = PaymentAttempt::create(order_id, Money::new(order.0, currency))?;
-        sqlx::query(
-            "INSERT INTO commerce.payment_attempts \
-             (id, store_id, order_id, currency, status, amount_minor) \
-             VALUES ($1, $2, $3, $4, 'pending', $5)",
-        )
-        .bind(attempt.id().as_uuid())
-        .bind(actor.store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(currency.as_str())
-        .bind(order.0)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         let detail = load_attempt(
             &mut transaction,
             actor.store_id,
             Some(channel_id),
             Some(shopper.shopper_id.as_uuid()),
-            attempt.id(),
+            order_id,
         )
         .await?
-        .ok_or_else(|| attempt_not_found(attempt.id()))?;
-        transaction.commit().await.map_err(database_error)?;
+        .ok_or_else(|| order_not_found(order_id))?;
+        if detail.status != PaymentAttemptStatus::Pending {
+            return Err(payment_order_not_pending());
+        }
         Ok(detail)
     }
 
     pub(crate) async fn prepare_checkout_command(
         &self,
         actor: &ShopperActor,
-        attempt_id: PaymentAttemptId,
+        order_id: OrderId,
         return_url: &str,
         idempotency_key: &str,
     ) -> Result<StripeCommand, ApplicationError> {
         let attempt = self
-            .get_attempt(actor, attempt_id)
+            .get_attempt(actor, order_id)
             .await?
-            .ok_or_else(|| attempt_not_found(attempt_id))?;
+            .ok_or_else(|| order_not_found(order_id))?;
         let job = direct_checkout_job(actor, &attempt, return_url);
         let mut command = self.prepare_stripe_command(&job).await?;
         command.idempotency_key = idempotency_key.to_owned();
@@ -78,14 +44,14 @@ impl PostgresStripeRepository {
     pub(crate) async fn record_checkout_result(
         &self,
         actor: &ShopperActor,
-        attempt_id: PaymentAttemptId,
+        order_id: OrderId,
         result: &StripeCommandResult,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let attempt = self
-            .get_attempt(actor, attempt_id)
+            .get_attempt(actor, order_id)
             .await?
-            .ok_or_else(|| attempt_not_found(attempt_id))?;
+            .ok_or_else(|| order_not_found(order_id))?;
         let job = direct_checkout_job(actor, &attempt, "");
         self.record_stripe_result(&job, result, now).await
     }
@@ -93,7 +59,7 @@ impl PostgresStripeRepository {
     pub(crate) async fn get_attempt(
         &self,
         shopper: &ShopperActor,
-        attempt_id: PaymentAttemptId,
+        order_id: OrderId,
     ) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
@@ -102,7 +68,7 @@ impl PostgresStripeRepository {
             actor.store_id,
             actor.sales_channel_id,
             Some(shopper.shopper_id.as_uuid()),
-            attempt_id,
+            order_id,
         )
         .await?;
         transaction.commit().await.map_err(database_error)?;
@@ -113,52 +79,56 @@ impl PostgresStripeRepository {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        attempt_id: PaymentAttemptId,
+        order_id: OrderId,
         amount_minor: i64,
     ) -> Result<RefundDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
-        let row = sqlx::query_as::<_, (i64, String, String, Uuid)>(
-            "SELECT amount_minor, currency::text, status::text, order_id \
-             FROM commerce.payment_attempts WHERE store_id = $1 AND id = $2 FOR UPDATE",
+        let row = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT total_amount_minor, currency::text, payment_status::text \
+             FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
+        .bind(order_id.as_uuid())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| attempt_not_found(attempt_id))?;
+        .ok_or_else(|| order_not_found(order_id))?;
         let currency = CurrencyCode::parse(&row.1)?;
-        let order_id = row.3;
-        let attempt = PaymentAttempt::rehydrate(
-            attempt_id,
-            OrderId::from_uuid(order_id),
-            Money::new(row.0, currency),
-            PaymentAttemptStatus::parse(&row.2).ok_or_else(corrupt_payment_state)?,
-            None,
-        );
+        // The captured amount available to refund against is the Order's
+        // total — only an Order that has been paid (in full, or already
+        // partially refunded) is eligible for a further refund.
+        let payment_status = match row.2.as_str() {
+            "paid" | "partially_refunded" => PaymentAttemptStatus::Captured,
+            _ => PaymentAttemptStatus::Failed,
+        };
         // Pending refunds already claim their share of the captured amount,
         // so a second concurrent request cannot double-spend it before the
         // first one confirms via webhook.
         let already_refunded: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(amount_minor), 0)::bigint FROM commerce.refunds \
-             WHERE store_id = $1 AND payment_attempt_id = $2 AND status IN ('pending', 'succeeded')",
+             WHERE store_id = $1 AND order_id = $2 AND status IN ('pending', 'succeeded')",
         )
         .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
+        .bind(order_id.as_uuid())
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let refund = Refund::create(&attempt, Money::new(amount_minor, currency), already_refunded)?;
+        let refund = Refund::create(
+            order_id,
+            payment_status,
+            Money::new(row.0, currency),
+            Money::new(amount_minor, currency),
+            already_refunded,
+        )?;
         let id = refund.id();
         sqlx::query(
             "INSERT INTO commerce.refunds \
-             (id, store_id, payment_attempt_id, order_id, currency, status, amount_minor) \
-             VALUES ($1, $2, $3, $4, $5, 'pending', $6)",
+             (id, store_id, order_id, currency, status, amount_minor) \
+             VALUES ($1, $2, $3, $4, 'pending', $5)",
         )
         .bind(id.as_uuid())
         .bind(store_id.as_uuid())
-        .bind(attempt_id.as_uuid())
-        .bind(order_id)
+        .bind(order_id.as_uuid())
         .bind(currency.as_str())
         .bind(amount_minor)
         .execute(&mut *transaction)
@@ -177,7 +147,7 @@ impl PostgresStripeRepository {
         .await?;
         let detail = RefundDetail {
             id,
-            payment_attempt_id: attempt_id,
+            order_id,
             amount_minor,
             currency,
             status: RefundStatus::Pending,
@@ -205,8 +175,8 @@ impl PostgresStripeRepository {
         let result = sqlx::query(
             "INSERT INTO commerce.provider_webhooks \
              (id, store_id, provider, provider_account_id, provider_event_id, event_type, \
-              payload, verified_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+              payload, order_id, verified_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              ON CONFLICT (provider_account_id, provider_event_id) DO NOTHING",
         )
         .bind(Uuid::now_v7())
@@ -216,6 +186,7 @@ impl PostgresStripeRepository {
         .bind(&event.stripe_event_id)
         .bind(&event.event_type)
         .bind(&event.payload)
+        .bind(event.order_id)
         .bind(event.verified_at)
         .execute(&mut *transaction)
         .await
@@ -230,43 +201,41 @@ impl PostgresStripeRepository {
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
         let mut transaction = self.begin_context(None, job.store_id).await?;
-        let stripe_object_id = job
-            .payload
-            .get("object")
-            .and_then(Value::as_str)
-            .ok_or_else(corrupt_webhook_payload)?
-            .to_owned();
         let failure_code = job
             .payload
             .get("failure_code")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let order_id = if job.event_type.starts_with("payment.") {
-            let aggregate_id = job
+        if job.event_type.starts_with("payment.") {
+            let order_id = job
                 .payload
-                .get("aggregate_id")
+                .get("order_id")
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
-                .filter(|value| !value.is_nil())
+                .map(OrderId::from_uuid)
                 .ok_or_else(corrupt_webhook_payload)?;
             apply_payment_event(
                 &mut transaction,
                 StoreId::from_uuid(job.store_id),
-                PaymentAttemptId::from_uuid(aggregate_id),
+                order_id,
                 &job.event_type,
-                stripe_object_id,
                 failure_code,
                 &job.payload,
                 now,
             )
-            .await?
+            .await?;
         } else if job.event_type.starts_with("refund.") {
+            let stripe_object_id = job
+                .payload
+                .get("object")
+                .and_then(Value::as_str)
+                .ok_or_else(corrupt_webhook_payload)?
+                .to_owned();
             let refund_id = job
                 .payload
-                .get("aggregate_id")
+                .get("refund_id")
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
-                .filter(|value| !value.is_nil())
                 .map(RefundId::from_uuid);
             apply_refund_event(
                 &mut transaction,
@@ -278,21 +247,10 @@ impl PostgresStripeRepository {
                 &job.payload,
                 now,
             )
-            .await?
+            .await?;
         } else {
             return Err(corrupt_webhook_payload());
         };
-        // Backfills the raw webhook snapshot's Order link now that the
-        // event has been resolved to one; a webhook that fails before this
-        // point leaves provider_webhooks.order_id NULL. provider_webhooks is
-        // otherwise append-only for chaos_runtime, so this goes through a
-        // narrow SECURITY DEFINER function rather than a direct UPDATE.
-        sqlx::query_scalar::<_, bool>("SELECT commerce.set_webhook_order_id($1, $2)")
-            .bind(job.id)
-            .bind(order_id.as_uuid())
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(database_error)?;
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
@@ -307,20 +265,32 @@ impl PostgresStripeRepository {
             return Err(invalid_outbox_payload());
         }
         let is_refund = job.event_type == "refund.create_requested";
-        type ContextRow = (i64, String, Uuid, String, Option<String>, Uuid);
+        type ContextRow = (
+            i64,
+            String,
+            Uuid,
+            String,
+            Option<String>,
+            Uuid,
+            Uuid,
+            String,
+            Uuid,
+            Option<Uuid>,
+        );
         let row: ContextRow = if is_refund {
             sqlx::query_as(
                 "SELECT refund.amount_minor, refund.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        attempt.stripe_payment_intent_id, refund.order_id \
+                        sales_order.stripe_payment_intent_id, \
+                        sales_order.shopper_id, sales_order.sales_channel_id, \
+                        sales_order.order_number, sales_order.id, refund.id \
                  FROM commerce.refunds AS refund \
-                 INNER JOIN commerce.payment_attempts AS attempt \
-                   ON attempt.store_id = refund.store_id AND attempt.id = refund.payment_attempt_id \
+                 INNER JOIN commerce.orders AS sales_order \
+                   ON sales_order.store_id = refund.store_id AND sales_order.id = refund.order_id \
                  INNER JOIN commerce.payment_provider_accounts AS account \
                    ON account.store_id = refund.store_id \
                   AND account.provider = 'stripe_checkout' AND account.enabled \
-                  AND account.readiness_status = 'ready' \
-                  AND account.readiness_valid_until > CURRENT_TIMESTAMP \
+                  AND account.readiness->>'status' = 'ready' \
                  WHERE refund.store_id = $1 AND refund.id = $2 \
                    AND account.credential_secret_reference IS NOT NULL \
                  ORDER BY account.id LIMIT 1",
@@ -333,16 +303,17 @@ impl PostgresStripeRepository {
             .ok_or_else(provider_unavailable)?
         } else {
             sqlx::query_as(
-                "SELECT attempt.amount_minor, attempt.currency::text, \
+                "SELECT sales_order.subtotal_amount_minor, sales_order.currency::text, \
                         account.id, account.credential_secret_reference, \
-                        attempt.stripe_payment_intent_id, attempt.order_id \
-                 FROM commerce.payment_attempts AS attempt \
+                        sales_order.stripe_payment_intent_id, \
+                        sales_order.shopper_id, sales_order.sales_channel_id, \
+                        sales_order.order_number, sales_order.id, NULL::uuid \
+                 FROM commerce.orders AS sales_order \
                  INNER JOIN commerce.payment_provider_accounts AS account \
-                   ON account.store_id = attempt.store_id \
+                   ON account.store_id = sales_order.store_id \
                   AND account.provider = 'stripe_checkout' AND account.enabled \
-                  AND account.readiness_status = 'ready' \
-                  AND account.readiness_valid_until > CURRENT_TIMESTAMP \
-                 WHERE attempt.store_id = $1 AND attempt.id = $2 \
+                  AND account.readiness->>'status' = 'ready' \
+                 WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
                    AND account.credential_secret_reference IS NOT NULL \
                  ORDER BY account.id LIMIT 1",
             )
@@ -354,17 +325,20 @@ impl PostgresStripeRepository {
             .ok_or_else(provider_unavailable)?
         };
         let command_amount = row.0;
-        if command_amount != outbox_amount(job)? || row.1 != outbox_currency(job)? {
+        if !is_refund && (command_amount != outbox_amount(job)? || row.1 != outbox_currency(job)?) {
+            return Err(invalid_outbox_payload());
+        }
+        if is_refund && command_amount != outbox_amount(job)? {
             return Err(invalid_outbox_payload());
         }
         if is_refund && row.4.is_none() {
             return Err(ApplicationError::Conflict {
                 code: "stripe_payment_reference_missing",
-                message: "the captured Payment Attempt has no Stripe payment reference",
+                message: "the Order has no Stripe payment reference",
             });
         }
         let checkout_details = if !is_refund {
-            let order_id = row.5;
+            let order_id = aggregate_id;
             let contact = sqlx::query_as::<
                 _,
                 (
@@ -471,7 +445,8 @@ impl PostgresStripeRepository {
         Ok(StripeCommand {
             stripe_account_id: StripeAccountId::from_uuid(row.2),
             event_type: job.event_type.clone(),
-            aggregate_id,
+            aggregate_id: row.8,
+            refund_id: row.9,
             amount_minor: command_amount,
             currency: CurrencyCode::parse(&row.1)?,
             idempotency_key: job.id.to_string(),
@@ -482,6 +457,12 @@ impl PostgresStripeRepository {
             stripe_payment_reference: row.4,
             checkout_details,
             return_url,
+            order_context: OrderMetadataContext {
+                store_id: job.store_id,
+                shopper_id: row.5,
+                sales_channel_id: row.6,
+                order_number: row.7,
+            },
         })
     }
 
@@ -499,21 +480,21 @@ impl PostgresStripeRepository {
         let aggregate_id = outbox_aggregate_id(job)?;
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let rows = if job.event_type == "payment.create_requested" {
-            sqlx::query(
-                "UPDATE commerce.payment_attempts \
-                 SET stripe_checkout_session_id = COALESCE(stripe_checkout_session_id, $3), \
-                     updated_at = CASE WHEN stripe_checkout_session_id IS NULL THEN $4 ELSE updated_at END \
-                 WHERE store_id = $1 AND id = $2 \
-                   AND (stripe_checkout_session_id IS NULL OR stripe_checkout_session_id = $3)",
+            // The Checkout Session id itself is not persisted — only the
+            // PaymentIntent id (set later, once Stripe reports it via
+            // webhook) is kept for refunds/lookups — so this call only
+            // needs to confirm the Order still exists to create against.
+            u64::from(
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT true FROM commerce.orders WHERE store_id = $1 AND id = $2",
+                )
+                .bind(job.store_id)
+                .bind(aggregate_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(database_error)?
+                .is_some(),
             )
-            .bind(job.store_id)
-            .bind(aggregate_id)
-            .bind(&result.stripe_object_id)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(database_error)?
-            .rows_affected()
         } else if job.event_type == "refund.create_requested" {
             sqlx::query(
                 "UPDATE commerce.refunds \
@@ -548,11 +529,11 @@ fn direct_checkout_job(
     return_url: &str,
 ) -> QueueJob {
     QueueJob {
-        id: attempt.id.as_uuid(),
+        id: attempt.order_id.as_uuid(),
         store_id: actor.machine.store_id.as_uuid(),
         event_type: "payment.create_requested".into(),
         payload: json!({
-            "aggregate_id": attempt.id.as_uuid(),
+            "aggregate_id": attempt.order_id.as_uuid(),
             "amount_minor": attempt.amount_minor,
             "currency": attempt.currency.as_str(),
             "return_url": return_url,
