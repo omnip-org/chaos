@@ -2,7 +2,7 @@ CREATE SCHEMA integration;
 
 SELECT pgmq.create('chaos_search_events');
 
-CREATE TYPE integration.email_provider AS ENUM ('resend');
+CREATE TYPE integration.email_provider AS ENUM ('none', 'resend');
 CREATE TYPE integration.payment_provider AS ENUM ('stripe');
 CREATE TYPE integration.shipping_provider AS ENUM ('manual');
 
