@@ -36,7 +36,6 @@ CREATE TABLE identity.credentials (
 CREATE TABLE identity.access_keys (
     id              UUID                NOT NULL,
     user_id         UUID                NOT NULL,
-    key_identifier  TEXT                NOT NULL,
     secret_digest   BYTEA               NOT NULL,
     display_suffix  CHAR(4)             NOT NULL,
     name            TEXT                NOT NULL,
@@ -48,10 +47,9 @@ CREATE TABLE identity.access_keys (
 
     CONSTRAINT access_keys_pkey                         PRIMARY KEY (id),
     CONSTRAINT access_keys_user_id_fkey                 FOREIGN KEY (user_id) REFERENCES identity.users (id) ON DELETE CASCADE,
-    CONSTRAINT access_keys_key_identifier_key           UNIQUE (key_identifier),
-    CONSTRAINT access_keys_key_identifier_format_check  CHECK (key_identifier ~ '^[A-Za-z0-9_-]{16}$'),
+    CONSTRAINT access_keys_secret_digest_key             UNIQUE (secret_digest),
     CONSTRAINT access_keys_secret_digest_length_check   CHECK (octet_length(secret_digest) = 32),
-    CONSTRAINT access_keys_display_suffix_format_check  CHECK (display_suffix ~ '^[A-Za-z0-9_-]{4}$'),
+    CONSTRAINT access_keys_display_suffix_format_check  CHECK (display_suffix ~ '^[1-9A-HJ-NP-Za-km-z]{4}$'),
     CONSTRAINT access_keys_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 80),
     CONSTRAINT access_keys_expiration_check             CHECK (expires_at IS NULL OR expires_at > created_at)
 );

@@ -66,9 +66,7 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         )
         .unwrap(),
         media_storage: None,
-        shopper_token_active_key_id: "test".into(),
-        shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
-        shopper_token_previous_key: None,
+        shopper_token_secret: "test-shopper-token-secret-32-bytes".into(),
         dependency_timeout: Duration::from_secs(1),
         shutdown_drain_delay: Duration::ZERO,
         shutdown_worker_timeout: Duration::from_secs(1),

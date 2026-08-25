@@ -314,14 +314,8 @@ impl ApiState {
         let fulfillment_management = FulfillmentManagement::new(Arc::new(
             PostgresFulfillmentRepository::new(infrastructure.runtime_pool()),
         ));
-        let shopper_credentials = HmacShopperCredentialCodec::new(
-            settings.shopper_token_active_key_id.clone(),
-            settings.shopper_token_active_secret.as_bytes().to_vec(),
-            settings
-                .shopper_token_previous_key
-                .as_ref()
-                .map(|(key_id, secret)| (key_id.clone(), secret.as_bytes().to_vec())),
-        )?;
+        let shopper_credentials =
+            HmacShopperCredentialCodec::new(settings.shopper_token_secret.as_bytes().to_vec())?;
         Ok(Self {
             infrastructure,
             lifecycle,
@@ -439,9 +433,7 @@ mod tests {
             )
             .unwrap(),
             media_storage: None,
-            shopper_token_active_key_id: "test".into(),
-            shopper_token_active_secret: "test-shopper-token-secret-32-bytes".into(),
-            shopper_token_previous_key: None,
+            shopper_token_secret: "test-shopper-token-secret-32-bytes".into(),
             dependency_timeout: Duration::from_millis(10),
             shutdown_drain_delay: Duration::ZERO,
             shutdown_worker_timeout: Duration::from_secs(1),

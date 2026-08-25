@@ -11,19 +11,14 @@ use uuid::Uuid;
 
 const PUBLIC_KEY_PREFIX: &str = "pk_";
 const PUBLIC_KEY_LENGTH: usize = 24;
-const PUBLIC_KEY_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
+const PUBLIC_KEY_ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 #[derive(Default)]
 pub struct DefaultPublishableKeyGenerator;
 
 impl DefaultPublishableKeyGenerator {
     pub fn generate(&self) -> GeneratedPublishableKey {
-        let mut random = [0_u8; PUBLIC_KEY_LENGTH];
-        rand::rng().fill_bytes(&mut random);
-        let suffix = random
-            .into_iter()
-            .map(|byte| PUBLIC_KEY_ALPHABET[usize::from(byte) % PUBLIC_KEY_ALPHABET.len()] as char)
-            .collect::<String>();
+        let suffix = random_base58(PUBLIC_KEY_LENGTH);
         GeneratedPublishableKey {
             public_key: format!("{PUBLIC_KEY_PREFIX}{suffix}"),
         }
@@ -203,6 +198,24 @@ fn valid_public_key(value: &str) -> bool {
         && value[PUBLIC_KEY_PREFIX.len()..]
             .bytes()
             .all(|byte| PUBLIC_KEY_ALPHABET.contains(&byte))
+}
+
+fn random_base58(length: usize) -> String {
+    let mut value = String::with_capacity(length);
+    while value.len() < length {
+        let mut bytes = [0_u8; 64];
+        rand::rng().fill_bytes(&mut bytes);
+        for byte in bytes {
+            if byte >= 232 {
+                continue;
+            }
+            value.push(PUBLIC_KEY_ALPHABET[usize::from(byte % 58)] as char);
+            if value.len() == length {
+                break;
+            }
+        }
+    }
+    value
 }
 
 #[cfg(test)]

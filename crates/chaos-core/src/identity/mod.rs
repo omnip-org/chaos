@@ -21,7 +21,6 @@ pub struct IdentityService {
 
 pub struct CreateAccessKeyOutput {
     pub key: AccessKey,
-    pub key_identifier: String,
     pub display_suffix: String,
     pub plaintext: SecretString,
 }
@@ -57,7 +56,6 @@ impl AccessKeyManagement {
         self.repository.create(&key, &material).await?;
         Ok(CreateAccessKeyOutput {
             key,
-            key_identifier: material.key_identifier,
             display_suffix: material.display_suffix,
             plaintext: material.plaintext,
         })

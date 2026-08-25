@@ -34,7 +34,6 @@ struct ListAccessKeysQuery {
 struct AccessKeyCreatedData {
     id: Uuid,
     name: String,
-    key_identifier: String,
     display_suffix: String,
     secret: String,
 }
@@ -43,7 +42,6 @@ struct AccessKeyCreatedData {
 struct AccessKeyData {
     id: Uuid,
     name: String,
-    key_identifier: String,
     display_suffix: String,
     created_at: ApiDateTime,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,7 +70,6 @@ async fn create_access_key(
     Ok(ApiResponse::created(AccessKeyCreatedData {
         id: output.key.id().as_uuid(),
         name: output.key.name().to_owned(),
-        key_identifier: output.key_identifier,
         display_suffix: output.display_suffix,
         secret: output.plaintext.expose_secret().to_owned(),
     }))
@@ -101,7 +98,6 @@ async fn list_access_keys(
         .map(|item| AccessKeyData {
             id: item.id.as_uuid(),
             name: item.name,
-            key_identifier: item.key_identifier,
             display_suffix: item.display_suffix,
             created_at: ApiDateTime::from(item.created_at),
             last_used_at: item.last_used_at.map(ApiDateTime::from),

@@ -56,7 +56,6 @@ pub trait IdentityAuthentication: Send + Sync {
 }
 
 pub struct GeneratedAccessKeyMaterial {
-    pub key_identifier: String,
     pub secret_digest: [u8; 32],
     pub display_suffix: String,
     pub plaintext: SecretString,
@@ -69,7 +68,6 @@ pub trait AccessKeyMaterialGenerator: Send + Sync {
 pub struct AccessKeyListItem {
     pub id: AccessKeyId,
     pub name: String,
-    pub key_identifier: String,
     pub display_suffix: String,
     pub created_at: OffsetDateTime,
     pub last_used_at: Option<OffsetDateTime>,

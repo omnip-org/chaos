@@ -35,8 +35,11 @@ An immutable commercial record after creation, with controlled state transitions
 A Storefront visitor identity scoped to one Store and created when the website
 opens a Shopper session. A signed possession token carries its UUID through Cart,
 Checkout, Payment, Order, and Analytics operations. Sales Channel is request
-context, not Shopper identity. Contact details are captured as Checkout and
-Order snapshots rather than as a separate Customer profile.
+context, not Shopper identity. The possession token has the compact format
+`shopper.<shopper_id>.<signature>`; Store and Sales Channel are covered by the
+HMAC signature but are not exposed as token fields. The signature is encoded with
+unpadded Base64URL. Contact details are captured as Checkout and Order snapshots
+rather than as a separate Customer profile.
 
 ## Cart and Checkout
 
@@ -53,10 +56,10 @@ A Payment records authorization and capture against one Order. A Refund referenc
 
 ## Access Key
 
-A private credential owned by one User and used by trusted clients such as MCP, CLI, or server-side integrations. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every Store-scoped request selects a Store and checks the User's current membership and role. Its plaintext format is `access_<identifier>_<secret>`.
+A private credential owned by one User and used by trusted clients such as MCP, CLI, or server-side integrations. The plaintext is shown once; only verification material is stored. An Access Key never grants Store access by itself. Every Store-scoped request selects a Store and checks the User's current membership and role. Its plaintext format is `ak_<43 Base58 characters>`.
 
 The authenticated operation chain is `Access Key -> User -> Store Membership -> Store`. Request telemetry retains the Access Key, User, Store, and request identities so AI-driven mutations are attributable.
 
 ## Publishable Key
 
-A Store-scoped public credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `public_<identifier>_<secret>`.
+A Store-scoped public credential for storefront or Sales Channel clients. It resolves an active Sales Channel and can enter the complete Store API. Operation-specific Shopper credentials, tracking capabilities, resource ownership, and business rules protect non-public data and mutations. It cannot authenticate trusted administration clients or invoke Store administration. Its plaintext format is `pk_<24 Base58 characters>`.

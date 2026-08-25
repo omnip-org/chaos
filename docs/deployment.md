@@ -95,7 +95,7 @@ curl --fail https://chaos.omnip.org/health/ready
 2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
 3. Configure the client with `Authorization: Bearer <access-key>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`.
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
-5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `public_<identifier>_<secret>` and must be treated as a client credential.
+5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `pk_<24 Base58 characters>` and must be treated as a client credential.
 6. Upload third-party credentials and configure Providers through MCP tools.
 7. Activate the Store and exercise a non-destructive quote or test transaction.
 

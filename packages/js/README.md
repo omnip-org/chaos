@@ -28,7 +28,7 @@ npm install @omnip-org/chaos-js
 import { createStorefrontClient } from "@omnip-org/chaos-js";
 
 const chaos = createStorefrontClient({
-  publishableKey: "public_...",
+  publishableKey: "pk_...",
   analytics: {
     providers: {
       // Must match the Store's Meta CAPI Dataset ID.

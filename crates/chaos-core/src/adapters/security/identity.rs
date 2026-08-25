@@ -10,7 +10,6 @@ use crate::{
     error::database_error,
 };
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chaos_domain::identity::{
     AccessKey, AccessKeyId, Email, ExternalSubject, IdentityProvider, UserId,
 };
@@ -30,9 +29,9 @@ use url::Url;
 use uuid::Uuid;
 
 const JWKS_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60);
-const ACCESS_KEY_PREFIX: &str = "access_";
-const KEY_IDENTIFIER_LENGTH: usize = 16;
-const KEY_SECRET_LENGTH: usize = 43;
+const ACCESS_KEY_PREFIX: &str = "ak_";
+const ACCESS_KEY_BODY_LENGTH: usize = 43;
+const BASE58_ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 #[derive(Clone, Debug)]
 pub struct OidcProviderConfiguration {
@@ -271,17 +270,11 @@ pub struct SecureAccessKeyMaterialGenerator;
 
 impl AccessKeyMaterialGenerator for SecureAccessKeyMaterialGenerator {
     fn generate(&self) -> GeneratedAccessKeyMaterial {
-        let mut identifier_bytes = [0_u8; 12];
-        let mut secret_bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut identifier_bytes);
-        rand::rng().fill_bytes(&mut secret_bytes);
-        let key_identifier = URL_SAFE_NO_PAD.encode(identifier_bytes);
-        let secret = URL_SAFE_NO_PAD.encode(secret_bytes);
-        let plaintext = format!("{ACCESS_KEY_PREFIX}{key_identifier}_{secret}");
+        let body = random_base58(ACCESS_KEY_BODY_LENGTH);
+        let plaintext = format!("{ACCESS_KEY_PREFIX}{body}");
         let secret_digest = Sha256::digest(plaintext.as_bytes()).into();
-        let display_suffix = secret[secret.len() - 4..].to_owned();
+        let display_suffix = body[body.len() - 4..].to_owned();
         GeneratedAccessKeyMaterial {
-            key_identifier,
             secret_digest,
             display_suffix,
             plaintext: SecretString::from(plaintext),
@@ -309,13 +302,12 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO identity.access_keys \
-             (id, user_id, key_identifier, secret_digest, display_suffix, name) \
-             SELECT $1, identity_user.id, $2, $3, $4, $5 \
+             (id, user_id, secret_digest, display_suffix, name) \
+             SELECT $1, identity_user.id, $2, $3, $4 \
              FROM identity.users AS identity_user \
-             WHERE identity_user.id = $6 AND identity_user.status = 'active'",
+             WHERE identity_user.id = $5 AND identity_user.status = 'active'",
         )
         .bind(key.id().as_uuid())
-        .bind(&material.key_identifier)
         .bind(material.secret_digest.as_slice())
         .bind(&material.display_suffix)
         .bind(key.name())
@@ -344,13 +336,12 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
                 Uuid,
                 String,
                 String,
-                String,
                 OffsetDateTime,
                 Option<OffsetDateTime>,
                 Option<OffsetDateTime>,
             ),
         >(
-            "SELECT id, name, key_identifier, display_suffix::text, created_at, \
+            "SELECT id, name, display_suffix::text, created_at, \
                     last_used_at, revoked_at \
              FROM identity.access_keys \
              WHERE user_id = $1 AND ($2::uuid IS NULL OR id > $2) \
@@ -366,19 +357,10 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
         Ok(rows
             .into_iter()
             .map(
-                |(
-                    id,
-                    name,
-                    key_identifier,
-                    display_suffix,
-                    created_at,
-                    last_used_at,
-                    revoked_at,
-                )| {
+                |(id, name, display_suffix, created_at, last_used_at, revoked_at)| {
                     AccessKeyListItem {
                         id: AccessKeyId::from_uuid(id),
                         name,
-                        key_identifier,
                         display_suffix,
                         created_at,
                         last_used_at,
@@ -414,10 +396,9 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
         &self,
         presented_key: &SecretString,
     ) -> Result<Option<McpPrincipal>, ApplicationError> {
-        let Some(key_identifier) = parse_access_key_identifier(presented_key.expose_secret())
-        else {
+        if !valid_access_key(presented_key.expose_secret()) {
             return Ok(None);
-        };
+        }
         let digest: [u8; 32] = Sha256::digest(presented_key.expose_secret().as_bytes()).into();
         let row = sqlx::query_as::<_, (Uuid, Uuid)>(
             "WITH authenticated AS MATERIALIZED ( \
@@ -425,8 +406,7 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
                  FROM identity.access_keys AS access_key \
                  INNER JOIN identity.users AS identity_user \
                     ON identity_user.id = access_key.user_id \
-                 WHERE access_key.key_identifier = $1 \
-                   AND access_key.secret_digest = $2 \
+                 WHERE access_key.secret_digest = $1 \
                    AND access_key.revoked_at IS NULL \
                    AND (access_key.expires_at IS NULL \
                         OR access_key.expires_at > CURRENT_TIMESTAMP) \
@@ -442,7 +422,6 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
              ) \
              SELECT id, user_id FROM authenticated",
         )
-        .bind(key_identifier)
         .bind(digest.as_slice())
         .fetch_optional(&self.pool)
         .await
@@ -454,21 +433,33 @@ impl AccessKeyRepository for PostgresAccessKeyRepository {
     }
 }
 
-fn parse_access_key_identifier(presented_key: &str) -> Option<&str> {
-    let remainder = presented_key.strip_prefix(ACCESS_KEY_PREFIX)?;
-    let (identifier, remainder) = remainder.split_at_checked(KEY_IDENTIFIER_LENGTH)?;
-    let secret = remainder.strip_prefix('_')?;
-    if secret.len() != KEY_SECRET_LENGTH
-        || !identifier.bytes().all(is_base64url_byte)
-        || !secret.bytes().all(is_base64url_byte)
-    {
-        return None;
-    }
-    Some(identifier)
+fn valid_access_key(value: &str) -> bool {
+    let Some(body) = value.strip_prefix(ACCESS_KEY_PREFIX) else {
+        return false;
+    };
+    body.len() == ACCESS_KEY_BODY_LENGTH && body.bytes().all(is_base58_byte)
 }
 
-fn is_base64url_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+fn random_base58(length: usize) -> String {
+    let mut value = String::with_capacity(length);
+    while value.len() < length {
+        let mut bytes = [0_u8; 64];
+        rand::rng().fill_bytes(&mut bytes);
+        for byte in bytes {
+            if byte >= 232 {
+                continue;
+            }
+            value.push(BASE58_ALPHABET[usize::from(byte % 58)] as char);
+            if value.len() == length {
+                break;
+            }
+        }
+    }
+    value
+}
+
+fn is_base58_byte(byte: u8) -> bool {
+    BASE58_ALPHABET.contains(&byte)
 }
 
 #[derive(Clone)]
@@ -579,10 +570,7 @@ mod tests {
         let generated = SecureAccessKeyMaterialGenerator.generate();
         let plaintext = generated.plaintext.expose_secret();
         assert!(plaintext.starts_with(ACCESS_KEY_PREFIX));
-        assert_eq!(
-            parse_access_key_identifier(plaintext),
-            Some(generated.key_identifier.as_str())
-        );
+        assert!(valid_access_key(plaintext));
         assert_eq!(
             generated.secret_digest,
             <[u8; 32]>::from(Sha256::digest(plaintext.as_bytes()))
@@ -592,12 +580,7 @@ mod tests {
 
     #[test]
     fn old_access_key_shape_is_rejected() {
-        let old_key = format!(
-            "cc_access_v1_{}_{}",
-            "a".repeat(KEY_IDENTIFIER_LENGTH),
-            "b".repeat(KEY_SECRET_LENGTH)
-        );
-        assert_eq!(parse_access_key_identifier(&old_key), None);
+        assert!(!valid_access_key("access_identifier_secret"));
     }
 
     #[test]

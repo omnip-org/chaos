@@ -32,9 +32,7 @@ pub struct Settings {
     pub analytics_meta_api_base_url: Url,
     pub provider_secret_key: SecretKey,
     pub media_storage: Option<MediaStorageSettings>,
-    pub shopper_token_active_key_id: String,
-    pub shopper_token_active_secret: String,
-    pub shopper_token_previous_key: Option<(String, String)>,
+    pub shopper_token_secret: String,
     pub dependency_timeout: Duration,
     pub shutdown_drain_delay: Duration,
     pub shutdown_worker_timeout: Duration,
@@ -131,12 +129,7 @@ impl Settings {
             )?,
             provider_secret_key: provider_secret_key()?,
             media_storage: media_storage_settings()?,
-            shopper_token_active_key_id: required("SHOPPER_TOKEN_ACTIVE_KEY_ID")?,
-            shopper_token_active_secret: required("SHOPPER_TOKEN_ACTIVE_SECRET")?,
-            shopper_token_previous_key: optional_pair(
-                "SHOPPER_TOKEN_PREVIOUS_KEY_ID",
-                "SHOPPER_TOKEN_PREVIOUS_SECRET",
-            )?,
+            shopper_token_secret: required("SHOPPER_TOKEN_SECRET")?,
             dependency_timeout: Duration::from_millis(parse_or("DEPENDENCY_TIMEOUT_MS", "1000")?),
             shutdown_drain_delay: Duration::from_millis(parse_or(
                 "SHUTDOWN_DRAIN_DELAY_MS",
@@ -200,18 +193,6 @@ fn media_storage_settings() -> anyhow::Result<Option<MediaStorageSettings>> {
 
 fn optional(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
-}
-
-fn optional_pair(first: &str, second: &str) -> anyhow::Result<Option<(String, String)>> {
-    match (env::var(first).ok(), env::var(second).ok()) {
-        (None, None) => Ok(None),
-        (Some(first_value), Some(second_value))
-            if !first_value.trim().is_empty() && !second_value.trim().is_empty() =>
-        {
-            Ok(Some((first_value, second_value)))
-        }
-        _ => bail!("environment variables {first} and {second} must be set together"),
-    }
 }
 
 fn optional_role(name: &str) -> anyhow::Result<Option<String>> {
