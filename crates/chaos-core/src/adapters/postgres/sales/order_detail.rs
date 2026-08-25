@@ -117,8 +117,8 @@ pub(crate) async fn load(
                 order_row.shipping_status::text AS shipping_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
                 order_row.shipping_amount_minor, order_row.total_amount_minor, order_row.refunded_amount_minor, \
-                payment_account.provider::text, order_row.payment_provider_reference_id, order_row.payment_failure_code, \
-                shipping_account.provider::text, order_row.shipping_provider_reference_id, \
+                payment_account.provider::text AS payment_provider, order_row.payment_provider_reference_id, order_row.payment_failure_code, \
+                shipping_account.provider::text AS shipping_provider, order_row.shipping_provider_reference_id, \
                 order_row.created_at, order_row.updated_at \
          FROM commerce.orders AS order_row \
          INNER JOIN integration.provider_accounts AS payment_account \
