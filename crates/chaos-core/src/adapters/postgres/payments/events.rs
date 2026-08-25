@@ -366,6 +366,13 @@ async fn apply_payment_event(
                     .await?;
         }
         confirm_paid_order(transaction, store_id, order_id, &order_status, now).await?;
+        let items = load_order_analytics_items(
+            transaction,
+            store_id.as_uuid(),
+            order_id.as_uuid(),
+        )
+        .await?;
+        let occurred_at = provider_event_time(provider_payload, now);
         append_event(
             transaction,
             AnalyticsEventToAppend {
@@ -378,8 +385,9 @@ async fn apply_payment_event(
                     "order_id": order_id.as_uuid(),
                     "value_minor": event_amount,
                     "currency": currency,
+                    "items": items,
                 }),
-                occurred_at: now,
+                occurred_at,
                 received_at: now,
             },
         )
@@ -982,8 +990,9 @@ async fn apply_refund_event(
                     "refund_id": refund_row_id,
                     "order_id": order_id,
                     "value_minor": amount,
+                    "currency": order_currency,
                 }),
-                occurred_at: now,
+                occurred_at: provider_event_time(provider_payload, now),
                 received_at: now,
             },
         )
@@ -1023,6 +1032,23 @@ async fn apply_refund_event(
             .await?;
     }
     Ok(OrderId::from_uuid(order_id))
+}
+
+fn provider_event_time(payload: &Value, fallback: OffsetDateTime) -> OffsetDateTime {
+    let event_created = payload
+        .get("stripe_event")
+        .and_then(|event| event.get("created"))
+        .and_then(Value::as_i64);
+    let object_created = payload
+        .get("stripe_event")
+        .and_then(|event| event.get("data"))
+        .and_then(|data| data.get("object"))
+        .and_then(|object| object.get("created"))
+        .and_then(Value::as_i64);
+    event_created
+        .or(object_created)
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .unwrap_or(fallback)
 }
 
 fn local_refund_status(status: PaymentRefundStatus) -> &'static str {

@@ -156,6 +156,12 @@ impl PostgresStorefrontSalesRepository {
             .unwrap_or_default();
         if quantity > previous_quantity {
             let now = OffsetDateTime::now_utc();
+            let added_quantity = quantity - previous_quantity;
+            let value_minor = row.5.checked_mul(i64::from(added_quantity)).ok_or_else(|| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "add_to_cart analytics value overflow"
+                ))
+            })?;
             append_event(
                 &mut transaction,
                 AnalyticsEventToAppend {
@@ -167,7 +173,14 @@ impl PostgresStorefrontSalesRepository {
                         "_source": "server",
                         "cart_id": cart_id.as_uuid(),
                         "product_variant_id": product_variant_id.as_uuid(),
-                        "quantity": quantity - previous_quantity,
+                        "quantity": added_quantity,
+                        "value_minor": value_minor,
+                        "currency": currency.as_str(),
+                        "items": [{
+                            "item_id": product_variant_id.as_uuid(),
+                            "quantity": added_quantity,
+                            "price_minor": row.5,
+                        }],
                     }),
                     occurred_at: now,
                     received_at: now,
@@ -344,6 +357,22 @@ impl PostgresStorefrontSalesRepository {
         let order_id = requested_order_id;
         reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
+        let items = cart
+            .lines()
+            .iter()
+            .map(|line| {
+                json!({
+                    "item_id": line.product_variant_id().as_uuid(),
+                    "quantity": line.quantity(),
+                    "price_minor": line.unit_price().amount_minor(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let num_items: u32 = cart
+            .lines()
+            .iter()
+            .map(CartLine::quantity)
+            .sum();
         append_event(
             &mut transaction,
             AnalyticsEventToAppend {
@@ -356,6 +385,10 @@ impl PostgresStorefrontSalesRepository {
                     "cart_id": cart_id.as_uuid(),
                     "order_id": order_id.as_uuid(),
                     "payment_ui": "stripe_embedded_checkout",
+                    "value_minor": subtotal,
+                    "currency": currency.as_str(),
+                    "num_items": num_items,
+                    "items": items,
                 }),
                 occurred_at: request.now,
                 received_at: request.now,

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use reqwest::{Client, StatusCode, Url};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::adapters::security::provider_secrets::DynamicSecretResolver;
 
@@ -52,6 +52,16 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
         &self,
         command: &AnalyticsDeliveryCommand,
     ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError> {
+        // Keep the first-party ledger broader than Meta's optimization events.
+        // Engagement duration and refund state are useful internally, but they
+        // are not browser conversions and must not be sent as custom Meta
+        // events. Returning a successful filtered receipt makes the delivery
+        // durable without retrying an intentionally excluded event.
+        if !is_meta_event(command) {
+            return Ok(AnalyticsDeliveryReceipt {
+                provider_reference: Some("filtered".into()),
+            });
+        }
         let token = self
             .secrets
             .resolve_analytics(&command.credential_secret_reference)
@@ -67,9 +77,7 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
                 event_id: command.event_id.to_string(),
                 action_source: "website",
                 event_source_url: source_url(&command.properties),
-                user_data: MetaUserData {
-                    external_id: vec![sha256_hex(command.shopper_id.as_bytes())],
-                },
+                user_data: meta_user_data(command),
                 custom_data: custom_data(command),
             }],
             test_event_code: command
@@ -142,12 +150,53 @@ struct MetaEvent<'a> {
 struct MetaUserData {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     external_id: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    em: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ph: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fbc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fbp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_user_agent: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct MetaResponse {
     events_received: u32,
     fbtrace_id: Option<String>,
+}
+
+#[cfg(test)]
+fn is_supported_meta_event(name: &str) -> bool {
+    matches!(
+        name,
+        "page_view"
+            | "view_content"
+            | "search"
+            | "add_to_cart"
+            | "initiate_checkout"
+            | "add_payment_info"
+            | "purchase"
+    )
+}
+
+fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
+    let source = command.properties.get("_source").and_then(Value::as_str);
+    match command.event_name.as_str() {
+        // Browser event and Pixel use the same queued UUID for these events.
+        "page_view" | "view_content" | "search" => source != Some("server"),
+        // These are authoritative commerce events. The browser only projects
+        // Purchase directly with the Order ID; it does not enqueue a second
+        // browser conversion for these names.
+        "add_to_cart" | "initiate_checkout" | "add_payment_info" | "purchase" => {
+            source == Some("server")
+        }
+        _ => false,
+    }
 }
 
 fn meta_event_name(name: &str) -> &str {
@@ -159,49 +208,222 @@ fn meta_event_name(name: &str) -> &str {
         "initiate_checkout" => "InitiateCheckout",
         "add_payment_info" => "AddPaymentInfo",
         "purchase" => "Purchase",
-        "refund" => "Refund",
-        "view_duration" => "ViewDuration",
         _ => name,
     }
 }
 
-fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
-    let mut data = command.properties.clone();
-    if let Some(object) = data.as_object_mut() {
-        // These fields are Chaos transport context, not business event data.
-        object.remove("_source");
-        object.remove("session_id");
-        // Traffic provenance remains a Chaos Analytics fact. Click identifiers
-        // must not be forwarded as arbitrary Meta custom_data fields.
-        object.remove("traffic");
-        if let Some(value) = object
-            .remove("value_minor")
-            .and_then(|value| value.as_i64())
-        {
-            let exponent = command
-                .properties
-                .get("currency")
-                .and_then(Value::as_str)
-                .map(currency_exponent)
-                .unwrap_or(2);
-            object.insert("value".into(), json!(value as f64 / 10_f64.powi(exponent)));
-        }
-        if let Some(currency) = object.get("currency").and_then(Value::as_str) {
-            object.insert("currency".into(), json!(currency));
-        }
+fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
+    let properties = &command.properties;
+    MetaUserData {
+        // Hash the stable Chaos shopper identifier in its canonical textual
+        // form so it remains stable across retries and destinations.
+        external_id: vec![sha256_hex(command.shopper_id.to_string().as_bytes())],
+        em: context_value(properties, "em")
+            .filter(|value| is_sha256(value))
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        ph: context_value(properties, "ph")
+            .filter(|value| is_sha256(value))
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        fbc: context_value(properties, "fbc").map(str::to_owned),
+        fbp: context_value(properties, "fbp").map(str::to_owned),
+        client_ip_address: context_value(properties, "client_ip_address").map(str::to_owned),
+        client_user_agent: context_value(properties, "client_user_agent").map(str::to_owned),
     }
-    data
+}
+
+fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
+    let Some(mut object) = command.properties.as_object().cloned() else {
+        return json!({});
+    };
+
+    // These fields are Chaos transport/context data or browser-only display
+    // fields. Standard Meta fields are rebuilt below from the canonical Chaos
+    // representation instead of forwarding implementation details.
+    for key in [
+        "_source",
+        "_meta",
+        "session_id",
+        "traffic",
+        "source_url",
+        "path",
+        "title",
+        "referrer_domain",
+        "active_milliseconds",
+        "page_view_event_id",
+        "product_id",
+        "product_variant_id",
+        "quantity",
+        "query",
+        "result_count",
+        "items",
+        "value_minor",
+    ] {
+        object.remove(key);
+    }
+
+    if let Some(value_minor) = command
+        .properties
+        .get("value_minor")
+        .and_then(Value::as_i64)
+    {
+        let exponent = command
+            .properties
+            .get("currency")
+            .and_then(Value::as_str)
+            .map(currency_exponent)
+            .unwrap_or(2);
+        object.insert(
+            "value".into(),
+            json!(value_minor as f64 / 10_f64.powi(exponent)),
+        );
+    }
+    if let Some(currency) = command.properties.get("currency").and_then(Value::as_str) {
+        object.insert("currency".into(), json!(currency.to_ascii_uppercase()));
+    }
+    if let Some(query) = command.properties.get("query").and_then(Value::as_str) {
+        object.insert("search_string".into(), json!(query));
+    }
+
+    let (contents, content_ids, num_items) = meta_contents(
+        command.properties.get("items"),
+        command.properties.get("product_variant_id"),
+        command.properties.get("product_id"),
+        command.properties.get("quantity"),
+        command.properties.get("currency").and_then(Value::as_str),
+    );
+    let has_contents = contents.is_some();
+    if let Some(contents) = contents {
+        object.insert("contents".into(), contents);
+        object.insert("content_ids".into(), json!(content_ids));
+        object.insert("content_type".into(), json!("product"));
+        object.insert("num_items".into(), json!(num_items));
+    }
+    if !has_contents
+        && let Some(ids) = content_ids_from_single_product(
+            command.properties.get("product_variant_id"),
+            command.properties.get("product_id"),
+        )
+    {
+        object.insert("content_ids".into(), json!(ids));
+        object.insert("content_type".into(), json!("product"));
+    }
+    Value::Object(object)
 }
 
 fn source_url(properties: &Value) -> Option<&str> {
+    context_value(properties, "source_url").filter(|value| {
+        Url::parse(value)
+            .map(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+            .unwrap_or(false)
+    })
+}
+
+fn context_value<'a>(properties: &'a Value, key: &str) -> Option<&'a str> {
     properties
-        .get("source_url")
+        .get("_meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get(key))
         .and_then(Value::as_str)
-        .or_else(|| properties.get("path").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            properties
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+}
+
+fn meta_contents(
+    items: Option<&Value>,
+    product_variant_id: Option<&Value>,
+    product_id: Option<&Value>,
+    quantity: Option<&Value>,
+    currency: Option<&str>,
+) -> (Option<Value>, Vec<String>, i64) {
+    let mut contents = Vec::new();
+    if let Some(items) = items.and_then(Value::as_array) {
+        for item in items {
+            let Some(item) = item.as_object() else {
+                continue;
+            };
+            let Some(id) = item
+                .get("item_id")
+                .or_else(|| item.get("product_variant_id"))
+                .or_else(|| item.get("product_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+            else {
+                continue;
+            };
+            let item_quantity = item
+                .get("quantity")
+                .and_then(Value::as_i64)
+                .filter(|quantity| *quantity > 0)
+                .unwrap_or(1);
+            let item_price = item
+                .get("price_minor")
+                .and_then(Value::as_i64)
+                .and_then(|minor| currency.map(|currency| minor_to_major(minor, currency)));
+            let mut content = Map::new();
+            content.insert("id".into(), json!(id));
+            content.insert("quantity".into(), json!(item_quantity));
+            if let Some(item_price) = item_price {
+                content.insert("item_price".into(), json!(item_price));
+            }
+            contents.push(Value::Object(content));
+        }
+    }
+    if contents.is_empty()
+        && let Some(id) = product_variant_id
+            .or(product_id)
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+    {
+        let item_quantity = quantity
+            .and_then(Value::as_i64)
+            .filter(|quantity| *quantity > 0)
+            .unwrap_or(1);
+        let mut content = Map::new();
+        content.insert("id".into(), json!(id));
+        content.insert("quantity".into(), json!(item_quantity));
+        contents.push(Value::Object(content));
+    }
+    let content_ids = contents
+        .iter()
+        .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect::<Vec<_>>();
+    let num_items = contents
+        .iter()
+        .filter_map(|item| item.get("quantity").and_then(Value::as_i64))
+        .sum();
+    if contents.is_empty() {
+        (None, content_ids, num_items)
+    } else {
+        (Some(Value::Array(contents)), content_ids, num_items)
+    }
+}
+
+fn content_ids_from_single_product(
+    product_variant_id: Option<&Value>,
+    product_id: Option<&Value>,
+) -> Option<Vec<String>> {
+    product_variant_id
+        .or(product_id)
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| vec![id.to_owned()])
+}
+
+fn minor_to_major(value_minor: i64, currency: &str) -> f64 {
+    value_minor as f64 / 10_f64.powi(currency_exponent(currency))
 }
 
 fn currency_exponent(currency: &str) -> i32 {
-    match currency {
+    match currency.to_ascii_uppercase().as_str() {
         "BIF" | "CLP" | "DJF" | "GNF" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX" | "VND"
         | "VUV" | "XAF" | "XOF" | "XPF" => 0,
         "BHD" | "JOD" | "KWD" | "OMR" | "TND" => 3,
@@ -215,6 +437,10 @@ fn sha256_hex(value: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn invalid_command() -> AnalyticsDeliveryError {
@@ -282,6 +508,76 @@ mod tests {
         assert!(data.get("_source").is_none());
         assert!(data.get("session_id").is_none());
         assert!(data.get("traffic").is_none());
-        assert_eq!(data["path"], json!("/"));
+        assert!(data.get("path").is_none());
+    }
+
+    #[test]
+    fn maps_items_and_search_to_meta_standard_fields() {
+        let mut input = command(1_299, "USD");
+        input.event_name = "search".into();
+        input.properties = json!({
+            "query": "shoes",
+            "items": [{"item_id": "variant-1", "quantity": 2, "price_minor": 650}],
+            "currency": "USD",
+            "value_minor": 1_300,
+            "_meta": {"source_url": "https://shop.example/search?q=shoes"}
+        });
+        let data = custom_data(&input);
+        assert_eq!(data["search_string"], json!("shoes"));
+        assert_eq!(data["content_ids"], json!(["variant-1"]));
+        assert_eq!(data["contents"][0]["item_price"], json!(6.5));
+        assert_eq!(data["num_items"], json!(2));
+        assert!(data.get("_meta").is_none());
+        assert_eq!(
+            source_url(&input.properties),
+            Some("https://shop.example/search?q=shoes")
+        );
+    }
+
+    #[test]
+    fn only_standard_conversion_events_are_sent_to_meta() {
+        assert!(is_supported_meta_event("purchase"));
+        assert!(is_supported_meta_event("page_view"));
+        assert!(!is_supported_meta_event("view_duration"));
+        assert!(!is_supported_meta_event("refund"));
+        assert!(!is_supported_meta_event("wishlist_added"));
+    }
+
+    #[test]
+    fn routes_meta_events_by_authoritative_source() {
+        let mut browser = command(1_299, "USD");
+        browser.properties = json!({"_source": "browser"});
+        browser.event_name = "page_view".into();
+        assert!(is_meta_event(&browser));
+        browser.event_name = "add_to_cart".into();
+        assert!(!is_meta_event(&browser));
+
+        let mut server = browser;
+        server.properties = json!({"_source": "server"});
+        assert!(is_meta_event(&server));
+        server.event_name = "page_view".into();
+        assert!(!is_meta_event(&server));
+    }
+
+    #[test]
+    fn includes_hashed_identity_and_browser_matching_context() {
+        let mut input = command(1_299, "USD");
+        input.properties = json!({
+            "_meta": {
+                "em": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "ph": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "fbc": "fb.1.123.click",
+                "fbp": "fb.1.123.browser",
+                "client_ip_address": "203.0.113.10",
+                "client_user_agent": "test-agent"
+            }
+        });
+        let user_data = meta_user_data(&input);
+        assert_eq!(user_data.em.len(), 1);
+        assert_eq!(user_data.ph.len(), 1);
+        assert_eq!(user_data.fbc.as_deref(), Some("fb.1.123.click"));
+        assert_eq!(user_data.fbp.as_deref(), Some("fb.1.123.browser"));
+        assert_eq!(user_data.client_ip_address.as_deref(), Some("203.0.113.10"));
+        assert_eq!(user_data.client_user_agent.as_deref(), Some("test-agent"));
     }
 }

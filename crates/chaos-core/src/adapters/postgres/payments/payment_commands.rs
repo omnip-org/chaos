@@ -532,6 +532,11 @@ impl PostgresStripeRepository {
             let Some((shopper_id, amount_minor, currency)) = order else {
                 return Err(stripe_object_mismatch());
             };
+            let items = load_order_analytics_items(&mut transaction, job.store_id, aggregate_id).await?;
+            let num_items: i64 = items
+                .iter()
+                .filter_map(|item| item.get("quantity").and_then(Value::as_i64))
+                .sum();
             append_event(
                 &mut transaction,
                 AnalyticsEventToAppend {
@@ -545,6 +550,8 @@ impl PostgresStripeRepository {
                         "value_minor": amount_minor,
                         "currency": currency,
                         "provider": job.provider.as_deref().unwrap_or("stripe"),
+                        "num_items": num_items,
+                        "items": items,
                     }),
                     occurred_at: now,
                     received_at: now,

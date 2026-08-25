@@ -117,6 +117,33 @@ impl PostgresStripeRepository {
     }
 }
 
+async fn load_order_analytics_items(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: Uuid,
+    order_id: Uuid,
+) -> Result<Vec<Value>, ApplicationError> {
+    let rows: Vec<(Uuid, i32, i64)> = sqlx::query_as(
+        "SELECT product_variant_id, quantity, unit_price_amount_minor
+           FROM commerce.order_lines
+          WHERE store_id = $1 AND order_id = $2
+          ORDER BY position",
+    )
+    .bind(store_id)
+    .bind(order_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    rows.into_iter()
+        .map(|(product_variant_id, quantity, price_minor)| {
+            Ok(json!({
+                "item_id": product_variant_id,
+                "quantity": i64::from(quantity),
+                "price_minor": price_minor,
+            }))
+        })
+        .collect()
+}
+
 // Shared transaction helpers and provider account reconstruction.
 
 async fn set_config(

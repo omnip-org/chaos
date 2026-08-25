@@ -96,12 +96,27 @@ retry, and drain in bounded batches. View duration uses a monotonic clock and
 resumes correctly after browser back-forward cache restoration. Store-defined
 behaviors can be recorded with `chaos.analytics?.track("wishlist_added", {
 product_id: "..." })`.
+Server-side conversion events inherit the latest browser attribution and session
+context for the same shopper when it is already collected; use the shopper ID
+and order/cart IDs as the durable association keys. UTM fields remain first-party
+analytics data and are not forwarded as Meta custom parameters.
+The server owns `add_to_cart`, `initiate_checkout`, `add_payment_info`, and
+`purchase` ledger conversions; do not duplicate those names through generic
+`track()`. The SDK keeps generic server-authoritative names out of Meta Pixel,
+and the Meta CAPI adapter routes them only from server-origin events.
 
-Provider scripts are optional and load immediately when configured. Meta Pixel
-receives the same event IDs used by CAPI. A confirmed Purchase uses the Order
-ID in both paths and is projected only once per browser, allowing Meta to
-deduplicate Pixel and CAPI copies. GA4 automatic PageView collection is
-disabled; Chaos maps semantic events to GA4 ecommerce names.
+Provider scripts are optional and load immediately when configured. For the
+Meta standard conversion events, Pixel receives the same event ID used by CAPI.
+A confirmed Purchase uses the Order ID in both paths and is projected only once
+per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration,
+refund state, and store-defined behavior events remain first-party ledger facts
+and are not sent to Meta. The collector records the full page URL and browser
+matching context (`fbc`, `fbp`, and user-agent) alongside the event; when a
+`fbclid` is present, the SDK also keeps the generated `_fbc` as a bounded
+first-party cookie. The API adds request cookies and proxy-provided client IP
+when available. GA4 automatic
+PageView collection is disabled; Chaos maps semantic events to GA4 ecommerce
+names.
 
 ### Server-side / SSR usage
 

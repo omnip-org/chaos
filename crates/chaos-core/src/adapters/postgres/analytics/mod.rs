@@ -1,6 +1,7 @@
 use crate::{ApplicationError, contracts::*, store::StoreActor};
 use chaos_domain::store::StoreId;
-use serde_json::Value;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -102,6 +103,15 @@ pub(crate) async fn append_event(
     tx: &mut Transaction<'_, Postgres>,
     event: AnalyticsEventToAppend,
 ) -> Result<bool, ApplicationError> {
+    let mut properties = event.properties;
+    enrich_server_meta(
+        tx,
+        event.store_id,
+        event.shopper_id,
+        event.occurred_at,
+        &mut properties,
+    )
+    .await?;
     sqlx::query(
         "SELECT pg_advisory_xact_lock(\
             hashtextextended($1::text || ':' || $2::text || ':' || $3::text, 0)\
@@ -135,13 +145,162 @@ pub(crate) async fn append_event(
     .bind(event.store_id)
     .bind(event.shopper_id)
     .bind(event.event_name)
-    .bind(event.properties)
+    .bind(properties)
     .bind(event.occurred_at)
     .bind(event.received_at)
     .execute(&mut **tx)
     .await
     .map_err(db)?;
     Ok(true)
+}
+
+/// Attach the best known browser attribution and order identity context to
+/// server events without adding a second analytics table or exposing raw
+/// contact data. A server conversion commonly happens after the browser event
+/// was flushed, so the latest browser context gives the first-party ledger and
+/// CAPI the same traffic/session and fbc/fbp, URL, IP and UA that the Pixel
+/// saw. Order contact fields are normalized and hashed here.
+async fn enrich_server_meta(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: Uuid,
+    shopper_id: Uuid,
+    occurred_at: OffsetDateTime,
+    properties: &mut Value,
+) -> Result<(), ApplicationError> {
+    let Some(object) = properties.as_object() else {
+        return Ok(());
+    };
+    if object.get("_source").and_then(Value::as_str) != Some("server") {
+        return Ok(());
+    }
+    let order_id = object
+        .get("order_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let cart_id = object
+        .get("cart_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let explicit_meta = object.get("_meta").and_then(Value::as_object).cloned();
+    let has_explicit_traffic = object.contains_key("traffic");
+    let has_explicit_session_id = object.contains_key("session_id");
+
+    let browser_context: Option<(Option<Value>, Option<Value>, Option<String>)> = sqlx::query_as(
+        "SELECT properties->'_meta', properties->'traffic', properties->>'session_id'
+           FROM integration.analytics_events
+          WHERE store_id = $1 AND shopper_id = $2
+            AND properties->>'_source' = 'browser'
+            AND occurred_at <= $3
+          ORDER BY occurred_at DESC, received_at DESC, id DESC
+          LIMIT 1",
+    )
+    .bind(store_id)
+    .bind(shopper_id)
+    .bind(occurred_at)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db)?;
+
+    let order_context: Option<(Option<String>, Option<String>, String)> =
+        if let Some(order_id) = order_id {
+            sqlx::query_as(
+                "SELECT order_row.contact_email::text, order_row.contact_phone,
+                        channel.storefront_origin
+                   FROM commerce.orders AS order_row
+                   JOIN commerce.store_sales_channels AS channel
+                     ON channel.store_id = order_row.store_id
+                    AND channel.id = order_row.sales_channel_id
+                  WHERE order_row.store_id = $1 AND order_row.id = $2",
+            )
+            .bind(store_id)
+            .bind(order_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db)?
+        } else {
+            None
+        };
+    let cart_origin: Option<String> = if order_context.is_none() {
+        if let Some(cart_id) = cart_id {
+            sqlx::query_scalar(
+                "SELECT channel.storefront_origin
+                       FROM commerce.carts AS cart
+                       JOIN commerce.store_sales_channels AS channel
+                         ON channel.store_id = cart.store_id
+                        AND channel.id = cart.sales_channel_id
+                      WHERE cart.store_id = $1 AND cart.id = $2",
+            )
+            .bind(store_id)
+            .bind(cart_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut meta = Map::new();
+    if let Some((email, phone, origin)) = order_context {
+        meta.insert("source_url".into(), Value::String(origin));
+        if let Some(email) = email.and_then(|value| normalized_email_hash(&value)) {
+            meta.insert("em".into(), Value::String(email));
+        }
+        if let Some(phone) = phone.and_then(|value| normalized_phone_hash(&value)) {
+            meta.insert("ph".into(), Value::String(phone));
+        }
+    } else if let Some(origin) = cart_origin {
+        meta.insert("source_url".into(), Value::String(origin));
+    }
+    let (browser_meta, browser_traffic, browser_session_id) =
+        browser_context.unwrap_or((None, None, None));
+    if let Some(Value::Object(browser_meta)) = browser_meta {
+        for key in [
+            "source_url",
+            "fbc",
+            "fbp",
+            "client_ip_address",
+            "client_user_agent",
+        ] {
+            if let Some(value) = browser_meta.get(key) {
+                meta.insert(key.into(), value.clone());
+            }
+        }
+    }
+    if let Some(explicit_meta) = explicit_meta {
+        meta.extend(explicit_meta);
+    }
+    if let Some(object) = properties.as_object_mut() {
+        if !meta.is_empty() {
+            object.insert("_meta".into(), Value::Object(meta));
+        }
+        if !has_explicit_traffic && let Some(Value::Object(traffic)) = browser_traffic {
+            object.insert("traffic".into(), Value::Object(traffic));
+        }
+        if !has_explicit_session_id && let Some(session_id) = browser_session_id {
+            object.insert("session_id".into(), Value::String(session_id));
+        }
+    }
+    Ok(())
+}
+
+fn normalized_email_hash(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    (!normalized.is_empty()).then(|| sha256_hex(normalized.as_bytes()))
+}
+
+fn normalized_phone_hash(value: &str) -> Option<String> {
+    let normalized: String = value.chars().filter(char::is_ascii_digit).collect();
+    (!normalized.is_empty()).then(|| sha256_hex(normalized.as_bytes()))
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl PostgresAnalyticsEventStore {
@@ -432,6 +591,18 @@ impl PostgresAnalyticsDeliveryStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
+        let mut properties = row.8;
+        // A browser batch may arrive after the server event transaction. Give
+        // the delivery path one more opportunity to associate attribution
+        // before CAPI is called, without mutating the immutable event ledger.
+        enrich_server_meta(
+            &mut tx,
+            job.store_id.as_uuid(),
+            row.7,
+            row.6,
+            &mut properties,
+        )
+        .await?;
         tx.commit().await.map_err(db)?;
         Ok(AnalyticsDeliveryCommand {
             delivery_id: job.id,
@@ -443,7 +614,7 @@ impl PostgresAnalyticsDeliveryStore {
             event_name: row.5,
             occurred_at: row.6,
             shopper_id: row.7,
-            properties: row.8,
+            properties,
         })
     }
 

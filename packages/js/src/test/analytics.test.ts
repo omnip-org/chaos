@@ -37,6 +37,9 @@ function harness(
     sessionStorage?: MemoryStorage;
     search?: string;
     referrer?: string;
+    cookie?: string;
+    href?: string;
+    userAgent?: string;
     providers?: {
       metaPixel?: { pixelId: string };
       ga4?: { measurementId: string };
@@ -50,10 +53,12 @@ function harness(
   const requests: Array<{ url: string; options: { body: string; headers?: Record<string, string> } }> = [];
   const scripts: Array<{ id: string; src: string; async: boolean }> = [];
   const document = Object.assign(new FakeTarget(), {
+    cookie: options.cookie ?? "",
     visibilityState: "visible",
     title: "Catalog",
     referrer: options.referrer ?? "https://search.example/results?q=private",
     location: {
+      href: options.href ?? "https://shop.example/products",
       pathname: "/products",
       search:
         options.search ??
@@ -71,6 +76,7 @@ function harness(
       pushState: (_data: unknown, _unused: string, _url?: string | URL | null) => {},
       replaceState: (_data: unknown, _unused: string, _url?: string | URL | null) => {},
     },
+    navigator: { userAgent: options.userAgent ?? "ChaosTest/1.0" },
   });
   const analytics = createStorefrontAnalytics({
     publishableKey: "public_test",
@@ -143,6 +149,37 @@ test("stores traffic context inside dynamic properties", async () => {
   assert.equal(event.properties.path, "/products");
 });
 
+test("stores the full URL and Meta browser matching context", async () => {
+  const environment = harness([{ ok: true, status: 200 }], {
+    cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.123.cookie-click",
+    href: "https://shop.example/products?variant=1",
+    userAgent: "ChaosBrowser/2.0",
+  });
+  environment.analytics.pageView();
+  await environment.analytics.flush();
+  const event = JSON.parse(environment.requests[0]!.options.body).events[0];
+  assert.equal(event.properties._meta.source_url, "https://shop.example/products?variant=1");
+  assert.equal(event.properties._meta.fbc, "fb.1.123.cookie-click");
+  assert.equal(event.properties._meta.fbp, "fb.1.123.browser");
+  assert.equal(event.properties._meta.client_user_agent, "ChaosBrowser/2.0");
+});
+
+test("does not turn a historical last-touch fbclid into a new fbc", async () => {
+  const localStorage = new MemoryStorage();
+  const first = harness([{ ok: true, status: 200 }], { localStorage });
+  first.analytics.pageView();
+  await first.analytics.flush();
+
+  const later = harness([{ ok: true, status: 200 }], {
+    localStorage,
+    search: "",
+  });
+  later.analytics.pageView();
+  await later.analytics.flush();
+  const event = JSON.parse(later.requests[0]!.options.body).events[0];
+  assert.equal(event.properties._meta.fbc, undefined);
+});
+
 test("splits active engagement into bounded behavior events", async () => {
   const environment = harness([{ ok: true, status: 200 }]);
   environment.analytics.pageView();
@@ -169,4 +206,42 @@ test("keeps one stable provider event identity", () => {
     (call) => call[0] === "track" && call[1] === "ViewContent",
   );
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
+});
+
+test("does not send duration, refund, or arbitrary events to Meta Pixel", () => {
+  const environment = harness([], {
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  environment.analytics.track("view_duration", { active_milliseconds: 1_000 });
+  environment.analytics.track("refund", { value_minor: 100, currency: "USD" });
+  environment.analytics.track("add_to_cart", { product_id: "product-1" });
+  environment.analytics.track("wishlist_added", { product_id: "product-1" });
+  const trackCalls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
+    (call) => call[0] === "track",
+  );
+  assert.equal(trackCalls.length, 0);
+});
+
+test("maps purchase items to Meta content fields", () => {
+  const environment = harness([], {
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  const eventId = environment.analytics.purchase({
+    orderId: "00000000-0000-4000-8000-000000000999",
+    valueMinor: 1_299,
+    currency: "usd",
+    items: [{ itemId: "variant-1", quantity: 2, priceMinor: 649 }],
+  });
+  const purchase = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
+    (call) => call[0] === "track" && call[1] === "Purchase",
+  );
+  assert.equal(eventId, "00000000-0000-4000-8000-000000000999");
+  assert.deepEqual(purchase?.[2], {
+    content_ids: ["variant-1"],
+    content_type: "product",
+    value: 12.99,
+    currency: "USD",
+    contents: [{ id: "variant-1", quantity: 2, item_price: 6.49 }],
+    num_items: 2,
+  });
 });

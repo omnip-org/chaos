@@ -11,6 +11,7 @@ const MAX_BATCH_SIZE = 20;
 const MAX_QUEUE_SIZE = 100;
 const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
 const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
+const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 
 export interface PageViewInput {
   path?: string;
@@ -91,6 +92,7 @@ export class ChaosStorefrontAnalytics {
   private readonly firstTouchStorageKey: string;
   private readonly lastNonDirectStorageKey: string;
   private readonly sessionTouchStorageKey: string;
+  private readonly metaFbcStorageKey: string;
   private readonly providerEventStoragePrefix: string;
   private traffic: TrafficAttribution | undefined;
   private queue: QueuedEvent[] = [];
@@ -149,6 +151,7 @@ export class ChaosStorefrontAnalytics {
     this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
     this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
     this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
+    this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v1`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
     this.sessionId = this.randomUUID();
     this.enableCollectionStorage();
@@ -217,7 +220,9 @@ export class ChaosStorefrontAnalytics {
 
   /** Record any store-defined behavior using the common event envelope. */
   track(eventName: string, properties: Record<string, unknown> = {}): string | null {
-    return this.enqueue(eventName, properties);
+    return this.enqueue(eventName, properties, {
+      sendToMeta: isBrowserMetaEvent(eventName),
+    });
   }
 
   viewContent({ productId, productVariantId }: { productId: string; productVariantId?: string }): string | null {
@@ -280,10 +285,14 @@ export class ChaosStorefrontAnalytics {
     let emitted = 0;
     while (this.accumulatedActiveMs >= 1) {
       const activeMilliseconds = Math.min(Math.floor(this.accumulatedActiveMs), MAX_ENGAGEMENT_INTERVAL_MS);
-      this.enqueue("view_duration", {
-        page_view_event_id: this.currentPageViewEventId,
-        active_milliseconds: activeMilliseconds,
-      });
+      this.enqueue(
+        "view_duration",
+        {
+          page_view_event_id: this.currentPageViewEventId,
+          active_milliseconds: activeMilliseconds,
+        },
+        { sendToMeta: false },
+      );
       this.accumulatedActiveMs -= activeMilliseconds;
       emitted += activeMilliseconds;
     }
@@ -340,7 +349,11 @@ export class ChaosStorefrontAnalytics {
     }
   }
 
-  private enqueue(eventName: string, properties: Record<string, unknown>): string | null {
+  private enqueue(
+    eventName: string,
+    properties: Record<string, unknown>,
+    options: { sendToMeta?: boolean } = {},
+  ): string | null {
     if (!this.collectionEnabled()) return null;
     const eventId = this.randomUUID();
     this.queue.push({
@@ -349,12 +362,17 @@ export class ChaosStorefrontAnalytics {
       occurred_at: new Date(this.now()).toISOString(),
       properties: compact({
         ...properties,
+        _meta: this.metaContext(),
         session_id: this.sessionId,
         ...(this.traffic ? { traffic: this.traffic } : {}),
       }),
     });
     try {
-      this.providers.track(eventName, eventId, properties);
+      const providerOptions =
+        options.sendToMeta === undefined ? {} : { meta: options.sendToMeta };
+      this.providers.track(eventName, eventId, properties, {
+        ...providerOptions,
+      });
     } catch {
       // Browser provider failures must not turn a successful API operation
       // into a failed commerce operation.
@@ -457,6 +475,41 @@ export class ChaosStorefrontAnalytics {
     return this.documentRef.visibilityState === "visible" && this.documentRef.hasFocus();
   }
 
+  private metaContext(): Record<string, unknown> {
+    // Only build fbc from a click observed in the current landing/session.
+    // Reusing a historical last-non-direct fbclid with a new timestamp would
+    // create an invalid click context. A persisted _fbc cookie remains valid
+    // across sessions and is preferred when available.
+    const fbclid = this.traffic?.session.fbclid;
+    const cookieFbc = readCookie(this.documentRef, "_fbc");
+    const fbc = cookieFbc ?? this.resolveFbc(fbclid);
+    const boundedFbc = boundedText(fbc, 512);
+    if (!cookieFbc && boundedFbc) writeCookie(this.documentRef, "_fbc", boundedFbc);
+    return compact({
+      source_url: currentSourceUrl(this.documentRef, this.windowRef),
+      fbc: boundedFbc,
+      fbp: boundedText(readCookie(this.documentRef, "_fbp"), 512),
+      client_user_agent: boundedText(this.windowRef.navigator?.userAgent, 512),
+    });
+  }
+
+  private resolveFbc(fbclid: string | undefined): string | undefined {
+    if (!fbclid) return undefined;
+    const stored = readStoredJson(this.sessionStorageRef, this.metaFbcStorageKey);
+    if (
+      stored &&
+      typeof stored === "object" &&
+      !Array.isArray(stored) &&
+      (stored as Record<string, unknown>).fbclid === fbclid &&
+      typeof (stored as Record<string, unknown>).fbc === "string"
+    ) {
+      return (stored as Record<string, string>).fbc;
+    }
+    const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
+    writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, { fbclid, fbc });
+    return fbc;
+  }
+
   private collectionEnabled(): boolean {
     return true;
   }
@@ -494,8 +547,13 @@ class BrowserProviderAdapters {
     if (this.options?.metaPixel) this.startMeta();
   }
 
-  track(eventName: string, eventId: string, properties: Record<string, unknown>): void {
-    if (this.metaStarted) {
+  track(
+    eventName: string,
+    eventId: string,
+    properties: Record<string, unknown>,
+    options: { meta?: boolean } = {},
+  ): void {
+    if ((options.meta ?? true) && this.metaStarted && isMetaEvent(eventName)) {
       const mapped = metaEvent(eventName, properties);
       this.windowRef.fbq?.("track", mapped.name, mapped.parameters, { eventID: eventId });
     }
@@ -568,22 +626,38 @@ function metaEvent(
     initiate_checkout: "InitiateCheckout",
     add_payment_info: "AddPaymentInfo",
     purchase: "Purchase",
-    view_duration: "ViewDuration",
   };
+  const contentIds = commerceItemIds(properties);
   return {
     name: names[eventName] ?? eventName,
     parameters: compact({
-      content_ids: commerceItemId(properties) ? [commerceItemId(properties)] : undefined,
-      content_type: commerceItemId(properties) ? "product" : undefined,
+      content_ids: contentIds.length > 0 ? contentIds : undefined,
+      content_type: contentIds.length > 0 ? "product" : undefined,
       search_string: properties.query,
       quantity: properties.quantity,
       page_path: properties.path,
-      active_milliseconds: properties.active_milliseconds,
       value: providerValue(properties.value_minor, properties.currency),
       currency: properties.currency,
-      contents: providerItems(properties.items),
+      contents: providerItems(properties.items, properties.currency),
+      num_items: providerItemCount(properties.items) ?? properties.quantity,
     }),
   };
+}
+
+function isMetaEvent(eventName: string): boolean {
+  return [
+    "page_view",
+    "view_content",
+    "search",
+    "add_to_cart",
+    "initiate_checkout",
+    "add_payment_info",
+    "purchase",
+  ].includes(eventName);
+}
+
+function isBrowserMetaEvent(eventName: string): boolean {
+  return ["page_view", "view_content", "search"].includes(eventName);
 }
 
 function ga4Event(
@@ -632,12 +706,23 @@ function validateMoney(valueMinor: number, currency: string): void {
   if (!/^[A-Za-z]{3}$/.test(currency)) throw new TypeError("currency must be an ISO 4217 code");
 }
 
-function providerItems(items: unknown): unknown {
+function providerItems(items: unknown, currency: unknown): unknown {
   if (!Array.isArray(items)) return undefined;
   return items.map((item) => {
     const value = item as Record<string, unknown>;
-    return compact({ id: value.item_id, quantity: value.quantity });
+    return compact({
+      id: value.item_id,
+      quantity: value.quantity,
+      item_price: providerValue(value.price_minor, currency),
+    });
   });
+}
+
+function providerItemCount(items: unknown): number | undefined {
+  if (!Array.isArray(items)) return undefined;
+  const quantities = items.map((item) => (item as Record<string, unknown>).quantity);
+  if (!quantities.every((quantity) => typeof quantity === "number")) return undefined;
+  return quantities.reduce((total, quantity) => total + (quantity as number), 0);
 }
 
 function ga4Items(items: unknown, currency: unknown): unknown {
@@ -654,6 +739,17 @@ function ga4Items(items: unknown, currency: unknown): unknown {
 
 function commerceItemId(properties: Record<string, unknown>): unknown {
   return properties.product_variant_id ?? properties.product_id;
+}
+
+function commerceItemIds(properties: Record<string, unknown>): string[] {
+  if (Array.isArray(properties.items)) {
+    const ids = properties.items
+      .map((item) => (item as Record<string, unknown>).item_id)
+      .filter((itemId): itemId is string => typeof itemId === "string" && itemId.length > 0);
+    if (ids.length > 0) return ids;
+  }
+  const itemId = commerceItemId(properties);
+  return typeof itemId === "string" && itemId.length > 0 ? [itemId] : [];
 }
 
 function analyticsStorageNamespace(endpoint: string, publishableKey: string): string {
@@ -718,6 +814,56 @@ function referrerHost(value: string | undefined): string | undefined {
     return new URL(value).host || undefined;
   } catch {
     return undefined;
+  }
+}
+
+function currentSourceUrl(
+  documentRef: Document,
+  windowRef: Window & typeof globalThis,
+): string | undefined {
+  const documentHref = documentRef.location?.href;
+  if (isHttpUrl(documentHref)) return documentHref;
+  const windowLocation = (windowRef as unknown as { location?: Location }).location;
+  const origin = windowLocation?.origin;
+  const path = documentRef.location?.pathname;
+  if (!isHttpUrl(origin) || typeof path !== "string") return undefined;
+  try {
+    return new URL(`${path}${documentRef.location?.search ?? ""}`, origin).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function isHttpUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function readCookie(documentRef: Document, name: string): string | undefined {
+  const cookie = documentRef.cookie;
+  if (typeof cookie !== "string") return undefined;
+  const value = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  if (!value) return undefined;
+  const raw = value.slice(name.length + 1);
+  if (!raw) return undefined;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function writeCookie(documentRef: Document, name: string, value: string): void {
+  try {
+    const secure = documentRef.location?.protocol === "https:" ? "; Secure" : "";
+    documentRef.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${META_FBC_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`;
+  } catch {
+    // Cookie storage is optional; the event still carries the matching value.
   }
 }
 
