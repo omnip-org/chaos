@@ -26,7 +26,7 @@ pub(crate) fn routes() -> Router<ApiState> {
         .route("/carts", post(create_cart))
         .route("/carts/{cart_id}", get(get_cart))
         .route("/carts/{cart_id}/lines/{product_variant_id}", put(set_cart_line).delete(remove_cart_line))
-        .route("/carts/{cart_id}/embedded-checkout", post(create_embedded_checkout))
+        .route("/carts/{cart_id}/checkout", post(create_embedded_checkout))
 }
 
 #[derive(Deserialize, Serialize)]

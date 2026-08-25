@@ -136,7 +136,7 @@ export class ChaosStorefrontClient {
   }
 
   private async createShopperSession(): Promise<string> {
-    const envelope = await this.request<{ data: ShopperSession }>("/shopper-sessions", { method: "POST" });
+    const envelope = await this.request<{ data: ShopperSession }>("/shopper/sessions", { method: "POST" });
     this.setShopperToken(envelope.data.shopper_token);
     return envelope.data.shopper_token;
   }

@@ -14,7 +14,7 @@ export class PaymentsResource {
     idempotencyKey?: string,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
-      `/carts/${encodeURIComponent(cartId)}/embedded-checkout`,
+      `/carts/${encodeURIComponent(cartId)}/checkout`,
       {
         method: "POST",
         body,

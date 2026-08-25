@@ -104,7 +104,7 @@ exchanged for a separate session — the tracking response omits contact details
 full postal address precisely because the link itself is treated as shareable.
 
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
-website visit creates one Shopper through `/storefront/v1/shopper-sessions`, and the
+website visit creates one Shopper through `/storefront/v1/shopper/sessions`, and the
 API returns a signed possession token for that row. The Shopper does not own a
 Sales Channel and does not hold contact information; channel is request context,
 while contact and address data are captured directly on the business Order.

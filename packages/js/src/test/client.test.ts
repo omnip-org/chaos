@@ -55,7 +55,7 @@ test("creates a shopper session when a browser client initializes", async () => 
 
     await Promise.resolve();
     assert.equal(requests.length, 1);
-    assert.match(requests[0]!, /\/shopper-sessions$/);
+    assert.match(requests[0]!, /\/shopper/sessions$/);
   } finally {
     if (descriptor) {
       Object.defineProperty(globalThis, "document", descriptor);
@@ -80,7 +80,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
         headers[key] = value;
       });
       requests.push({ url: String(url), headers });
-      if (String(url).endsWith("/shopper-sessions")) {
+      if (String(url).endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token-abc" } });
       }
       return jsonResponse(201, { data: { id: "cart-1", lines: [] } });
@@ -91,7 +91,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
   await client.cart.get("cart-1");
 
   assert.equal(requests.length, 3);
-  assert.match(requests[0]!.url, /\/shopper-sessions$/);
+  assert.match(requests[0]!.url, /\/shopper/sessions$/);
   assert.equal(requests[1]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
   assert.equal(requests[2]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
   assert.equal(client.getShopperToken(), "shopper-token-abc");
@@ -120,7 +120,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
   await client.cart.get("cart-1");
 
   assert.equal(requests.length, 1);
-  assert.doesNotMatch(requests[0]!, /shopper-sessions/);
+  assert.doesNotMatch(requests[0]!, /shopper/sessions/);
 });
 
 test("explicit shopper sessions update the client token", async () => {
@@ -174,7 +174,7 @@ test("serializes concurrent addLine calls for one cart", async () => {
     analytics: false,
     randomUUID: () => "random-id",
     fetch: (async (url: string, init: RequestInit) => {
-      if (url.endsWith("/shopper-sessions")) {
+      if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
       if (init.method === "GET") {
@@ -270,10 +270,10 @@ test("payments create an embedded Checkout session in one request", async () => 
         headers: new Headers(init.headers),
         body: typeof init.body === "string" ? init.body : undefined,
       });
-      if (url.endsWith("/shopper-sessions")) {
+      if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
-      if (url.endsWith("/embedded-checkout")) {
+      if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
             order_id: "order-1",
@@ -319,10 +319,10 @@ test("payments create an embedded Checkout session without an email", async () =
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
       requests.push({ url, body: typeof init.body === "string" ? init.body : undefined });
-      if (url.endsWith("/shopper-sessions")) {
+      if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
-      if (url.endsWith("/embedded-checkout")) {
+      if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
             order_id: "order-1",

@@ -11,7 +11,7 @@ export class ShopperSessionResource {
    * initialization and persists the token for subsequent Cart/Payment calls.
    */
   async create(): Promise<DataEnvelope<ShopperSession>> {
-    const response = await this.client.request<DataEnvelope<ShopperSession>>("/shopper-sessions", {
+    const response = await this.client.request<DataEnvelope<ShopperSession>>("/shopper/sessions", {
       method: "POST",
     });
     this.client.setShopperToken(response.data.shopper_token);
