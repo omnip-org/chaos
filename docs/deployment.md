@@ -93,7 +93,7 @@ curl --fail https://chaos.omnip.org/health/ready
 
 1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
 2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
-3. Configure the client with `Authorization: Bearer <access-key>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`.
+3. Configure the client with `Authorization: Bearer <access-key>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`. `create_store` requires the default web Sales Channel's absolute `storefront_origin`.
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
 5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `pk_<24 Base58 characters>` and must be treated as a client credential.
 6. Upload third-party credentials and configure Providers through MCP tools.

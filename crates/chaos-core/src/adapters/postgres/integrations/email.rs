@@ -3,6 +3,7 @@ use crate::{
     contracts::{EmailMessage, QueueJob},
     error::database_error,
 };
+use chaos_domain::store::StorefrontOrigin;
 use serde_json::Value;
 use sqlx::PgPool;
 use url::Url;
@@ -11,15 +12,11 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct PostgresEmailRepository {
     pool: PgPool,
-    storefront_public_base_url: Url,
 }
 
 impl PostgresEmailRepository {
-    pub fn new(pool: PgPool, storefront_public_base_url: Url) -> Self {
-        Self {
-            pool,
-            storefront_public_base_url,
-        }
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     pub async fn prepare_order_confirmation(
@@ -44,11 +41,15 @@ impl PostgresEmailRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        let row = sqlx::query_as::<_, (String, String, i64, String, String, String)>(
+        let row = sqlx::query_as::<_, (String, String, i64, String, String, String, String)>(
             "SELECT order_row.contact_email::text, order_row.order_number, \
                     order_row.total_amount_minor, order_row.currency::text, \
+                    channel.storefront_origin, \
                     account.provider, account.credential_secret_reference \
              FROM commerce.orders AS order_row \
+             INNER JOIN commerce.store_sales_channels AS channel \
+               ON channel.store_id = order_row.store_id \
+              AND channel.id = order_row.sales_channel_id \
              INNER JOIN integration.provider_accounts AS account \
                ON account.store_id = order_row.store_id \
               AND account.capability = 'email' \
@@ -70,18 +71,14 @@ impl PostgresEmailRepository {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("orders@chaos.example");
-        let mut tracking_url = self
-            .storefront_public_base_url
-            .join("orders/track")
-            .map_err(|error| invalid_email_url(error.to_string()))?;
-        tracking_url.set_fragment(Some(&format!("token={tracking_token}")));
+        let tracking_url = order_tracking_url(&row.4, tracking_token)?;
         let text = format!(
             "Your order {} has been confirmed. Total: {} {}. Track your order: {}",
             row.1, row.2, row.3, tracking_url
         );
         Ok((
-            row.4,
             row.5,
+            row.6,
             EmailMessage {
                 from: sender.to_owned(),
                 to: row.0,
@@ -92,6 +89,17 @@ impl PostgresEmailRepository {
             },
         ))
     }
+}
+
+fn order_tracking_url(origin: &str, tracking_token: &str) -> Result<Url, ApplicationError> {
+    let origin = StorefrontOrigin::parse(origin.to_owned())
+        .map_err(|error| invalid_email_url(error.to_string()))?;
+    let mut tracking_url = Url::parse(origin.as_str())
+        .map_err(|error| invalid_email_url(error.to_string()))?
+        .join("orders/track")
+        .map_err(|error| invalid_email_url(error.to_string()))?;
+    tracking_url.set_fragment(Some(&format!("token={tracking_token}")));
+    Ok(tracking_url)
 }
 
 fn invalid_email_job(field: &'static str) -> ApplicationError {
@@ -109,4 +117,24 @@ fn invalid_email_url(error: String) -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "failed to build order tracking URL: {error}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_tracking_url;
+
+    #[test]
+    fn tracking_url_uses_the_sales_channel_origin() {
+        let first = order_tracking_url("https://first.example.test", "ot_first").unwrap();
+        let second = order_tracking_url("https://second.example.test/", "ot_second").unwrap();
+
+        assert_eq!(
+            first.as_str(),
+            "https://first.example.test/orders/track#token=ot_first"
+        );
+        assert_eq!(
+            second.as_str(),
+            "https://second.example.test/orders/track#token=ot_second"
+        );
+    }
 }

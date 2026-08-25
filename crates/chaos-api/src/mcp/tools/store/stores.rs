@@ -26,6 +26,8 @@ use crate::mcp::{
 pub struct CreateStoreParams {
     pub code: String,
     pub name: String,
+    /// Absolute HTTP(S) origin for the default web Sales Channel.
+    pub storefront_origin: String,
     #[serde(default = "region")]
     pub region: String,
     #[serde(default = "currency")]
@@ -113,6 +115,7 @@ impl ChaosMcp {
                 region: Some(params.region),
                 currency: Some(params.currency),
                 meta: params.meta,
+                storefront_origin: params.storefront_origin,
             })
             .await
         {

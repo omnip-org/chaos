@@ -567,12 +567,16 @@ mod tests {
         ] {
             sqlx::query(
                 "INSERT INTO commerce.store_sales_channels \
-                 (id, store_id, code, name, is_default) \
-                 VALUES ($1, $2, $3, 'Web', true)",
+                 (id, store_id, code, name, storefront_origin, is_default) \
+                 VALUES ($1, $2, $3, 'Web', $4, true)",
             )
             .bind(id.as_uuid())
             .bind(store.as_uuid())
             .bind(code)
+            .bind(format!(
+                "https://{}.storefront.example.test/",
+                id.as_uuid().simple()
+            ))
             .execute(&owner_pool)
             .await
             .unwrap();

@@ -20,7 +20,7 @@ An owner may create and administer the Store, add Users as members, and grant or
 
 ## Sales Channel
 
-A publication and client-delivery surface within one Store, such as web, mobile, point of sale, marketplace, or custom. Products may be published to selected channels. A Sales Channel does not own products or orders independently of its Store.
+A publication and client-delivery surface within one Store, such as web, mobile, point of sale, marketplace, or custom. Products may be published to selected channels. Each Sales Channel stores the canonical storefront origin used for customer-facing links such as order tracking. A Sales Channel does not own products or orders independently of its Store.
 
 ## Product and Variant
 

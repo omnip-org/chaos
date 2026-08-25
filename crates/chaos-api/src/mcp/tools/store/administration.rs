@@ -63,6 +63,8 @@ pub struct CreateSalesChannelParams {
     /// URL-safe code, unique within the Store.
     pub code: String,
     pub name: String,
+    /// Absolute HTTP(S) origin used by customer-facing links for this channel.
+    pub storefront_origin: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -75,6 +77,8 @@ pub struct UpdateSalesChannelParams {
     pub sales_channel_id: String,
     pub code: String,
     pub name: String,
+    /// Absolute HTTP(S) origin used by customer-facing links for this channel.
+    pub storefront_origin: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
 }
@@ -256,7 +260,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a sales channel in the selected Store. Requires \
+        description = "Create a sales channel in the selected Store, including its \
+                        storefront origin. Requires \
                         confirm: true."
     )]
     async fn create_sales_channel(
@@ -287,6 +292,7 @@ impl ChaosMcp {
                 store_id,
                 code: params.code,
                 name: params.name,
+                storefront_origin: params.storefront_origin,
             })
             .await
         {
@@ -296,7 +302,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a sales channel's code and name in the selected Store. \
+        description = "Update a sales channel's code, name, and storefront origin in the \
+                        selected Store. \
                         Requires confirm: true."
     )]
     async fn update_sales_channel(
@@ -333,6 +340,7 @@ impl ChaosMcp {
                 sales_channel_id,
                 code: params.code,
                 name: params.name,
+                storefront_origin: params.storefront_origin,
             })
             .await
         {
@@ -469,6 +477,7 @@ fn sales_channel_json(item: SalesChannelAdminItem) -> serde_json::Value {
         "id": item.id.as_uuid(),
         "code": item.code.as_str(),
         "name": item.name,
+        "storefront_origin": item.storefront_origin.as_str(),
         "status": item.status.as_str(),
         "is_default": item.is_default,
         "created_at": format_time(item.created_at),

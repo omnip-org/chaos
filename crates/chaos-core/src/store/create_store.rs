@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chaos_domain::{
     CurrencyCode, RegionCode,
     identity::UserId,
-    store::{SalesChannel, Store, StoreCode, StoreId, StoreMembership},
+    store::{SalesChannel, Store, StoreCode, StoreId, StoreMembership, StorefrontOrigin},
 };
 
 use crate::{ApplicationError, adapters::postgres::PostgresStoreProvisioningRepository};
@@ -15,6 +15,7 @@ pub struct CreateStoreInput {
     pub region: Option<String>,
     pub currency: Option<String>,
     pub meta: Option<serde_json::Value>,
+    pub storefront_origin: String,
 }
 
 #[derive(Debug)]
@@ -54,7 +55,8 @@ impl CreateStore {
             currency,
             input.meta,
         )?;
-        let default_sales_channel = SalesChannel::default_web(store.id());
+        let storefront_origin = StorefrontOrigin::parse(input.storefront_origin)?;
+        let default_sales_channel = SalesChannel::default_web(store.id(), storefront_origin);
         let owner_membership = StoreMembership::owner(store.id(), input.user_id);
         let mut transaction = self.repository.begin(input.user_id).await?;
 

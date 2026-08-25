@@ -2,6 +2,7 @@ use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
         SalesChannelCode, SalesChannelId, SalesChannelStatus, StoreCode, StoreId, StoreStatus,
+        StorefrontOrigin,
     },
 };
 use time::OffsetDateTime;
@@ -22,6 +23,7 @@ pub struct SalesChannelAdminItem {
     pub id: SalesChannelId,
     pub code: SalesChannelCode,
     pub name: String,
+    pub storefront_origin: StorefrontOrigin,
     pub status: SalesChannelStatus,
     pub is_default: bool,
     pub created_at: OffsetDateTime,
