@@ -23,6 +23,7 @@ pub struct Settings {
     pub auth_jwt_secret: SecretString,
     pub auth_jwt_lifetime_seconds: u32,
     pub mcp_allowed_hosts: Vec<String>,
+    pub mcp_allowed_origins: Vec<String>,
     pub public_base_url: Url,
     pub google_client_id: Option<String>,
     pub apple_client_id: Option<String>,
@@ -88,6 +89,11 @@ impl Settings {
         let database_identity_url =
             optional("DATABASE_IDENTITY_URL").unwrap_or_else(|| database_url.clone());
         let public_base_url = required_url("PUBLIC_BASE_URL")?;
+        let mut default_mcp_origin = public_base_url.clone();
+        default_mcp_origin.set_path("");
+        default_mcp_origin.set_query(None);
+        default_mcp_origin.set_fragment(None);
+        let default_mcp_origin = default_mcp_origin.as_str().trim_end_matches('/').to_owned();
         let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
             database_url,
@@ -114,6 +120,10 @@ impl Settings {
             auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
             auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
+            mcp_allowed_origins: comma_separated_origins(
+                "MCP_ALLOWED_ORIGINS",
+                &default_mcp_origin,
+            )?,
             public_base_url,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
@@ -239,6 +249,33 @@ fn comma_separated_or(name: &str, default: &str) -> anyhow::Result<Vec<String>> 
         value.contains('/') || value.contains("//") || value.chars().any(char::is_whitespace)
     }) {
         bail!("environment variable {name} must contain comma-separated host authorities");
+    }
+    Ok(values)
+}
+
+fn comma_separated_origins(name: &str, default: &str) -> anyhow::Result<Vec<String>> {
+    let values = env::var(name).unwrap_or_else(|_| default.to_owned());
+    let values = values
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for value in &values {
+        if value.eq_ignore_ascii_case("null") {
+            continue;
+        }
+        let origin = value
+            .parse::<Url>()
+            .with_context(|| format!("environment variable {name} contains an invalid origin"))?;
+        if !matches!(origin.scheme(), "http" | "https")
+            || origin.host_str().is_none()
+            || (!origin.path().is_empty() && origin.path() != "/")
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+        {
+            bail!("environment variable {name} must contain HTTP(S) origins without paths");
+        }
     }
     Ok(values)
 }

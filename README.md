@@ -1,6 +1,6 @@
 # Chaos Commerce
 
-A headless commerce engine where Users create, join, and leave independent Stores. Each Store owns its channels, catalog, variants, publication state, orders, payments, refunds, fulfillment, and public Storefront Keys. Users operate their Stores through AI MCP with User-owned private Access Keys. Chaos is built with Rust, Axum, PostgreSQL 18, and Redis 8.
+A headless commerce engine where Users create, join, and leave independent Stores. Each Store owns its channels, catalog, variants, publication state, orders, payments, refunds, fulfillment, and public Storefront Keys. Users operate their Stores through AI MCP with OAuth 2.1 + PKCE or legacy User-owned private Access Keys. Chaos is built with Rust, Axum, PostgreSQL 18, and Redis 8.
 
 ## Local development
 

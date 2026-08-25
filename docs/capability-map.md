@@ -25,7 +25,7 @@ replacement, then passes the relevant services into HTTP and MCP delivery.
 
 | Capability | HTTP delivery | MCP tools | Core use case | External seams | Repositories / adapters | Worker / queue |
 | --- | --- | --- | --- | --- | --- | --- |
-| Identity and Access Keys | `crates/chaos-api/src/http/identity/v1/` | — | `crates/chaos-core/src/identity/` | `crates/chaos-core/src/contracts/identity.rs` | `crates/chaos-core/src/adapters/security/identity.rs` | — |
+| Identity, MCP OAuth, and Access Keys | `crates/chaos-api/src/http/identity/v1/`, `crates/chaos-api/src/http/oauth.rs` | — | `crates/chaos-core/src/identity/` | `crates/chaos-core/src/contracts/identity.rs` | `crates/chaos-core/src/adapters/security/identity.rs`, `crates/chaos-core/src/adapters/security/mcp_oauth.rs` | — |
 | Stores and memberships | — | `crates/chaos-api/src/mcp/tools/store/` | `crates/chaos-core/src/store/` | `crates/chaos-core/src/contracts/store*.rs` | `crates/chaos-core/src/adapters/postgres/store/` | — |
 | Catalog and media | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-core/src/catalog/` | `crates/chaos-core/src/contracts/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-core/src/adapters/postgres/catalog/`, `adapters/storage/media.rs` | Search indexing in `crates/chaos-core/src/adapters/postgres/search/` |
 | Price lists | — | `crates/chaos-api/src/mcp/tools/pricing/` | `crates/chaos-core/src/pricing/` | `crates/chaos-core/src/contracts/pricing.rs` | `crates/chaos-core/src/adapters/postgres/pricing/` | — |
@@ -128,7 +128,7 @@ when adding a route, tool, service, or worker:
 | Worker dependency construction | `crates/chaos-worker/src/runtime.rs` |
 | Worker polling and dispatch | `crates/chaos-worker/src/workers.rs` |
 | Repository public exports | `crates/chaos-core/src/adapters/postgres/mod.rs` |
-| Database ownership | `migrations/0001_platform.sql` through `0007_integration_analytics.sql`; Store, catalog, sales, payments, and fulfillment business objects use `commerce`, while Provider accounts, webhook inboxes, and event routing use `integration` |
+| Database ownership | `migrations/0001_platform.sql` through `migrations/0011_identity_oauth.sql`; Store, catalog, sales, payments, and fulfillment business objects use `commerce`, while identity/OAuth state uses `identity`, and Provider accounts, webhook inboxes, and event routing use `integration` |
 
 If a new file is added but one of these registration points is not updated,
 the code may compile while the route, MCP tool, or Worker remains unreachable.

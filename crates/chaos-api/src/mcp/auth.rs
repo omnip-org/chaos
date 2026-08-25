@@ -1,24 +1,31 @@
 use chaos_core::{
-    ApplicationError,
-    contracts::{AdminActor, McpPrincipal},
-    identity::AccessKeyAuthentication,
-    store::StoreQueries,
+    ApplicationError, contracts::AdminActor, identity::AccessKeyAuthentication, store::StoreQueries,
 };
-use chaos_domain::store::StoreId;
+use chaos_domain::{
+    identity::{AccessKeyId, UserId},
+    store::StoreId,
+};
 use rmcp::model::CallToolResult;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret as _, SecretString};
 
+use crate::mcp::McpOAuthService;
 use crate::mcp::error::tool_error;
 
-/// Every MCP tool call authenticates a user-owned key and authorizes the user
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedMcpPrincipal {
+    pub user_id: UserId,
+    pub key_id: Option<AccessKeyId>,
+}
+
+/// Every MCP tool call authenticates an MCP OAuth token or a legacy user-owned key and authorizes the user
 /// against the Store selected by the tool's explicit `store_id` parameter.
 /// Membership is checked on every call so leaving a Store takes effect without
 /// rotating the key. Store scope is deliberately part of the tool input rather
 /// than an HTTP header so MCP clients can discover it from the tool schema.
 ///
-/// Returns `Ok(Err(CallToolResult::error))` (not `Err(ErrorData)`) on auth
-/// failure so the caller's MCP client renders "wrong scope"/"unauthorized" as
-/// readable tool output rather than an opaque protocol error.
+/// Tool-level authorization failures are returned as structured tool output;
+/// transport-level bearer failures are rejected by the HTTP challenge
+/// middleware before rmcp dispatches the request.
 pub async fn authenticate_mcp(
     access_key_authentication: &AccessKeyAuthentication,
     store_queries: &StoreQueries,
@@ -27,14 +34,16 @@ pub async fn authenticate_mcp(
 ) -> Result<AdminActor, CallToolResult> {
     let principal = authenticate_principal(access_key_authentication, parts).await?;
     let store_id = parse_store_id(requested_store_id).map_err(tool_error)?;
-    let actor = store_queries
+    let mut actor = store_queries
         .authorize(principal.user_id, store_id)
         .await
-        .map_err(tool_error)?
-        .with_access_key(principal.key_id);
+        .map_err(tool_error)?;
+    if let Some(key_id) = principal.key_id {
+        actor = actor.with_access_key(key_id);
+    }
     tracing::info!(
         request_id = request_id(parts),
-        access_key_id = %principal.key_id.as_uuid(),
+        access_key_id = ?principal.key_id.map(|id| id.as_uuid()),
         user_id = %principal.user_id.as_uuid(),
         store_id = %store_id.as_uuid(),
         "MCP request authorized"
@@ -45,19 +54,47 @@ pub async fn authenticate_mcp(
 pub async fn authenticate_principal(
     access_key_authentication: &AccessKeyAuthentication,
     parts: &http::request::Parts,
-) -> Result<McpPrincipal, CallToolResult> {
+) -> Result<AuthenticatedMcpPrincipal, CallToolResult> {
+    if let Some(principal) = parts.extensions.get::<AuthenticatedMcpPrincipal>() {
+        return Ok(principal.clone());
+    }
     let token = bearer_token(parts).map_err(tool_error)?;
-    let principal = access_key_authentication
-        .authenticate(&token)
+    let principal = authenticate_access_key(access_key_authentication, &token)
         .await
         .map_err(tool_error)?;
     tracing::info!(
         request_id = request_id(parts),
-        access_key_id = %principal.key_id.as_uuid(),
+        access_key_id = %principal.key_id.expect("access-key principal").as_uuid(),
         user_id = %principal.user_id.as_uuid(),
         "Access Key authenticated"
     );
     Ok(principal)
+}
+
+pub(crate) async fn authenticate_token(
+    access_key_authentication: &AccessKeyAuthentication,
+    oauth: &McpOAuthService,
+    token: &SecretString,
+) -> Result<AuthenticatedMcpPrincipal, ApplicationError> {
+    if token.expose_secret().starts_with("ak_") {
+        return authenticate_access_key(access_key_authentication, token).await;
+    }
+    let principal = oauth.authenticate_access_token(token).await?;
+    Ok(AuthenticatedMcpPrincipal {
+        user_id: principal.user_id,
+        key_id: None,
+    })
+}
+
+async fn authenticate_access_key(
+    access_key_authentication: &AccessKeyAuthentication,
+    token: &SecretString,
+) -> Result<AuthenticatedMcpPrincipal, ApplicationError> {
+    let principal = access_key_authentication.authenticate(token).await?;
+    Ok(AuthenticatedMcpPrincipal {
+        user_id: principal.user_id,
+        key_id: Some(principal.key_id),
+    })
 }
 
 fn request_id(parts: &http::request::Parts) -> &str {

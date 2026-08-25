@@ -58,6 +58,10 @@ Identity owns:
 - Chaos access-token issuance and verification;
 - User-owned Access Key issuance, verification, listing, and revocation.
 
+MCP OAuth authorization-code transactions, PKCE challenges, short-lived access
+tokens, and rotated refresh tokens are also owned by the identity database. The
+MCP resource server accepts both OAuth access tokens and legacy Access Keys.
+
 The database stores no passwords, magic links, passkeys, or human sessions. JWTs contain issuer, audience, subject, issued-at, and expiry claims and are signed with HS256. Provider ID tokens are accepted only after signature, algorithm, issuer, audience, expiry, subject, and verified-email validation against cached Provider JWKS.
 
 Identity uses a dedicated non-owner database role because sign-in and Access Key authentication occur before any Store context exists. That role can access only the `identity` schema.
@@ -80,7 +84,7 @@ Credential resolution is intentionally asymmetric:
 - a webhook yields `store_id` only after signature verification and Provider mapping;
 - a Worker carries `store_id` in its durable job and establishes a fresh transaction context.
 
-The MCP operation chain is `request_id -> access_key_id -> user_id -> store_id -> use case`. An MCP credential never contains a cached membership or role.
+The MCP operation chain is `request_id -> mcp credential -> user_id -> store_id -> use case`. OAuth access tokens are short-lived, audience-bound to the MCP resource, and refresh-token rotation is enforced; Access Keys remain a backwards-compatible long-lived credential. Neither credential contains a cached membership or role.
 
 ## Commerce reliability
 

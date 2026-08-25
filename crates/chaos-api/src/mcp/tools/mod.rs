@@ -82,11 +82,11 @@ impl rmcp::ServerHandler for ChaosMcp {
             .build();
         info.instructions = Some(
             "Chaos Commerce admin tools. Every tool call authenticates against the \
-             Authorization: Bearer <access-key> header using a user-owned Access Key. Every \
-             Store-scoped tool must include its explicit store_id parameter, and current Store \
-             membership is checked before the tool runs. create_store and list_stores are \
-             User-scoped and do not require store_id. Read tools return store data; write tools \
-             require confirm: true."
+             Authorization: Bearer header using an MCP OAuth access token or a legacy user-owned \
+             Access Key. Every Store-scoped tool must include its explicit store_id parameter, \
+             and current Store membership is checked before the tool runs. create_store and \
+             list_stores are User-scoped and do not require store_id. Read tools return store \
+             data; write tools require confirm: true."
                 .into(),
         );
         info

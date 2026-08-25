@@ -36,6 +36,9 @@ The repository includes the local self-signed origin certificate used behind Clo
 Set `AUTH_JWT_ISSUER` to the public HTTPS API origin, use a deployment-specific `AUTH_JWT_AUDIENCE`, generate `AUTH_JWT_SECRET` with at least 32 random bytes, and configure at least one of `GOOGLE_CLIENT_ID` or `APPLE_CLIENT_ID`.
 
 Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted by the MCP endpoint. The MCP transport is stateless, so a color switch does not require sticky sessions.
+Set `MCP_ALLOWED_ORIGINS` to the browser origins that are allowed to send MCP
+requests (for example, the dashboard origin). Native MCP clients usually omit
+the `Origin` header and are unaffected by this setting. Do not use `*`.
 
 ## Provider secret encryption
 
@@ -90,6 +93,20 @@ curl --fail https://chaos.omnip.org/health/ready
 ```
 
 ## Identity and MCP bootstrap
+
+MCP clients should use the OAuth flow first. A client that receives `401` from
+`/mcp/v1` discovers `resource_metadata` from `WWW-Authenticate`, reads the
+protected-resource and authorization-server metadata, registers a public client
+if needed, generates a PKCE S256 verifier, and opens the authorization URL in a
+browser. The API's authorization page signs the user in with Google and returns
+a short-lived MCP access token plus a rotating refresh token. The authorization
+page offers every configured browser provider (Google GSI and/or Sign in with
+Apple JS). The access token
+is sent as `Authorization: Bearer <mcp-access-token>` and the client refreshes
+it before the 15-minute expiry. OAuth access tokens and refresh tokens are
+stored only as digests and are audience-bound to `/mcp/v1`.
+
+The legacy bootstrap remains available for clients that cannot use OAuth:
 
 1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
 2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.

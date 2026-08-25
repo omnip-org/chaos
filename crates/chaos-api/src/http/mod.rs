@@ -1,5 +1,6 @@
 mod health;
 mod identity;
+mod oauth;
 mod shared;
 mod storefront;
 
@@ -83,7 +84,9 @@ pub struct ApiState {
     pub identity_auth: Arc<dyn IdentityAuthentication>,
     pub access_key_management: Arc<AccessKeyManagement>,
     pub access_key_authentication: Arc<AccessKeyAuthentication>,
+    pub mcp_oauth: Arc<crate::mcp::McpOAuthService>,
     pub mcp_allowed_hosts: Vec<String>,
+    pub mcp_allowed_origins: Vec<String>,
     pub create_store: Arc<CreateStore>,
     pub store_administration: Arc<StoreAdministration>,
     pub inventory_management: Arc<InventoryManagement>,
@@ -171,6 +174,12 @@ impl ApiState {
             Arc::new(SecureAccessKeyMaterialGenerator),
         );
         let access_key_authentication = AccessKeyAuthentication::new(access_key_repository);
+        let mcp_oauth = crate::mcp::McpOAuthService::new(
+            infrastructure.identity_pool(),
+            &settings.public_base_url,
+            settings.google_client_id.clone(),
+            settings.apple_client_id.clone(),
+        )?;
         let create_store = CreateStore::new(Arc::new(PostgresStoreProvisioningRepository::new(
             infrastructure.runtime_pool(),
         )));
@@ -323,7 +332,9 @@ impl ApiState {
             identity_auth: Arc::new(identity_auth),
             access_key_management: Arc::new(access_key_management),
             access_key_authentication: Arc::new(access_key_authentication),
+            mcp_oauth: Arc::new(mcp_oauth),
             mcp_allowed_hosts: settings.mcp_allowed_hosts.clone(),
+            mcp_allowed_origins: settings.mcp_allowed_origins.clone(),
             create_store: Arc::new(create_store),
             store_administration: Arc::new(store_administration),
             inventory_management: Arc::new(inventory_management),
@@ -362,6 +373,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", health::routes())
         .nest("/identity/v1", identity::v1::routes())
+        .merge(oauth::routes())
         .nest("/storefront/v1", storefront::v1::routes())
         .nest("/integrations/v1", storefront::integration_routes())
         .with_state(state)
@@ -421,6 +433,7 @@ mod tests {
             ),
             auth_jwt_lifetime_seconds: 3600,
             mcp_allowed_hosts: vec!["localhost".into()],
+            mcp_allowed_origins: vec!["http://localhost:8080".into()],
             public_base_url: "http://localhost:8080/".parse().unwrap(),
             google_client_id: Some("test-google-client".into()),
             apple_client_id: None,
@@ -644,7 +657,45 @@ mod tests {
         assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
         let accepted = app.oneshot(request("localhost")).await.unwrap();
-        assert_eq!(accepted.status(), StatusCode::OK);
-        assert!(accepted.headers().get("mcp-session-id").is_none());
+        assert_eq!(accepted.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            accepted.headers()[axum::http::header::WWW_AUTHENTICATE],
+            "Bearer resource_metadata=\"http://localhost:8080/.well-known/oauth-protected-resource\""
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_metadata_points_clients_to_the_mcp_resource() {
+        let app = router(test_state());
+        let protected = app
+            .clone()
+            .oneshot(
+                Request::get("/.well-known/oauth-protected-resource/mcp/v1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(protected.status(), StatusCode::OK);
+        let body = to_bytes(protected.into_body(), 4096).await.unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["resource"], "http://localhost:8080/mcp/v1");
+        assert_eq!(json["authorization_servers"][0], "http://localhost:8080");
+
+        let authorization_server = app
+            .oneshot(
+                Request::get("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorization_server.status(), StatusCode::OK);
+        let body = to_bytes(authorization_server.into_body(), 4096)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(json["code_challenge_methods_supported"][0], "S256");
+        assert_eq!(json["token_endpoint_auth_methods_supported"][0], "none");
     }
 }
