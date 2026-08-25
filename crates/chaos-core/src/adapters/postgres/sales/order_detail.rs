@@ -164,7 +164,8 @@ pub(crate) async fn load(
     .await
     .map_err(database_error)?;
     let refunds = sqlx::query_as::<_, RefundRow>(
-        "SELECT id, status::text, amount_minor, payment_provider_reference_id, \
+        "SELECT id, status::text, amount_minor, \
+                payment_provider_reference_id AS provider_reference_id, \
                 failure_code, created_at, updated_at \
          FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",

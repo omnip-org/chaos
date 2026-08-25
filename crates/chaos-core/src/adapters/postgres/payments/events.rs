@@ -793,7 +793,8 @@ async fn apply_refund_event(
                  (id, store_id, order_id, currency, status, amount_minor, \
                   payment_provider_account_id, payment_provider_reference_id) \
                  VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7) \
-                 ON CONFLICT (store_id, payment_provider_account_id, payment_provider_reference_id) DO NOTHING",
+                 ON CONFLICT (store_id, payment_provider_account_id, payment_provider_reference_id) \
+                 WHERE payment_provider_reference_id IS NOT NULL DO NOTHING",
             )
             .bind(Uuid::now_v7())
             .bind(store_id.as_uuid())
