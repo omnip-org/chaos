@@ -27,12 +27,17 @@ CREATE TABLE integration.event_outbox (
     internal_event_type TEXT        NOT NULL,
     payload             JSONB       NOT NULL,
     queue_name          TEXT,
-    pgmq_message_id     BIGINT      UNIQUE,
+    pgmq_message_id     BIGINT,
     processed_at        TIMESTAMPTZ,
     failed_at           TIMESTAMPTZ,
     last_error          TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    -- pgmq assigns message ids independently per queue, so the same numeric
+    -- id is expected to recur across different queues (chaos_payment_commands,
+    -- chaos_email_commands, chaos_shipping_commands, ...). Only the pair is
+    -- unique; a bare pgmq_message_id UNIQUE constraint would spuriously
+    -- reject a legitimate cross-queue collision.
     CONSTRAINT event_outbox_queue_name_pgmq_message_id_key      UNIQUE (queue_name, pgmq_message_id),
     CONSTRAINT event_outbox_store_id_fkey                       FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT event_outbox_internal_event_type_fkey            FOREIGN KEY (internal_event_type) REFERENCES integration.event_routes (internal_event_type),
