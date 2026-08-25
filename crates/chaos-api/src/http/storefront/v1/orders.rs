@@ -173,7 +173,8 @@ struct TrackedOrderData {
 
 #[derive(Serialize)]
 struct OrderContactData {
-    email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     phone: Option<String>,
 }
@@ -224,7 +225,7 @@ async fn get_tracked_order(
 
 fn contact_data(value: &chaos_domain::sales::OrderContact) -> OrderContactData {
     OrderContactData {
-        email: value.email().into(),
+        email: value.email().map(str::to_owned),
         phone: value.phone().map(str::to_owned),
     }
 }

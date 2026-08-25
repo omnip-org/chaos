@@ -39,7 +39,10 @@ pub struct RemoveCartLineInput {
 pub struct CreateStripeCheckoutInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
-    pub email: String,
+    /// Optional: Stripe Embedded Checkout collects the shopper's email
+    /// directly when the storefront does not already have one, and a
+    /// verified payment webhook backfills it onto the Order afterward.
+    pub email: Option<String>,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,

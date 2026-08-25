@@ -216,7 +216,7 @@ impl PostgresStorefrontSalesRepository {
         &self,
         shopper: &ShopperActor,
         cart_id: CartId,
-        email: &str,
+        email: Option<&str>,
         request: StripeCheckoutRequest,
     ) -> Result<StripeCheckoutDraft, ApplicationError> {
         let actor = &shopper.machine;

@@ -198,7 +198,10 @@ fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CreateEmbeddedCheckoutBody {
-    email: String,
+    /// Optional: Stripe Embedded Checkout collects the shopper's email
+    /// directly when the storefront does not already have one.
+    #[serde(default)]
+    email: Option<String>,
     return_url: String,
     payment_provider: String,
 }
@@ -241,7 +244,7 @@ async fn create_embedded_checkout(
         .create_stripe_checkout(CreateStripeCheckoutInput {
             actor: actor.clone(),
             cart_id: CartId::from_uuid(path.cart_id),
-            email: body.email.clone(),
+            email: body.email.clone().filter(|value| !value.trim().is_empty()),
             payment_provider,
             now: state.clock.now(),
             idempotency_key,

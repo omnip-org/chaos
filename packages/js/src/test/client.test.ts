@@ -309,6 +309,46 @@ test("payments create an embedded Checkout session in one request", async () => 
   });
 });
 
+test("payments create an embedded Checkout session without an email", async () => {
+  const requests: Array<{ url: string; body: string | undefined }> = [];
+  let sequence = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => `id-${++sequence}`,
+    fetch: (async (url: string, init: RequestInit) => {
+      requests.push({ url, body: typeof init.body === "string" ? init.body : undefined });
+      if (url.endsWith("/shopper-sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/embedded-checkout")) {
+        return jsonResponse(201, {
+          data: {
+            order_id: "order-1",
+            client_action: {
+              type: "mount_embedded_checkout",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
+          },
+        });
+      }
+      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+    }) as unknown as typeof fetch,
+  });
+
+  await client.payments.createEmbeddedCheckout("cart-1", {
+    payment_provider: "stripe",
+    return_url: "https://shop.example.com/checkout/success",
+  }, "order-idempotency-1");
+
+  assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
+    payment_provider: "stripe",
+    return_url: "https://shop.example.com/checkout/success",
+  });
+});
+
 test("browser SDK observations record only after successful responses", async () => {
   const recorded: Array<[string, unknown]> = [];
   const client = createStorefrontClient({

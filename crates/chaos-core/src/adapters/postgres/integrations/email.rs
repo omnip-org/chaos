@@ -19,10 +19,15 @@ impl PostgresEmailRepository {
         Self { pool }
     }
 
+    /// Returns `None` when the Order has no contact email yet (the shopper's
+    /// payment webhook has not backfilled one). That is a terminal outcome,
+    /// not a transient failure: there is nobody to send the confirmation to,
+    /// and retrying will not change that once the checkout session itself
+    /// has settled without an email.
     pub async fn prepare_order_confirmation(
         &self,
         job: &QueueJob,
-    ) -> Result<(String, String, EmailMessage), ApplicationError> {
+    ) -> Result<Option<(String, String, EmailMessage)>, ApplicationError> {
         let order_id = job
             .payload
             .get("aggregate_id")
@@ -41,8 +46,9 @@ impl PostgresEmailRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        let row = sqlx::query_as::<_, (String, String, i64, String, String, String, String)>(
-            "SELECT order_row.contact_email::text, order_row.order_number, \
+        let row =
+            sqlx::query_as::<_, (Option<String>, String, i64, String, String, String, String)>(
+                "SELECT order_row.contact_email::text, order_row.order_number, \
                     order_row.total_amount_minor, order_row.currency::text, \
                     channel.storefront_origin, \
                     account.provider, account.credential_secret_reference \
@@ -57,14 +63,17 @@ impl PostgresEmailRepository {
               AND account.credential_secret_reference IS NOT NULL \
              WHERE order_row.store_id = $1 AND order_row.id = $2 \
              ORDER BY account.id LIMIT 1",
-        )
-        .bind(job.store_id)
-        .bind(order_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(email_provider_unavailable)?;
+            )
+            .bind(job.store_id)
+            .bind(order_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(email_provider_unavailable)?;
         transaction.commit().await.map_err(database_error)?;
+        let Some(contact_email) = row.0 else {
+            return Ok(None);
+        };
         let sender = job
             .payload
             .get("sender")
@@ -76,18 +85,18 @@ impl PostgresEmailRepository {
             "Your order {} has been confirmed. Total: {} {}. Track your order: {}",
             row.1, row.2, row.3, tracking_url
         );
-        Ok((
+        Ok(Some((
             row.5,
             row.6,
             EmailMessage {
                 from: sender.to_owned(),
-                to: row.0,
+                to: contact_email,
                 subject: format!("Order {} confirmed", row.1),
                 text,
                 html: None,
                 idempotency_key: format!("order-confirmed-{}", order_id.simple()),
             },
-        ))
+        )))
     }
 }
 

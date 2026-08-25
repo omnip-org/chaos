@@ -77,7 +77,10 @@ pub struct StripeWebhookConfiguration {
 }
 
 pub struct PaymentCheckoutDetails {
-    pub customer_email: String,
+    /// Absent when the shopper has not supplied an email yet; Stripe
+    /// Embedded Checkout collects it directly and a verified webhook
+    /// backfills it onto the Order afterward.
+    pub customer_email: Option<String>,
     pub customer_phone: Option<String>,
     pub shipping_address: Option<PaymentShippingAddress>,
     pub line_items: Vec<PaymentLineItem>,

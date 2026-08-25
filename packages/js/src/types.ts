@@ -158,7 +158,12 @@ export interface SetCartLineRequest {
 }
 
 export interface OrderContact {
-  email: string;
+  /**
+   * Absent until a verified payment webhook backfills it. Stripe Embedded
+   * Checkout collects the shopper's email directly when the storefront does
+   * not already have one.
+   */
+  email?: string;
   phone?: string;
 }
 
@@ -286,7 +291,12 @@ export interface TrackedOrder {
 }
 
 export interface CreateEmbeddedCheckoutRequest {
-  email: string;
+  /**
+   * Optional: omit to let Stripe Embedded Checkout collect the shopper's
+   * email directly. Pass it only if the storefront already has a verified
+   * value to prefill.
+   */
+  email?: string;
   /** Supported payment provider selected for this checkout. */
   payment_provider: "stripe";
   /** Stripe appends the order ID to this URL before redirecting the shopper. */

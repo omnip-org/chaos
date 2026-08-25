@@ -239,10 +239,6 @@ impl PaymentProvider for StripeGateway {
             ("mode".into(), "payment".into()),
             ("ui_mode".into(), "embedded_page".into()),
             ("return_url".into(), return_url.into()),
-            (
-                "customer_email".into(),
-                checkout_details.customer_email.clone(),
-            ),
             ("phone_number_collection[enabled]".into(), "true".into()),
             ("billing_address_collection".into(), "required".into()),
             ("allow_promotion_codes".into(), "true".into()),
@@ -271,6 +267,9 @@ impl PaymentProvider for StripeGateway {
                 command.order_context.order_number.clone(),
             ),
         ];
+        if let Some(customer_email) = checkout_details.customer_email.as_deref() {
+            form.push(("customer_email".into(), customer_email.into()));
+        }
         for (index, line) in checkout_details.line_items.iter().enumerate() {
             form.push((
                 format!("line_items[{index}][quantity]"),
@@ -338,10 +337,12 @@ impl PaymentProvider for StripeGateway {
                 option.service_id.to_string(),
             ));
         }
-        form.push((
-            "payment_intent_data[receipt_email]".into(),
-            checkout_details.customer_email.clone(),
-        ));
+        if let Some(customer_email) = checkout_details.customer_email.as_deref() {
+            form.push((
+                "payment_intent_data[receipt_email]".into(),
+                customer_email.into(),
+            ));
+        }
         if let Some(shipping) = checkout_details.shipping_address.as_ref() {
             append_shipping_address(
                 &mut form,
@@ -876,7 +877,7 @@ mod tests {
 
     fn checkout_details() -> PaymentCheckoutDetails {
         PaymentCheckoutDetails {
-            customer_email: "buyer@example.com".into(),
+            customer_email: Some("buyer@example.com".into()),
             customer_phone: Some("+14155552671".into()),
             shipping_address: Some(PaymentShippingAddress {
                 name: "Buyer Example".into(),
@@ -1125,6 +1126,61 @@ mod tests {
             refund_id.to_string()
         );
         assert_eq!(refund_request.headers["idempotency-key"], "refund-command");
+        drop(requests);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_checkout_adapter_omits_customer_email_when_not_yet_known() {
+        let state = MockState(Arc::new(Mutex::new(Vec::new())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(stripe_mock))
+                    .with_state(state.clone()),
+            )
+            .into_future(),
+        );
+        let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
+        let secrets = Arc::new(StaticSecrets(HashMap::from([(
+            "test://stripe".into(),
+            r#"{"secret_key":"sk_test_secret","publishable_key":"pk_test_public"}"#.into(),
+        )])));
+        let provider = StripeGateway::new(
+            format!("http://{address}/").parse().unwrap(),
+            Duration::from_secs(2),
+            secrets,
+        )
+        .unwrap();
+        let mut details = checkout_details();
+        details.customer_email = None;
+        provider
+            .execute(PaymentCommand {
+                kind: PaymentCommandKind::CreateCheckoutSession,
+                aggregate_id: Uuid::now_v7(),
+                refund_id: None,
+                amount_minor: 1234,
+                currency: CurrencyCode::parse("USD").unwrap(),
+                idempotency_key: "payment-command-no-email".into(),
+                provider_account_id: TEST_PROVIDER_ACCOUNT_ID,
+                credential_secret_reference: reference.expose_reference().into(),
+                provider_payment_reference: None,
+                checkout_details: Some(details),
+                return_url: Some("https://shop.example.com/success".into()),
+                order_context: order_metadata_context(),
+            })
+            .await
+            .unwrap();
+        let requests = state.0.lock().unwrap();
+        let checkout_form: HashMap<String, String> =
+            url::form_urlencoded::parse(requests[0].body.as_bytes())
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+        assert!(!checkout_form.contains_key("customer_email"));
+        assert!(!checkout_form.contains_key("payment_intent_data[receipt_email]"));
         drop(requests);
         server.abort();
     }

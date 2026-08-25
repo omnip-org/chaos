@@ -170,8 +170,13 @@ impl EmailWorkers {
                 job.internal_event_type.as_deref().unwrap_or("unknown")
             )));
         }
-        let (provider, reference, message) =
-            self.repository.prepare_order_confirmation(job).await?;
+        let Some((provider, reference, message)) =
+            self.repository.prepare_order_confirmation(job).await?
+        else {
+            // No contact email to send to (yet). This is a terminal outcome,
+            // not a transient failure: nothing will change on retry.
+            return Ok(());
+        };
         let provider = self
             .providers
             .get(&provider)

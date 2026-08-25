@@ -6,19 +6,30 @@ use crate::{DomainError, FieldViolation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderContact {
-    email: String,
+    email: Option<String>,
     phone: Option<String>,
 }
 
 impl OrderContact {
-    pub fn new(email: impl Into<String>, phone: Option<String>) -> Result<Self, DomainError> {
-        let email = email.into().trim().to_lowercase();
-        if email.len() > 320 || EmailAddress::from_str(&email).is_err() {
-            return Err(validation(
-                "contact.email",
-                "must be a valid email address with at most 320 characters",
-            ));
-        }
+    /// `email` is optional because Stripe Embedded Checkout collects it
+    /// directly when the storefront does not already have one; a verified
+    /// payment webhook backfills it onto the Order afterward.
+    pub fn new(
+        email: Option<impl Into<String>>,
+        phone: Option<String>,
+    ) -> Result<Self, DomainError> {
+        let email = email
+            .map(|value| {
+                let email = value.into().trim().to_lowercase();
+                if email.len() > 320 || EmailAddress::from_str(&email).is_err() {
+                    return Err(validation(
+                        "contact.email",
+                        "must be a valid email address with at most 320 characters",
+                    ));
+                }
+                Ok(email)
+            })
+            .transpose()?;
         let phone = optional_text("contact.phone", phone, 32)?;
         if phone.as_ref().is_some_and(|value| {
             !value.starts_with('+')
@@ -36,8 +47,8 @@ impl OrderContact {
         Ok(Self { email, phone })
     }
 
-    pub fn email(&self) -> &str {
-        &self.email
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
     }
 
     pub fn phone(&self) -> Option<&str> {
@@ -204,7 +215,7 @@ mod tests {
     #[test]
     fn contact_and_address_are_canonical_validated_snapshots() {
         let contact =
-            OrderContact::new(" Guest@Example.COM ", Some("+14155552671".into())).unwrap();
+            OrderContact::new(Some(" Guest@Example.COM "), Some("+14155552671".into())).unwrap();
         let address = PostalAddress::new(
             " Guest Buyer ",
             None,
@@ -217,15 +228,21 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(contact.email(), "guest@example.com");
+        assert_eq!(contact.email(), Some("guest@example.com"));
         assert_eq!(address.full_name(), "Guest Buyer");
         assert_eq!(address.country_code(), "US");
     }
 
     #[test]
+    fn contact_email_is_optional_until_a_payment_provider_backfills_it() {
+        let contact = OrderContact::new(None::<String>, None).unwrap();
+        assert_eq!(contact.email(), None);
+    }
+
+    #[test]
     fn contact_and_address_reject_invalid_customer_data() {
-        assert!(OrderContact::new("invalid", None).is_err());
-        assert!(OrderContact::new("guest@example.com", Some("4155552671".into())).is_err());
+        assert!(OrderContact::new(Some("invalid"), None).is_err());
+        assert!(OrderContact::new(Some("guest@example.com"), Some("4155552671".into())).is_err());
         assert!(PostalAddress::new("", None, "1 Main", None, "City", None, None, "USA").is_err());
     }
 }

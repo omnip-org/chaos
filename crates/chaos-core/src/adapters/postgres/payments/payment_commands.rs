@@ -351,7 +351,7 @@ impl PostgresStripeRepository {
             let contact = sqlx::query_as::<
                 _,
                 (
-                    String,
+                    Option<String>,
                     Option<String>,
                     Option<String>,
                     Option<String>,

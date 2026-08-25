@@ -253,9 +253,8 @@ async fn load_identity(
     .await
     .map_err(database_error)?
     .ok_or_else(corrupt_state)?;
-    let email = row.contact_email.ok_or_else(corrupt_state)?;
     Ok(OrderIdentity::new(
-        OrderContact::new(email, row.contact_phone)?,
+        OrderContact::new(row.contact_email, row.contact_phone)?,
         optional_address(
             row.billing_full_name,
             row.billing_company,
