@@ -116,10 +116,12 @@ async fn get_cart(
 
 async fn set_cart_line(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
     ApiJson(body): ApiJson<SetCartLineBody>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
+    let expected_version = expected_cart_version(&headers)?;
     let cart = state
         .storefront_sales
         .set_cart_line(SetCartLineInput {
@@ -127,6 +129,7 @@ async fn set_cart_line(
             cart_id: CartId::from_uuid(path.cart_id),
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
             quantity: body.quantity,
+            expected_version,
         })
         .await?;
     Ok(ApiResponse::ok(cart_data(cart)?))
@@ -134,15 +137,18 @@ async fn set_cart_line(
 
 async fn remove_cart_line(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     CartShopper(actor): CartShopper,
     ApiPath(path): ApiPath<CartLinePath>,
 ) -> Result<ApiResponse<CartData>, ApiError> {
+    let expected_version = expected_cart_version(&headers)?;
     let cart = state
         .storefront_sales
         .remove_cart_line(RemoveCartLineInput {
             actor,
             cart_id: CartId::from_uuid(path.cart_id),
             product_variant_id: ProductVariantId::from_uuid(path.product_variant_id),
+            expected_version,
         })
         .await?;
     Ok(ApiResponse::ok(cart_data(cart)?))
@@ -224,12 +230,12 @@ async fn create_embedded_checkout(
             "must be a supported payment provider such as stripe",
         )
     })?;
-    let request_id = headers
-        .get("x-request-id")
+    let idempotency_key = headers
+        .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| Uuid::parse_str(value).ok())
         .filter(|value| !value.is_nil())
-        .ok_or_else(|| invalid_value("X-Request-ID", "must be a valid UUID"))?;
+        .ok_or_else(|| invalid_value("Idempotency-Key", "must be a valid UUID"))?;
     let draft = state
         .storefront_sales
         .create_stripe_checkout(CreateStripeCheckoutInput {
@@ -238,7 +244,7 @@ async fn create_embedded_checkout(
             email: body.email.clone(),
             payment_provider,
             now: state.clock.now(),
-            request_id,
+            idempotency_key,
         })
         .await?;
     let mut return_url = url::Url::parse(&body.return_url)
@@ -254,7 +260,7 @@ async fn create_embedded_checkout(
             provider: payment_provider.as_str().to_owned(),
             return_url: Some(return_url.to_string()),
             now: state.clock.now(),
-            request_id,
+            idempotency_key,
         })
         .await?;
     Ok(ApiResponse::created(EmbeddedCheckoutData {
@@ -299,6 +305,17 @@ fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
         }],
     }
     .into()
+}
+
+fn expected_cart_version(headers: &HeaderMap) -> Result<u64, ApiError> {
+    let value = headers
+        .get("if-match")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().trim_matches('"'))
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| invalid_value("If-Match", "must contain the Cart version"))?;
+    Ok(value)
 }
 
 #[cfg(test)]

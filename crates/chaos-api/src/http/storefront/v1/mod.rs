@@ -22,5 +22,8 @@ pub(crate) fn routes() -> Router<ApiState> {
         .merge(carts::routes())
         .merge(orders::routes())
         .merge(analytics::routes())
-        .merge(webhooks::routes())
+}
+
+pub(crate) fn integration_routes() -> Router<ApiState> {
+    webhooks::routes()
 }

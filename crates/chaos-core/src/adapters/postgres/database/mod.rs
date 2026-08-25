@@ -6,16 +6,23 @@ mod store_context;
 
 use chaos_domain::{identity::UserId, sales::ShopperId, store::StoreId};
 use rand::Rng;
+use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 
 pub(crate) const ORDER_TRACKING_TOKEN_LIFETIME: time::Duration = time::Duration::days(180);
 
-pub(crate) fn generate_order_tracking_digest() -> [u8; 32] {
+pub(crate) struct OrderTrackingCapability {
+    pub(crate) token: SecretString,
+    pub(crate) digest: [u8; 32],
+}
+
+pub(crate) fn generate_order_tracking_capability() -> OrderTrackingCapability {
     let mut secret = [0_u8; 32];
     rand::rng().fill_bytes(&mut secret);
-    let plaintext = format!("ot_{}", URL_SAFE_NO_PAD.encode(secret));
-    Sha256::digest(plaintext.as_bytes()).into()
+    let token = SecretString::from(format!("ot_{}", URL_SAFE_NO_PAD.encode(secret)));
+    let digest = Sha256::digest(token.expose_secret()).into();
+    OrderTrackingCapability { token, digest }
 }
 
 pub(crate) async fn set_user_context(

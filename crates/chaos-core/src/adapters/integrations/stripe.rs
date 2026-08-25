@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     ApplicationError,
     contracts::{
-        IntegrationSecretResolver, PaymentClientAction, PaymentCommand, PaymentCommandResult,
-        PaymentProvider, PaymentShippingAddress, PaymentWebhookVerifier,
+        IntegrationSecretResolver, PaymentClientAction, PaymentCommand, PaymentCommandKind,
+        PaymentCommandResult, PaymentProvider, PaymentShippingAddress, PaymentWebhookVerifier,
         StripeWebhookConfigurationRepository, StripeWebhookEvent,
     },
 };
@@ -150,7 +150,7 @@ impl PaymentProvider for StripeGateway {
             .http
             .credentials(&command.credential_secret_reference)
             .await?;
-        if command.internal_event_type == "refund.create_requested" {
+        if command.kind == PaymentCommandKind::CreateRefund {
             let payment_reference = command.provider_payment_reference.as_deref().ok_or(
                 ApplicationError::Conflict {
                     code: "stripe_payment_intent_missing",
@@ -224,7 +224,7 @@ impl PaymentProvider for StripeGateway {
                 client_action: None,
             });
         }
-        if command.internal_event_type != "payment.create_requested" {
+        if command.kind != PaymentCommandKind::CreateCheckoutSession {
             return Err(stripe_invalid_response());
         }
         let return_url = command
@@ -1026,7 +1026,7 @@ mod tests {
         let aggregate_id = Uuid::now_v7();
         let created = provider
             .execute(PaymentCommand {
-                internal_event_type: "payment.create_requested".into(),
+                kind: PaymentCommandKind::CreateCheckoutSession,
                 aggregate_id,
                 refund_id: None,
                 amount_minor: 1234,
@@ -1092,7 +1092,7 @@ mod tests {
         let refund_id = Uuid::now_v7();
         let refunded = provider
             .execute(PaymentCommand {
-                internal_event_type: "refund.create_requested".into(),
+                kind: PaymentCommandKind::CreateRefund,
                 aggregate_id: refund_order_id,
                 refund_id: Some(refund_id),
                 amount_minor: 500,
@@ -1158,7 +1158,7 @@ mod tests {
         let aggregate_id = Uuid::now_v7();
         let created = provider
             .execute(PaymentCommand {
-                internal_event_type: "payment.create_requested".into(),
+                kind: PaymentCommandKind::CreateCheckoutSession,
                 aggregate_id,
                 refund_id: None,
                 amount_minor: 1234,
@@ -1220,7 +1220,7 @@ mod tests {
         .unwrap();
         let result = provider
             .execute(PaymentCommand {
-                internal_event_type: "payment.create_requested".into(),
+                kind: PaymentCommandKind::CreateCheckoutSession,
                 aggregate_id: Uuid::now_v7(),
                 refund_id: None,
                 amount_minor: 1234,

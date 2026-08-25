@@ -86,6 +86,12 @@ pub struct PaymentCheckoutDetails {
     pub automatic_tax: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaymentCommandKind {
+    CreateCheckoutSession,
+    CreateRefund,
+}
+
 pub struct PaymentLineItem {
     pub name: String,
     pub sku: Option<String>,
@@ -115,12 +121,12 @@ pub struct PaymentShippingAddress {
 
 pub struct PaymentCommand {
     pub provider_account_id: Uuid,
-    pub internal_event_type: String,
+    pub kind: PaymentCommandKind,
     /// The Order this command acts on — always present, and what
     /// `chaos_order_id` in provider metadata carries.
     pub aggregate_id: Uuid,
     /// The specific Refund row this command creates — only set for
-    /// `refund.create_requested`. An Order can have more than one refund in
+    /// a refund command. An Order can have more than one refund in
     /// flight at once, so the webhook confirming a refund needs this (via
     /// `chaos_refund_id` metadata) to know which row to update; order_id
     /// alone cannot disambiguate.

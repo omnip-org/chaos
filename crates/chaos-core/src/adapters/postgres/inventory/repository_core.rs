@@ -8,7 +8,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-type VariantInventoryRow = (Uuid, i64, OffsetDateTime);
+type VariantInventoryRow = (Uuid, i64, i64, OffsetDateTime);
 
 #[derive(Clone)]
 pub struct PostgresInventoryRepository {
@@ -44,8 +44,8 @@ impl PostgresInventoryRepository {
     ) -> Result<VariantInventoryView, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         require_store(&mut transaction, adjustment.store_id).await?;
-        let on_hand = sqlx::query_scalar::<_, i64>(
-            "SELECT on_hand_quantity \
+        let (on_hand, reserved) = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT on_hand_quantity, reserved_quantity \
              FROM commerce.product_variants \
              WHERE store_id = $1 AND id = $2 AND track_inventory FOR UPDATE",
         )
@@ -55,6 +55,18 @@ impl PostgresInventoryRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(invalid_inventory_selection)?;
+        let next_on_hand = on_hand
+            .checked_add(adjustment.delta_quantity)
+            .ok_or_else(|| ApplicationError::Conflict {
+                code: "inventory_overflow",
+                message: "inventory arithmetic overflowed",
+            })?;
+        if next_on_hand < reserved {
+            return Err(ApplicationError::Conflict {
+                code: "inventory_reserved",
+                message: "on-hand inventory cannot be reduced below active reservations",
+            });
+        }
         let balance = InventoryBalance::new(on_hand)
             .map_err(ApplicationError::from)?
             .adjust(adjustment.delta_quantity)
@@ -73,6 +85,7 @@ impl PostgresInventoryRepository {
         let inventory = VariantInventoryView {
             product_variant_id: adjustment.product_variant_id,
             on_hand_quantity: balance.on_hand(),
+            reserved_quantity: reserved,
             updated_at,
         };
         transaction.commit().await.map_err(database_error)?;
@@ -91,7 +104,7 @@ impl PostgresInventoryRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, VariantInventoryRow>(
-            "SELECT id, on_hand_quantity, updated_at \
+            "SELECT id, on_hand_quantity, reserved_quantity, updated_at \
              FROM commerce.product_variants \
              WHERE store_id = $1 AND track_inventory \
                AND ($2::uuid IS NULL OR id > $2) \
@@ -112,6 +125,7 @@ fn variant_inventory(row: VariantInventoryRow) -> VariantInventoryView {
     VariantInventoryView {
         product_variant_id: ProductVariantId::from_uuid(row.0),
         on_hand_quantity: row.1,
-        updated_at: row.2,
+        reserved_quantity: row.2,
+        updated_at: row.3,
     }
 }

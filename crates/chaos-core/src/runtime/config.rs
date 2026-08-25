@@ -90,6 +90,9 @@ impl Settings {
         let database_url = required("DATABASE_URL")?;
         let database_identity_url =
             optional("DATABASE_IDENTITY_URL").unwrap_or_else(|| database_url.clone());
+        let public_base_url = required_url("PUBLIC_BASE_URL")?;
+        let storefront_public_base_url =
+            optional_url("STOREFRONT_PUBLIC_BASE_URL")?.unwrap_or_else(|| public_base_url.clone());
         let settings = Self {
             bind_addr: parse_or("APP_BIND_ADDR", "0.0.0.0:8080")?,
             database_url,
@@ -116,10 +119,10 @@ impl Settings {
             auth_jwt_secret: SecretString::from(required("AUTH_JWT_SECRET")?),
             auth_jwt_lifetime_seconds: parse_or("AUTH_JWT_LIFETIME_SECONDS", "3600")?,
             mcp_allowed_hosts: comma_separated_or("MCP_ALLOWED_HOSTS", "localhost,127.0.0.1,::1")?,
-            public_base_url: required_url("PUBLIC_BASE_URL")?,
+            public_base_url,
             google_client_id: optional("GOOGLE_CLIENT_ID"),
             apple_client_id: optional("APPLE_CLIENT_ID"),
-            storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
+            storefront_public_base_url,
             stripe_api_base_url: parse_or("STRIPE_API_BASE_URL", "https://api.stripe.com/")?,
             resend_api_base_url: parse_or("RESEND_API_BASE_URL", "https://api.resend.com/")?,
             analytics_meta_api_base_url: parse_or(
@@ -242,6 +245,19 @@ fn required_url(name: &str) -> anyhow::Result<Url> {
         bail!("environment variable {name} must be an HTTP(S) URL with a host");
     }
     Ok(url)
+}
+
+fn optional_url(name: &str) -> anyhow::Result<Option<Url>> {
+    let Some(value) = optional(name) else {
+        return Ok(None);
+    };
+    let url: Url = value
+        .parse()
+        .with_context(|| format!("environment variable {name} must be an absolute public URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        bail!("environment variable {name} must be an HTTP(S) URL with a host");
+    }
+    Ok(Some(url))
 }
 
 fn comma_separated_or(name: &str, default: &str) -> anyhow::Result<Vec<String>> {

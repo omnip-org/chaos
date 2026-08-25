@@ -261,7 +261,10 @@ impl PostgresStripeRepository {
             .internal_event_type
             .as_deref()
             .ok_or_else(invalid_outbox_payload)?;
-        if !matches!(internal_event_type, "payment.create_requested" | "refund.create_requested") {
+        if !matches!(
+            internal_event_type,
+            "payment.checkout_session" | "refund.create_requested"
+        ) {
             return Err(invalid_outbox_payload());
         }
         let is_refund = internal_event_type == "refund.create_requested";
@@ -450,7 +453,11 @@ impl PostgresStripeRepository {
         let return_url = outbox_return_url(job);
         Ok(PaymentCommand {
             provider_account_id: row.2,
-            internal_event_type: internal_event_type.to_owned(),
+            kind: if is_refund {
+                PaymentCommandKind::CreateRefund
+            } else {
+                PaymentCommandKind::CreateCheckoutSession
+            },
             aggregate_id: row.8,
             refund_id: row.9,
             amount_minor: command_amount,
@@ -486,22 +493,44 @@ impl PostgresStripeRepository {
             .as_deref()
             .ok_or_else(invalid_outbox_payload)?;
         let mut transaction = self.begin_context(None, job.store_id).await?;
-        let rows = if internal_event_type == "payment.create_requested" {
+        let rows = if internal_event_type == "payment.checkout_session" {
             // The Checkout Session id itself is not persisted — only the
             // PaymentIntent id (set later, once Stripe reports it via
             // webhook) is kept for refunds/lookups — so this call only
             // needs to confirm the Order still exists to create against.
-            u64::from(
-                sqlx::query_scalar::<_, bool>(
-                    "SELECT true FROM commerce.orders WHERE store_id = $1 AND id = $2",
-                )
-                .bind(job.store_id)
-                .bind(aggregate_id)
-                .fetch_optional(&mut *transaction)
-                .await
-                .map_err(database_error)?
-                .is_some(),
+            let order = sqlx::query_as::<_, (Uuid, i64, String)>(
+                "SELECT shopper_id, total_amount_minor, currency::text \
+                 FROM commerce.orders \
+                 WHERE store_id = $1 AND id = $2",
             )
+            .bind(job.store_id)
+            .bind(aggregate_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+            let Some((shopper_id, amount_minor, currency)) = order else {
+                return Err(stripe_object_mismatch());
+            };
+            append_event(
+                &mut transaction,
+                AnalyticsEventToAppend {
+                    store_id: job.store_id,
+                    shopper_id,
+                    event_id: aggregate_id,
+                    event_name: "add_payment_info".into(),
+                    properties: json!({
+                        "_source": "server",
+                        "order_id": aggregate_id,
+                        "value_minor": amount_minor,
+                        "currency": currency,
+                        "provider": job.provider.as_deref().unwrap_or("stripe"),
+                    }),
+                    occurred_at: now,
+                    received_at: now,
+                },
+            )
+            .await?;
+            1
         } else if internal_event_type == "refund.create_requested" {
             sqlx::query(
                 "UPDATE commerce.refunds \
@@ -540,7 +569,7 @@ fn direct_checkout_job(
         id: attempt.order_id.as_uuid(),
         store_id: actor.machine.store_id.as_uuid(),
         queue_name: "chaos_payment_commands".into(),
-        internal_event_type: Some("payment.create_requested".into()),
+        internal_event_type: Some("payment.checkout_session".into()),
         provider_event_type: None,
         normalized_event_type: None,
         payload: json!({

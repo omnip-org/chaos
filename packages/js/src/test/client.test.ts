@@ -167,6 +167,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
 
 test("serializes concurrent addLine calls for one cart", async () => {
   let quantity = 1;
+  let version = 0;
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -179,12 +180,21 @@ test("serializes concurrent addLine calls for one cart", async () => {
       if (init.method === "GET") {
         await new Promise((resolve) => setTimeout(resolve, 0));
         return jsonResponse(200, {
-          data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity }] },
+          data: {
+            id: "cart-1",
+            version,
+            lines: [{ product_variant_id: "variant-1", quantity }],
+          },
         });
       }
       quantity = JSON.parse(String(init.body)).quantity;
+      version += 1;
       return jsonResponse(200, {
-        data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity }] },
+        data: {
+          id: "cart-1",
+          version,
+          lines: [{ product_variant_id: "variant-1", quantity }],
+        },
       });
     }) as unknown as typeof fetch,
   });
@@ -267,7 +277,6 @@ test("payments create an embedded Checkout session in one request", async () => 
         return jsonResponse(201, {
           data: {
             order_id: "order-1",
-            payment_attempt_id: "attempt-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -284,10 +293,10 @@ test("payments create an embedded Checkout session in one request", async () => 
     email: "shopper@example.com",
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
-  }, "order-request-1");
+  }, "order-idempotency-1");
 
   assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
-  assert.equal(requests[1]?.headers.get("x-request-id"), "order-request-1");
+  assert.equal(requests[1]?.headers.get("idempotency-key"), "order-idempotency-1");
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
     email: "shopper@example.com",
     payment_provider: "stripe",

@@ -15,8 +15,8 @@ The initial schema migration activates all three extensions. Their objects remai
 ## Activation requirements
 
 - `pg_cron` is preloaded for the `chaos` database and uses PostgreSQL background workers. Scheduling permissions require a dedicated migration and a reviewed job-execution role.
-- `pgmq` does not require a background worker. `0005_integration_core.sql` creates generic outbox queues, while `0008_commerce_payments.sql` creates the payment command and Stripe webhook queues. Runtime roles do not receive direct access to the `pgmq` schema; narrowly granted routines in `integration` and `commerce` claim and finish messages while updating authoritative records in the same transaction.
-- `pg_partman` builds on native declarative partitioning and is installed in the dedicated `partman` schema. Migration `0009_integration_analytics.sql` manages the daily Analytics event ledger partitions and leaves retention unset for manual operations. Partition ownership and maintenance permissions require a dedicated role before the first managed partition set is created.
+- `pgmq` does not require a background worker. `0004_integration.sql` creates the shared event, provider-webhook, and capability queues; `0007_integration_analytics.sql` adds the analytics delivery queue. Runtime roles do not receive direct access to the `pgmq` schema; narrowly granted routines in `integration` and `commerce` claim and finish messages while updating authoritative records in the same transaction.
+- `pg_partman` builds on native declarative partitioning and is installed in the dedicated `partman` schema. Migration `0007_integration_analytics.sql` manages the daily Analytics event ledger partitions and leaves retention unset for manual operations. Partition ownership and maintenance permissions require a dedicated role before the first managed partition set is created.
 
 Extensions must not bypass bounded-context ownership. Business code accesses extension APIs through contracts and concrete adapters, and extension-owned schemas are never used as substitutes for Store isolation.
 

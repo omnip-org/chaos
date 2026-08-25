@@ -1,3 +1,6 @@
+import { ChaosApiError, throwForResponse } from "./errors.js";
+import type { AnalyticsCollectionResult } from "./types.js";
+
 /**
  * First-party behavior collection. Events use one stable envelope and keep
  * event-specific values inside properties so the collector can evolve without
@@ -91,7 +94,7 @@ export class ChaosStorefrontAnalytics {
   private readonly providerEventStoragePrefix: string;
   private traffic: TrafficAttribution | undefined;
   private queue: QueuedEvent[] = [];
-  private inFlight: Promise<unknown> | null = null;
+  private inFlight: Promise<AnalyticsCollectionResult | null> | null = null;
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private currentPageViewEventId: string | null = null;
@@ -228,22 +231,6 @@ export class ChaosStorefrontAnalytics {
     return this.enqueue("search", compact({ query, result_count: resultCount }));
   }
 
-  /** Projects a created Payment Attempt to browser providers once. */
-  addPaymentInfo(input: {
-    paymentAttemptId: string;
-    orderId: string;
-    valueMinor: number;
-    currency: string;
-  }): string | null {
-    validateMoney(input.valueMinor, input.currency);
-    return this.projectProviderEventOnce("add_payment_info", input.paymentAttemptId, {
-      payment_attempt_id: input.paymentAttemptId,
-      order_id: input.orderId,
-      value_minor: input.valueMinor,
-      currency: input.currency.toUpperCase(),
-    });
-  }
-
   /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
   purchase(input: {
     orderId: string;
@@ -303,7 +290,7 @@ export class ChaosStorefrontAnalytics {
     return emitted;
   }
 
-  flush(options: { keepalive?: boolean } = {}): Promise<unknown> {
+  flush(options: { keepalive?: boolean } = {}): Promise<AnalyticsCollectionResult | null> {
     if (this.inFlight) return this.inFlight;
     this.pruneExpiredQueue();
     if (this.queue.length === 0) return Promise.resolve(null);
@@ -313,13 +300,13 @@ export class ChaosStorefrontAnalytics {
     return this.inFlight;
   }
 
-  private async drainQueue(keepalive: boolean): Promise<unknown> {
-    let result: unknown = null;
+  private async drainQueue(keepalive: boolean): Promise<AnalyticsCollectionResult | null> {
+    let result: AnalyticsCollectionResult | null = null;
     while (this.queue.length > 0) result = await this.sendNextBatch(keepalive);
     return result;
   }
 
-  private async sendNextBatch(keepalive: boolean): Promise<unknown> {
+  private async sendNextBatch(keepalive: boolean): Promise<AnalyticsCollectionResult> {
     const batch = this.queue.splice(0, MAX_BATCH_SIZE);
     try {
       const response = await this.fetchImpl(this.endpoint, {
@@ -333,12 +320,18 @@ export class ChaosStorefrontAnalytics {
         keepalive,
       });
       if (!response.ok) {
-        throw new Error(`analytics collection failed with HTTP ${response.status}`);
+        await throwForResponse(response);
       }
       this.persistQueue();
-      return await response.json();
+      const envelope = (await response.json()) as { data: AnalyticsCollectionResult };
+      return envelope.data;
     } catch (error) {
-      if (this.collectionEnabled()) {
+      const permanentClientError =
+        error instanceof ChaosApiError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 429;
+      if (this.collectionEnabled() && !permanentClientError) {
         this.queue.unshift(...batch);
         this.trimQueue();
       }

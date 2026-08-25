@@ -102,16 +102,23 @@ pub(crate) async fn append_event(
     tx: &mut Transaction<'_, Postgres>,
     event: AnalyticsEventToAppend,
 ) -> Result<bool, ApplicationError> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))")
-        .bind(event.store_id)
-        .bind(event.event_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(db)?;
-    let duplicate: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM integration.analytics_events WHERE store_id=$1 AND event_id=$2)",
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(\
+            hashtextextended($1::text || ':' || $2::text || ':' || $3::text, 0)\
+        )",
     )
     .bind(event.store_id)
+    .bind(&event.event_name)
+    .bind(event.event_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(db)?;
+    let duplicate: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM integration.analytics_events \
+         WHERE store_id = $1 AND event_name = $2 AND event_id = $3)",
+    )
+    .bind(event.store_id)
+    .bind(&event.event_name)
     .bind(event.event_id)
     .fetch_one(&mut **tx)
     .await

@@ -32,8 +32,12 @@ export interface RequestOptions<Query extends object = Record<string, never>> {
   body?: unknown;
   /** Attaches the shopper token, acquiring one if the browser has not created a Shopper session yet. */
   requiresShopperToken?: boolean;
-  /** Client-generated request identifier for order/checkout retries. */
+  /** Optional trace identifier propagated as X-Request-ID. */
   requestId?: string;
+  /** Business idempotency key sent as Idempotency-Key. */
+  idempotencyKey?: string;
+  /** Optimistic concurrency validator sent as If-Match. */
+  ifMatch?: string;
 }
 
 export class ChaosStorefrontClient {
@@ -159,6 +163,12 @@ export class ChaosStorefrontClient {
     }
     if (options.requestId) {
       headers["X-Request-ID"] = options.requestId;
+    }
+    if (options.idempotencyKey) {
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    if (options.ifMatch) {
+      headers["If-Match"] = options.ifMatch;
     }
     if (options.requiresShopperToken) {
       headers["x-chaos-shopper-token"] = await this.ensureShopperToken();

@@ -11,7 +11,7 @@ export class PaymentsResource {
   createEmbeddedCheckout(
     cartId: string,
     body: CreateEmbeddedCheckoutRequest,
-    requestId?: string,
+    idempotencyKey?: string,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
       `/carts/${encodeURIComponent(cartId)}/embedded-checkout`,
@@ -19,7 +19,7 @@ export class PaymentsResource {
         method: "POST",
         body,
         requiresShopperToken: true,
-        requestId: requestId ?? this.client.randomUUID(),
+        idempotencyKey: idempotencyKey ?? this.client.randomUUID(),
       },
     );
   }

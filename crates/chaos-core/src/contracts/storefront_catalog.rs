@@ -33,7 +33,7 @@ pub struct StorefrontCatalogVariant {
     pub title: String,
     pub sku: Option<String>,
     pub track_inventory: bool,
-    pub on_hand_quantity: i64,
+    pub available_quantity: i64,
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub selected_options: Vec<StorefrontSelectedOption>,

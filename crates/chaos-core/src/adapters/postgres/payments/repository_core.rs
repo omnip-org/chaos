@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use crate::{
     ApplicationError,
     adapters::postgres::database::{
-        ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_digest,
+        generate_order_tracking_capability, ORDER_TRACKING_TOKEN_LIFETIME,
     },
     error::database_error,
     contracts::{
         AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
         PaymentCheckoutDetails, PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
-        PaymentShippingAddress, PaymentCommand, PaymentCommandResult,
+        PaymentShippingAddress, PaymentCommand, PaymentCommandKind, PaymentCommandResult,
         StripeWebhookConfiguration, StripeWebhookConfigurationRepository, QueueJob, RefundDetail,
         ShopperActor,
     },
@@ -26,12 +26,14 @@ use chaos_domain::{
     store::{SalesChannelId, StoreId},
 };
 use serde_json::{Value, json};
+use secrecy::ExposeSecret;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::adapters::postgres::{
     analytics::{AnalyticsEventToAppend, append_event},
+    sales::{consume_order_inventory, release_order_inventory},
 };
 
 type ProviderAccountRow = (

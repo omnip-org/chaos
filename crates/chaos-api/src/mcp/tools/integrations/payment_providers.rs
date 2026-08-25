@@ -231,7 +231,7 @@ fn invalid_id(field: &'static str) -> CallToolResult {
 
 fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> serde_json::Value {
     let id = value.account.id().as_uuid();
-    let webhook_path = format!("/storefront/v1/webhooks/stripe/{id}");
+    let webhook_path = format!("/integrations/v1/webhooks/stripe/{id}");
     let webhook_url = format!(
         "{}/{}",
         public_base_url.trim_end_matches('/'),

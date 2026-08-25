@@ -46,6 +46,9 @@ const { data: product } = await chaos.catalog.getProduct("running-shoes");
 // first mutating call, then reused for every subsequent Cart/Checkout call.
 const { data: cart } = await chaos.cart.create();
 await chaos.cart.addLine(cart.id, product.variants[0].id);
+// Cart mutations use the response version as an If-Match precondition. The
+// SDK reads and sends it automatically; direct HTTP callers must send the
+// current Cart version in the If-Match header.
 
 // Stripe Embedded Checkout — Chaos reserves inventory and creates the
 // provisional Checkout/Order before Stripe collects the remaining details.
@@ -55,6 +58,8 @@ const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
   payment_provider: "stripe",
   return_url: "https://shop.example.com/checkout/success",
 });
+// The optional third argument is the UUID Idempotency-Key. The SDK generates
+// one when omitted, so retrying the same checkout does not create a new Order.
 const action = session.client_action;
 // Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
@@ -62,8 +67,9 @@ const action = session.client_action;
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
 // browser SDK. AddToCart, InitiateCheckout, AddPaymentInfo, Purchase, and
-// Refund are recorded by the authoritative server workflows. After the server
-// confirms payment, project Purchase with authoritative Order data:
+// Refund are recorded by authoritative server workflows. The client does not
+// synthesize AddPaymentInfo because the server records it after Stripe creates
+// the Session. After the server confirms payment, project Purchase with Order data:
 chaos.analytics?.purchase({
   orderId: order.id,
   valueMinor: order.total_amount_minor,
@@ -110,10 +116,13 @@ const chaos = createStorefrontClient({
 });
 ```
 
-If a storefront receives an order tracking token through its own notification
-channel, it can use the token to refresh the order:
+Confirmation emails link to the storefront's `/orders/track` page with the
+tracking token in the URL fragment. The page reads the fragment locally and
+submits it in the request body; the token is never placed in a query string:
 
 ```ts
+const trackingToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+if (!trackingToken) throw new Error("missing order tracking token");
 const tracked = await chaos.orders.getTrackedOrder(trackingToken);
 console.log(tracked.order_number, tracked.shipping_status);
 ```

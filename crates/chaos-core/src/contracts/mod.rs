@@ -77,7 +77,7 @@ pub use storefront_catalog::{
 };
 pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
-    PaymentCommand, PaymentCommandResult, PaymentLineItem, PaymentProvider,
+    PaymentCommand, PaymentCommandKind, PaymentCommandResult, PaymentLineItem, PaymentProvider,
     PaymentProviderRegistry, PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption,
     PaymentWebhookEvent, PaymentWebhookVerifier, PaymentWebhookVerifierRegistry, RefundDetail,
     StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeCommand,

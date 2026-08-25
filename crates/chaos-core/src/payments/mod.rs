@@ -26,7 +26,7 @@ pub struct CreatePaymentAttemptInput {
     pub provider: String,
     pub return_url: Option<String>,
     pub now: OffsetDateTime,
-    pub request_id: uuid::Uuid,
+    pub idempotency_key: uuid::Uuid,
 }
 
 pub struct EmbeddedCheckoutResult {
@@ -189,7 +189,7 @@ impl PaymentService {
                 input.order_id,
                 &input.provider,
                 return_url,
-                &input.request_id.to_string(),
+                &input.idempotency_key.to_string(),
             )
             .await?;
         let provider = self

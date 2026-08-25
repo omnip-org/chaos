@@ -1,22 +1,25 @@
 // Cart-to-Order commands and the Stripe Embedded Checkout handoff.
 
-async fn ensure_inventory_available(
+async fn reserve_inventory_for_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart: &Cart,
 ) -> Result<(), ApplicationError> {
     for line in cart.lines().iter().filter(|line| line.track_inventory()) {
-        let available: Option<i64> = sqlx::query_scalar(
-            "SELECT on_hand_quantity \
-             FROM commerce.product_variants \
-             WHERE store_id = $1 AND id = $2 AND track_inventory FOR UPDATE",
+        let reserved: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE commerce.product_variants \
+             SET reserved_quantity = reserved_quantity + $3, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2 AND track_inventory \
+               AND on_hand_quantity - reserved_quantity >= $3 \
+             RETURNING id",
         )
         .bind(actor.store_id.as_uuid())
         .bind(line.product_variant_id().as_uuid())
+        .bind(i64::from(line.quantity()))
         .fetch_optional(&mut **transaction)
         .await
         .map_err(database_error)?;
-        if available.unwrap_or_default() < i64::from(line.quantity()) {
+        if reserved.is_none() {
             return Err(insufficient_inventory(line.product_variant_id()));
         }
     }
@@ -94,11 +97,13 @@ impl PostgresStorefrontSalesRepository {
         cart_id: CartId,
         product_variant_id: ProductVariantId,
         quantity: u32,
+        expected_version: u64,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        ensure_cart_version(header.4, expected_version)?;
         let previous_quantity: Option<i32> = sqlx::query_scalar(
             "SELECT quantity FROM commerce.cart_lines \
              WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
@@ -121,7 +126,7 @@ impl PostgresStorefrontSalesRepository {
         .ok_or_else(|| variant_unavailable(product_variant_id))?;
         if row.4 {
             let available: Option<i64> = sqlx::query_scalar(
-                "SELECT on_hand_quantity \
+                "SELECT on_hand_quantity - reserved_quantity \
                  FROM commerce.product_variants \
                  WHERE store_id = $1 AND id = $2 AND track_inventory",
             )
@@ -182,11 +187,13 @@ impl PostgresStorefrontSalesRepository {
         shopper: &ShopperActor,
         cart_id: CartId,
         product_variant_id: ProductVariantId,
+        expected_version: u64,
     ) -> Result<CartDetail, ApplicationError> {
         let actor = &shopper.machine;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        lock_active_cart(&mut transaction, actor, cart_id).await?;
+        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        ensure_cart_version(header.4, expected_version)?;
         sqlx::query(
             "DELETE FROM commerce.cart_lines WHERE store_id = $1 \
              AND cart_id = $2 AND product_variant_id = $3",
@@ -261,7 +268,6 @@ impl PostgresStorefrontSalesRepository {
             CartStatus::Active,
             lines.clone(),
         )?;
-        ensure_inventory_available(&mut transaction, actor, &cart).await?;
         let requested_order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
         let order_number = generate_order_number(request.now)?;
@@ -282,12 +288,12 @@ impl PostgresStorefrontSalesRepository {
         .ok_or_else(payment_provider_unavailable)?;
         let inserted_order_id: Option<Uuid> = sqlx::query_scalar(
             "INSERT INTO commerce.orders \
-             (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, request_id, \
+             (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, idempotency_key, \
               price_list_id, currency, payment_provider_account_id, contact_email, \
-              subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
-              shipping_amount_minor, total_amount_minor, created_at, updated_at) \
+             subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
+             shipping_amount_minor, total_amount_minor, created_at, updated_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,0,0,0,$13,$13) \
-             ON CONFLICT (store_id, sales_channel_id, shopper_id, request_id) DO NOTHING \
+             ON CONFLICT (store_id, sales_channel_id, shopper_id, idempotency_key) DO NOTHING \
              RETURNING id",
         )
         .bind(requested_order_id.as_uuid())
@@ -296,7 +302,7 @@ impl PostgresStorefrontSalesRepository {
         .bind(channel_id.as_uuid())
         .bind(cart_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
-        .bind(request.request_id)
+        .bind(request.idempotency_key)
         .bind(header.1)
         .bind(currency.as_str())
         .bind(payment_provider_account_id)
@@ -315,12 +321,12 @@ impl PostgresStorefrontSalesRepository {
                   AND account.store_id = order_row.store_id \
                   AND account.capability = 'payment' \
                  WHERE order_row.store_id = $1 AND order_row.sales_channel_id = $2 \
-                   AND order_row.shopper_id = $3 AND order_row.request_id = $4",
+                   AND order_row.shopper_id = $3 AND order_row.idempotency_key = $4",
             )
             .bind(actor.store_id.as_uuid())
             .bind(channel_id.as_uuid())
             .bind(shopper.shopper_id.as_uuid())
-            .bind(request.request_id)
+            .bind(request.idempotency_key)
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
@@ -336,6 +342,7 @@ impl PostgresStorefrontSalesRepository {
             });
         };
         let order_id = requested_order_id;
+        reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
         append_event(
             &mut transaction,
@@ -415,6 +422,17 @@ impl PostgresStorefrontSalesRepository {
         };
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
+    }
+}
+
+fn ensure_cart_version(current: i64, expected: u64) -> Result<(), ApplicationError> {
+    if u64::try_from(current).ok() == Some(expected) {
+        Ok(())
+    } else {
+        Err(ApplicationError::Conflict {
+            code: "cart_version_conflict",
+            message: "the Cart changed; reload it before retrying the mutation",
+        })
     }
 }
 

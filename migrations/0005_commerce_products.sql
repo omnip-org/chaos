@@ -69,11 +69,12 @@ CREATE TABLE commerce.product_variants (
     title            TEXT                       NOT NULL,
     sku              extensions.citext,
     status           commerce.variant_status    NOT NULL DEFAULT 'active',
-    track_inventory  BOOLEAN                    NOT NULL DEFAULT true,
-    on_hand_quantity BIGINT                     NOT NULL DEFAULT 0,
-    meta             JSONB,
-    created_at       TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at       TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    track_inventory   BOOLEAN                    NOT NULL DEFAULT true,
+    on_hand_quantity  BIGINT                     NOT NULL DEFAULT 0,
+    reserved_quantity BIGINT                     NOT NULL DEFAULT 0,
+    meta              JSONB,
+    created_at        TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT product_variants_store_id_id_key               UNIQUE (store_id, id),
     CONSTRAINT product_variants_store_id_product_id_id_key    UNIQUE (store_id, product_id, id),
@@ -81,9 +82,11 @@ CREATE TABLE commerce.product_variants (
     CONSTRAINT product_variants_title_length_check            CHECK (length(trim(title)) BETWEEN 1 AND 255),
     CONSTRAINT product_variants_sku_length_check              CHECK (sku IS NULL OR length(trim(sku::text)) BETWEEN 1 AND 64),
     CONSTRAINT product_variants_sku_characters_check          CHECK (sku IS NULL OR sku::text !~ '[[:cntrl:]]'),
-    CONSTRAINT product_variants_on_hand_nonnegative_check     CHECK (on_hand_quantity >= 0),
-    CONSTRAINT product_variants_meta_size_check               CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
-    CONSTRAINT product_variants_meta_is_object_check          CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
+    CONSTRAINT product_variants_on_hand_nonnegative_check        CHECK (on_hand_quantity >= 0),
+    CONSTRAINT product_variants_reserved_nonnegative_check       CHECK (reserved_quantity >= 0),
+    CONSTRAINT product_variants_reserved_not_above_on_hand_check CHECK (reserved_quantity <= on_hand_quantity),
+    CONSTRAINT product_variants_meta_size_check                  CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT product_variants_meta_is_object_check             CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.variant_selected_options (

@@ -78,7 +78,10 @@ impl WorkerRuntime {
         let shipping_queue = integration_queue.clone();
         let email_workers = EmailWorkers::new(
             integration_queue,
-            Arc::new(PostgresEmailRepository::new(infrastructure.runtime_pool())),
+            Arc::new(PostgresEmailRepository::new(
+                infrastructure.runtime_pool(),
+                settings.storefront_public_base_url.clone(),
+            )),
             [email_provider],
         );
         let shipping_workers = ShippingWorkers::new(

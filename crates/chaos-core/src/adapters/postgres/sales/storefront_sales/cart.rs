@@ -125,10 +125,10 @@ async fn lock_active_cart(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
     cart_id: CartId,
-) -> Result<(Uuid, Uuid, String, String), ApplicationError> {
-    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
+    let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64)>(
         "SELECT cart.sales_channel_id, cart.price_list_id, price_list.currency::text, \
-                cart.status::text \
+                cart.status::text, cart.version \
          FROM commerce.carts AS cart \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart.store_id AND price_list.id = cart.price_list_id \
@@ -145,7 +145,7 @@ async fn lock_active_cart(
     if row.3 != "active" {
         return Err(cart_not_active());
     }
-    Ok((row.0, row.1, row.2, row.3))
+    Ok((row.0, row.1, row.2, row.3, row.4))
 }
 
 async fn load_cart(

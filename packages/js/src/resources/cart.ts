@@ -25,10 +25,12 @@ export class CartResource {
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
+    expectedVersion?: number,
   ): Promise<DataEnvelope<Cart>> {
-    return this.enqueueMutation(cartId, () =>
-      this.setLineRequest(cartId, productVariantId, body),
-    );
+    return this.enqueueMutation(cartId, async () => {
+      const version = expectedVersion ?? (await this.get(cartId)).data.version;
+      return this.setLineRequest(cartId, productVariantId, body, version);
+    });
   }
 
   /** Adds a quantity to a Cart line. The API records the authoritative AddToCart event. */
@@ -47,27 +49,31 @@ export class CartResource {
         cartId,
         productVariantId,
         { quantity: (existing?.quantity ?? 0) + quantity },
+        current.data.version,
       );
       return response;
     });
   }
 
   removeLine(cartId: string, productVariantId: string): Promise<DataEnvelope<Cart>> {
-    return this.enqueueMutation(cartId, () =>
-      this.client.request(
+    return this.enqueueMutation(cartId, async () => {
+      const current = await this.get(cartId);
+      return this.client.request(
         `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
         {
           method: "DELETE",
           requiresShopperToken: true,
+          ifMatch: String(current.data.version),
         },
-      ),
-    );
+      );
+    });
   }
 
   private setLineRequest(
     cartId: string,
     productVariantId: string,
     body: SetCartLineRequest,
+    expectedVersion: number,
   ): Promise<DataEnvelope<Cart>> {
     return this.client.request<DataEnvelope<Cart>>(
       `/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(productVariantId)}`,
@@ -75,6 +81,7 @@ export class CartResource {
         method: "PUT",
         body,
         requiresShopperToken: true,
+        ifMatch: String(expectedVersion),
       },
     );
   }

@@ -88,14 +88,16 @@ PostgreSQL is the source of truth for catalogs, inventory, orders, payments, ref
 
 Money uses integer minor units plus an ISO currency. Orders snapshot the product, price, address, and Provider evidence required to preserve history. Stripe owns checkout tax and promotion calculation; its verified webhook writes subtotal, discount, tax, shipping, and total as Order facts. External Provider calls occur outside database transactions. Inbox and outbox records make webhook and Worker processing retryable and idempotent.
 
-Orders use an internal UUID for joins and a client-supplied request UUID for checkout
+Orders use an internal UUID for joins and a client-supplied idempotency key for checkout
 deduplication, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
 tracking uses a Chaos-hosted URL with a fragment capability, valid for 180 days from
-order confirmation; only its digest is stored after a successful confirmation email
-delivery. The capability is presented directly on every tracking request rather than
-exchanged for a separate session — the tracking response omits contact details and the
-full postal address precisely because the link itself is treated as shareable.
+order confirmation. Only its digest is stored in the tracking table; the plaintext is
+carried by the durable `order.confirmed` outbox job until the confirmation email reaches
+its terminal state, and is then removed from the outbox payload. The capability is
+presented directly on every tracking request rather than exchanged for a separate
+session — the tracking response omits contact details and the full postal address
+precisely because the link itself is treated as shareable.
 
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
 website visit creates one Shopper through `/storefront/v1/shopper-sessions`, and the
@@ -114,7 +116,7 @@ leasing live in the `integration` schema. The migrations
 are organized into Store foundation, Catalog and Pricing, Integration core,
 Provider accounts, Sales, Payments, Analytics, and Fulfillment. Checkout
 request deduplication is owned by the Order row in `commerce`, through its
-request UUID and database unique constraint.
+`idempotency_key` and database unique constraint.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
 creates a pending Order and reserves tracked inventory while leaving the Cart
@@ -158,7 +160,7 @@ loop. Business outbox routing is data-driven:
 `event_routes.queue_name` points directly to the PGMQ queue, while each
 capability worker owns only its payload semantics.
 
-API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Payment commands, Email `order.confirmed` notifications, Shipping `fulfillment.shipped` projections, Search events, and all provider webhook capabilities use the same leasing contract. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
+API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Refund commands, Email `order.confirmed` notifications, Shipping `fulfillment.shipped` projections, Search events, and all provider webhook capabilities use the same leasing contract; browser checkout Session creation remains synchronous because it must return a client secret. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
 
 ## Incremental refactoring rule
 

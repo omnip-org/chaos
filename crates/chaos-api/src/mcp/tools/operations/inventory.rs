@@ -81,6 +81,7 @@ impl ChaosMcp {
                         json!({
                             "product_variant_id": item.product_variant_id.as_uuid(),
                             "on_hand_quantity": item.on_hand_quantity,
+                            "reserved_quantity": item.reserved_quantity,
                             "updated_at": format_time(item.updated_at),
                         })
                     })
@@ -146,6 +147,7 @@ impl ChaosMcp {
             Ok(item) => Ok(text_result(json!({
                 "product_variant_id": item.product_variant_id.as_uuid(),
                 "on_hand_quantity": item.on_hand_quantity,
+                "reserved_quantity": item.reserved_quantity,
                 "updated_at": format_time(item.updated_at),
             }))),
             Err(error) => Ok(tool_error(error)),

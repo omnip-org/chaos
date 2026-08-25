@@ -4,6 +4,7 @@ use time::OffsetDateTime;
 pub struct VariantInventoryView {
     pub product_variant_id: ProductVariantId,
     pub on_hand_quantity: i64,
+    pub reserved_quantity: i64,
     pub updated_at: OffsetDateTime,
 }
 

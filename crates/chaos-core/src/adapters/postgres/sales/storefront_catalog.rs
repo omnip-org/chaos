@@ -83,7 +83,8 @@ impl PostgresStorefrontCatalogRepository {
                  LIMIT 1 \
              ) \
             SELECT variant.id, variant.title, variant.sku::text, \
-                    variant.track_inventory, variant.on_hand_quantity, \
+                    variant.track_inventory, \
+                    variant.on_hand_quantity - variant.reserved_quantity, \
                     price.amount_minor, selected.currency, \
                     variant.meta \
              FROM commerce.product_variants AS variant \
@@ -113,7 +114,7 @@ impl PostgresStorefrontCatalogRepository {
                     title,
                     sku,
                     track_inventory,
-                    on_hand_quantity,
+                    available_quantity,
                     amount_minor,
                     currency,
                     metadata,
@@ -123,7 +124,7 @@ impl PostgresStorefrontCatalogRepository {
                         title,
                         sku,
                         track_inventory,
-                        on_hand_quantity,
+                        available_quantity,
                         amount_minor,
                         currency: CurrencyCode::parse(&currency).map_err(|_| {
                             ApplicationError::Unexpected(anyhow::anyhow!(

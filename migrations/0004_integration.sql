@@ -260,7 +260,12 @@ BEGIN
         UPDATE integration.event_outbox AS event
         SET processed_at = CASE WHEN succeeded THEN finished_at ELSE NULL END,
             failed_at    = CASE WHEN succeeded THEN NULL ELSE finished_at END,
-            last_error   = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END
+            last_error   = CASE WHEN succeeded THEN NULL ELSE left(failure, 2000) END,
+            payload      = CASE
+                               WHEN event.internal_event_type = 'order.confirmed'
+                               THEN event.payload - 'tracking_token'
+                               ELSE event.payload
+                           END
         WHERE event.id = event_id;
 
         PERFORM pgmq.delete(queue_name, message_id);

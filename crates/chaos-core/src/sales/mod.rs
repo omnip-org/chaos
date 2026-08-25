@@ -26,12 +26,14 @@ pub struct SetCartLineInput {
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
     pub quantity: u32,
+    pub expected_version: u64,
 }
 
 pub struct RemoveCartLineInput {
     pub actor: ShopperActor,
     pub cart_id: CartId,
     pub product_variant_id: ProductVariantId,
+    pub expected_version: u64,
 }
 
 pub struct CreateStripeCheckoutInput {
@@ -40,14 +42,14 @@ pub struct CreateStripeCheckoutInput {
     pub email: String,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
-    pub request_id: uuid::Uuid,
+    pub idempotency_key: uuid::Uuid,
 }
 
 pub(crate) struct StripeCheckoutRequest {
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub expires_at: OffsetDateTime,
-    pub request_id: uuid::Uuid,
+    pub idempotency_key: uuid::Uuid,
 }
 
 pub struct StorefrontSales {
@@ -101,6 +103,7 @@ impl StorefrontSales {
                 input.cart_id,
                 input.product_variant_id,
                 input.quantity,
+                input.expected_version,
             )
             .await
     }
@@ -111,7 +114,12 @@ impl StorefrontSales {
     ) -> Result<CartDetail, ApplicationError> {
         input.actor.machine.require_sales_channel()?;
         self.repository
-            .remove_cart_line(&input.actor, input.cart_id, input.product_variant_id)
+            .remove_cart_line(
+                &input.actor,
+                input.cart_id,
+                input.product_variant_id,
+                input.expected_version,
+            )
             .await
     }
 
@@ -130,7 +138,7 @@ impl StorefrontSales {
                     payment_provider: input.payment_provider,
                     now: input.now,
                     expires_at: input.now + Duration::minutes(30),
-                    request_id: input.request_id,
+                    idempotency_key: input.idempotency_key,
                 },
             )
             .await

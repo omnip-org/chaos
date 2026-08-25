@@ -26,7 +26,7 @@ export class OrdersResource {
   }
 
   getTrackedOrder(trackingToken: string): Promise<DataEnvelope<TrackedOrder>> {
-    return this.client.request("/order-tracking-orders", {
+    return this.client.request("/orders/tracking", {
       method: "POST",
       body: { tracking_token: trackingToken },
     });

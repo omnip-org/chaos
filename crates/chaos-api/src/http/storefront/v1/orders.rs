@@ -19,10 +19,11 @@ use crate::http::{
 pub(crate) fn routes() -> Router<ApiState> {
     Router::new()
         .route("/orders/{order_id}", get(get_order))
-        .route("/order-tracking-orders", post(get_tracked_order))
+        .route("/orders/tracking", post(get_tracked_order))
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrackingTokenBody {
     tracking_token: String,
 }

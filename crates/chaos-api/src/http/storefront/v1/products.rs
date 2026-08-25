@@ -56,7 +56,7 @@ struct StorefrontVariantData {
     #[serde(skip_serializing_if = "Option::is_none")]
     sku: Option<String>,
     track_inventory: bool,
-    on_hand_quantity: i64,
+    available_quantity: i64,
     price: StorefrontPriceData,
     selected_options: Vec<StorefrontSelectedOptionData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -238,7 +238,7 @@ fn variant_data(variant: StorefrontCatalogVariant) -> StorefrontVariantData {
         title: variant.title,
         sku: variant.sku,
         track_inventory: variant.track_inventory,
-        on_hand_quantity: variant.on_hand_quantity,
+        available_quantity: variant.available_quantity,
         price: StorefrontPriceData {
             amount_minor: variant.amount_minor,
             currency: variant.currency.as_str().to_owned(),

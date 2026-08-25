@@ -1,6 +1,9 @@
 use crate::{
     ApplicationError,
-    adapters::postgres::database::{ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_digest},
+    adapters::postgres::{
+        database::{ORDER_TRACKING_TOKEN_LIFETIME, generate_order_tracking_capability},
+        sales::{consume_order_inventory, release_order_inventory},
+    },
     contracts::{AdminActor, OrderDetail, OrderListFilter, OrderPage},
     error::database_error,
 };
@@ -8,6 +11,7 @@ use chaos_domain::{
     sales::{Order, OrderId, OrderStatus},
     store::StoreId,
 };
+use secrecy::ExposeSecret;
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -116,8 +120,16 @@ impl PostgresOrderManagementRepository {
         let current_status = OrderStatus::parse(&row).ok_or_else(corrupt_state)?;
         let mut order = Order::rehydrate(order_id, current_status);
         match target_status {
-            OrderStatus::Confirmed => order.confirm()?,
-            OrderStatus::Cancelled => order.cancel()?,
+            OrderStatus::Confirmed => {
+                order.confirm()?;
+                consume_order_inventory(&mut transaction, store_id.as_uuid(), order_id.as_uuid())
+                    .await?;
+            }
+            OrderStatus::Cancelled => {
+                order.cancel()?;
+                release_order_inventory(&mut transaction, store_id.as_uuid(), order_id.as_uuid())
+                    .await?;
+            }
             OrderStatus::Pending => return Err(invalid_target()),
         };
         sqlx::query(
@@ -132,15 +144,16 @@ impl PostgresOrderManagementRepository {
         .await
         .map_err(database_error)?;
         if target_status == OrderStatus::Confirmed {
-            let tracking_digest = generate_order_tracking_digest();
+            let tracking_capability = generate_order_tracking_capability();
             sqlx::query(
                 "INSERT INTO commerce.order_tracking_tokens \
-                 (store_id,order_id,token_digest,expires_at,created_at) \
-                 VALUES($1,$2,$3,$4,$5) ON CONFLICT(store_id,order_id) DO NOTHING",
+                 (store_id, order_id, token_digest, expires_at, created_at) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (store_id, order_id) DO NOTHING",
             )
             .bind(store_id.as_uuid())
             .bind(order_id.as_uuid())
-            .bind(tracking_digest.as_slice())
+            .bind(tracking_capability.digest.as_slice())
             .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
             .bind(now)
             .execute(&mut *transaction)
@@ -157,6 +170,7 @@ impl PostgresOrderManagementRepository {
             .bind(serde_json::json!({
                 "aggregate_id": order_id.as_uuid(),
                 "order_id": order_id.as_uuid(),
+                "tracking_token": tracking_capability.token.expose_secret(),
             }))
             .execute(&mut *transaction)
             .await

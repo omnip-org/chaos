@@ -5,16 +5,21 @@ use crate::{
 };
 use serde_json::Value;
 use sqlx::PgPool;
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct PostgresEmailRepository {
     pool: PgPool,
+    storefront_public_base_url: Url,
 }
 
 impl PostgresEmailRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, storefront_public_base_url: Url) -> Self {
+        Self {
+            pool,
+            storefront_public_base_url,
+        }
     }
 
     pub async fn prepare_order_confirmation(
@@ -27,6 +32,12 @@ impl PostgresEmailRepository {
             .and_then(Value::as_str)
             .and_then(|value| Uuid::parse_str(value).ok())
             .ok_or_else(|| invalid_email_job("aggregate_id"))?;
+        let tracking_token = job
+            .payload
+            .get("tracking_token")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("ot_") && value.len() > 3)
+            .ok_or_else(|| invalid_email_job("tracking_token"))?;
         let mut transaction = self.pool.begin().await.map_err(database_error)?;
         sqlx::query("SELECT set_config('app.store_id', $1, true)")
             .bind(job.store_id.to_string())
@@ -59,9 +70,14 @@ impl PostgresEmailRepository {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("orders@chaos.example");
+        let mut tracking_url = self
+            .storefront_public_base_url
+            .join("orders/track")
+            .map_err(|error| invalid_email_url(error.to_string()))?;
+        tracking_url.set_fragment(Some(&format!("token={tracking_token}")));
         let text = format!(
-            "Your order {} has been confirmed. Total: {} {}.",
-            row.1, row.2, row.3
+            "Your order {} has been confirmed. Total: {} {}. Track your order: {}",
+            row.1, row.2, row.3, tracking_url
         );
         Ok((
             row.4,
@@ -87,4 +103,10 @@ fn email_provider_unavailable() -> ApplicationError {
         code: "email_provider_unavailable",
         message: "no configured Email provider account is available",
     }
+}
+
+fn invalid_email_url(error: String) -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "failed to build order tracking URL: {error}"
+    ))
 }

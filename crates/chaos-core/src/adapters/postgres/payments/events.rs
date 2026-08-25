@@ -38,6 +38,7 @@ async fn insert_order_confirmed_event(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
+    tracking_token: &secrecy::SecretString,
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.event_outbox \
@@ -50,6 +51,7 @@ async fn insert_order_confirmed_event(
     .bind(json!({
         "aggregate_id": order_id.as_uuid(),
         "order_id": order_id.as_uuid(),
+        "tracking_token": tracking_token.expose_secret(),
     }))
     .execute(&mut **transaction)
     .await
@@ -633,6 +635,7 @@ async fn cancel_pending_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    release_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
     Ok(())
 }
 
@@ -650,7 +653,7 @@ async fn confirm_paid_order(
     }
     let mut order = Order::rehydrate(order_id, status);
     order.confirm()?;
-    consume_order_inventory(transaction, store_id, order_id).await?;
+    consume_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
     sqlx::query(
         "UPDATE commerce.orders SET status = 'confirmed', updated_at = $3 \
          WHERE store_id = $1 AND id = $2",
@@ -661,7 +664,28 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    insert_order_confirmed_event(transaction, store_id, order_id).await?;
+    let tracking_capability = generate_order_tracking_capability();
+    sqlx::query(
+        "INSERT INTO commerce.order_tracking_tokens \
+         (store_id, order_id, token_digest, expires_at, created_at) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (store_id, order_id) DO NOTHING",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(tracking_capability.digest.as_slice())
+    .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    insert_order_confirmed_event(
+        transaction,
+        store_id,
+        order_id,
+        &tracking_capability.token,
+    )
+    .await?;
     let cart_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT cart_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )
@@ -681,58 +705,6 @@ async fn confirm_paid_order(
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
-    }
-    let tracking_digest = generate_order_tracking_digest();
-    sqlx::query(
-        "INSERT INTO commerce.order_tracking_tokens \
-         (store_id,order_id,token_digest,expires_at,created_at) \
-         VALUES($1,$2,$3,$4,$5) ON CONFLICT(store_id,order_id) DO NOTHING",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(tracking_digest.as_slice())
-    .bind(now + ORDER_TRACKING_TOKEN_LIFETIME)
-    .bind(now)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(())
-}
-
-async fn consume_order_inventory(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    order_id: OrderId,
-) -> Result<(), ApplicationError> {
-    let lines = sqlx::query_as::<_, (Uuid, i64)>(
-        "SELECT product_variant_id, quantity::bigint \
-         FROM commerce.order_lines \
-         WHERE store_id = $1 AND order_id = $2 AND track_inventory \
-         ORDER BY product_variant_id",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    for (product_variant_id, quantity) in lines {
-        sqlx::query_scalar::<_, i64>(
-            "UPDATE commerce.product_variants \
-             SET on_hand_quantity = on_hand_quantity - $3, updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2 AND track_inventory \
-               AND on_hand_quantity >= $3 \
-             RETURNING on_hand_quantity",
-        )
-        .bind(store_id.as_uuid())
-        .bind(product_variant_id)
-        .bind(quantity)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| ApplicationError::Conflict {
-            code: "insufficient_inventory",
-            message: "one or more order lines exceed available inventory",
-        })?;
     }
     Ok(())
 }

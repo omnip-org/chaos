@@ -369,6 +369,7 @@ pub fn router(state: ApiState) -> Router {
         .nest("/health", health::routes())
         .nest("/identity/v1", identity::v1::routes())
         .nest("/storefront/v1", storefront::v1::routes())
+        .nest("/integrations/v1", storefront::integration_routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
         .fallback(shared::error::not_found)
@@ -535,7 +536,7 @@ mod tests {
             (Method::POST, "/storefront/v1/carts"),
             (
                 Method::POST,
-                "/storefront/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
+                "/integrations/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
             ),
         ];
 

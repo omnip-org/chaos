@@ -40,7 +40,7 @@ export interface ProductVariant {
   title: string;
   sku?: string;
   track_inventory: boolean;
-  on_hand_quantity: number;
+  available_quantity: number;
   price: Price;
   selected_options: ProductSelectedOption[];
   metadata?: unknown;
@@ -295,7 +295,6 @@ export interface CreateEmbeddedCheckoutRequest {
 
 export interface EmbeddedCheckoutSession {
   order_id: UUID;
-  payment_attempt_id: UUID;
   client_action: PaymentClientAction;
 }
 
