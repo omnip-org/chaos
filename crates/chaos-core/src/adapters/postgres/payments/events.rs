@@ -1,5 +1,15 @@
 // Payment outbox records, provider event application, order settlement, cancellation, and refund state.
 
+type RefundDetailRow = (
+    Uuid,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_outbox(
     transaction: &mut Transaction<'static, Postgres>,
@@ -208,6 +218,81 @@ async fn recompute_order_refund_summary(
     .await
     .map_err(database_error)?;
     Ok(())
+}
+
+async fn load_refund_reconciliation_context(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+    provider_account_id: Uuid,
+    payment_provider_reference: &str,
+) -> Result<Option<RefundReconciliationContext>, ApplicationError> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT sales_order.id, account.credential_secret_reference \
+         FROM commerce.orders AS sales_order \
+         INNER JOIN integration.provider_accounts AS account \
+           ON account.store_id = sales_order.store_id \
+          AND account.id = sales_order.payment_provider_account_id \
+          AND account.capability = 'payment' \
+          AND account.provider = 'stripe' \
+          AND account.enabled \
+         WHERE sales_order.store_id = $1 \
+           AND sales_order.payment_provider_account_id = $2 \
+           AND sales_order.payment_provider_reference_id = $3 \
+           AND account.credential_secret_reference IS NOT NULL \
+         FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(provider_account_id)
+    .bind(payment_provider_reference)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(row.map(|(order_id, credential_secret_reference)| {
+        RefundReconciliationContext {
+            store_id,
+            order_id: OrderId::from_uuid(order_id),
+            provider_account_id,
+            credential_secret_reference,
+            payment_provider_reference: payment_provider_reference.to_owned(),
+        }
+    }))
+}
+
+impl PostgresStripeRepository {
+    pub(crate) async fn prepare_refund_reconciliation(
+        &self,
+        actor: &AdminActor,
+        store_id: StoreId,
+        order_id: OrderId,
+    ) -> Result<RefundReconciliationContext, ApplicationError> {
+        let mut transaction = self.begin_admin(actor).await?;
+        let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
+            "SELECT payment_provider_account_id, payment_provider_reference_id \
+             FROM commerce.orders \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let (provider_account_id, payment_provider_reference) = row
+            .ok_or_else(|| order_not_found(order_id))?;
+        let payment_provider_reference = payment_provider_reference.ok_or(ApplicationError::Conflict {
+            code: "stripe_payment_intent_missing",
+            message: "the Order has no Stripe PaymentIntent",
+        })?;
+        let context = load_refund_reconciliation_context(
+            &mut transaction,
+            store_id,
+            provider_account_id,
+            &payment_provider_reference,
+        )
+        .await?
+        .ok_or_else(provider_unavailable)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(context)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -743,6 +828,13 @@ async fn apply_refund_event(
         .get("amount")
         .and_then(Value::as_i64)
         .ok_or_else(corrupt_webhook_payload)?;
+    let provider_currency = object
+        .get("currency")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_uppercase)
+        .ok_or_else(corrupt_webhook_payload)?;
+    let provider_currency =
+        CurrencyCode::parse(&provider_currency).map_err(|_| corrupt_webhook_payload())?;
     let payment_intent = object
         .get("payment_intent")
         .and_then(Value::as_str)
@@ -750,11 +842,25 @@ async fn apply_refund_event(
     if amount <= 0 {
         return Err(corrupt_webhook_payload());
     }
-    let succeeded = event_type == "refund.succeeded";
-    let failed = event_type == "refund.failed";
-    if !succeeded && !failed {
+    if !matches!(
+        event_type,
+        "refund.pending" | "refund.succeeded" | "refund.failed"
+    ) {
         return Err(corrupt_webhook_payload());
     }
+    let provider_status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(corrupt_webhook_payload)?;
+    let target_status = match provider_status {
+        "pending" | "requires_action" => "pending",
+        "succeeded" => "succeeded",
+        // Stripe reports Dashboard cancellation through refund.failed with
+        // status=canceled. The local ledger intentionally uses its existing
+        // failed state for both provider outcomes.
+        "failed" | "canceled" => "failed",
+        _ => return Err(corrupt_webhook_payload()),
+    };
 
     let resolved: Option<(Uuid, Uuid)> = match refund_id {
         Some(id) => sqlx::query_as(
@@ -771,8 +877,18 @@ async fn apply_refund_event(
         None => None,
     };
 
-    let (refund_row_id, order_id) = match resolved {
-        Some(row) => row,
+    let (refund_row_id, order_id, order_currency) = match resolved {
+        Some((refund_row_id, order_id)) => {
+            let order_currency: String = sqlx::query_scalar(
+                "SELECT currency::text FROM commerce.orders WHERE store_id = $1 AND id = $2",
+            )
+            .bind(store_id.as_uuid())
+            .bind(order_id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+            (refund_row_id, order_id, order_currency)
+        }
         None => {
             let payment_intent = payment_intent.ok_or_else(corrupt_webhook_payload)?;
             let order: (Uuid, String) = sqlx::query_as(
@@ -806,7 +922,7 @@ async fn apply_refund_event(
             .execute(&mut **transaction)
             .await
             .map_err(database_error)?;
-            sqlx::query_as(
+            let refund_row: (Uuid, Uuid) = sqlx::query_as(
                 "SELECT id, order_id FROM commerce.refunds \
                  WHERE store_id = $1 AND payment_provider_account_id = $2 \
                    AND payment_provider_reference_id = $3 FOR UPDATE",
@@ -816,16 +932,20 @@ async fn apply_refund_event(
             .bind(&provider_reference_id)
             .fetch_one(&mut **transaction)
             .await
-            .map_err(database_error)?
+            .map_err(database_error)?;
+            (refund_row.0, refund_row.1, order.1)
         }
     };
+    if order_currency != provider_currency.as_str() {
+        return Err(stripe_currency_mismatch());
+    }
 
-    if succeeded {
+    if target_status == "succeeded" {
         let applied = sqlx::query(
             "UPDATE commerce.refunds SET status = 'succeeded', \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = NULL, updated_at = $5 \
-             WHERE store_id = $1 AND id = $2 AND status <> 'succeeded'",
+             WHERE store_id = $1 AND id = $2 AND status = 'pending'",
         )
         .bind(store_id.as_uuid())
         .bind(refund_row_id)
@@ -868,12 +988,27 @@ async fn apply_refund_event(
             },
         )
         .await?;
-    } else if failed {
+    } else if target_status == "pending" {
+        sqlx::query(
+            "UPDATE commerce.refunds SET status = 'pending', \
+                    payment_provider_account_id = $3, payment_provider_reference_id = $4, \
+                    failure_code = NULL, updated_at = $5 \
+             WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+        )
+        .bind(store_id.as_uuid())
+        .bind(refund_row_id)
+        .bind(provider_account_id)
+        .bind(&provider_reference_id)
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+    } else {
         sqlx::query(
             "UPDATE commerce.refunds SET status = 'failed', \
                     payment_provider_account_id = $3, payment_provider_reference_id = $4, \
                     failure_code = $5, updated_at = $6 \
-             WHERE store_id = $1 AND id = $2 AND status = 'pending'",
+             WHERE store_id = $1 AND id = $2 AND status IN ('pending', 'succeeded', 'failed')",
         )
         .bind(store_id.as_uuid())
         .bind(refund_row_id)
@@ -884,6 +1019,304 @@ async fn apply_refund_event(
         .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
+        recompute_order_refund_summary(transaction, store_id, OrderId::from_uuid(order_id), now)
+            .await?;
     }
     Ok(OrderId::from_uuid(order_id))
+}
+
+fn local_refund_status(status: PaymentRefundStatus) -> &'static str {
+    match status {
+        PaymentRefundStatus::Pending | PaymentRefundStatus::RequiresAction => "pending",
+        PaymentRefundStatus::Succeeded => "succeeded",
+        PaymentRefundStatus::Failed | PaymentRefundStatus::Canceled => "failed",
+    }
+}
+
+fn reconcile_refund_status(
+    current_status: &str,
+    observed_status: PaymentRefundStatus,
+) -> &'static str {
+    match current_status {
+        // A later provider snapshot may confirm a pending refund or move it
+        // to a terminal state.
+        "pending" => local_refund_status(observed_status),
+        // A failed provider snapshot may be newer than a previously received
+        // succeeded event (for example, a Dashboard cancellation). A stale
+        // succeeded snapshot must never reopen a failed local state.
+        "succeeded" => {
+            if matches!(
+                observed_status,
+                PaymentRefundStatus::Failed | PaymentRefundStatus::Canceled
+            ) {
+                "failed"
+            } else {
+                "succeeded"
+            }
+        }
+        "failed" => "failed",
+        _ => local_refund_status(observed_status),
+    }
+}
+
+fn local_refund_failure_code(observation: &PaymentRefundObservation) -> Option<String> {
+    match observation.status {
+        PaymentRefundStatus::Failed => Some(
+            observation
+                .failure_code
+                .clone()
+                .unwrap_or_else(|| "provider_failure".into()),
+        ),
+        PaymentRefundStatus::Canceled => Some(
+            observation
+                .failure_code
+                .clone()
+                .unwrap_or_else(|| "merchant_request".into()),
+        ),
+        PaymentRefundStatus::Pending
+        | PaymentRefundStatus::RequiresAction
+        | PaymentRefundStatus::Succeeded => None,
+    }
+}
+
+async fn upsert_refund_observation(
+    transaction: &mut Transaction<'static, Postgres>,
+    context: &RefundReconciliationContext,
+    observation: &PaymentRefundObservation,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    if observation.provider_reference_id.trim().is_empty()
+        || observation.provider_reference_id.chars().count() > 255
+        || observation.amount_minor <= 0
+    {
+        return Err(stripe_invalid_response());
+    }
+    let order_currency: String = sqlx::query_scalar(
+        "SELECT currency::text FROM commerce.orders WHERE store_id = $1 AND id = $2",
+    )
+    .bind(context.store_id.as_uuid())
+    .bind(context.order_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if order_currency != observation.currency.as_str() {
+        return Err(stripe_currency_mismatch());
+    }
+
+    let provider_row: Option<(Uuid, Uuid, i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, order_id, amount_minor, status::text, failure_code FROM commerce.refunds \
+         WHERE store_id = $1 AND payment_provider_account_id = $2 \
+           AND payment_provider_reference_id = $3 FOR UPDATE",
+    )
+    .bind(context.store_id.as_uuid())
+    .bind(context.provider_account_id)
+    .bind(&observation.provider_reference_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let chaos_row = if let Some(chaos_refund_id) = observation.chaos_refund_id {
+        sqlx::query_as::<_, (Uuid, Uuid, i64, String, Option<String>)>(
+            "SELECT id, order_id, amount_minor, status::text, failure_code \
+             FROM commerce.refunds \
+             WHERE store_id = $1 AND id = $2 AND order_id = $3 FOR UPDATE",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(chaos_refund_id)
+        .bind(context.order_id.as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?
+    } else {
+        None
+    };
+    if let (Some(provider_row), Some(chaos_row)) = (provider_row.as_ref(), chaos_row.as_ref())
+        && provider_row.0 != chaos_row.0
+    {
+        return Err(ApplicationError::Conflict {
+            code: "refund_reconciliation_identity_mismatch",
+            message: "Stripe Refund metadata and provider reference resolve to different refunds",
+        });
+    }
+    let existing = provider_row.or(chaos_row);
+    let observed_status = local_refund_status(observation.status);
+    let observed_failure_code = local_refund_failure_code(observation);
+    match existing {
+        Some((
+            refund_id,
+            order_id,
+            amount_minor,
+            current_status,
+            current_failure_code,
+        )) => {
+            if order_id != context.order_id.as_uuid() || amount_minor != observation.amount_minor {
+                return Err(ApplicationError::Conflict {
+                    code: "refund_reconciliation_amount_mismatch",
+                    message: "the Stripe Refund amount does not match the local Refund",
+                });
+            }
+            let status = reconcile_refund_status(&current_status, observation.status);
+            let failure_code = match status {
+                "failed" => observed_failure_code.or(current_failure_code),
+                _ => None,
+            };
+            sqlx::query(
+                "UPDATE commerce.refunds SET status = $4::commerce.refund_status, \
+                        payment_provider_reference_id = $3, failure_code = $5, updated_at = $6 \
+                 WHERE store_id = $1 AND id = $2",
+            )
+            .bind(context.store_id.as_uuid())
+            .bind(refund_id)
+            .bind(&observation.provider_reference_id)
+            .bind(status)
+            .bind(failure_code)
+            .bind(now)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+        }
+        None => {
+            let status = observed_status;
+            sqlx::query(
+                "INSERT INTO commerce.refunds \
+                 (id, store_id, order_id, currency, status, amount_minor, \
+                  payment_provider_account_id, payment_provider_reference_id, failure_code, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5::commerce.refund_status, $6, $7, $8, $9, $10)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(context.store_id.as_uuid())
+            .bind(context.order_id.as_uuid())
+            .bind(observation.currency.as_str())
+            .bind(status)
+            .bind(observation.amount_minor)
+            .bind(context.provider_account_id)
+            .bind(&observation.provider_reference_id)
+            .bind(observed_failure_code)
+            .bind(now)
+            .execute(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+    Ok(())
+}
+
+impl PostgresStripeRepository {
+    pub(crate) async fn apply_refund_reconciliation(
+        &self,
+        context: &RefundReconciliationContext,
+        observations: &[PaymentRefundObservation],
+        now: OffsetDateTime,
+    ) -> Result<(i64, Vec<RefundDetail>), ApplicationError> {
+        let mut transaction = self.begin_context(None, context.store_id.as_uuid()).await?;
+        let order_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM commerce.orders \
+             WHERE store_id = $1 AND id = $2 \
+               AND payment_provider_account_id = $3 \
+               AND payment_provider_reference_id = $4)",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(context.order_id.as_uuid())
+        .bind(context.provider_account_id)
+        .bind(&context.payment_provider_reference)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !order_exists {
+            return Err(provider_unavailable());
+        }
+        let order_currency: String = sqlx::query_scalar(
+            "SELECT currency::text FROM commerce.orders WHERE store_id = $1 AND id = $2",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(context.order_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "SELECT id FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(context.order_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        for observation in observations {
+            upsert_refund_observation(&mut transaction, context, observation, now).await?;
+        }
+        recompute_order_refund_summary(
+            &mut transaction,
+            context.store_id,
+            context.order_id,
+            now,
+        )
+        .await?;
+        let refunded_amount_minor: i64 = sqlx::query_scalar(
+            "SELECT refunded_amount_minor FROM commerce.orders WHERE store_id = $1 AND id = $2",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(context.order_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let rows: Vec<RefundDetailRow> = sqlx::query_as(
+            "SELECT id, status::text, amount_minor, payment_provider_reference_id, \
+                    failure_code, created_at, updated_at \
+             FROM commerce.refunds WHERE store_id = $1 AND order_id = $2 \
+             ORDER BY created_at, id",
+        )
+        .bind(context.store_id.as_uuid())
+        .bind(context.order_id.as_uuid())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let refunds = rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    status,
+                    amount_minor,
+                    provider_reference_id,
+                    failure_code,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ok(RefundDetail {
+                        id: RefundId::from_uuid(id),
+                        order_id: context.order_id,
+                        amount_minor,
+                        currency: CurrencyCode::parse(&order_currency)?,
+                        status: RefundStatus::parse(&status).ok_or_else(corrupt_payment_state)?,
+                        provider_reference_id,
+                        failure_code,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, ApplicationError>>()?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok((refunded_amount_minor, refunds))
+    }
+}
+
+#[cfg(test)]
+mod refund_reconciliation_tests {
+    use super::{PaymentRefundStatus, reconcile_refund_status};
+
+    #[test]
+    fn stale_provider_snapshots_do_not_reopen_terminal_refunds() {
+        assert_eq!(
+            reconcile_refund_status("failed", PaymentRefundStatus::Succeeded),
+            "failed"
+        );
+        assert_eq!(
+            reconcile_refund_status("succeeded", PaymentRefundStatus::Failed),
+            "failed"
+        );
+        assert_eq!(
+            reconcile_refund_status("succeeded", PaymentRefundStatus::Canceled),
+            "failed"
+        );
+    }
 }

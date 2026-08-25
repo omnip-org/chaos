@@ -53,6 +53,42 @@ pub struct RefundDetail {
     pub updated_at: OffsetDateTime,
 }
 
+/// A current Refund snapshot read from the payment provider. Webhooks are
+/// notifications, while reconciliation uses this provider-owned snapshot as
+/// the source of truth for a Refund's amount and terminal state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentRefundObservation {
+    pub provider_reference_id: String,
+    pub amount_minor: i64,
+    pub currency: CurrencyCode,
+    pub status: PaymentRefundStatus,
+    pub failure_code: Option<String>,
+    /// Present for Refunds created by Chaos. Dashboard-created Refunds leave
+    /// this empty and are matched by their Stripe Refund ID instead.
+    pub chaos_refund_id: Option<Uuid>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaymentRefundStatus {
+    Pending,
+    RequiresAction,
+    Succeeded,
+    Failed,
+    Canceled,
+}
+
+impl PaymentRefundStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::RequiresAction => "requires_action",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+        }
+    }
+}
+
 pub struct PaymentWebhookEvent {
     pub provider_account_id: Uuid,
     pub provider_event_id: String,
@@ -185,6 +221,15 @@ pub trait PaymentProvider: Send + Sync {
         &self,
         command: PaymentCommand,
     ) -> Result<PaymentCommandResult, ApplicationError>;
+
+    /// Fetches all Refund objects for one provider payment. This is used after
+    /// a charge-level refund notification and by manual reconciliation so a
+    /// missed Refund webhook cannot leave the local ledger incomplete.
+    async fn list_refunds(
+        &self,
+        credential_secret_reference: &str,
+        payment_provider_reference: &str,
+    ) -> Result<Vec<PaymentRefundObservation>, ApplicationError>;
 }
 
 /// Runtime registry for the Payment capability. The application selects an

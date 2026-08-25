@@ -168,7 +168,7 @@ impl PostgresStripeRepository {
         &self,
         job: &QueueJob,
         now: OffsetDateTime,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<Option<RefundReconciliationContext>, ApplicationError> {
         let mut transaction = self.begin_context(None, job.store_id).await?;
         let failure_code = job
             .payload
@@ -186,6 +186,7 @@ impl PostgresStripeRepository {
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
+        let mut reconciliation = None;
         let resolved_order_id = if normalized_event_type.starts_with("payment.") {
             let order_id = job
                 .payload
@@ -205,6 +206,21 @@ impl PostgresStripeRepository {
                 now,
             )
             .await?)
+        } else if normalized_event_type == "refund.reconcile" {
+            let payment_intent = job
+                .payload
+                .get("provider_payment_intent")
+                .and_then(Value::as_str)
+                .filter(|value| value.starts_with("pi_"))
+                .ok_or_else(corrupt_webhook_payload)?;
+            reconciliation = load_refund_reconciliation_context(
+                &mut transaction,
+                StoreId::from_uuid(job.store_id),
+                provider_account_id,
+                payment_intent,
+            )
+            .await?;
+            reconciliation.as_ref().map(|context| context.order_id)
         } else if normalized_event_type.starts_with("refund.") {
             let stripe_object_id = job
                 .payload
@@ -247,7 +263,7 @@ impl PostgresStripeRepository {
             }
         }
         transaction.commit().await.map_err(database_error)?;
-        Ok(())
+        Ok(reconciliation)
     }
 
     pub(crate) async fn prepare_payment_command(

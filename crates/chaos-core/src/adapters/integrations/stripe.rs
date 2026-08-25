@@ -4,19 +4,20 @@ use crate::{
     ApplicationError,
     contracts::{
         IntegrationSecretResolver, PaymentClientAction, PaymentCommand, PaymentCommandKind,
-        PaymentCommandResult, PaymentProvider, PaymentShippingAddress, PaymentWebhookVerifier,
-        StripeWebhookConfigurationRepository, StripeWebhookEvent,
+        PaymentCommandResult, PaymentProvider, PaymentRefundObservation, PaymentRefundStatus,
+        PaymentShippingAddress, PaymentWebhookVerifier, StripeWebhookConfigurationRepository,
+        StripeWebhookEvent,
     },
 };
 use async_trait::async_trait;
-use chaos_domain::stripe::StripeAccountId;
+use chaos_domain::{CurrencyCode, stripe::StripeAccountId};
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::{
     Client, StatusCode,
     header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::Sha256;
 use time::OffsetDateTime;
@@ -117,6 +118,47 @@ impl StripeHttp {
             .await
             .map_err(provider_network_error)?;
         parse_stripe_response(response).await
+    }
+
+    async fn list_refunds(
+        &self,
+        credentials: &StripeCredentials,
+        payment_intent: &str,
+    ) -> Result<Vec<StripeRefundObject>, ApplicationError> {
+        if !valid_stripe_identifier(payment_intent, "pi_") {
+            return Err(stripe_invalid_response());
+        }
+        let mut refunds = Vec::new();
+        let mut starting_after: Option<String> = None;
+        loop {
+            let mut query = vec![
+                ("payment_intent".to_owned(), payment_intent.to_owned()),
+                ("limit".to_owned(), "100".to_owned()),
+            ];
+            if let Some(cursor) = starting_after.as_ref() {
+                query.push(("starting_after".to_owned(), cursor.clone()));
+            }
+            let response = self
+                .client
+                .get(self.endpoint("v1/refunds")?)
+                .headers(stripe_headers(
+                    credentials.secret_key.expose_secret(),
+                    None,
+                )?)
+                .query(&query)
+                .send()
+                .await
+                .map_err(provider_network_error)?;
+            let page: StripeRefundList = parse_stripe_response(response).await?;
+            let has_more = page.has_more;
+            let next_cursor = page.data.last().map(|refund| refund.id.clone());
+            refunds.extend(page.data);
+            if !has_more {
+                break;
+            }
+            starting_after = Some(next_cursor.ok_or_else(stripe_invalid_response)?);
+        }
+        Ok(refunds)
     }
 }
 
@@ -372,6 +414,40 @@ impl PaymentProvider for StripeGateway {
             }),
         })
     }
+
+    async fn list_refunds(
+        &self,
+        credential_secret_reference: &str,
+        payment_provider_reference: &str,
+    ) -> Result<Vec<PaymentRefundObservation>, ApplicationError> {
+        let credentials = self.http.credentials(credential_secret_reference).await?;
+        let payment_intent = if valid_stripe_identifier(payment_provider_reference, "pi_") {
+            payment_provider_reference.to_owned()
+        } else {
+            let session = self
+                .http
+                .retrieve_object(
+                    "v1/checkout/sessions/",
+                    &credentials,
+                    payment_provider_reference,
+                    "cs_",
+                )
+                .await?;
+            session
+                .payment_intent
+                .filter(|value| valid_stripe_identifier(value, "pi_"))
+                .ok_or(ApplicationError::Conflict {
+                    code: "stripe_payment_intent_missing",
+                    message: "the Stripe Checkout Session has no PaymentIntent",
+                })?
+        };
+        self.http
+            .list_refunds(&credentials, &payment_intent)
+            .await?
+            .into_iter()
+            .map(payment_refund_observation)
+            .collect()
+    }
 }
 
 fn append_shipping_address(
@@ -560,6 +636,69 @@ struct StripeObject {
 }
 
 #[derive(Deserialize)]
+struct StripeRefundList {
+    #[serde(default)]
+    data: Vec<StripeRefundObject>,
+    #[serde(default)]
+    has_more: bool,
+}
+
+#[derive(Deserialize)]
+struct StripeRefundObject {
+    id: String,
+    amount: i64,
+    currency: String,
+    #[serde(default)]
+    payment_intent: Option<String>,
+    status: String,
+    #[serde(default)]
+    failure_reason: Option<String>,
+    #[serde(default)]
+    metadata: HashMap<String, String>,
+}
+
+fn payment_refund_observation(
+    refund: StripeRefundObject,
+) -> Result<PaymentRefundObservation, ApplicationError> {
+    if !valid_stripe_identifier(&refund.id, "re_") || refund.amount <= 0 {
+        return Err(stripe_invalid_response());
+    }
+    if refund
+        .payment_intent
+        .as_deref()
+        .is_some_and(|value| !valid_stripe_identifier(value, "pi_"))
+    {
+        return Err(stripe_invalid_response());
+    }
+    let status = match refund.status.as_str() {
+        "pending" => PaymentRefundStatus::Pending,
+        "requires_action" => PaymentRefundStatus::RequiresAction,
+        "succeeded" => PaymentRefundStatus::Succeeded,
+        "failed" => PaymentRefundStatus::Failed,
+        "canceled" => PaymentRefundStatus::Canceled,
+        _ => return Err(stripe_invalid_response()),
+    };
+    let failure_code = match refund.failure_reason {
+        Some(value) if !value.trim().is_empty() && value.chars().count() <= 2000 => Some(value),
+        Some(_) => return Err(stripe_invalid_response()),
+        None => None,
+    };
+    let chaos_refund_id = refund
+        .metadata
+        .get("chaos_refund_id")
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|value| !value.is_nil());
+    Ok(PaymentRefundObservation {
+        provider_reference_id: refund.id,
+        amount_minor: refund.amount,
+        currency: CurrencyCode::parse(&refund.currency.to_ascii_uppercase())?,
+        status,
+        failure_code,
+        chaos_refund_id,
+    })
+}
+
+#[derive(Deserialize)]
 struct StripeEventEnvelope {
     id: String,
     #[serde(rename = "type")]
@@ -617,8 +756,10 @@ fn map_stripe_event(event: &StripeEventEnvelope) -> Result<MappedStripeEvent, Ap
             | "checkout.session.async_payment_succeeded"
             | "checkout.session.async_payment_failed"
             | "checkout.session.expired"
+            | "charge.refunded"
             | "refund.created"
             | "refund.updated"
+            | "refund.failed"
     );
     let Some(data) = event.data.as_ref() else {
         return if known_wire_event {
@@ -657,15 +798,20 @@ fn map_stripe_event(event: &StripeEventEnvelope) -> Result<MappedStripeEvent, Ap
         "checkout.session.async_payment_succeeded" => (Some("payment.captured"), "cs_"),
         "checkout.session.async_payment_failed" => (Some("payment.failed"), "cs_"),
         "checkout.session.expired" => (Some("payment.cancelled"), "cs_"),
+        // A charge-level notification is the trigger for a provider API
+        // reconciliation. It contains the aggregate amount but not the
+        // individual Refund objects, so it must never create a local Refund
+        // row directly.
+        "charge.refunded" => (Some("refund.reconcile"), "ch_"),
         // Refund events created by Chaos carry the order metadata. Dashboard
         // refunds (no chaos_order_id metadata) are correlated later through
         // the PaymentIntent reference — order_id is None for those here.
-        "refund.created" | "refund.updated" if object.status.as_deref() == Some("succeeded") => {
-            (Some("refund.succeeded"), "re_")
-        }
-        "refund.created" | "refund.updated" if object.status.as_deref() == Some("failed") => {
-            (Some("refund.failed"), "re_")
-        }
+        "refund.created" | "refund.updated" | "refund.failed" => match object.status.as_deref() {
+            Some("succeeded") => (Some("refund.succeeded"), "re_"),
+            Some("failed" | "canceled") => (Some("refund.failed"), "re_"),
+            Some("pending" | "requires_action") => (Some("refund.pending"), "re_"),
+            _ => (None, ""),
+        },
         // A verified provider event that Chaos does not act on keeps its raw
         // provider type and is later marked unsupported by the Worker. This
         // prevents endless retries while preserving the payload for support.
@@ -729,13 +875,13 @@ fn stripe_headers(
     Ok(headers)
 }
 
-async fn parse_stripe_response(
+async fn parse_stripe_response<T: DeserializeOwned>(
     response: reqwest::Response,
-) -> Result<StripeObject, ApplicationError> {
+) -> Result<T, ApplicationError> {
     let status = response.status();
     if status.is_success() {
         return response
-            .json::<StripeObject>()
+            .json::<T>()
             .await
             .map_err(|_| stripe_invalid_response());
     }
@@ -987,6 +1133,12 @@ mod tests {
             ("GET", "/v1/payment_intents/pi_created") => {
                 r#"{"id":"pi_created","client_secret":"pi_created_secret_value"}"#
             }
+            ("GET", "/v1/refunds") => {
+                r#"{"object":"list","has_more":false,"data":[
+                    {"id":"re_first","amount":2000,"currency":"usd","payment_intent":"pi_created","status":"succeeded","metadata":{}},
+                    {"id":"re_canceled","amount":300,"currency":"usd","payment_intent":"pi_created","status":"canceled","failure_reason":"merchant_request","metadata":{}}
+                ]}"#
+            }
             ("POST", "/v1/refunds") => r#"{"id":"re_created"}"#,
             ("POST", "/v1/checkout/sessions") => {
                 r#"{"id":"cs_created","client_secret":"cs_created_secret_value"}"#
@@ -1127,6 +1279,44 @@ mod tests {
         );
         assert_eq!(refund_request.headers["idempotency-key"], "refund-command");
         drop(requests);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stripe_gateway_lists_succeeded_and_canceled_refunds() {
+        let state = MockState(Arc::new(Mutex::new(Vec::new())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(stripe_mock))
+                    .with_state(state.clone()),
+            )
+            .into_future(),
+        );
+        let reference = PaymentSecretReference::new("credential", "test://stripe").unwrap();
+        let secrets = Arc::new(StaticSecrets(HashMap::from([(
+            "test://stripe".into(),
+            r#"{"secret_key":"sk_test_secret","publishable_key":"pk_test_public"}"#.into(),
+        )])));
+        let provider = StripeGateway::new(
+            format!("http://{address}/").parse().unwrap(),
+            Duration::from_secs(2),
+            secrets,
+        )
+        .unwrap();
+        let refunds = provider
+            .list_refunds(reference.expose_reference(), "pi_created")
+            .await
+            .unwrap();
+        assert_eq!(refunds.len(), 2);
+        assert_eq!(refunds[0].provider_reference_id, "re_first");
+        assert_eq!(refunds[0].status, PaymentRefundStatus::Succeeded);
+        assert_eq!(refunds[1].provider_reference_id, "re_canceled");
+        assert_eq!(refunds[1].status, PaymentRefundStatus::Canceled);
+        assert_eq!(refunds[1].failure_code.as_deref(), Some("merchant_request"));
         server.abort();
     }
 
@@ -1567,6 +1757,38 @@ mod tests {
         assert_eq!(event_type.as_deref(), Some("refund.failed"));
         assert_eq!(resolved_order_id, Some(order_id));
         assert_eq!(resolved_refund_id, Some(refund_id));
+        assert_eq!(failure_code, None);
+    }
+
+    #[test]
+    fn refund_failed_canceled_is_handled_as_a_refund_failure() {
+        let order_id = Uuid::now_v7();
+        let refund_id = Uuid::now_v7();
+        let event = refund_event("refund.failed", "canceled", order_id, refund_id);
+        let (event_type, resolved_order_id, resolved_refund_id, failure_code) =
+            map_stripe_event(&event).unwrap();
+        assert_eq!(event_type.as_deref(), Some("refund.failed"));
+        assert_eq!(resolved_order_id, Some(order_id));
+        assert_eq!(resolved_refund_id, Some(refund_id));
+        assert_eq!(failure_code, None);
+    }
+
+    #[test]
+    fn charge_refunded_requests_refund_reconciliation() {
+        let event: StripeEventEnvelope = serde_json::from_value(serde_json::json!({
+            "id": "evt_charge_refunded",
+            "type": "charge.refunded",
+            "data": {"object": {
+                "id": "ch_refunded",
+                "payment_intent": "pi_created",
+                "status": "succeeded"
+            }}
+        }))
+        .unwrap();
+        let (event_type, order_id, refund_id, failure_code) = map_stripe_event(&event).unwrap();
+        assert_eq!(event_type.as_deref(), Some("refund.reconcile"));
+        assert_eq!(order_id, None);
+        assert_eq!(refund_id, None);
         assert_eq!(failure_code, None);
     }
 }

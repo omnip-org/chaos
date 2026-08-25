@@ -41,6 +41,19 @@ pub struct CreateRefundInput {
     pub amount_minor: i64,
 }
 
+pub struct ReconcileRefundsInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub order_id: OrderId,
+    pub now: OffsetDateTime,
+}
+
+pub struct RefundReconciliationResult {
+    pub order_id: OrderId,
+    pub refunded_amount_minor: i64,
+    pub refunds: Vec<RefundDetail>,
+}
+
 pub struct CreateStripeAccountInput {
     pub actor: StoreActor,
     pub store_id: StoreId,
@@ -235,6 +248,36 @@ impl PaymentService {
             .await
     }
 
+    pub async fn reconcile_refunds(
+        &self,
+        input: ReconcileRefundsInput,
+    ) -> Result<RefundReconciliationResult, ApplicationError> {
+        require_payment_operator(&input.actor)?;
+        let context = self
+            .repository
+            .prepare_refund_reconciliation(&input.actor, input.store_id, input.order_id)
+            .await?;
+        let provider = self
+            .payment_providers
+            .get("stripe")
+            .ok_or_else(payment_provider_not_supported)?;
+        let observations = provider
+            .list_refunds(
+                &context.credential_secret_reference,
+                &context.payment_provider_reference,
+            )
+            .await?;
+        let (refunded_amount_minor, refunds) = self
+            .repository
+            .apply_refund_reconciliation(&context, &observations, input.now)
+            .await?;
+        Ok(RefundReconciliationResult {
+            order_id: input.order_id,
+            refunded_amount_minor,
+            refunds,
+        })
+    }
+
     pub async fn receive_webhook(
         &self,
         provider_account_id: StripeAccountId,
@@ -344,7 +387,32 @@ impl PaymentWorkers {
                 }
             } else {
                 match self.repository.process_webhook_job(job, now).await {
-                    Ok(()) => WebhookProcessingResult::Processed,
+                    Ok(Some(context)) => {
+                        let provider_name = job.provider.as_deref().unwrap_or("stripe");
+                        let result = async {
+                            let provider = self
+                                .payment_providers
+                                .get(provider_name)
+                                .ok_or_else(payment_provider_not_supported)?;
+                            let observations = provider
+                                .list_refunds(
+                                    &context.credential_secret_reference,
+                                    &context.payment_provider_reference,
+                                )
+                                .await?;
+                            self.repository
+                                .apply_refund_reconciliation(&context, &observations, now)
+                                .await
+                        }
+                        .await;
+                        match result {
+                            Ok(_) => WebhookProcessingResult::Processed,
+                            Err(error) => WebhookProcessingResult::Failed {
+                                reason: error.to_string(),
+                            },
+                        }
+                    }
+                    Ok(None) => WebhookProcessingResult::Processed,
                     Err(error) => WebhookProcessingResult::Failed {
                         reason: error.to_string(),
                     },

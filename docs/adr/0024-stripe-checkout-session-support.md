@@ -70,8 +70,9 @@ are:
 - `checkout.session.async_payment_succeeded` → `payment.captured`;
 - `checkout.session.async_payment_failed` → `payment.failed`;
 - `checkout.session.expired` → `payment.cancelled`.
-- `refund.created` and `refund.updated` → the corresponding local refund
-  status transition.
+- `charge.refunded` → a full Refund reconciliation for the PaymentIntent;
+- `refund.created`, `refund.updated`, and `refund.failed` → the corresponding
+  local refund status transition.
 
 An ordinary `checkout.session.completed` event with `payment_status=unpaid`
 is accepted into the durable inbox without a normalized event type and is
@@ -79,8 +80,12 @@ finished as `unsupported` without transitioning
 the Order; the asynchronous follow-up event is authoritative. Other verified
 Stripe events that Chaos does not handle are retained as unsupported inbox items
 and completed by the Worker without a business state change. Refunds are
-executed through Stripe and reconciled from verified `refund.created` and
-`refund.updated` events.
+executed through Stripe and reconciled from verified refund events. A
+charge-level refund event also triggers an API snapshot reconciliation so a
+missing individual Refund webhook cannot lose a local Refund row.
+Stripe's provider `canceled` status is normalized to the existing local
+`failed` status with `failure_code=merchant_request`; the raw provider payload
+remains available in the Webhook inbox for audit.
 
 Stripe webhook requests are verified against the exact raw request bytes,
 with the standard `Stripe-Signature` header and a five-minute timestamp
@@ -122,7 +127,9 @@ becomes the authoritative business snapshot after webhook reconciliation.
 - Chaos owns one business Order per checkout attempt. It does not persist a
   second local Checkout aggregate or duplicate contact/address/line snapshots.
 - Stripe Dashboard refunds and API-created refunds are reconciled through the
-  verified `refund.created` and `refund.updated` webhook events.
+  verified `charge.refunded`, `refund.created`, `refund.updated`, and
+  `refund.failed` events. The `reconcile_refunds` admin tool can replay the
+  complete Stripe Refund list for an Order when an event was missed.
 - MCP configuration returns the exact Webhook URL, the `Stripe-Signature`
   header, the payment and refund event names, the signing-secret location, and the
   Test/Live mode guidance.

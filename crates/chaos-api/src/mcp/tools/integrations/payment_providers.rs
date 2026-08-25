@@ -251,8 +251,10 @@ fn stripe_account_json(value: StripeAccountDetail, public_base_url: &str) -> ser
                 "checkout.session.async_payment_succeeded",
                 "checkout.session.async_payment_failed",
                 "checkout.session.expired",
+                "charge.refunded",
                 "refund.created",
-                "refund.updated"
+                "refund.updated",
+                "refund.failed"
             ],
             "signing_secret": "Use the whsec_... signing secret from Stripe Dashboard → Developers → Webhooks → this endpoint",
             "mode": "Use Stripe Test mode with sk_test_/pk_test_ keys and Live mode with sk_live_/pk_live_ keys"

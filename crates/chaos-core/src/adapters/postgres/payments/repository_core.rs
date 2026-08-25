@@ -11,9 +11,9 @@ use crate::{
         AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
         PaymentCheckoutDetails, PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
-        PaymentShippingAddress, PaymentCommand, PaymentCommandKind, PaymentCommandResult,
-        StripeWebhookConfiguration, StripeWebhookConfigurationRepository, QueueJob, RefundDetail,
-        ShopperActor,
+        PaymentRefundObservation, PaymentRefundStatus, PaymentShippingAddress, PaymentCommand,
+        PaymentCommandKind, PaymentCommandResult, StripeWebhookConfiguration,
+        StripeWebhookConfigurationRepository, QueueJob, RefundDetail, ShopperActor,
     },
     store::StoreActor,
 };
@@ -43,6 +43,15 @@ type ProviderAccountRow = (
     OffsetDateTime,
     OffsetDateTime,
 );
+
+#[derive(Clone)]
+pub(crate) struct RefundReconciliationContext {
+    pub store_id: StoreId,
+    pub order_id: OrderId,
+    pub provider_account_id: Uuid,
+    pub credential_secret_reference: String,
+    pub payment_provider_reference: String,
+}
 
 #[derive(Clone)]
 pub struct PostgresStripeRepository {

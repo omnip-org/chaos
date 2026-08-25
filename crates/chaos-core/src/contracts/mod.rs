@@ -78,9 +78,10 @@ pub use storefront_catalog::{
 pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,
     PaymentCommand, PaymentCommandKind, PaymentCommandResult, PaymentLineItem, PaymentProvider,
-    PaymentProviderRegistry, PaymentSecretResolver, PaymentShippingAddress, PaymentShippingOption,
-    PaymentWebhookEvent, PaymentWebhookVerifier, PaymentWebhookVerifierRegistry, RefundDetail,
-    StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, StripeCommand,
-    StripeCommandResult, StripePaymentGateway, StripeWebhookConfiguration,
-    StripeWebhookConfigurationRepository, StripeWebhookEvent, StripeWebhookSignatureVerifier,
+    PaymentProviderRegistry, PaymentRefundObservation, PaymentRefundStatus, PaymentSecretResolver,
+    PaymentShippingAddress, PaymentShippingOption, PaymentWebhookEvent, PaymentWebhookVerifier,
+    PaymentWebhookVerifierRegistry, RefundDetail, StripeAccountConfiguration, StripeAccountDetail,
+    StripeAccountPage, StripeCommand, StripeCommandResult, StripePaymentGateway,
+    StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeWebhookEvent,
+    StripeWebhookSignatureVerifier,
 };

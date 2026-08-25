@@ -1,4 +1,4 @@
-use chaos_core::payments::CreateRefundInput;
+use chaos_core::payments::{CreateRefundInput, ReconcileRefundsInput};
 use chaos_domain::sales::OrderId;
 use rmcp::{
     ErrorData,
@@ -26,6 +26,16 @@ pub struct CreateRefundParams {
     /// The refund amount in the payment's smallest currency unit (e.g. cents for USD).
     pub amount_minor: i64,
     /// Must be explicitly set to true. This action affects live store data.
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct ReconcileRefundsParams {
+    /// The Store UUID containing the order.
+    pub store_id: String,
+    /// The Order's UUID.
+    pub order_id: String,
+    /// Must be explicitly set to true. This updates local payment records.
     pub confirm: bool,
 }
 
@@ -80,6 +90,64 @@ impl ChaosMcp {
                 "failure_code": detail.failure_code,
                 "created_at": format_time(detail.created_at),
                 "updated_at": format_time(detail.updated_at),
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Reconcile an Order's Refund records from Stripe. This fetches every Refund\
+                        attached to the Order's PaymentIntent, repairs missing webhook records,\
+                        and updates provider failed or canceled states. Requires confirm: true."
+    )]
+    async fn reconcile_refunds(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ReconcileRefundsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::mcp::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            &parts,
+            &params.store_id,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let store_id = actor.store_id();
+        let order_id = match parse_uuid_field(&params.order_id, "order_id") {
+            Ok(id) => OrderId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
+        match self
+            .state
+            .payment_service
+            .reconcile_refunds(ReconcileRefundsInput {
+                actor,
+                store_id,
+                order_id,
+                now: self.state.clock.now(),
+            })
+            .await
+        {
+            Ok(result) => Ok(text_result(json!({
+                "order_id": result.order_id.as_uuid(),
+                "refunded_amount_minor": result.refunded_amount_minor,
+                "refunds": result.refunds.into_iter().map(|refund| json!({
+                    "id": refund.id.as_uuid(),
+                    "amount_minor": refund.amount_minor,
+                    "currency": refund.currency.as_str(),
+                    "status": refund.status.as_str(),
+                    "provider_reference_id": refund.provider_reference_id,
+                    "failure_code": refund.failure_code,
+                    "created_at": format_time(refund.created_at),
+                    "updated_at": format_time(refund.updated_at),
+                })).collect::<Vec<_>>(),
             }))),
             Err(error) => Ok(tool_error(error)),
         }
