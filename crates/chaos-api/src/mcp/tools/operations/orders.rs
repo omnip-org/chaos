@@ -18,16 +18,26 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderStatusParam {
+    Pending,
+    Confirmed,
+    Cancelled,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListOrdersParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Maximum number of orders to return (1-100). Defaults to 20.
     #[serde(default)]
     pub limit: Option<u16>,
-    /// Filter by order status: pending, confirmed, or cancelled.
+    /// Filter by order status.
     #[serde(default)]
-    pub status: Option<String>,
+    pub status: Option<OrderStatusParam>,
     /// Exact customer-facing Order number, for example W-20260820-7K4M9Q2D.
     #[serde(default)]
     pub order_number: Option<String>,
@@ -35,12 +45,16 @@ pub struct ListOrdersParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetOrderParams {
+    /// The Store UUID containing the order.
+    pub store_id: String,
     /// The order's UUID.
     pub order_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ChangeOrderStatusParams {
+    /// The Store UUID containing the order.
+    pub store_id: String,
     /// The order's UUID.
     pub order_id: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -60,6 +74,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -72,11 +87,11 @@ impl ChaosMcp {
             Some(Err(result)) => return Ok(result),
             None => None,
         };
-        let status = match params.status.as_deref().map(parse_order_status) {
-            Some(Ok(status)) => Some(status),
-            Some(Err(result)) => return Ok(result),
-            None => None,
-        };
+        let status = params.status.map(|status| match status {
+            OrderStatusParam::Pending => OrderStatus::Pending,
+            OrderStatusParam::Confirmed => OrderStatus::Confirmed,
+            OrderStatusParam::Cancelled => OrderStatus::Cancelled,
+        });
         let limit = params.limit.unwrap_or(20);
 
         match self
@@ -129,6 +144,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -190,6 +206,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -284,15 +301,6 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
         })).collect::<Vec<_>>(),
         "created_at": format_time(detail.created_at),
         "updated_at": format_time(detail.updated_at),
-    })
-}
-
-fn parse_order_status(value: &str) -> Result<chaos_domain::sales::OrderStatus, CallToolResult> {
-    chaos_domain::sales::OrderStatus::parse(value).ok_or_else(|| {
-        CallToolResult::structured_error(json!({
-            "code": "invalid_params",
-            "message": "status must be one of: pending, confirmed, cancelled",
-        }))
     })
 }
 

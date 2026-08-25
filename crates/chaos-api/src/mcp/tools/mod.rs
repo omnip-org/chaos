@@ -1,8 +1,11 @@
 mod catalog;
 mod integrations;
 mod operations;
+mod params;
 mod pricing;
 mod store;
+
+pub(crate) use params::StoreIdParams;
 
 use chaos_core::contracts::AdminActor;
 use rmcp::{handler::server::router::tool::ToolRouter, model::CallToolResult, tool_handler};
@@ -54,11 +57,13 @@ impl ChaosMcp {
     async fn store_actor(
         &self,
         parts: &http::request::Parts,
+        store_id: &str,
     ) -> Result<chaos_core::store::StoreActor, CallToolResult> {
         match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             parts,
+            store_id,
         )
         .await?
         {
@@ -78,10 +83,10 @@ impl rmcp::ServerHandler for ChaosMcp {
         info.instructions = Some(
             "Chaos Commerce admin tools. Every tool call authenticates against the \
              Authorization: Bearer <access-key> header using a user-owned Access Key. Every \
-             Store-scoped request must include X-Chaos-Store-Id and current Store membership \
-             is checked before the tool runs. create_store and list_stores are User-scoped and \
-             do not require that header. Read tools return \
-             store data; write tools require confirm: true."
+             Store-scoped tool must include its explicit store_id parameter, and current Store \
+             membership is checked before the tool runs. create_store and list_stores are \
+             User-scoped and do not require store_id. Read tools return store data; write tools \
+             require confirm: true."
                 .into(),
         );
         info

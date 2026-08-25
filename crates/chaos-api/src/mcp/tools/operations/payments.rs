@@ -19,6 +19,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateRefundParams {
+    /// The Store UUID containing the order.
+    pub store_id: String,
     /// The Order's UUID.
     pub order_id: String,
     /// The refund amount in the payment's smallest currency unit (e.g. cents for USD).
@@ -42,6 +44,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

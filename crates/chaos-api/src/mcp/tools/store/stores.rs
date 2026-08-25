@@ -44,23 +44,39 @@ pub struct ListStoresParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListStoreMembersParams {}
+pub struct ListStoreMembersParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
+}
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct AddStoreMemberParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     pub user_id: String,
     pub confirm: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreRoleParam {
+    Owner,
+    Member,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct SetStoreMemberRoleParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     pub user_id: String,
-    pub role: String,
+    pub role: StoreRoleParam,
     pub confirm: bool,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct LeaveStoreParams {
+    /// The Store UUID to leave.
+    pub store_id: String,
     pub confirm: bool,
 }
 
@@ -68,8 +84,7 @@ pub struct LeaveStoreParams {
 impl ChaosMcp {
     #[tool(
         description = "Create a Store owned by the authenticated User. This tool does not use \
-                       X-Chaos-Store-Id because the Store does not exist yet. Requires confirm: \
-                       true."
+                       store_id because the Store does not exist yet. Requires confirm: true."
     )]
     async fn create_store(
         &self,
@@ -108,7 +123,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "List Stores currently available to the authenticated User. This tool \
-                       does not require X-Chaos-Store-Id."
+                       does not require store_id."
     )]
     async fn list_stores(
         &self,
@@ -164,9 +179,9 @@ impl ChaosMcp {
     async fn list_store_members(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(_params): Parameters<ListStoreMembersParams>,
+        Parameters(params): Parameters<ListStoreMembersParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -190,7 +205,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<AddStoreMemberParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -219,7 +234,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<SetStoreMemberRoleParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -230,14 +245,9 @@ impl ChaosMcp {
             Ok(id) => UserId::from_uuid(id),
             Err(_) => return Ok(invalid_uuid("user_id")),
         };
-        let role = match StoreRole::parse(&params.role) {
-            Some(role) => role,
-            None => {
-                return Ok(CallToolResult::structured_error(json!({
-                    "code": "invalid_params",
-                    "message": "role must be owner or member",
-                })));
-            }
+        let role = match params.role {
+            StoreRoleParam::Owner => StoreRole::Owner,
+            StoreRoleParam::Member => StoreRole::Member,
         };
         let store_id = actor.store_id();
         match self
@@ -257,7 +267,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<LeaveStoreParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };

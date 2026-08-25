@@ -19,6 +19,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListVariantInventoryParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default)]
@@ -27,6 +29,8 @@ pub struct ListVariantInventoryParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct AdjustInventoryParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     /// The product variant's UUID.
     pub product_variant_id: String,
     /// Signed change to on-hand quantity. Positive receives inventory; negative removes it.
@@ -50,6 +54,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -110,6 +115,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

@@ -20,10 +20,15 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ListShippingProviderAccountsParams {}
+pub struct ListShippingProviderAccountsParams {
+    /// The Store UUID whose shipping accounts should be listed.
+    pub store_id: String,
+}
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateFulfillmentParams {
+    /// The Store UUID containing the order.
+    pub store_id: String,
     /// The order's UUID.
     pub order_id: String,
     /// The shipping provider account's UUID. Use list_shipping_provider_accounts \
@@ -41,6 +46,8 @@ pub struct CreateFulfillmentParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct MarkFulfillmentShippedParams {
+    /// The Store UUID containing the fulfillment.
+    pub store_id: String,
     /// The fulfillment's UUID.
     pub fulfillment_id: String,
     /// Optional carrier tracking number to set or update.
@@ -55,6 +62,8 @@ pub struct MarkFulfillmentShippedParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct FulfillmentIdParams {
+    /// The Store UUID containing the fulfillment.
+    pub store_id: String,
     /// The fulfillment's UUID.
     pub fulfillment_id: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -70,12 +79,13 @@ impl ChaosMcp {
     async fn list_shipping_provider_accounts(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(_params): Parameters<ListShippingProviderAccountsParams>,
+        Parameters(params): Parameters<ListShippingProviderAccountsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let actor = match crate::mcp::auth::authenticate_mcp(
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -117,6 +127,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -169,6 +180,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -215,6 +227,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -259,6 +272,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

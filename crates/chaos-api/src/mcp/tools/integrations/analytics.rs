@@ -13,14 +13,13 @@ use uuid::Uuid;
 use crate::mcp::{
     error::{text_result, tool_error},
     mutation::require_confirmation,
-    tools::ChaosMcp,
+    tools::{ChaosMcp, StoreIdParams},
 };
-
-#[derive(Deserialize, JsonSchema)]
-pub struct EmptyParams {}
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ConfigureMetaDestinationParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     /// Meta Dataset ID that receives Conversions API events.
     pub dataset_id: String,
     /// Opaque `enc://...` reference returned by create_provider_secret with kind
@@ -36,6 +35,8 @@ pub struct ConfigureMetaDestinationParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListAnalyticsEventsParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Maximum number of events to return, from 1 to 100. Defaults to 20.
     pub limit: Option<u16>,
     /// Storage row ID returned by a previous page. Only older events are returned.
@@ -66,9 +67,9 @@ impl ChaosMcp {
     async fn get_meta_destination(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(_params): Parameters<EmptyParams>,
+        Parameters(params): Parameters<StoreIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -93,7 +94,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ConfigureMetaDestinationParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -155,7 +156,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListAnalyticsEventsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };

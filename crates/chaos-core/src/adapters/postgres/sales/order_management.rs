@@ -146,6 +146,21 @@ impl PostgresOrderManagementRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
+            sqlx::query(
+                "INSERT INTO integration.event_outbox \
+                 (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
+                 VALUES ($1, $2, 'order', $3, 'order.confirmed', $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(store_id.as_uuid())
+            .bind(order_id.as_uuid())
+            .bind(serde_json::json!({
+                "aggregate_id": order_id.as_uuid(),
+                "order_id": order_id.as_uuid(),
+            }))
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
         }
         let detail = super::order_detail::load(&mut transaction, store_id, None, order_id)
             .await?

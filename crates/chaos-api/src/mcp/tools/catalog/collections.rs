@@ -25,6 +25,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListCollectionsParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -35,12 +37,16 @@ pub struct ListCollectionsParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetCollectionParams {
+    /// The Store UUID containing the collection.
+    pub store_id: String,
     /// The collection's UUID.
     pub collection_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateCollectionParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     /// URL-safe handle, unique within the Store.
     pub handle: String,
     pub title: String,
@@ -55,6 +61,8 @@ pub struct CreateCollectionParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateCollectionParams {
+    /// The Store UUID containing the collection.
+    pub store_id: String,
     /// The collection's UUID.
     pub collection_id: String,
     pub handle: String,
@@ -70,6 +78,8 @@ pub struct UpdateCollectionParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ChangeCollectionStatusParams {
+    /// The Store UUID containing the collection.
+    pub store_id: String,
     /// The collection's UUID.
     pub collection_id: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -78,6 +88,8 @@ pub struct ChangeCollectionStatusParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct AddProductsToCollectionParams {
+    /// The Store UUID containing the collection.
+    pub store_id: String,
     /// The collection's UUID.
     pub collection_id: String,
     /// The complete replacement set of product UUIDs for this collection, in display order.
@@ -88,6 +100,8 @@ pub struct AddProductsToCollectionParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CollectionPublicationParams {
+    /// The Store UUID containing the collection.
+    pub store_id: String,
     /// The collection's UUID.
     pub collection_id: String,
     /// The sales channel's UUID to publish to or unpublish from.
@@ -112,6 +126,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -179,6 +194,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -229,6 +245,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -270,6 +287,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -326,7 +344,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Replace the full set of member products in a collection, in the Store \
-                        selected by X-Chaos-Store-Id. Pass the complete desired product_ids list, in \
+                        selected by store_id. Pass the complete desired product_ids list, in \
                         display order — this replaces membership, it does not append. Requires \
                         confirm: true."
     )]
@@ -339,6 +357,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -413,6 +432,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -454,6 +474,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

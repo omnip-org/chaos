@@ -19,6 +19,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreatePublishableKeyParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     pub name: String,
     /// Must be explicitly set to true. This action affects live store data.
     pub confirm: bool,
@@ -26,6 +28,8 @@ pub struct CreatePublishableKeyParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListPublishableKeysParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -36,6 +40,8 @@ pub struct ListPublishableKeysParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct RevokePublishableKeyParams {
+    /// The Store UUID containing the key.
+    pub store_id: String,
     /// The Publishable Key's UUID.
     pub publishable_key_id: String,
     /// Must be explicitly set to true. This action is irreversible and affects live
@@ -58,6 +64,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -101,6 +108,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -159,6 +167,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

@@ -17,9 +17,23 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSecretKindParam {
+    PaymentCredential,
+    PaymentWebhook,
+    EmailCredential,
+    EmailWebhook,
+    ShippingCredential,
+    ShippingWebhook,
+    AnalyticsCredential,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateProviderSecretParams {
+    /// The Store UUID where the encrypted secret will be stored.
+    pub store_id: String,
     /// Secret purpose. Payment uses `payment_credential` and `payment_webhook`; Email uses `email_credential` and `email_webhook`; Shipping uses `shipping_credential` and `shipping_webhook`; Analytics uses `analytics_credential`.
-    pub kind: String,
+    pub kind: ProviderSecretKindParam,
     /// The secret value to store. It is encrypted immediately and only an opaque `enc://...` reference is returned.
     /// Returned as an opaque reference, never in plaintext, from any read path.
     pub value: String,
@@ -49,6 +63,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -58,15 +73,27 @@ impl ChaosMcp {
         if let Err(result) = require_confirmation(params.confirm) {
             return Ok(result);
         }
-        let kind = match chaos_core::contracts::ProviderSecretKind::parse(&params.kind) {
-            Some(kind) => kind,
-            None => {
-                return Ok(CallToolResult::structured_error(json!({
-                    "code": "invalid_params",
-                    "message": "kind must be one of: payment_credential, payment_webhook, \
-                        email_credential, email_webhook, shipping_credential, shipping_webhook, \
-                                analytics_credential",
-                })));
+        let kind = match params.kind {
+            ProviderSecretKindParam::PaymentCredential => {
+                chaos_core::contracts::ProviderSecretKind::PaymentCredential
+            }
+            ProviderSecretKindParam::PaymentWebhook => {
+                chaos_core::contracts::ProviderSecretKind::PaymentWebhook
+            }
+            ProviderSecretKindParam::EmailCredential => {
+                chaos_core::contracts::ProviderSecretKind::EmailCredential
+            }
+            ProviderSecretKindParam::EmailWebhook => {
+                chaos_core::contracts::ProviderSecretKind::EmailWebhook
+            }
+            ProviderSecretKindParam::ShippingCredential => {
+                chaos_core::contracts::ProviderSecretKind::ShippingCredential
+            }
+            ProviderSecretKindParam::ShippingWebhook => {
+                chaos_core::contracts::ProviderSecretKind::ShippingWebhook
+            }
+            ProviderSecretKindParam::AnalyticsCredential => {
+                chaos_core::contracts::ProviderSecretKind::AnalyticsCredential
             }
         };
         let store_id = actor.store_id();

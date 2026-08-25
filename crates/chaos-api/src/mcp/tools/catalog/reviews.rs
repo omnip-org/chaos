@@ -18,10 +18,20 @@ use crate::mcp::{
 };
 
 #[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatusParam {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ListReviewsParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Filter by review status: pending, approved, or rejected. Defaults to pending.
     #[serde(default)]
-    pub status: Option<String>,
+    pub status: Option<ReviewStatusParam>,
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -32,6 +42,8 @@ pub struct ListReviewsParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ApproveReviewParams {
+    /// The Store UUID containing the review.
+    pub store_id: String,
     /// The review's UUID.
     pub review_id: String,
     /// Whether to mark the review as left by a verified buyer.
@@ -43,6 +55,8 @@ pub struct ApproveReviewParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct RejectReviewParams {
+    /// The Store UUID containing the review.
+    pub store_id: String,
     /// The review's UUID.
     pub review_id: String,
     /// Must be explicitly set to true. This action affects live store data.
@@ -51,6 +65,8 @@ pub struct RejectReviewParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct AddReviewReplyParams {
+    /// The Store UUID containing the review.
+    pub store_id: String,
     /// The UUID of the review being replied to.
     pub review_id: String,
     pub content: String,
@@ -74,6 +90,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -81,10 +98,10 @@ impl ChaosMcp {
             Err(result) => return Ok(result),
         };
         let store_id = actor.store_id();
-        let status = match params.status.as_deref().map(parse_review_status) {
-            Some(Ok(status)) => status,
-            Some(Err(result)) => return Ok(result),
-            None => ReviewStatus::Pending,
+        let status = match params.status.unwrap_or(ReviewStatusParam::Pending) {
+            ReviewStatusParam::Pending => ReviewStatus::Pending,
+            ReviewStatusParam::Approved => ReviewStatus::Approved,
+            ReviewStatusParam::Rejected => ReviewStatus::Rejected,
         };
         let after = match params.cursor.as_deref().map(parse_uuid_cursor) {
             Some(Ok(id)) => Some(ReviewId::from_uuid(id)),
@@ -137,6 +154,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -184,6 +202,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -227,6 +246,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -276,15 +296,6 @@ fn review_summary(item: chaos_core::contracts::ReviewSummary) -> serde_json::Val
         "verified_buyer": item.verified_buyer,
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),
-    })
-}
-
-fn parse_review_status(value: &str) -> Result<ReviewStatus, CallToolResult> {
-    ReviewStatus::parse(value).ok_or_else(|| {
-        CallToolResult::structured_error(json!({
-            "code": "invalid_params",
-            "message": "status must be one of: pending, approved, rejected",
-        }))
     })
 }
 

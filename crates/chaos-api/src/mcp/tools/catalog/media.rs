@@ -24,6 +24,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UploadProductMediaParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// Optional product variant UUID, if this image is specific to one variant.
@@ -47,12 +49,16 @@ pub struct UploadProductMediaParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListProductMediaParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ArchiveProductMediaParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// The media asset's UUID.
@@ -79,6 +85,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -208,6 +215,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -246,6 +254,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

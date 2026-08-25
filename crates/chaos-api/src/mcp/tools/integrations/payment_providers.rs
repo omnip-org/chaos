@@ -21,6 +21,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListStripeAccountsParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     #[serde(default)]
     pub cursor: Option<String>,
     #[serde(default)]
@@ -29,11 +31,15 @@ pub struct ListStripeAccountsParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetStripeAccountParams {
+    /// The Store UUID containing the account.
+    pub store_id: String,
     pub stripe_account_id: String,
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateStripeAccountParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     /// Display name for the store's direct Stripe account.
     pub display_name: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`. The stored value must be JSON containing `secret_key` and `publishable_key`.
@@ -45,6 +51,8 @@ pub struct CreateStripeAccountParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateStripeAccountParams {
+    /// The Store UUID containing the account.
+    pub store_id: String,
     pub stripe_account_id: String,
     pub display_name: String,
     /// Opaque reference returned by `create_provider_secret` with kind `payment_credential`.
@@ -62,7 +70,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<ListStripeAccountsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -113,7 +121,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<GetStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -144,7 +152,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<CreateStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };
@@ -180,7 +188,7 @@ impl ChaosMcp {
         Extension(parts): Extension<http::request::Parts>,
         Parameters(params): Parameters<UpdateStripeAccountParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let actor = match self.store_actor(&parts).await {
+        let actor = match self.store_actor(&parts, &params.store_id).await {
             Ok(actor) => actor,
             Err(result) => return Ok(result),
         };

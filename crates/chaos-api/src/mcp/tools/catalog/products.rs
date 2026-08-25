@@ -26,6 +26,8 @@ use crate::mcp::{
 
 #[derive(Deserialize, JsonSchema)]
 pub struct ListProductsParams {
+    /// The Store UUID to inspect.
+    pub store_id: String,
     /// Opaque cursor from a previous page's `next_cursor`. Omit for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -36,6 +38,8 @@ pub struct ListProductsParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct GetProductParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
 }
@@ -78,6 +82,8 @@ fn default_true() -> bool {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct CreateProductParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
     /// URL-safe handle, unique within the Store (lowercase letters, digits, hyphens).
     pub handle: String,
     pub title: String,
@@ -99,6 +105,8 @@ pub struct CreateProductParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ChangeProductStatusParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// Must be explicitly set to true. This action is irreversible via this tool
@@ -108,6 +116,8 @@ pub struct ChangeProductStatusParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateProductParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// URL-safe handle, unique within the Store.
@@ -128,6 +138,8 @@ pub struct UpdateProductParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct UpdateProductVariantParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// The product variant's UUID.
@@ -149,6 +161,8 @@ pub struct UpdateProductVariantParams {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ProductPublicationParams {
+    /// The Store UUID containing the product.
+    pub store_id: String,
     /// The product's UUID.
     pub product_id: String,
     /// The sales channel's UUID to publish to or unpublish from.
@@ -174,6 +188,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -246,6 +261,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -322,6 +338,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -395,6 +412,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -444,6 +462,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -547,6 +566,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {
@@ -587,6 +607,7 @@ impl ChaosMcp {
             &self.state.access_key_authentication,
             &self.state.store_queries,
             &parts,
+            &params.store_id,
         )
         .await
         {

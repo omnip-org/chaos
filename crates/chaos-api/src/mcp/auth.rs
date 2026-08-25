@@ -11,8 +11,10 @@ use secrecy::SecretString;
 use crate::mcp::error::tool_error;
 
 /// Every MCP tool call authenticates a user-owned key and authorizes the user
-/// against the Store selected by `X-Chaos-Store-Id`. Membership is checked on
-/// every call so leaving a Store takes effect without rotating the key.
+/// against the Store selected by the tool's explicit `store_id` parameter.
+/// Membership is checked on every call so leaving a Store takes effect without
+/// rotating the key. Store scope is deliberately part of the tool input rather
+/// than an HTTP header so MCP clients can discover it from the tool schema.
 ///
 /// Returns `Ok(Err(CallToolResult::error))` (not `Err(ErrorData)`) on auth
 /// failure so the caller's MCP client renders "wrong scope"/"unauthorized" as
@@ -21,9 +23,10 @@ pub async fn authenticate_mcp(
     access_key_authentication: &AccessKeyAuthentication,
     store_queries: &StoreQueries,
     parts: &http::request::Parts,
+    requested_store_id: &str,
 ) -> Result<AdminActor, CallToolResult> {
     let principal = authenticate_principal(access_key_authentication, parts).await?;
-    let store_id = store_id(parts).map_err(tool_error)?;
+    let store_id = parse_store_id(requested_store_id).map_err(tool_error)?;
     let actor = store_queries
         .authorize(principal.user_id, store_id)
         .await
@@ -76,18 +79,13 @@ fn bearer_token(parts: &http::request::Parts) -> Result<SecretString, Applicatio
     Ok(SecretString::from(value.to_owned()))
 }
 
-fn store_id(parts: &http::request::Parts) -> Result<StoreId, ApplicationError> {
-    let value = parts
-        .headers
-        .get("x-chaos-store-id")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| uuid::Uuid::parse_str(value).ok())
-        .ok_or_else(|| ApplicationError::Validation {
-            violations: vec![chaos_domain::FieldViolation {
-                field: "X-Chaos-Store-Id",
-                reason: "must be a valid Store UUID".into(),
-            }],
-        })?;
+fn parse_store_id(value: &str) -> Result<StoreId, ApplicationError> {
+    let value = uuid::Uuid::parse_str(value).map_err(|_| ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field: "store_id",
+            reason: "must be a valid Store UUID".into(),
+        }],
+    })?;
     Ok(StoreId::from_uuid(value))
 }
 
@@ -187,12 +185,12 @@ mod tests {
         let queries = StoreQueries::new(Arc::new(FixedMembership { user_id, store_id }));
         let request = http::Request::builder()
             .header(http::header::AUTHORIZATION, "Bearer access_test_secret")
-            .header("x-chaos-store-id", store_id.as_uuid().to_string())
             .body(())
             .unwrap();
         let (parts, _) = request.into_parts();
 
-        let actor = authenticate_mcp(&authentication, &queries, &parts)
+        let requested_store_id = store_id.as_uuid().to_string();
+        let actor = authenticate_mcp(&authentication, &queries, &parts, &requested_store_id)
             .await
             .unwrap();
         assert_eq!(actor.store_id(), store_id);
@@ -223,8 +221,9 @@ mod tests {
             .unwrap();
         let (parts, _) = request.into_parts();
 
+        let requested_store_id = StoreId::new().as_uuid().to_string();
         assert!(
-            authenticate_mcp(&authentication, &queries, &parts)
+            authenticate_mcp(&authentication, &queries, &parts, &requested_store_id)
                 .await
                 .is_err()
         );

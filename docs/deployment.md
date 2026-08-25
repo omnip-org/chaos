@@ -43,7 +43,7 @@ Payment, email, shipping, and analytics Provider Key secrets are AES-256-GCM enc
 
 **Back this key up like you would the database itself.** There is no rotation or re-encryption tooling — losing the key makes every previously stored Provider Key permanently unrecoverable, and rotating it requires an owner to re-submit every Provider Key for every Store through MCP.
 
-An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The MCP connection uses the User's private Key and selects the target Store with `X-Chaos-Store-Id`.
+An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The MCP connection uses the User's private Access Key, and the tool input carries the target Store as `store_id`. Store scope is part of every Store-scoped tool's JSON schema; it is not an HTTP header.
 
 The response contains a newly generated `enc://...` reference. The plaintext is not returned again or stored anywhere in plaintext. Use that reference in the existing Provider account create/update request.
 
@@ -93,7 +93,7 @@ curl --fail https://chaos.omnip.org/health/ready
 
 1. Exchange a Google or Apple identity token at `POST /identity/v1/auth/external`; retain the returned User ID for explicit Store membership management.
 2. Create a User-owned Access Key at `POST /identity/v1/access-keys` with the JWT. Preserve the plaintext returned once.
-3. Configure the client with `Authorization: Bearer <access-key>` and `X-Chaos-Store-Id: <store-id>` when using Store-scoped operations.
+3. Configure the client with `Authorization: Bearer <access-key>`. Pass `store_id: <store-id>` in every Store-scoped MCP tool input. `create_store` and `list_stores` are User-scoped and do not take `store_id`.
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
 5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `public_<identifier>_<secret>` and must be treated as a client credential.
 6. Upload third-party credentials and configure Providers through MCP tools.
