@@ -55,7 +55,7 @@ test("creates a shopper session when a browser client initializes", async () => 
 
     await Promise.resolve();
     assert.equal(requests.length, 1);
-    assert.match(requests[0]!, /\/shopper/sessions$/);
+    assert.match(requests[0]!, /\/shopper\/sessions$/);
   } finally {
     if (descriptor) {
       Object.defineProperty(globalThis, "document", descriptor);
@@ -91,7 +91,7 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
   await client.cart.get("cart-1");
 
   assert.equal(requests.length, 3);
-  assert.match(requests[0]!.url, /\/shopper/sessions$/);
+  assert.match(requests[0]!.url, /\/shopper\/sessions$/);
   assert.equal(requests[1]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
   assert.equal(requests[2]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
   assert.equal(client.getShopperToken(), "shopper-token-abc");
@@ -120,7 +120,7 @@ test("reuses a shopper token persisted from a previous session", async () => {
   await client.cart.get("cart-1");
 
   assert.equal(requests.length, 1);
-  assert.doesNotMatch(requests[0]!, /shopper/sessions/);
+  assert.doesNotMatch(requests[0]!, /shopper\/sessions/);
 });
 
 test("explicit shopper sessions update the client token", async () => {
