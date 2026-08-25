@@ -448,9 +448,9 @@ async fn authorization_server_metadata(State(state): State<ApiState>) -> Respons
     metadata_response(Json(metadata))
 }
 
-fn validate_registration(
-    body: &RegisterRequest,
-) -> Option<(Vec<String>, Vec<String>, Vec<String>, String)> {
+type RegistrationFields = (Vec<String>, Vec<String>, Vec<String>, String);
+
+fn validate_registration(body: &RegisterRequest) -> Option<RegistrationFields> {
     let client_name = body.client_name.trim();
     if client_name.is_empty() || client_name.len() > 120 || body.redirect_uris.is_empty() {
         return None;
