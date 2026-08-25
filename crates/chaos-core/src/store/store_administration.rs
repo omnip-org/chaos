@@ -4,7 +4,7 @@ use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
         SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
-        StoreId, StoreStatus,
+        StoreId, StoreStatus, StorefrontOrigin,
     },
 };
 
@@ -36,6 +36,7 @@ pub struct CreateSalesChannelInput {
     pub store_id: StoreId,
     pub code: String,
     pub name: String,
+    pub storefront_origin: String,
 }
 
 pub struct UpdateSalesChannelInput {
@@ -44,6 +45,7 @@ pub struct UpdateSalesChannelInput {
     pub sales_channel_id: SalesChannelId,
     pub code: String,
     pub name: String,
+    pub storefront_origin: String,
 }
 
 pub struct ChangeSalesChannelStatusInput {
@@ -143,7 +145,12 @@ impl StoreAdministration {
         input: CreateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         input.actor.require_owner()?;
-        let channel = channel(input.store_id, input.code, input.name)?;
+        let channel = channel(
+            input.store_id,
+            input.code,
+            input.name,
+            input.storefront_origin,
+        )?;
         self.repository
             .create_sales_channel(input.actor, &channel)
             .await
@@ -154,7 +161,12 @@ impl StoreAdministration {
         input: UpdateSalesChannelInput,
     ) -> Result<SalesChannelId, ApplicationError> {
         input.actor.require_owner()?;
-        let replacement = channel(input.store_id, input.code, input.name)?;
+        let replacement = channel(
+            input.store_id,
+            input.code,
+            input.name,
+            input.storefront_origin,
+        )?;
         self.repository
             .update_sales_channel(input.actor, input.sales_channel_id, &replacement)
             .await
@@ -197,11 +209,13 @@ fn channel(
     store_id: StoreId,
     code: String,
     name: String,
+    storefront_origin: String,
 ) -> Result<SalesChannel, ApplicationError> {
     Ok(SalesChannel::create(
         store_id,
         SalesChannelCode::parse(code)?,
         name,
+        StorefrontOrigin::parse(storefront_origin)?,
     )?)
 }
 

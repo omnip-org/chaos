@@ -102,13 +102,14 @@ impl PostgresStoreProvisioningTransaction {
     ) -> Result<(), ApplicationError> {
         sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, status, is_default) \
-             VALUES ($1, $2, $3, $4, $5::commerce.sales_channel_status, $6)",
+             (id, store_id, code, name, storefront_origin, status, is_default) \
+             VALUES ($1, $2, $3, $4, $5, $6::commerce.sales_channel_status, $7)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
+        .bind(channel.storefront_origin().as_str())
         .bind(channel.status().as_str())
         .bind(channel.is_default())
         .execute(&mut *self.transaction)
@@ -187,14 +188,15 @@ mod tests {
             region: None,
             currency: None,
             meta: None,
+            storefront_origin: format!("https://{unique_suffix}.shop.example.test"),
         };
 
         let output = service.execute(make_input()).await.unwrap();
 
-        let stored: (String, String, String, String, bool) = sqlx::query_as(
+        let stored: (String, String, String, String, String, bool) = sqlx::query_as(
             "SELECT store.status::text, store.region::text, \
                     store.currency::text, \
-                    channel.code::text, channel.is_default \
+                    channel.code::text, channel.storefront_origin, channel.is_default \
              FROM commerce.stores AS store \
              INNER JOIN commerce.store_sales_channels AS channel \
                  ON channel.store_id = store.id \
@@ -211,6 +213,7 @@ mod tests {
                 "US".into(),
                 "USD".into(),
                 "web".into(),
+                format!("https://{unique_suffix}.shop.example.test/"),
                 true,
             )
         );

@@ -1,3 +1,4 @@
+use url::Url;
 use uuid::Uuid;
 
 use crate::{DomainError, FieldViolation};
@@ -25,6 +26,40 @@ impl Default for SalesChannelId {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct StorefrontOrigin(String);
+
+impl StorefrontOrigin {
+    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        let mut url = Url::parse(value.trim()).map_err(|_| storefront_origin_error())?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || (!url.path().is_empty() && url.path() != "/")
+        {
+            return Err(storefront_origin_error());
+        }
+        url.set_path("/");
+        Ok(Self(url.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn storefront_origin_error() -> DomainError {
+    DomainError::Validation(vec![FieldViolation {
+        field: "storefront_origin",
+        reason: "must be an absolute HTTP(S) origin without credentials, path, query, or fragment"
+            .into(),
+    }])
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -83,6 +118,7 @@ pub struct SalesChannel {
     store_id: StoreId,
     code: SalesChannelCode,
     name: String,
+    storefront_origin: StorefrontOrigin,
     status: SalesChannelStatus,
     is_default: bool,
 }
@@ -92,6 +128,7 @@ impl SalesChannel {
         store_id: StoreId,
         code: SalesChannelCode,
         name: impl Into<String>,
+        storefront_origin: StorefrontOrigin,
     ) -> Result<Self, DomainError> {
         let name = name.into();
         if name.trim().is_empty() || name.chars().count() > 120 {
@@ -105,17 +142,19 @@ impl SalesChannel {
             store_id,
             code,
             name,
+            storefront_origin,
             status: SalesChannelStatus::Active,
             is_default: false,
         })
     }
 
-    pub fn default_web(store_id: StoreId) -> Self {
+    pub fn default_web(store_id: StoreId, storefront_origin: StorefrontOrigin) -> Self {
         Self {
             id: SalesChannelId::new(),
             store_id,
             code: SalesChannelCode("web".into()),
             name: "Online Store".into(),
+            storefront_origin,
             status: SalesChannelStatus::Active,
             is_default: true,
         }
@@ -135,6 +174,10 @@ impl SalesChannel {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn storefront_origin(&self) -> &StorefrontOrigin {
+        &self.storefront_origin
     }
 
     pub const fn status(&self) -> SalesChannelStatus {
@@ -163,9 +206,16 @@ mod tests {
 
     #[test]
     fn default_channel_is_an_active_web_surface() {
-        let channel = SalesChannel::default_web(StoreId::new());
+        let channel = SalesChannel::default_web(
+            StoreId::new(),
+            StorefrontOrigin::parse("https://shop.example.test").unwrap(),
+        );
 
         assert_eq!(channel.code().as_str(), "web");
+        assert_eq!(
+            channel.storefront_origin().as_str(),
+            "https://shop.example.test/"
+        );
         assert_eq!(channel.status(), SalesChannelStatus::Active);
         assert!(channel.is_default());
     }
@@ -176,10 +226,27 @@ mod tests {
             StoreId::new(),
             SalesChannelCode::parse("mobile-app").unwrap(),
             "Mobile App",
+            StorefrontOrigin::parse("https://mobile.example.test/").unwrap(),
         )
         .unwrap();
         assert!(!channel.is_default());
         assert!(SalesChannel::validate_archival(false).is_ok());
         assert!(SalesChannel::validate_archival(true).is_err());
+    }
+
+    #[test]
+    fn storefront_origin_normalizes_and_rejects_non_origins() {
+        let origin = StorefrontOrigin::parse("https://SHOP.example.test").unwrap();
+        assert_eq!(origin.as_str(), "https://shop.example.test/");
+
+        for value in [
+            "shop.example.test",
+            "https://shop.example.test/orders",
+            "https://user:password@shop.example.test",
+            "https://shop.example.test?store=one",
+            "https://shop.example.test/#token=secret",
+        ] {
+            assert!(StorefrontOrigin::parse(value).is_err(), "accepted {value}");
+        }
     }
 }

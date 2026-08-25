@@ -91,13 +91,13 @@ Money uses integer minor units plus an ISO currency. Orders snapshot the product
 Orders use an internal UUID for joins and a client-supplied idempotency key for checkout
 deduplication, plus a random shopper-facing
 `W-YYYYMMDD-XXXXXXXX` order number for receipts, support, and MCP lookup. Guest order
-tracking uses a Chaos-hosted URL with a fragment capability, valid for 180 days from
-order confirmation. Only its digest is stored in the tracking table; the plaintext is
-carried by the durable `order.confirmed` outbox job until the confirmation email reaches
-its terminal state, and is then removed from the outbox payload. The capability is
-presented directly on every tracking request rather than exchanged for a separate
-session — the tracking response omits contact details and the full postal address
-precisely because the link itself is treated as shareable.
+tracking uses the Order's Sales Channel storefront origin with a fragment capability,
+valid for 180 days from order confirmation. Only its digest is stored in the tracking
+table; the plaintext is carried by the durable `order.confirmed` outbox job until the
+confirmation email reaches its terminal state, and then is removed from the outbox
+payload. The capability is presented directly on every tracking request rather than
+exchanged for a separate session — the tracking response omits contact details and the
+full postal address precisely because the link itself is treated as shareable.
 
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
 website visit creates one Shopper through `/storefront/v1/shopper-sessions`, and the

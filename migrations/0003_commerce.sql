@@ -47,20 +47,24 @@ CREATE TABLE commerce.store_memberships (
 );
 
 CREATE TABLE commerce.store_sales_channels (
-    id           UUID                           NOT NULL PRIMARY KEY,
-    store_id     UUID                           NOT NULL,
-    code         extensions.citext              NOT NULL,
-    name         TEXT                           NOT NULL,
-    status       commerce.sales_channel_status  NOT NULL DEFAULT 'active',
-    is_default   BOOLEAN                        NOT NULL DEFAULT false,
-    created_at   TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id                UUID                           NOT NULL PRIMARY KEY,
+    store_id          UUID                           NOT NULL,
+    code              extensions.citext              NOT NULL,
+    name              TEXT                           NOT NULL,
+    storefront_origin TEXT                           NOT NULL,
+    status            commerce.sales_channel_status  NOT NULL DEFAULT 'active',
+    is_default        BOOLEAN                        NOT NULL DEFAULT false,
+    created_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMPTZ                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT store_sales_channels_store_id_code_key    UNIQUE (store_id, code),
-    CONSTRAINT store_sales_channels_store_id_id_key      UNIQUE (store_id, id),
-    CONSTRAINT store_sales_channels_store_id_fkey        FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_sales_channels_code_format_check    CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
-    CONSTRAINT store_sales_channels_name_length_check    CHECK (length(trim(name)) BETWEEN 1 AND 120)
+    CONSTRAINT store_sales_channels_store_id_code_key     UNIQUE (store_id, code),
+    CONSTRAINT store_sales_channels_store_id_id_key       UNIQUE (store_id, id),
+    CONSTRAINT store_sales_channels_storefront_origin_key UNIQUE (storefront_origin),
+    CONSTRAINT store_sales_channels_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT store_sales_channels_code_format_check     CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$'),
+    CONSTRAINT store_sales_channels_name_length_check     CHECK (length(trim(name)) BETWEEN 1 AND 120),
+    CONSTRAINT store_sales_channels_storefront_origin_length_check CHECK (length(trim(storefront_origin)) BETWEEN 10 AND 2048),
+    CONSTRAINT store_sales_channels_storefront_origin_scheme_check CHECK (storefront_origin ~ '^https?://')
 );
 
 CREATE TABLE commerce.store_publishable_keys (

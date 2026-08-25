@@ -469,11 +469,12 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, is_default) \
-             VALUES ($1, $2, 'web', 'Web', true)",
+             (id, store_id, code, name, storefront_origin, is_default) \
+             VALUES ($1, $2, 'web', 'Web', $3, true)",
         )
         .bind(channel_id.as_uuid())
         .bind(store_id.as_uuid())
+        .bind(format!("https://{suffix}.storefront.example.test"))
         .execute(&owner_pool)
         .await
         .unwrap();

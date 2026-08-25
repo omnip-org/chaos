@@ -154,8 +154,8 @@ END;
 $$;
 
 CREATE FUNCTION integration.claim_event_outbox (
-    queue_name TEXT,
-    batch_size INTEGER
+    requested_queue_name TEXT,
+    batch_size            INTEGER
 )
 RETURNS TABLE (
     id                  UUID,
@@ -175,20 +175,20 @@ DECLARE
     message RECORD;
     target  RECORD;
 BEGIN
-    IF queue_name NOT IN (
+    IF requested_queue_name NOT IN (
         'chaos_payment_commands',
         'chaos_email_commands',
         'chaos_shipping_commands',
         'chaos_search_events'
     ) THEN
-        RAISE EXCEPTION 'unsupported outbox queue %', queue_name
+        RAISE EXCEPTION 'unsupported outbox queue %', requested_queue_name
             USING ERRCODE = '22023';
     END IF;
 
     FOR message IN
         SELECT queued.msg_id, queued.read_ct
         FROM pgmq.read(
-            queue_name,
+            requested_queue_name,
             120,
             greatest(least(batch_size, 100), 1),
             '{}'::jsonb
@@ -203,13 +203,13 @@ BEGIN
             event.created_at
         INTO target
         FROM integration.event_outbox AS event
-        WHERE event.queue_name = queue_name
+        WHERE event.queue_name = requested_queue_name
           AND event.pgmq_message_id = message.msg_id
           AND event.processed_at IS NULL
           AND event.failed_at IS NULL;
 
         IF NOT FOUND THEN
-            PERFORM pgmq.delete(queue_name, message.msg_id);
+            PERFORM pgmq.delete(requested_queue_name, message.msg_id);
             CONTINUE;
         END IF;
 
@@ -577,7 +577,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION commerce.rebuild_store_products (store_id UUID)
+CREATE FUNCTION commerce.rebuild_store_products (requested_store_id UUID)
 RETURNS BIGINT
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -587,12 +587,12 @@ DECLARE
     product_id UUID;
     rebuilt    BIGINT := 0;
 BEGIN
-    DELETE FROM commerce.product_documents WHERE store_id = $1;
+    DELETE FROM commerce.product_documents WHERE store_id = requested_store_id;
 
     FOR product_id IN
-        SELECT id FROM commerce.products WHERE store_id = $1
+        SELECT id FROM commerce.products WHERE store_id = requested_store_id
     LOOP
-        PERFORM commerce.refresh_product_document($1, product_id);
+        PERFORM commerce.refresh_product_document(requested_store_id, product_id);
         rebuilt := rebuilt + 1;
     END LOOP;
 

@@ -7,7 +7,7 @@ use chaos_domain::{
     CurrencyCode, RegionCode,
     store::{
         SalesChannel, SalesChannelCode, SalesChannelId, SalesChannelStatus, Store, StoreCode,
-        StoreId, StoreStatus,
+        StoreId, StoreStatus, StorefrontOrigin,
     },
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -54,6 +54,7 @@ type StoreRow = (
 
 type ChannelRow = (
     Uuid,
+    String,
     String,
     String,
     String,
@@ -161,7 +162,7 @@ impl PostgresStoreAdministrationRepository {
             return Ok(None);
         }
         let rows = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, status::text, is_default, \
+            "SELECT id, code::text, name, storefront_origin, status::text, is_default, \
                     created_at, updated_at FROM commerce.store_sales_channels \
              WHERE store_id = $1 \
                AND ($2::uuid IS NULL OR id > $2) ORDER BY id ASC LIMIT $3",
@@ -187,7 +188,7 @@ impl PostgresStoreAdministrationRepository {
     ) -> Result<Option<SalesChannelAdminItem>, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let row = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, code::text, name, status::text, is_default, \
+            "SELECT id, code::text, name, storefront_origin, status::text, is_default, \
                     created_at, updated_at FROM commerce.store_sales_channels \
              WHERE store_id = $1 AND id = $2",
         )
@@ -209,13 +210,14 @@ impl PostgresStoreAdministrationRepository {
         require_writable_store(&mut transaction, channel.store_id()).await?;
         sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, status, is_default) \
-             VALUES ($1, $2, $3, $4, 'active', false)",
+             (id, store_id, code, name, storefront_origin, status, is_default) \
+             VALUES ($1, $2, $3, $4, $5, 'active', false)",
         )
         .bind(channel.id().as_uuid())
         .bind(channel.store_id().as_uuid())
         .bind(channel.code().as_str())
         .bind(channel.name())
+        .bind(channel.storefront_origin().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
@@ -232,13 +234,14 @@ impl PostgresStoreAdministrationRepository {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
             "UPDATE commerce.store_sales_channels SET code = $3, name = $4, \
-                    updated_at = CURRENT_TIMESTAMP \
+                    storefront_origin = $5, updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(replacement.store_id().as_uuid())
         .bind(sales_channel_id.as_uuid())
         .bind(replacement.code().as_str())
         .bind(replacement.name())
+        .bind(replacement.storefront_origin().as_str())
         .execute(&mut *transaction)
         .await
         .map_err(map_channel_error)?;
@@ -330,11 +333,12 @@ fn store_item(row: StoreRow) -> Result<StoreAdminItem, ApplicationError> {
 }
 
 fn channel_item(row: ChannelRow) -> Result<SalesChannelAdminItem, ApplicationError> {
-    let (id, code, name, status, is_default, created_at, updated_at) = row;
+    let (id, code, name, storefront_origin, status, is_default, created_at, updated_at) = row;
     Ok(SalesChannelAdminItem {
         id: SalesChannelId::from_uuid(id),
         code: SalesChannelCode::parse(code)?,
         name,
+        storefront_origin: StorefrontOrigin::parse(storefront_origin)?,
         status: SalesChannelStatus::parse(&status).ok_or_else(corrupt_status)?,
         is_default,
         created_at,
@@ -359,13 +363,23 @@ fn map_store_error(error: sqlx::Error) -> ApplicationError {
 }
 
 fn map_channel_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(database_error) = &error
-        && database_error.constraint() == Some("store_sales_channels_store_id_code_key")
-    {
-        return ApplicationError::Conflict {
-            code: "sales_channel_code_taken",
-            message: "the Sales Channel code is already in use for this Store",
+    if let sqlx::Error::Database(database_error) = &error {
+        let conflict = match database_error.constraint() {
+            Some("store_sales_channels_store_id_code_key") => Some(ApplicationError::Conflict {
+                code: "sales_channel_code_taken",
+                message: "the Sales Channel code is already in use for this Store",
+            }),
+            Some("store_sales_channels_storefront_origin_key") => {
+                Some(ApplicationError::Conflict {
+                    code: "sales_channel_origin_taken",
+                    message: "the storefront origin is already in use by another Sales Channel",
+                })
+            }
+            _ => None,
         };
+        if let Some(conflict) = conflict {
+            return conflict;
+        }
     }
     database_error(error)
 }
@@ -460,11 +474,12 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
-             (id, store_id, code, name, is_default) \
-             VALUES ($1, $2, 'web', 'Online Store', true)",
+             (id, store_id, code, name, storefront_origin, is_default) \
+             VALUES ($1, $2, 'web', 'Online Store', $3, true)",
         )
         .bind(default_channel_id.as_uuid())
         .bind(store_id.as_uuid())
+        .bind(format!("https://{suffix}.default.example.test"))
         .execute(&owner_pool)
         .await
         .unwrap();
@@ -524,6 +539,7 @@ mod tests {
                 store_id,
                 code: "mobile".into(),
                 name: "Mobile App".into(),
+                storefront_origin: format!("https://{suffix}.mobile.example.test"),
             })
             .await
             .unwrap();
@@ -539,6 +555,7 @@ mod tests {
                 sales_channel_id: channel_id,
                 code: "mobile-app".into(),
                 name: "Updated Mobile App".into(),
+                storefront_origin: format!("https://{suffix}.updated.example.test"),
             })
             .await
             .unwrap();

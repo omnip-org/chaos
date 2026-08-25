@@ -73,12 +73,13 @@ mod tests {
         {
             sqlx::query(
                 "INSERT INTO commerce.store_sales_channels \
-                 (id, store_id, code, name, is_default) \
-                 VALUES ($1, $2, $3, $3, true)",
+                 (id, store_id, code, name, storefront_origin, is_default) \
+                 VALUES ($1, $2, $3, $3, $4, true)",
             )
             .bind(channel_id)
             .bind(store_id)
             .bind(code)
+            .bind(format!("https://{}.example.test/", store_id.simple()))
             .execute(&pool)
             .await
             .unwrap();

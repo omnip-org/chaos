@@ -116,7 +116,7 @@ const chaos = createStorefrontClient({
 });
 ```
 
-Confirmation emails link to the storefront's `/orders/track` page with the
+Confirmation emails link to the Sales Channel storefront's `/orders/track` page with the
 tracking token in the URL fragment. The page reads the fragment locally and
 submits it in the request body; the token is never placed in a query string:
 
