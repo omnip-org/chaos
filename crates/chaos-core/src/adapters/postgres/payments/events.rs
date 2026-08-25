@@ -66,6 +66,12 @@ async fn load_attempt(
     shopper_id: Option<Uuid>,
     order_id: OrderId,
 ) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
+    // subtotal_amount_minor is the pre-tax reference amount Chaos already
+    // knows when a checkout attempt is created; total_amount_minor is a
+    // Stripe-reported fact filled in only after the checkout session
+    // settles, so it is not yet meaningful here. prepare_payment_command
+    // validates a checkout outbox job's amount against this same
+    // subtotal_amount_minor column, so both must agree.
     let row = sqlx::query_as::<
         _,
         (
@@ -79,7 +85,7 @@ async fn load_attempt(
             OffsetDateTime,
         ),
     >(
-        "SELECT sales_order.id, sales_order.total_amount_minor, \
+        "SELECT sales_order.id, sales_order.subtotal_amount_minor, \
                 sales_order.currency::text, sales_order.payment_status::text, \
                 sales_order.payment_provider_reference_id, sales_order.payment_failure_code, \
                 sales_order.created_at, sales_order.updated_at \
