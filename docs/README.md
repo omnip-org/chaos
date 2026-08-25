@@ -80,12 +80,10 @@ not in application use cases.
 ## Contracts and operations
 
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
-- `migrations/0001_platform.sql`, `0002_identity.sql`,
-  `0003_commerce_stores.sql`, `0004_commerce_catalog.sql`,
-  `0005_integration_core.sql`, `0006_integration_providers.sql`,
-  `0007_commerce_sales.sql`, `0008_commerce_payments.sql`,
-  `0009_integration_analytics.sql`, and `0010_commerce_fulfillment.sql`
-  are the fresh bootstrap schema. The commerce
+- `migrations/0001_platform.sql` through `0007_integration_analytics.sql`
+  are the fresh bootstrap schema. `0004_integration.sql` owns the shared
+  Integration account, webhook inbox, and queue infrastructure; the commerce
+  schema
   schema persists one `commerce.shoppers` identity per website visit; cart,
   checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS

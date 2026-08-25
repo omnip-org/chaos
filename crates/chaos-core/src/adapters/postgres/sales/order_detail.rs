@@ -121,12 +121,14 @@ pub(crate) async fn load(
                 shipping_account.provider::text, order_row.shipping_provider_reference_id, \
                 order_row.created_at, order_row.updated_at \
          FROM commerce.orders AS order_row \
-         INNER JOIN integration.payment_provider_accounts AS payment_account \
+         INNER JOIN integration.provider_accounts AS payment_account \
            ON payment_account.id = order_row.payment_provider_account_id \
           AND payment_account.store_id = order_row.store_id \
-         LEFT JOIN integration.shipping_provider_accounts AS shipping_account \
+          AND payment_account.capability = 'payment' \
+         LEFT JOIN integration.provider_accounts AS shipping_account \
            ON shipping_account.id = order_row.shipping_provider_account_id \
           AND shipping_account.store_id = order_row.store_id \
+          AND shipping_account.capability = 'shipping' \
          WHERE order_row.store_id = $1 \
            AND ($2::uuid IS NULL OR order_row.sales_channel_id = $2) \
            AND order_row.id = $3",

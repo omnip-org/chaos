@@ -8,20 +8,22 @@ use chaos_core::runtime::lifecycle::Lifecycle;
 use chaos_core::{
     adapters::integrations::{
         analytics::rate_limit::RedisAnalyticsCollectionRateLimiter,
+        resend::ResendEmailProvider,
         stripe::{StripeGateway, StripeWebhookVerifier},
     },
     adapters::postgres::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
         PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
         PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresFulfillmentRepository, PostgresInventoryRepository,
-        PostgresMediaAssetRepository, PostgresOrderManagementRepository,
-        PostgresPricingManagementRepository, PostgresPricingProvisioningRepository,
-        PostgresPublishableKeyRepository, PostgresReviewRepository,
-        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
-        PostgresStoreProvisioningRepository, PostgresStoreReadRepository,
-        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
-        PostgresStripeRepository,
+        PostgresCollectionRepository, PostgresFulfillmentRepository,
+        PostgresIntegrationAccountRepository, PostgresIntegrationWebhookRepository,
+        PostgresInventoryRepository, PostgresMediaAssetRepository,
+        PostgresOrderManagementRepository, PostgresPricingManagementRepository,
+        PostgresPricingProvisioningRepository, PostgresPublishableKeyRepository,
+        PostgresReviewRepository, PostgresStoreAdministrationRepository,
+        PostgresStoreMembershipRepository, PostgresStoreProvisioningRepository,
+        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
+        PostgresStorefrontSalesRepository, PostgresStripeRepository,
     },
     adapters::security::{
         identity::{
@@ -44,7 +46,11 @@ use chaos_core::{
         CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
         MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
     },
-    contracts::{Clock, IdentityAuthentication, MediaStorage, ShopperCredentialCodec},
+    contracts::{
+        Clock, IdentityAuthentication, MediaStorage, PaymentWebhookVerifierRegistry,
+        ShopperCredentialCodec,
+    },
+    email::EmailWebhooks,
     fulfillment::FulfillmentManagement,
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
@@ -102,6 +108,7 @@ pub struct ApiState {
     pub storefront_sales: Arc<StorefrontSales>,
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
+    pub email_webhooks: Arc<EmailWebhooks>,
     pub stripe_account_administration: Arc<StripeAccountAdministration>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub clock: Arc<dyn Clock>,
@@ -272,17 +279,35 @@ impl ApiState {
             settings.dependency_timeout,
             payment_secrets.clone(),
         )?);
-        let payment_provider =
-            stripe_gateway.clone() as Arc<dyn chaos_core::contracts::StripePaymentGateway>;
+        let payment_providers = Arc::new(chaos_core::contracts::PaymentProviderRegistry::new([
+            stripe_gateway.clone() as Arc<dyn chaos_core::contracts::PaymentProvider>,
+        ]));
         let webhook_verifier = Arc::new(StripeWebhookVerifier::new(
             payment_repository.clone(),
             payment_secrets,
-        ))
-            as Arc<dyn chaos_core::contracts::StripeWebhookSignatureVerifier>;
+        )) as Arc<dyn chaos_core::contracts::PaymentWebhookVerifier>;
+        let webhook_verifiers = Arc::new(PaymentWebhookVerifierRegistry::new([webhook_verifier]));
         let payment_service = PaymentService::new(
             payment_repository.clone(),
-            webhook_verifier,
-            payment_provider,
+            Arc::new(PostgresIntegrationWebhookRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            webhook_verifiers,
+            payment_providers,
+        );
+        let resend_provider = Arc::new(ResendEmailProvider::new(
+            settings.resend_api_base_url.clone(),
+            dynamic_secrets.clone(),
+            settings.dependency_timeout,
+        )?) as Arc<dyn chaos_core::contracts::EmailWebhookVerifier>;
+        let email_webhooks = EmailWebhooks::new(
+            Arc::new(PostgresIntegrationAccountRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            Arc::new(PostgresIntegrationWebhookRepository::new(
+                infrastructure.runtime_pool(),
+            )),
+            [resend_provider],
         );
         let stripe_account_administration =
             StripeAccountAdministration::new(payment_repository.clone());
@@ -329,6 +354,7 @@ impl ApiState {
             storefront_sales: Arc::new(storefront_sales),
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
+            email_webhooks: Arc::new(email_webhooks),
             stripe_account_administration: Arc::new(stripe_account_administration),
             fulfillment_management: Arc::new(fulfillment_management),
             clock: Arc::new(SystemClock),
@@ -405,6 +431,7 @@ mod tests {
             apple_client_id: None,
             storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
             stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
+            resend_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
             analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
             provider_secret_key: chaos_core::runtime::config::SecretKey::from_base64(
                 "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",

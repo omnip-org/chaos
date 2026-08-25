@@ -242,7 +242,7 @@ CREATE TABLE commerce.price_lists (
 
     CONSTRAINT price_lists_store_id_id_key              UNIQUE (store_id, id),
     CONSTRAINT price_lists_store_id_code_key            UNIQUE (store_id, code),
-    CONSTRAINT price_lists_store_id_id_currency_key     UNIQUE (store_id, id, currency)
+    CONSTRAINT price_lists_store_id_id_currency_key     UNIQUE (store_id, id, currency),
     CONSTRAINT price_lists_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT price_lists_code_format_check            CHECK (code::text ~ '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'),
     CONSTRAINT price_lists_name_length_check            CHECK (length(trim(name)) BETWEEN 1 AND 120),
@@ -329,10 +329,10 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER price_lists_currency_matches_store
-    BEFORE INSERT OR UPDATE OF currency, store_id ON commerce.price_lists
-    FOR EACH ROW
-    EXECUTE FUNCTION commerce.check_price_list_currency();
+CREATE TRIGGER price_lists_currency_matches_store BEFORE INSERT OR UPDATE OF currency, store_id ON commerce.price_lists FOR EACH ROW EXECUTE FUNCTION commerce.check_price_list_currency();
+
+CREATE TRIGGER products_search_change AFTER INSERT OR UPDATE OF handle, title, description ON commerce.products FOR EACH ROW EXECUTE FUNCTION commerce.capture_product_change();
+CREATE TRIGGER variants_search_change AFTER INSERT OR UPDATE OF title, sku OR DELETE ON commerce.product_variants FOR EACH ROW EXECUTE FUNCTION commerce.capture_variant_change();
 
 ALTER TABLE commerce.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_options ENABLE ROW LEVEL SECURITY;
@@ -424,8 +424,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.prices
     TO chaos_runtime;
 
-REVOKE DELETE
-    ON commerce.collections,
-       commerce.media_assets,
-       commerce.reviews
-    FROM chaos_runtime;
+REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.reviews FROM chaos_runtime;
+
+GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products (UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

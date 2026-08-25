@@ -8,6 +8,10 @@ use crate::ApplicationError;
 pub enum ProviderSecretKind {
     PaymentCredential,
     PaymentWebhook,
+    EmailCredential,
+    EmailWebhook,
+    ShippingCredential,
+    ShippingWebhook,
     AnalyticsCredential,
 }
 
@@ -16,6 +20,10 @@ impl ProviderSecretKind {
         match self {
             Self::PaymentCredential => "payment-credential",
             Self::PaymentWebhook => "payment-webhook",
+            Self::EmailCredential => "email-credential",
+            Self::EmailWebhook => "email-webhook",
+            Self::ShippingCredential => "shipping-credential",
+            Self::ShippingWebhook => "shipping-webhook",
             Self::AnalyticsCredential => "analytics-credential",
         }
     }
@@ -24,6 +32,10 @@ impl ProviderSecretKind {
         match value {
             "payment_credential" => Some(Self::PaymentCredential),
             "payment_webhook" => Some(Self::PaymentWebhook),
+            "email_credential" => Some(Self::EmailCredential),
+            "email_webhook" => Some(Self::EmailWebhook),
+            "shipping_credential" => Some(Self::ShippingCredential),
+            "shipping_webhook" => Some(Self::ShippingWebhook),
             "analytics_credential" => Some(Self::AnalyticsCredential),
             _ => None,
         }
@@ -39,4 +51,12 @@ pub trait ProviderSecretWriter: Send + Sync {
         kind: ProviderSecretKind,
         value: &SecretString,
     ) -> Result<String, ApplicationError>;
+}
+
+/// Shared secret resolution port used by capability adapters. The reference
+/// remains opaque to the adapter and can point to encrypted storage or a
+/// tightly scoped environment variable.
+#[async_trait]
+pub trait IntegrationSecretResolver: Send + Sync {
+    async fn resolve(&self, reference: &str) -> Result<SecretString, ApplicationError>;
 }

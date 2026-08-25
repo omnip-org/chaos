@@ -6,8 +6,8 @@
 ## Context
 
 Chaos runs HTTP API replicas separately from an independently scalable Worker.
-Payment commands, fulfillment projections, search refreshes, Stripe webhooks,
-and external provider delivery all need crash recovery and safe
+Payment commands, Email notifications, fulfillment projections, search
+refreshes, provider webhooks, and external provider delivery all need crash recovery and safe
 concurrent consumption. Maintaining a separate status, attempt counter,
 availability timestamp, and lease implementation for each flow duplicated the
 same queue mechanism and made reliability harder to audit.
@@ -21,15 +21,17 @@ current scale constraint.
 Use logged PGMQ queues for event delivery:
 
 - `chaos_payment_commands`;
-- `chaos_fulfillment_events`;
+- `chaos_email_commands`;
+- `chaos_shipping_commands`;
 - `chaos_search_events`;
 - `chaos_webhooks`;
 - `chaos_analytics_deliveries`.
 
-The authoritative delivery row remains in its owning schema: generic event
-delivery uses `integration.event_outbox`, while payment commands and Stripe
-webhooks use `commerce`. Each row keeps the business payload, stable
-event or delivery identifier, processing outcome, and bounded error. A `BEFORE
+The authoritative delivery row remains in the `integration` schema: outbound
+events use `integration.event_outbox`, while every verified provider webhook
+uses `integration.provider_webhook_inbox`. Commerce tables remain the source of truth
+for order/payment/fulfillment state transitions. Each integration row keeps the
+business payload, stable event or delivery identifier, processing outcome, and bounded error. A `BEFORE
 INSERT` trigger sends a versioned message containing only that row identifier
 and stores the returned PGMQ message ID. Claim routines join the message back
 to the authoritative row. Finish routines update the row and delete the
@@ -41,12 +43,13 @@ already terminal. This handles Store deletion and administrative cleanup without
 leaving invisible messages to cycle forever. Queue state remains in PGMQ and
 authoritative integration rows; no second message archive is maintained.
 
-Application ports describe domain-specific jobs; PGMQ remains an infrastructure
-detail. The runtime role has no direct PGMQ privileges and calls only reviewed
-routines in the owning schema. API replicas do not consume queues.
+Application ports describe capability-specific jobs; PGMQ remains an
+infrastructure detail. The runtime role has no direct PGMQ privileges and calls
+only reviewed routines in the `integration` schema. API replicas do not consume
+queues.
 
-Business outbox routing is stored in `integration.event_consumers`: each event
-type points directly to its PGMQ queue. The database routine only resolves that
+Business outbox routing is stored in `integration.event_routes`: each internal
+event type points directly to its PGMQ queue. The database routine only resolves that
 registered value, so adding a consumer does not require changing a routing
 `CASE` expression.
 

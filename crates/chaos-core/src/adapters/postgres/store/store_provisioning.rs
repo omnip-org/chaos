@@ -67,8 +67,9 @@ impl PostgresStoreProvisioningTransaction {
         // Every Store can mark Orders shipped/delivered from day one, without
         // any carrier integration or credential setup.
         sqlx::query(
-            "INSERT INTO integration.shipping_provider_accounts (id, store_id, provider, display_name) \
-             VALUES ($1, $2, 'manual', 'Manual fulfillment')",
+            "INSERT INTO integration.provider_accounts \
+             (id, store_id, capability, provider, display_name) \
+             VALUES ($1, $2, 'shipping', 'manual', 'Manual fulfillment')",
         )
         .bind(Uuid::now_v7())
         .bind(store.id().as_uuid())

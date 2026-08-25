@@ -11,10 +11,9 @@ use crate::{
         AdminActor, MachineActor, OrderMetadataContext, PaymentAttemptDetail,
         PaymentCheckoutDetails, PaymentLineItem, StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,
-        PaymentShippingAddress,
-        StripeWebhookConfiguration, StripeWebhookConfigurationRepository, StripeCommand,
-        StripeCommandResult, QueueJob, RefundDetail, ShopperActor,
-        StripeWebhookEvent,
+        PaymentShippingAddress, PaymentCommand, PaymentCommandResult,
+        StripeWebhookConfiguration, StripeWebhookConfigurationRepository, QueueJob, RefundDetail,
+        ShopperActor,
     },
     store::StoreActor,
 };
@@ -184,8 +183,8 @@ async fn load_stripe_account(
     sqlx::query_as::<_, ProviderAccountRow>(
         "SELECT id, display_name, \
                 credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
-                created_at, updated_at FROM integration.payment_provider_accounts \
-         WHERE store_id = $1 AND id = $2 AND provider = 'stripe'",
+                created_at, updated_at FROM integration.provider_accounts \
+         WHERE store_id = $1 AND id = $2 AND capability = 'payment' AND provider = 'stripe'",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
@@ -213,7 +212,7 @@ fn stripe_account_detail(
 fn map_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(database) = &error {
         let (code, message) = match database.constraint() {
-            Some("payment_provider_accounts_store_provider_key") => (
+            Some("provider_accounts_store_capability_provider_key") => (
                 "payment_provider_already_configured",
                 "the Payment Provider is already configured for this Store",
             ),

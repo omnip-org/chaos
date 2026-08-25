@@ -32,8 +32,9 @@ replacement, then passes the relevant services into HTTP and MCP delivery.
 | Storefront catalog | `crates/chaos-api/src/http/storefront/v1/products.rs`, `collections.rs` | — | `crates/chaos-core/src/catalog/storefront.rs` | `crates/chaos-core/src/contracts/storefront_catalog.rs` | `crates/chaos-core/src/adapters/postgres/sales/storefront_catalog.rs` | Search indexer in `crates/chaos-core/src/adapters/postgres/search/` |
 | Shopper, cart, checkout, and order | `crates/chaos-api/src/http/storefront/v1/shopper_sessions.rs`, `carts.rs`, `orders.rs` | `crates/chaos-api/src/mcp/tools/operations/orders.rs` | `crates/chaos-core/src/sales/` | `crates/chaos-core/src/contracts/sales.rs` | `crates/chaos-core/src/adapters/postgres/sales/` | Checkout expiry in `crates/chaos-worker/src/workers.rs` |
 | Inventory and reservations | — | `crates/chaos-api/src/mcp/tools/operations/inventory.rs` | `crates/chaos-core/src/inventory/` | `crates/chaos-core/src/contracts/inventory.rs` | `crates/chaos-core/src/adapters/postgres/inventory/` | Reservation transitions are called by sales and payment workflows |
-| Payments and refunds | `crates/chaos-api/src/http/storefront/v1/carts.rs`, `webhooks.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/payments/` | `crates/chaos-core/src/contracts/stripe.rs` | `crates/chaos-core/src/adapters/postgres/payments/`, `adapters/integrations/stripe.rs` | Payment state and webhook inbox in `commerce`; typed Provider accounts in `integration`; command workers in `crates/chaos-worker/src/workers.rs` |
-| Fulfillment and returns | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-core/src/fulfillment/` | `crates/chaos-core/src/contracts/fulfillment.rs` | `crates/chaos-core/src/adapters/postgres/fulfillment/` | Fulfillment state in `commerce`; typed Shipping Provider accounts in `integration`; Manual only, with no carrier worker |
+| Payments and refunds | `crates/chaos-api/src/http/storefront/v1/carts.rs`, `webhooks.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/payments/` | `crates/chaos-core/src/contracts/stripe.rs` (`PaymentProvider`, registry) | `crates/chaos-core/src/adapters/postgres/payments/`, `adapters/integrations/stripe.rs` | Payment state remains in `commerce`; account lookup and canonical webhook inbox are in `integration`; command/webhook workers use `chaos_payment_commands` and `chaos_webhooks` |
+| Email delivery | `crates/chaos-api/src/http/storefront/v1/webhooks.rs` | Provider secret/account configuration follows the Integrations tools | `crates/chaos-core/src/email.rs` | `crates/chaos-core/src/contracts/email.rs` | `crates/chaos-core/src/adapters/postgres/integrations/email.rs`, `adapters/integrations/resend.rs` | `order.confirmed` routes to `chaos_email_commands`; verified email events use the shared `chaos_webhooks` inbox |
+| Fulfillment and returns | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-core/src/fulfillment/` and `shipping.rs` | `crates/chaos-core/src/contracts/shipping.rs` | `crates/chaos-core/src/adapters/postgres/fulfillment/`, `adapters/integrations/manual_shipping.rs` | Fulfillment state remains in `commerce`; account lookup and Shipping dispatch use `integration` and `chaos_shipping_commands` |
 | Analytics and Meta delivery | `crates/chaos-api/src/http/storefront/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics/` | `crates/chaos-core/src/contracts/analytics.rs` | `crates/chaos-core/src/adapters/postgres/analytics/`, `adapters/integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
 | Provider secrets | — | `crates/chaos-api/src/mcp/tools/integrations/provider_secrets.rs` | `crates/chaos-core/src/store/provider_secrets.rs` | `crates/chaos-core/src/contracts/provider_secret.rs` | `crates/chaos-core/src/adapters/security/provider_secrets.rs` and Store repositories | — |
 
@@ -70,10 +71,10 @@ HTTP storefront/v1/shopper_sessions.rs + carts.rs + orders.rs
 
 HTTP storefront/v1/carts.rs + webhooks.rs
   -> chaos-core payments/
-  -> contracts/stripe.rs
+  -> contracts/stripe.rs (`PaymentProvider` port and registry)
   -> adapters/postgres/payments/
   -> adapters/integrations/stripe.rs
-  -> payment worker / order settlement / reservation closure
+  -> integration.provider_webhook_inbox / payment worker / order settlement / reservation closure
 ```
 
 When changing checkout or payment, inspect the cart/order and checkout/webhook
@@ -94,6 +95,24 @@ HTTP storefront/v1/analytics.rs
 The stored event ledger is authoritative. Meta delivery is a retryable
 projection and must not replace the internal event write.
 
+### Provider webhook ingress
+
+```text
+HTTP provider route
+  -> capability verifier (Stripe / Resend / future carrier)
+  -> VerifiedWebhookEvent
+  -> integration.provider_webhook_inbox unique inbox
+  -> chaos_webhooks
+  -> capability worker / Commerce state transition
+```
+
+Only the verifier knows the provider signature format. The Integration
+repository owns account resolution, idempotency, queue enqueue, visibility
+leases, retries, and terminal processing evidence. A verified event keeps its
+raw `provider_event_type`; a known event also receives a
+`normalized_event_type`, while an unknown event is retained and finished as
+`unsupported`.
+
 ## Registration and composition points
 
 These files are intentionally high-signal entry points and must be checked
@@ -109,7 +128,7 @@ when adding a route, tool, service, or worker:
 | Worker dependency construction | `crates/chaos-worker/src/runtime.rs` |
 | Worker polling and dispatch | `crates/chaos-worker/src/workers.rs` |
 | Repository public exports | `crates/chaos-core/src/adapters/postgres/mod.rs` |
-| Database ownership | `migrations/0001_platform.sql` through `0010_commerce_fulfillment.sql`; Store, catalog, sales, payments, and fulfillment business objects use `commerce`, while Provider accounts and event routing use `integration` |
+| Database ownership | `migrations/0001_platform.sql` through `0007_integration_analytics.sql`; Store, catalog, sales, payments, and fulfillment business objects use `commerce`, while Provider accounts, webhook inboxes, and event routing use `integration` |
 
 If a new file is added but one of these registration points is not updated,
 the code may compile while the route, MCP tool, or Worker remains unreachable.

@@ -266,9 +266,11 @@ impl PostgresStorefrontSalesRepository {
         let subtotal = cart.total()?.amount_minor();
         let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM integration.payment_provider_accounts \
+            "SELECT id FROM integration.provider_accounts \
              WHERE store_id = $1 \
-               AND provider = $2::integration.payment_provider \
+               AND capability = 'payment' \
+               AND provider = $2 \
+               AND enabled \
                AND credential_secret_reference IS NOT NULL \
                AND webhook_secret_reference IS NOT NULL",
         )
@@ -308,9 +310,10 @@ impl PostgresStorefrontSalesRepository {
             let existing = sqlx::query_as::<_, (Uuid, String, i64, String)>(
                 "SELECT order_row.id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text \
                  FROM commerce.orders AS order_row \
-                 INNER JOIN integration.payment_provider_accounts AS account \
+                 INNER JOIN integration.provider_accounts AS account \
                    ON account.id = order_row.payment_provider_account_id \
                   AND account.store_id = order_row.store_id \
+                  AND account.capability = 'payment' \
                  WHERE order_row.store_id = $1 AND order_row.sales_channel_id = $2 \
                    AND order_row.shopper_id = $3 AND order_row.request_id = $4",
             )

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::{
     ApplicationError,
     contracts::{
-        AnalyticsDeliveryError, PaymentSecretResolver, ProviderSecretKind, ProviderSecretWriter,
+        AnalyticsDeliveryError, IntegrationSecretResolver, PaymentSecretResolver,
+        ProviderSecretKind, ProviderSecretWriter,
     },
 };
 use aes_gcm::{
@@ -79,6 +80,18 @@ impl PaymentSecretResolver for DynamicSecretResolver {
             .map_err(|_| ApplicationError::Unavailable {
                 service: "payment_secret_manager",
                 source: anyhow::anyhow!("Payment Provider credentials are unavailable"),
+            })
+    }
+}
+
+#[async_trait]
+impl IntegrationSecretResolver for DynamicSecretResolver {
+    async fn resolve(&self, reference: &str) -> Result<SecretString, ApplicationError> {
+        self.resolve_reference(reference, "CHAOS_INTEGRATION_SECRET_")
+            .await
+            .map_err(|_| ApplicationError::Unavailable {
+                service: "integration_secret_manager",
+                source: anyhow::anyhow!("Integration provider credentials are unavailable"),
             })
     }
 }

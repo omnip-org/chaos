@@ -39,7 +39,7 @@ Set `MCP_ALLOWED_HOSTS` to the comma-separated public Host authorities accepted 
 
 ## Provider secret encryption
 
-Payment, shipping, and analytics Provider Key secrets are AES-256-GCM encrypted and stored directly in PostgreSQL as an opaque `enc://<base64>` reference. There is no separate secret-manager service to run. `CHAOS_PROVIDER_SECRET_KEY` in the host's `.env` is the only key material: exactly 32 raw bytes, base64-encoded (`openssl rand -base64 32`), read once at startup.
+Payment, email, shipping, and analytics Provider Key secrets are AES-256-GCM encrypted and stored directly in PostgreSQL as opaque `enc://<base64>` references. There is no separate secret-manager service to run. `CHAOS_PROVIDER_SECRET_KEY` in the host's `.env` is the only key material: exactly 32 raw bytes, base64-encoded (`openssl rand -base64 32`), read once at startup.
 
 **Back this key up like you would the database itself.** There is no rotation or re-encryption tooling — losing the key makes every previously stored Provider Key permanently unrecoverable, and rotating it requires an owner to re-submit every Provider Key for every Store through MCP.
 
@@ -101,6 +101,6 @@ curl --fail https://chaos.omnip.org/health/ready
 
 ## Deployment secrets and rotation
 
-The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery, and Chaos currently exposes no Resend configuration or notification persistence. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, provider API base URLs, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Order-confirmation email delivery runs in the Worker from the Store's `integration.provider_accounts` row; verified delivery callbacks are retained in `integration.provider_webhook_inbox`, while a separate notification projection is not yet maintained. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
 
 Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

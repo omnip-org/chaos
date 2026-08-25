@@ -74,9 +74,10 @@ are:
   status transition.
 
 An ordinary `checkout.session.completed` event with `payment_status=unpaid`
-is accepted into the durable inbox as `webhook.ignored` without transitioning
+is accepted into the durable inbox without a normalized event type and is
+finished as `unsupported` without transitioning
 the Order; the asynchronous follow-up event is authoritative. Other verified
-Stripe events that Chaos does not handle are retained as ignored inbox items
+Stripe events that Chaos does not handle are retained as unsupported inbox items
 and completed by the Worker without a business state change. Refunds are
 executed through Stripe and reconciled from verified `refund.created` and
 `refund.updated` events.

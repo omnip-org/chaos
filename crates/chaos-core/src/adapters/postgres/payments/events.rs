@@ -13,7 +13,7 @@ async fn insert_outbox(
 ) -> Result<(), ApplicationError> {
     sqlx::query(
         "INSERT INTO integration.event_outbox \
-         (id, store_id, aggregate_type, aggregate_id, event_type, payload) \
+         (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(Uuid::now_v7())
@@ -26,6 +26,30 @@ async fn insert_outbox(
         "amount_minor": amount_minor,
         "currency": currency.as_str(),
         "return_url": return_url,
+        "provider": "stripe",
+    }))
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn insert_order_confirmed_event(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+    order_id: OrderId,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO integration.event_outbox \
+         (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
+         VALUES ($1, $2, 'order', $3, 'order.confirmed', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(json!({
+        "aggregate_id": order_id.as_uuid(),
+        "order_id": order_id.as_uuid(),
     }))
     .execute(&mut **transaction)
     .await
@@ -637,6 +661,7 @@ async fn confirm_paid_order(
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
+    insert_order_confirmed_event(transaction, store_id, order_id).await?;
     let cart_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT cart_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
     )

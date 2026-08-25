@@ -13,8 +13,9 @@ use crate::{
     adapters::postgres::PostgresStripeRepository,
     contracts::{
         AdminActor, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentClientAction,
-        QueueJob, RefundDetail, ShopperActor, StripeAccountConfiguration, StripeAccountDetail,
-        StripeAccountPage, StripePaymentGateway, StripeWebhookSignatureVerifier,
+        PaymentProviderRegistry, PaymentWebhookVerifierRegistry, QueueJob, RefundDetail,
+        ShopperActor, StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage,
+        VerifiedWebhookEvent, WebhookInbox, WebhookProcessingResult,
     },
     store::StoreActor,
 };
@@ -22,6 +23,7 @@ use crate::{
 pub struct CreatePaymentAttemptInput {
     pub actor: ShopperActor,
     pub order_id: OrderId,
+    pub provider: String,
     pub return_url: Option<String>,
     pub now: OffsetDateTime,
     pub request_id: uuid::Uuid,
@@ -141,20 +143,23 @@ impl StripeAccountAdministration {
 
 pub struct PaymentService {
     repository: Arc<PostgresStripeRepository>,
-    verifier: Arc<dyn StripeWebhookSignatureVerifier>,
-    stripe_gateway: Arc<dyn StripePaymentGateway>,
+    webhook_inbox: Arc<dyn WebhookInbox>,
+    webhook_verifiers: Arc<PaymentWebhookVerifierRegistry>,
+    payment_providers: Arc<PaymentProviderRegistry>,
 }
 
 impl PaymentService {
     pub fn new(
         repository: Arc<PostgresStripeRepository>,
-        verifier: Arc<dyn StripeWebhookSignatureVerifier>,
-        stripe_gateway: Arc<dyn StripePaymentGateway>,
+        webhook_inbox: Arc<dyn WebhookInbox>,
+        webhook_verifiers: Arc<PaymentWebhookVerifierRegistry>,
+        payment_providers: Arc<PaymentProviderRegistry>,
     ) -> Self {
         Self {
             repository,
-            verifier,
-            stripe_gateway,
+            webhook_inbox,
+            webhook_verifiers,
+            payment_providers,
         }
     }
 
@@ -170,7 +175,8 @@ impl PaymentService {
                 .ok_or_else(|| ApplicationError::Validation {
                     violations: vec![chaos_domain::FieldViolation {
                         field: "return_url",
-                        reason: "return_url is required for Stripe Embedded Checkout".into(),
+                        reason: "return_url is required for provider-hosted Embedded Checkout"
+                            .into(),
                     }],
                 })?;
         self.repository
@@ -181,11 +187,16 @@ impl PaymentService {
             .prepare_checkout_command(
                 &input.actor,
                 input.order_id,
+                &input.provider,
                 return_url,
                 &input.request_id.to_string(),
             )
             .await?;
-        let result = self.stripe_gateway.execute(command).await?;
+        let provider = self
+            .payment_providers
+            .get(&input.provider)
+            .ok_or_else(payment_provider_not_supported)?;
+        let result = provider.execute(command).await?;
         self.repository
             .record_checkout_result(&input.actor, input.order_id, &result, input.now)
             .await?;
@@ -231,30 +242,67 @@ impl PaymentService {
         payload: &[u8],
         received_at: OffsetDateTime,
     ) -> Result<bool, ApplicationError> {
-        let event = self
-            .verifier
+        self.receive_provider_webhook(
+            "stripe",
+            provider_account_id.as_uuid(),
+            signature,
+            payload,
+            received_at,
+        )
+        .await
+    }
+
+    pub async fn receive_provider_webhook(
+        &self,
+        provider: &str,
+        provider_account_id: Uuid,
+        signature: &str,
+        payload: &[u8],
+        received_at: OffsetDateTime,
+    ) -> Result<bool, ApplicationError> {
+        let verifier =
+            self.webhook_verifiers
+                .get(provider)
+                .ok_or_else(|| ApplicationError::NotFound {
+                    resource: "payment_provider",
+                    id: provider.to_owned(),
+                })?;
+        let event = verifier
             .verify(provider_account_id, signature, payload, received_at)
             .await?;
-        self.repository.ingest_webhook(&event).await
+        self.webhook_inbox
+            .record(VerifiedWebhookEvent {
+                provider_account_id: event.provider_account_id,
+                capability: "payment".into(),
+                provider: provider.to_owned(),
+                provider_event_id: event.provider_event_id,
+                provider_event_type: event.provider_event_type,
+                normalized_event_type: event.normalized_event_type,
+                payload: event.payload,
+                aggregate_type: event.order_id.map(|_| "order".into()),
+                aggregate_id: event.order_id,
+                verified_at: event.verified_at,
+            })
+            .await
     }
 }
 
 pub struct PaymentWorkers {
     queue: Arc<dyn IntegrationQueue>,
     repository: Arc<PostgresStripeRepository>,
-    stripe_gateway: Arc<dyn StripePaymentGateway>,
+    payment_providers: Arc<PaymentProviderRegistry>,
 }
 
 impl PaymentWorkers {
     pub fn new(
         queue: Arc<dyn IntegrationQueue>,
         repository: Arc<PostgresStripeRepository>,
-        stripe_gateway: Arc<dyn StripePaymentGateway>,
+        payment_providers: Arc<PaymentProviderRegistry>,
     ) -> Self {
         Self {
             queue,
             repository,
-            stripe_gateway,
+            payment_providers,
         }
     }
 
@@ -263,10 +311,13 @@ impl PaymentWorkers {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_outbox(limit).await?;
+        let jobs = self
+            .queue
+            .claim_outbox("chaos_payment_commands", limit)
+            .await?;
         for job in &jobs {
             let result = self
-                .execute_stripe_job(job, now)
+                .execute_payment_job(job, now)
                 .await
                 .map_err(|error| error.to_string());
             self.queue
@@ -281,13 +332,24 @@ impl PaymentWorkers {
         now: OffsetDateTime,
         limit: u16,
     ) -> Result<usize, ApplicationError> {
-        let jobs = self.queue.claim_webhooks(limit).await?;
+        let jobs = self.queue.claim_webhooks("payment", limit).await?;
         for job in &jobs {
-            let result = self
-                .repository
-                .process_webhook_job(job, now)
-                .await
-                .map_err(|error| error.to_string());
+            let result = if job.normalized_event_type.is_none() {
+                WebhookProcessingResult::Unsupported {
+                    reason: format!(
+                        "unsupported {} webhook {}",
+                        job.provider.as_deref().unwrap_or("payment provider"),
+                        job.provider_event_type.as_deref().unwrap_or("unknown")
+                    ),
+                }
+            } else {
+                match self.repository.process_webhook_job(job, now).await {
+                    Ok(()) => WebhookProcessingResult::Processed,
+                    Err(error) => WebhookProcessingResult::Failed {
+                        reason: error.to_string(),
+                    },
+                }
+            };
             self.queue
                 .finish_webhook(job.id, job.attempts, result, now)
                 .await?;
@@ -295,15 +357,20 @@ impl PaymentWorkers {
         Ok(jobs.len())
     }
 
-    async fn execute_stripe_job(
+    async fn execute_payment_job(
         &self,
         job: &QueueJob,
         now: OffsetDateTime,
     ) -> Result<(), ApplicationError> {
-        let command = self.repository.prepare_stripe_command(job).await?;
-        let result = self.stripe_gateway.execute(command).await?;
+        let command = self.repository.prepare_payment_command(job).await?;
+        let provider_name = job.provider.as_deref().unwrap_or("stripe");
+        let provider = self
+            .payment_providers
+            .get(provider_name)
+            .ok_or_else(payment_provider_not_supported)?;
+        let result = provider.execute(command).await?;
         self.repository
-            .record_stripe_result(job, &result, now)
+            .record_payment_result(job, &result, now)
             .await?;
         Ok(())
     }
@@ -321,6 +388,13 @@ fn require_payment_operator(actor: &AdminActor) -> Result<(), ApplicationError> 
     match actor {
         AdminActor::Store(_) => Ok(()),
         AdminActor::Machine(_) => Err(ApplicationError::Forbidden),
+    }
+}
+
+fn payment_provider_not_supported() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "payment_provider_not_supported",
+        message: "the configured Payment provider has no adapter",
     }
 }
 

@@ -13,8 +13,8 @@ impl PostgresStripeRepository {
             "SELECT id, display_name, \
                     credential_secret_reference IS NOT NULL AND webhook_secret_reference IS NOT NULL, \
              created_at, updated_at \
-             FROM integration.payment_provider_accounts \
-             WHERE store_id = $1 AND provider = 'stripe' \
+             FROM integration.provider_accounts \
+             WHERE store_id = $1 AND capability = 'payment' AND provider = 'stripe' \
                AND ($2::uuid IS NULL OR id < $2) \
              ORDER BY id DESC LIMIT $3",
         )
@@ -55,10 +55,10 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         sqlx::query(
-            "INSERT INTO integration.payment_provider_accounts \
-             (id, store_id, provider, display_name, \
+            "INSERT INTO integration.provider_accounts \
+             (id, store_id, capability, provider, display_name, \
               credential_secret_reference, webhook_secret_reference) \
-             VALUES ($1,$2,$3,$4,$5,$6)",
+             VALUES ($1,$2,'payment',$3,$4,$5,$6)",
         )
         .bind(account.id().as_uuid())
         .bind(store_id.as_uuid())
@@ -85,11 +85,11 @@ impl PostgresStripeRepository {
     ) -> Result<StripeAccountDetail, ApplicationError> {
         let mut transaction = self.begin_human(actor).await?;
         let result = sqlx::query(
-            "UPDATE integration.payment_provider_accounts SET display_name = $3, \
+            "UPDATE integration.provider_accounts SET display_name = $3, \
                     credential_secret_reference = $4, \
                     webhook_secret_reference = $5, \
                     updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2",
+             WHERE store_id = $1 AND id = $2 AND capability = 'payment' AND provider = 'stripe'",
         )
         .bind(store_id.as_uuid())
         .bind(account.id().as_uuid())

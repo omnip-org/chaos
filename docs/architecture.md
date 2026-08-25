@@ -106,10 +106,11 @@ Carts, Orders, Payments, and Analytics events carry the same `shopper_id`; there
 is no Customer entity or visitor-to-Customer association table. An Order-bearing
 Shopper is the buyer for all commerce and analytics purposes.
 
-Store-owned business state, including Orders, refunds, and verified payment
-webhook ingestion, remains in the `commerce` schema so Store-scoped foreign
-keys and RLS stay simple. External Provider configuration, credentials, and
-provider enums live in the `integration` schema. The migrations
+Store-owned business state, including Orders, refunds, and payment/fulfillment
+state transitions, remains in the `commerce` schema so Store-scoped foreign
+keys and RLS stay simple. External Provider accounts, opaque credential
+references, the canonical webhook inbox, and provider-independent queue
+leasing live in the `integration` schema. The migrations
 are organized into Store foundation, Catalog and Pricing, Integration core,
 Provider accounts, Sales, Payments, Analytics, and Fulfillment. Checkout
 request deduplication is owned by the Order row in `commerce`, through its
@@ -133,19 +134,31 @@ lowercase snake-case identifier, not as a database enum, so new behaviors do
 not require a migration. Provider delivery is an optional retryable projection
 of stored events through destination and delivery records. See ADR 0026.
 
-The `integration` schema owns `payment_provider_accounts`,
-`shipping_provider_accounts`, Provider enums, event consumers, and event
-outbox routing. The `commerce` schema owns `provider_webhooks`, refunds, and
-payment state transitions. The Integration schema keeps one concise name for
-each generic responsibility:
-`event_consumers`, `event_outbox`, `analytics_events`,
-`analytics_destinations`, and `analytics_deliveries`. The last three form one chain: an internal Analytics
-event is scheduled for a configured destination, then its delivery observation
-is recorded by `destination_id` and `analytics_event_id`. Business outbox
-routing is data-driven: `event_consumers.queue_name` points directly to the
-PGMQ queue, while worker code owns only the payload semantics.
+The `integration` schema owns `provider_accounts`, `provider_webhook_inbox`,
+event routes, and event outbox routing. `provider_accounts` uses one row shape for
+Email, Payment, and Shipping accounts; `capability` and `provider` select the
+capability-specific adapter while `configuration` holds bounded provider
+settings and the secret columns hold only opaque references. There is no
+`commerce.provider_webhooks` table. Every verified provider webhook enters the
+same `integration.provider_webhook_inbox`, whose unique
+`(provider_account_id, provider_event_id)` key provides idempotency and whose
+PGMQ envelope provides retryable delivery. The inbox stores both the raw
+`provider_event_type` and an optional `normalized_event_type`; verified events
+that are not understood by the running version finish as `unsupported` rather
+than being rejected at ingress. The `commerce` schema owns refunds, orders,
+and fulfillment state transitions, not provider transport records.
 
-API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
+The application deliberately does not force Email, Payment, and Shipping into
+one lowest-common-denominator provider interface. Each capability has its own
+port (`EmailProvider`, `PaymentProvider`, and `ShippingProvider`), while the
+inbox, provider-account lookup, queue leasing, retries, and secret resolution
+are shared. This keeps provider wire formats out of order state and allows a
+new adapter to be registered by provider name without changing the worker
+loop. Business outbox routing is data-driven:
+`event_routes.queue_name` points directly to the PGMQ queue, while each
+capability worker owns only its payload semantics.
+
+API replicas never start polling loops. `chaos-worker` is deployed and scaled independently. PGMQ owns durable message visibility, retry attempts, and concurrent claims; compact integration records retain the business payload and delivery outcome. Payment commands, Email `order.confirmed` notifications, Shipping `fulfillment.shipped` projections, Search events, and all provider webhook capabilities use the same leasing contract. Deployment may begin with one Worker replica for cost, but correctness does not depend on singleton execution. Adaptive polling backoff limits idle database work, while visibility timeouts, idempotent handlers, bounded retries, and bounded shutdown provide crash recovery. Scheduled reconciliation derived from authoritative rows continues to use short database leases because it is not an event queue. See ADR 0029.
 
 ## Incremental refactoring rule
 

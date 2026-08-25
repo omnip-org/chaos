@@ -21,7 +21,10 @@ pub use catalog::{
     PostgresReviewRepository,
 };
 pub use fulfillment::PostgresFulfillmentRepository;
-pub use integrations::PostgresIntegrationQueue;
+pub use integrations::{
+    PostgresEmailRepository, PostgresIntegrationAccountRepository, PostgresIntegrationQueue,
+    PostgresIntegrationWebhookRepository, PostgresShippingRepository,
+};
 pub use inventory::PostgresInventoryRepository;
 pub use payments::PostgresStripeRepository;
 pub use pricing::{PostgresPricingManagementRepository, PostgresPricingProvisioningRepository};

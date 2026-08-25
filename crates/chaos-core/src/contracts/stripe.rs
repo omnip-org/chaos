@@ -7,6 +7,7 @@ use chaos_domain::{
 };
 use secrecy::SecretString;
 use serde_json::Value;
+use std::{collections::HashMap, sync::Arc};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -52,16 +53,18 @@ pub struct RefundDetail {
     pub updated_at: OffsetDateTime,
 }
 
-pub struct StripeWebhookEvent {
-    pub stripe_account_id: Uuid,
-    pub stripe_event_id: String,
-    pub event_type: String,
-    pub object_reference: String,
+pub struct PaymentWebhookEvent {
+    pub provider_account_id: Uuid,
+    pub provider_event_id: String,
+    pub provider_event_type: String,
+    pub normalized_event_type: Option<String>,
+    pub object_reference: Option<String>,
     pub order_id: Option<Uuid>,
     /// Present only for `refund.*` events Chaos itself created — resolves
     /// which Refund row this event confirms when an Order has more than one
     /// in flight. Absent for a refund created outside Chaos (e.g. the
-    /// Stripe Dashboard), which is instead resolved via the PaymentIntent.
+    /// provider dashboard), which is instead resolved via the provider
+    /// payment reference.
     pub refund_id: Option<Uuid>,
     pub failure_code: Option<String>,
     pub payload: Value,
@@ -110,11 +113,11 @@ pub struct PaymentShippingAddress {
     pub country_code: String,
 }
 
-pub struct StripeCommand {
-    pub stripe_account_id: StripeAccountId,
-    pub event_type: String,
+pub struct PaymentCommand {
+    pub provider_account_id: Uuid,
+    pub internal_event_type: String,
     /// The Order this command acts on — always present, and what
-    /// `chaos_order_id` in Stripe metadata carries.
+    /// `chaos_order_id` in provider metadata carries.
     pub aggregate_id: Uuid,
     /// The specific Refund row this command creates — only set for
     /// `refund.create_requested`. An Order can have more than one refund in
@@ -125,16 +128,16 @@ pub struct StripeCommand {
     pub amount_minor: i64,
     pub currency: CurrencyCode,
     pub idempotency_key: String,
-    pub credential_secret_reference: PaymentSecretReference,
-    pub stripe_payment_reference: Option<String>,
-    /// Required when creating a Stripe Checkout Session; absent for Stripe
-    /// commands that do not create a Checkout Session.
+    pub credential_secret_reference: String,
+    pub provider_payment_reference: Option<String>,
+    /// Required when creating a provider-hosted checkout; absent for commands
+    /// that do not create a checkout session.
     pub checkout_details: Option<PaymentCheckoutDetails>,
     pub return_url: Option<String>,
-    /// Written into the Stripe object's metadata purely so an operator
-    /// reading the object in the Stripe Dashboard sees full Chaos context
-    /// without switching back to the admin tooling. Not read back from any
-    /// webhook — order_id/refund_id alone drive webhook processing.
+    /// Written into the provider object's metadata when the adapter supports
+    /// metadata, so an operator can see Chaos context without switching back
+    /// to the admin tooling. Not read back from any webhook — order_id/refund_id
+    /// alone drive webhook processing.
     pub order_context: OrderMetadataContext,
 }
 
@@ -146,41 +149,97 @@ pub struct OrderMetadataContext {
     pub order_number: String,
 }
 
-pub struct StripeCommandResult {
-    pub stripe_object_id: String,
+pub struct PaymentCommandResult {
+    pub provider_object_id: String,
     pub client_action: Option<PaymentClientAction>,
 }
 
 pub struct PaymentClientAction {
-    /// The client handoff for Stripe Embedded Checkout. The client token is
-    /// the Checkout Session client secret.
+    /// The client handoff for provider-hosted Embedded Checkout. The client
+    /// token is the provider's checkout client secret.
     pub kind: &'static str,
     pub public_key: SecretString,
     pub client_token: SecretString,
 }
 
+/// Compatibility names for the first Payment adapter. The fields above are
+/// capability-level; Stripe-specific wire mapping stays in its adapter.
+pub type StripeCommand = PaymentCommand;
+pub type StripeCommandResult = PaymentCommandResult;
+pub type StripeWebhookEvent = PaymentWebhookEvent;
+
 #[async_trait]
-pub trait StripePaymentGateway: Send + Sync {
+pub trait PaymentProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn execute(
         &self,
-        command: StripeCommand,
-    ) -> Result<StripeCommandResult, ApplicationError>;
+        command: PaymentCommand,
+    ) -> Result<PaymentCommandResult, ApplicationError>;
+}
+
+/// Runtime registry for the Payment capability. The application selects an
+/// adapter from the provider account recorded on the Order/outbox job; adding
+/// another payment provider therefore does not add another branch to the
+/// worker loop.
+pub struct PaymentProviderRegistry {
+    providers: HashMap<String, Arc<dyn PaymentProvider>>,
+}
+
+impl PaymentProviderRegistry {
+    pub fn new(providers: impl IntoIterator<Item = Arc<dyn PaymentProvider>>) -> Self {
+        Self {
+            providers: providers
+                .into_iter()
+                .map(|provider| (provider.name().to_owned(), provider))
+                .collect(),
+        }
+    }
+
+    pub fn get(&self, provider: &str) -> Option<Arc<dyn PaymentProvider>> {
+        self.providers.get(provider).cloned()
+    }
 }
 
 #[async_trait]
-pub trait StripeWebhookSignatureVerifier: Send + Sync {
+pub trait PaymentWebhookVerifier: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn verify(
         &self,
-        provider_account_id: StripeAccountId,
+        provider_account_id: Uuid,
         signature: &str,
         payload: &[u8],
         received_at: OffsetDateTime,
-    ) -> Result<StripeWebhookEvent, ApplicationError>;
+    ) -> Result<PaymentWebhookEvent, ApplicationError>;
 }
+
+/// Runtime registry for inbound Payment webhooks. The HTTP route supplies the
+/// provider name, while the registry keeps provider-specific signature logic
+/// out of `PaymentService` and the router.
+pub struct PaymentWebhookVerifierRegistry {
+    verifiers: HashMap<String, Arc<dyn PaymentWebhookVerifier>>,
+}
+
+impl PaymentWebhookVerifierRegistry {
+    pub fn new(verifiers: impl IntoIterator<Item = Arc<dyn PaymentWebhookVerifier>>) -> Self {
+        Self {
+            verifiers: verifiers
+                .into_iter()
+                .map(|verifier| (verifier.name().to_owned(), verifier))
+                .collect(),
+        }
+    }
+
+    pub fn get(&self, provider: &str) -> Option<Arc<dyn PaymentWebhookVerifier>> {
+        self.verifiers.get(provider).cloned()
+    }
+}
+
+/// Compatibility names for the existing Stripe adapter. New application code
+/// should depend on `PaymentProvider` and `PaymentWebhookVerifier` instead.
+pub use PaymentProvider as StripePaymentGateway;
+pub use PaymentWebhookVerifier as StripeWebhookSignatureVerifier;
 
 #[async_trait]
 pub trait StripeWebhookConfigurationRepository: Send + Sync {

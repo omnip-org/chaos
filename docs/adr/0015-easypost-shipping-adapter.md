@@ -3,7 +3,7 @@
 - Status: Superseded (2026-08-24) — Chaos does not integrate EasyPost or any
   carrier API. Fulfillment tracking is manual-only, recorded through MCP
   tools against `commerce.fulfillments` and the `manual` account in
-  `integration.shipping_provider_accounts`.
+  `integration.provider_accounts` with `capability = 'shipping'`.
   All EasyPost-specific code has been removed. Kept for historical context.
 - Date: 2026-08-16
 

@@ -124,9 +124,9 @@ mod tests {
         }
         for (id, store_id) in [(provider_account_a, store_a), (provider_account_b, store_b)] {
             sqlx::query(
-                "INSERT INTO integration.payment_provider_accounts \
-                 (id, store_id, provider) \
-                 VALUES ($1, $2, 'stripe')",
+                "INSERT INTO integration.provider_accounts \
+                 (id, store_id, capability, provider) \
+                 VALUES ($1, $2, 'payment', 'stripe')",
             )
             .bind(id)
             .bind(store_id)
@@ -168,11 +168,12 @@ mod tests {
                 .fetch_all(&mut *transaction)
                 .await
                 .unwrap();
-        let visible_provider_account_ids: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM integration.payment_provider_accounts ORDER BY id")
-                .fetch_all(&mut *transaction)
-                .await
-                .unwrap();
+        let visible_provider_account_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM integration.provider_accounts WHERE capability = 'payment' ORDER BY id",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap();
         transaction.rollback().await.unwrap();
 
         assert_eq!(visible_ids, vec![store_a]);
@@ -182,7 +183,7 @@ mod tests {
         assert_eq!(visible_shopper_ids, vec![shopper_a]);
         assert_eq!(visible_provider_account_ids, vec![provider_account_a]);
 
-        sqlx::query("DELETE FROM integration.payment_provider_accounts WHERE store_id = ANY($1)")
+        sqlx::query("DELETE FROM integration.provider_accounts WHERE store_id = ANY($1)")
             .bind(vec![store_a, store_b])
             .execute(&pool)
             .await

@@ -59,6 +59,7 @@ pub(crate) fn test_state(database_url: &str, user_id: UserId) -> ApiState {
         apple_client_id: None,
         storefront_public_base_url: "http://localhost:4321/".parse().unwrap(),
         stripe_api_base_url: "http://127.0.0.1:12111/".parse().unwrap(),
+        resend_api_base_url: "http://127.0.0.1:12113/".parse().unwrap(),
         analytics_meta_api_base_url: "http://127.0.0.1:12114/".parse().unwrap(),
         provider_secret_key: chaos_core::runtime::config::SecretKey::from_base64(
             "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=",

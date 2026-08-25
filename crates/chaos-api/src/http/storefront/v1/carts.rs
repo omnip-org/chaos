@@ -251,6 +251,7 @@ async fn create_embedded_checkout(
         .create_embedded_checkout(CreatePaymentAttemptInput {
             actor: actor.clone(),
             order_id: draft.order_id,
+            provider: payment_provider.as_str().to_owned(),
             return_url: Some(return_url.to_string()),
             now: state.clock.now(),
             request_id,

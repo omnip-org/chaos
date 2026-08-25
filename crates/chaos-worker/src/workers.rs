@@ -13,6 +13,16 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
+    let email_worker = tokio::spawn(email_worker_loop(
+        runtime.email_workers.clone(),
+        runtime.clock.clone(),
+        lifecycle.clone(),
+    ));
+    let shipping_worker = tokio::spawn(shipping_worker_loop(
+        runtime.shipping_workers.clone(),
+        runtime.clock.clone(),
+        lifecycle.clone(),
+    ));
     let analytics_worker = tokio::spawn(analytics_worker_loop(
         runtime.analytics_delivery_worker.clone(),
         runtime.clock.clone(),
@@ -27,9 +37,52 @@ pub async fn run(
     shutdown_signal(lifecycle).await;
     tokio::join!(
         drain_worker("payment", payment_worker, worker_shutdown_timeout),
+        drain_worker("email", email_worker, worker_shutdown_timeout),
+        drain_worker("shipping", shipping_worker, worker_shutdown_timeout),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
     );
+}
+
+async fn email_worker_loop(
+    workers: std::sync::Arc<chaos_core::email::EmailWorkers>,
+    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let now = clock.now();
+        let mut processed = 0;
+        match workers.run_outbox_batch(now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => tracing::warn!(%worker_id, %error, "email outbox batch failed"),
+        }
+        match workers.run_webhook_batch(now, 25).await {
+            Ok(count) => processed += count,
+            Err(error) => tracing::warn!(%worker_id, %error, "email webhook batch failed"),
+        }
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn shipping_worker_loop(
+    workers: std::sync::Arc<chaos_core::shipping::ShippingWorkers>,
+    clock: std::sync::Arc<dyn chaos_core::contracts::Clock>,
+    lifecycle: Lifecycle,
+) {
+    let worker_id = Uuid::now_v7();
+    let mut backoff = PollBackoff::new();
+    while lifecycle.is_accepting_traffic() {
+        let processed = match workers.run_outbox_batch(clock.now(), 25).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(%worker_id, %error, "shipping outbox batch failed");
+                0
+            }
+        };
+        tokio::time::sleep(backoff.observe(processed)).await;
+    }
 }
 
 struct PollBackoff {
