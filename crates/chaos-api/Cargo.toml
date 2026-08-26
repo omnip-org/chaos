@@ -11,14 +11,11 @@ base64.workspace = true
 chaos-core = { path = "../chaos-core" }
 chaos-domain = { path = "../chaos-domain" }
 http.workspace = true
-reqwest.workspace = true
 rmcp.workspace = true
-rustls.workspace = true
 schemars.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 sqlx.workspace = true
 time.workspace = true
 tokio.workspace = true

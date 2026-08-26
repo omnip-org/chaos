@@ -17,6 +17,17 @@ Completion performs a bounded object metadata request through the storage port a
 
 The public URL is derived from the configured asset origin and server-owned object key; clients cannot submit it. The API never fetches client-controlled URLs. Storefront media is returned only when the parent Store, Sales Channel, Product, Product publication, and Media Asset are all active or ready as applicable.
 
+The MCP surface follows the same split: `prepare_product_media_upload` accepts
+only file metadata and returns a short-lived presigned PUT request;
+the MCP Host uploads the original bytes directly to object storage; and
+`complete_product_media_upload` verifies the stored object before the asset
+becomes ready. `refresh_product_media_upload` reissues the PUT request while
+the asset is still pending. No MCP tool accepts inline Base64 media bytes.
+The upload request is carried in the Host metadata channel under
+`com.omniporg.chaos/media-upload`; the model-facing tool content contains only
+the pending asset and next-step information. Hosts must treat the metadata as a
+short-lived bearer credential and must not log or expose it.
+
 ## Consequences
 
 - Binary traffic bypasses the OLTP API and PostgreSQL.

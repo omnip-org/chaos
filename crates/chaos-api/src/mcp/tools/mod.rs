@@ -107,6 +107,10 @@ mod tests {
         let aggregate_router = ChaosMcp::tool_router();
 
         assert_eq!(aggregate_router.map.len(), expected_route_count);
+        assert!(aggregate_router.has_route("prepare_product_media_upload"));
+        assert!(aggregate_router.has_route("refresh_product_media_upload"));
+        assert!(aggregate_router.has_route("complete_product_media_upload"));
+        assert!(!aggregate_router.has_route("upload_product_media"));
         for capability_router in capability_routers {
             for name in capability_router.map.keys() {
                 assert!(aggregate_router.has_route(name));

@@ -14,6 +14,7 @@ preserve the dependency direction in
 | [`capability-map.md`](capability-map.md) | File-level navigation map for AI-assisted changes and cross-layer flows |
 | [`database-conventions.md`](database-conventions.md) | Required schema, SQL, isolation, migration, money, and time rules |
 | [`deployment.md`](deployment.md) | Production topology, secrets, bootstrap, rollout, and rollback |
+| [`media-upload.md`](media-upload.md) | MCP Host direct-upload flow for Catalog media |
 | [`postgresql-extensions.md`](postgresql-extensions.md) | PostgreSQL image and extension lifecycle |
 | [`adr/`](adr/) | Historical decisions and their status; an amended ADR must be read with its named successor |
 
