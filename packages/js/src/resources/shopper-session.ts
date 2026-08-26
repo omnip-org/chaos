@@ -7,8 +7,7 @@ export class ShopperSessionResource {
   /**
    * Creates a new anonymous possession-bound shopper session and persists
    * its token for subsequent Cart/Payment calls. Most callers never need
-   * this directly — the browser client starts this automatically on website
-   * initialization and persists the token for subsequent Cart/Payment calls.
+   * this directly — shopper-scoped requests acquire the session automatically.
    */
   async create(): Promise<DataEnvelope<ShopperSession>> {
     const response = await this.client.request<DataEnvelope<ShopperSession>>("/shopper/sessions", {

@@ -30,7 +30,7 @@ class MemoryStorage {
 }
 
 function harness(
-  responses: Array<{ ok: boolean; status: number }> = [{ ok: true, status: 200 }],
+  responses: Array<{ ok: boolean; status: number; body?: unknown }> = [{ ok: true, status: 200 }],
   options: {
     autoStart?: boolean;
     localStorage?: MemoryStorage;
@@ -93,11 +93,12 @@ function harness(
     fetch: (async (url: string, request: { body: string; headers?: Record<string, string> }) => {
       requests.push({ url, options: request });
       const response = responses.shift() ?? { ok: true, status: 200 };
-      return { ...response, json: async () => ({ data: {} }) } as Response;
+      return { ...response, json: async () => response.body ?? { data: {} } } as Response;
     }) as unknown as typeof fetch,
   });
   return {
     analytics,
+    document,
     window,
     requests,
     scripts,
@@ -111,7 +112,7 @@ function harness(
   };
 }
 
-test("starts collection without a policy and accepts arbitrary behavior names", async () => {
+test("starts collection and records valid custom behavior names", async () => {
   const environment = harness([{ ok: true, status: 200 }], { autoStart: true });
   const eventId = environment.analytics.track("wishlist_added", { product_id: "product-1" });
   await environment.analytics.flush();
@@ -149,10 +150,10 @@ test("stores traffic context inside dynamic properties", async () => {
   assert.equal(event.properties.path, "/products");
 });
 
-test("stores the full URL and Meta browser matching context", async () => {
+test("stores the page URL without its fragment and Meta browser matching context", async () => {
   const environment = harness([{ ok: true, status: 200 }], {
     cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.123.cookie-click",
-    href: "https://shop.example/products?variant=1",
+    href: "https://shop.example/products?variant=1#token=secret-capability",
     userAgent: "ChaosBrowser/2.0",
   });
   environment.analytics.pageView();
@@ -162,6 +163,94 @@ test("stores the full URL and Meta browser matching context", async () => {
   assert.equal(event.properties._meta.fbc, "fb.1.123.cookie-click");
   assert.equal(event.properties._meta.fbp, "fb.1.123.browser");
   assert.equal(event.properties._meta.client_user_agent, "ChaosBrowser/2.0");
+});
+
+test("does not lose valid events when a server rejects one event in a batch", async () => {
+  const environment = harness([
+    {
+      ok: false,
+      status: 422,
+      body: { error: { code: "validation_failed", message: "invalid event name" } },
+    },
+    { ok: true, status: 200 },
+    {
+      ok: false,
+      status: 422,
+      body: { error: { code: "validation_failed", message: "invalid event name" } },
+    },
+  ]);
+  const validEventId = environment.analytics.pageView();
+  const queue = (environment.analytics as unknown as { queue: unknown[] }).queue;
+  queue.push({
+    event_id: "00000000-0000-4000-8000-000000000998",
+    event_name: "Invalid-Name",
+    occurred_at: "2026-08-16T00:00:00.000Z",
+    properties: {},
+  });
+
+  await environment.analytics.flush();
+
+  assert.equal(environment.requests.length, 3);
+  assert.deepEqual(
+    JSON.parse(environment.requests[1]!.options.body).events.map((event: { event_id: string }) => event.event_id),
+    [validEventId],
+  );
+  assert.equal(environment.analytics.track("valid_custom_event"), "00000000-0000-4000-8000-000000000004");
+});
+
+test("rejects event names that the Storefront API cannot store", () => {
+  const environment = harness();
+  assert.throws(
+    () => environment.analytics.track("Invalid-Name"),
+    /eventName must be 1-64 lowercase snake_case characters/,
+  );
+});
+
+test("sends generic events to GA4 once and leaves server conversions to the server", () => {
+  const environment = harness([], {
+    providers: { ga4: { measurementId: "G-TEST1234" } },
+  });
+  environment.analytics.track("wishlist_added", { product_id: "product-1" });
+  environment.analytics.track("purchase", { order_id: "order-1" });
+
+  const events = (environment.window as unknown as { dataLayer: unknown[][] }).dataLayer.filter(
+    (call) => call[0] === "event",
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.[1], "wishlist_added");
+});
+
+test("keeps history observation active when one of multiple analytics clients stops", async () => {
+  const first = harness([], { autoStart: false });
+  const second = createStorefrontAnalytics({
+    publishableKey: "public_test",
+    getShopperToken: () => "shopper-token",
+    document: first.document as unknown as Document,
+    window: first.window as unknown as Window & typeof globalThis,
+    randomUUID: () => "00000000-0000-4000-8000-000000000099",
+    setInterval: (() => 1) as unknown as typeof setInterval,
+    clearInterval: (() => {}) as unknown as typeof clearInterval,
+    autoStart: false,
+    fetch: (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { received: 1, stored: 1, duplicates: 0 } }),
+    })) as unknown as typeof fetch,
+  });
+  first.analytics.start();
+  second.start();
+
+  first.window.history.pushState({}, "", "/first");
+  const firstQueue = (first.analytics as unknown as { queue: unknown[] }).queue;
+  const secondQueue = (second as unknown as { queue: unknown[] }).queue;
+  assert.equal(firstQueue.length, 1);
+  assert.equal(secondQueue.length, 1);
+
+  await first.analytics.stop();
+  first.window.history.pushState({}, "", "/second");
+
+  assert.equal(secondQueue.length, 2);
+  await second.stop();
 });
 
 test("does not turn a historical last-touch fbclid into a new fbc", async () => {

@@ -38,12 +38,12 @@ test("does not construct browser analytics during SSR", () => {
   assert.equal(client.analytics, undefined);
 });
 
-test("creates a shopper session when a browser client initializes", async () => {
+test("defers shopper session creation until a browser request needs it", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
   Object.defineProperty(globalThis, "document", { value: {}, configurable: true });
   const requests: string[] = [];
   try {
-    createStorefrontClient({
+    const client = createStorefrontClient({
       publishableKey: "public_test",
       storage: null,
       analytics: false,
@@ -54,7 +54,9 @@ test("creates a shopper session when a browser client initializes", async () => 
     });
 
     await Promise.resolve();
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 0);
+    await client.cart.create();
+    assert.equal(requests.length, 2);
     assert.match(requests[0]!, /\/shopper\/sessions$/);
   } finally {
     if (descriptor) {
@@ -382,4 +384,36 @@ test("browser SDK observations record only after successful responses", async ()
     ["search", { query: "shoes", resultCount: 1 }],
     ["view_content", { productId: "product-1" }],
   ]);
+});
+
+test("projects purchases only after a confirmed order is paid", async () => {
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => "random-id",
+    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  const recorded: unknown[] = [];
+  const mutable = client as unknown as {
+    analytics: { purchase: (input: unknown) => void };
+    request: () => Promise<unknown>;
+  };
+  mutable.analytics = { purchase: (input) => recorded.push(input) };
+  const order = {
+    id: "order-1",
+    status: "confirmed",
+    payment_status: "pending",
+    total_amount_minor: 1_000,
+    currency: "USD",
+    lines: [{ product_variant_id: "variant-1", quantity: 1, unit_price_amount_minor: 1_000 }],
+  };
+  mutable.request = async () => ({ data: order });
+
+  await client.orders.get("order-1");
+  assert.equal(recorded.length, 0);
+
+  order.payment_status = "paid";
+  await client.orders.get("order-1");
+  assert.equal(recorded.length, 1);
 });

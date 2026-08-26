@@ -334,9 +334,11 @@ export interface ErrorDetail {
 }
 
 export interface ApiErrorBody {
-  code: string;
-  message: string;
-  details?: ErrorDetail[];
+  error?: {
+    code?: string;
+    message?: string;
+    details?: ErrorDetail[];
+  };
 }
 
 // Analytics
@@ -358,7 +360,21 @@ export interface TrafficAttribution {
   last_non_direct?: TrafficTouchpoint;
 }
 
-export type BrowserAnalyticsEventName = string;
+/**
+ * Known event names get editor completion; custom names remain supported but
+ * are validated at runtime against the Storefront API snake_case contract.
+ */
+export type BrowserAnalyticsEventName =
+  | "page_view"
+  | "view_content"
+  | "search"
+  | "view_duration"
+  | "add_to_cart"
+  | "initiate_checkout"
+  | "add_payment_info"
+  | "purchase"
+  | "refund"
+  | (string & {});
 
 export interface BrowserAnalyticsEvent {
   event_id: UUID;

@@ -1,4 +1,4 @@
-import type { ErrorDetail } from "./types.js";
+import type { ApiErrorBody, ErrorDetail } from "./types.js";
 
 export class ChaosApiError extends Error {
   readonly status: number;
@@ -19,7 +19,7 @@ export async function throwForResponse(response: Response): Promise<never> {
   let message = `Store API request failed with HTTP ${response.status}`;
   let details: ErrorDetail[] = [];
   try {
-    const body = (await response.json()) as { error?: { code?: string; message?: string; details?: ErrorDetail[] } };
+    const body = (await response.json()) as ApiErrorBody;
     if (body.error) {
       code = body.error.code ?? code;
       message = body.error.message ?? message;

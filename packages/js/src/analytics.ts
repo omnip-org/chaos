@@ -1,5 +1,5 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
-import type { AnalyticsCollectionResult } from "./types.js";
+import type { AnalyticsCollectionResult, BrowserAnalyticsEventName } from "./types.js";
 
 /**
  * First-party behavior collection. Events use one stable envelope and keep
@@ -11,7 +11,16 @@ const MAX_BATCH_SIZE = 20;
 const MAX_QUEUE_SIZE = 100;
 const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
 const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
+const MAX_PROPERTIES_BYTES = 32_768;
+const MAX_GA4_EVENT_NAME_BYTES = 40;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
+const SERVER_AUTHORITATIVE_EVENT_NAMES = new Set([
+  "add_to_cart",
+  "initiate_checkout",
+  "add_payment_info",
+  "purchase",
+  "refund",
+]);
 
 export interface PageViewInput {
   path?: string;
@@ -219,9 +228,11 @@ export class ChaosStorefrontAnalytics {
   }
 
   /** Record any store-defined behavior using the common event envelope. */
-  track(eventName: string, properties: Record<string, unknown> = {}): string | null {
+  track(eventName: BrowserAnalyticsEventName, properties: Record<string, unknown> = {}): string | null {
+    validateEventName(eventName);
     return this.enqueue(eventName, properties, {
       sendToMeta: isBrowserMetaEvent(eventName),
+      sendToGa4: !SERVER_AUTHORITATIVE_EVENT_NAMES.has(eventName),
     });
   }
 
@@ -263,7 +274,6 @@ export class ChaosStorefrontAnalytics {
     eventId: string,
     properties: Record<string, unknown>,
   ): string | null {
-    if (!this.collectionEnabled()) return null;
     const storageKey = `${this.providerEventStoragePrefix}${eventName}.${eventId}`;
     if (this.storage?.getItem(storageKey)) return null;
     try {
@@ -278,7 +288,7 @@ export class ChaosStorefrontAnalytics {
 
   flushViewDuration(): number {
     this.snapshotActiveTime();
-    if (!this.currentPageViewEventId || !this.collectionEnabled()) {
+    if (!this.currentPageViewEventId) {
       this.accumulatedActiveMs = 0;
       return 0;
     }
@@ -311,12 +321,17 @@ export class ChaosStorefrontAnalytics {
 
   private async drainQueue(keepalive: boolean): Promise<AnalyticsCollectionResult | null> {
     let result: AnalyticsCollectionResult | null = null;
-    while (this.queue.length > 0) result = await this.sendNextBatch(keepalive);
+    while (this.queue.length > 0) {
+      const batch = this.queue.splice(0, MAX_BATCH_SIZE);
+      result = mergeCollectionResults(result, await this.sendBatch(batch, keepalive));
+    }
     return result;
   }
 
-  private async sendNextBatch(keepalive: boolean): Promise<AnalyticsCollectionResult> {
-    const batch = this.queue.splice(0, MAX_BATCH_SIZE);
+  private async sendBatch(
+    batch: QueuedEvent[],
+    keepalive: boolean,
+  ): Promise<AnalyticsCollectionResult | null> {
     try {
       const response = await this.fetchImpl(this.endpoint, {
         method: "POST",
@@ -335,15 +350,21 @@ export class ChaosStorefrontAnalytics {
       const envelope = (await response.json()) as { data: AnalyticsCollectionResult };
       return envelope.data;
     } catch (error) {
-      const permanentClientError =
-        error instanceof ChaosApiError &&
-        error.status >= 400 &&
-        error.status < 500 &&
-        error.status !== 429;
-      if (this.collectionEnabled() && !permanentClientError) {
-        this.queue.unshift(...batch);
-        this.trimQueue();
+      if (isSplittableClientError(error) && batch.length > 1) {
+        const splitAt = Math.ceil(batch.length / 2);
+        const first = await this.sendBatch(batch.slice(0, splitAt), keepalive);
+        const second = await this.sendBatch(batch.slice(splitAt), keepalive);
+        return mergeCollectionResults(first, second);
       }
+      if (isPermanentClientError(error)) {
+        // A client-side validation error belongs to this event batch. Drop
+        // only the offending single event after bisection, so valid events in
+        // the same batch are not lost with it.
+        this.persistQueue();
+        return null;
+      }
+      this.queue.unshift(...batch);
+      this.trimQueue();
       this.persistQueue();
       throw error;
     }
@@ -352,11 +373,11 @@ export class ChaosStorefrontAnalytics {
   private enqueue(
     eventName: string,
     properties: Record<string, unknown>,
-    options: { sendToMeta?: boolean } = {},
+    options: { sendToMeta?: boolean; sendToGa4?: boolean } = {},
   ): string | null {
-    if (!this.collectionEnabled()) return null;
+    validateEventName(eventName);
     const eventId = this.randomUUID();
-    this.queue.push({
+    const event: QueuedEvent = {
       event_id: eventId,
       event_name: eventName,
       occurred_at: new Date(this.now()).toISOString(),
@@ -366,10 +387,13 @@ export class ChaosStorefrontAnalytics {
         session_id: this.sessionId,
         ...(this.traffic ? { traffic: this.traffic } : {}),
       }),
-    });
+    };
+    validateEventProperties(event.properties);
+    this.queue.push(event);
     try {
-      const providerOptions =
-        options.sendToMeta === undefined ? {} : { meta: options.sendToMeta };
+      const providerOptions: { meta?: boolean; ga4?: boolean } = {};
+      if (options.sendToMeta !== undefined) providerOptions.meta = options.sendToMeta;
+      if (options.sendToGa4 !== undefined) providerOptions.ga4 = options.sendToGa4;
       this.providers.track(eventName, eventId, properties, {
         ...providerOptions,
       });
@@ -459,7 +483,7 @@ export class ChaosStorefrontAnalytics {
   }
 
   private updateActivityState(): void {
-    const active = this.isActive() && this.collectionEnabled();
+    const active = this.isActive();
     this.snapshotActiveTime();
     this.activeStartedAt = active ? this.monotonicNow() : null;
   }
@@ -510,10 +534,6 @@ export class ChaosStorefrontAnalytics {
     return fbc;
   }
 
-  private collectionEnabled(): boolean {
-    return true;
-  }
-
 }
 
 type ProviderOptions = AnalyticsOptions["providers"];
@@ -551,15 +571,17 @@ class BrowserProviderAdapters {
     eventName: string,
     eventId: string,
     properties: Record<string, unknown>,
-    options: { meta?: boolean } = {},
+    options: { meta?: boolean; ga4?: boolean } = {},
   ): void {
     if ((options.meta ?? true) && this.metaStarted && isMetaEvent(eventName)) {
       const mapped = metaEvent(eventName, properties);
       this.windowRef.fbq?.("track", mapped.name, mapped.parameters, { eventID: eventId });
     }
-    if (this.ga4Started) {
+    if ((options.ga4 ?? true) && this.ga4Started) {
       const mapped = ga4Event(eventName, eventId, properties);
-      this.windowRef.gtag?.("event", mapped.name, mapped.parameters);
+      if (isValidGa4EventName(mapped.name)) {
+        this.windowRef.gtag?.("event", mapped.name, mapped.parameters);
+      }
     }
   }
 
@@ -765,21 +787,49 @@ function analyticsStorageNamespace(endpoint: string, publishableKey: string): st
 function observeHistory(windowRef: Window & typeof globalThis, listener: () => void): () => void {
   const history = windowRef.history;
   if (!history?.pushState || !history?.replaceState) return () => {};
-  const pushState = history.pushState.bind(history);
-  const replaceState = history.replaceState.bind(history);
-  history.pushState = (...args: Parameters<History["pushState"]>) => {
-    pushState(...args);
-    listener();
-  };
-  history.replaceState = (...args: Parameters<History["replaceState"]>) => {
-    replaceState(...args);
-    listener();
-  };
+  let state = historyObservers.get(history);
+  if (!state) {
+    const pushState = history.pushState.bind(history);
+    const replaceState = history.replaceState.bind(history);
+    const listeners = new Set<() => void>();
+    const notify = () => {
+      for (const registeredListener of [...listeners]) registeredListener();
+    };
+    const pushWrapper: History["pushState"] = (...args) => {
+      pushState(...args);
+      notify();
+    };
+    const replaceWrapper: History["replaceState"] = (...args) => {
+      replaceState(...args);
+      notify();
+    };
+    state = { listeners, pushState, replaceState, pushWrapper, replaceWrapper };
+    historyObservers.set(history, state);
+    history.pushState = pushWrapper;
+    history.replaceState = replaceWrapper;
+  }
+  state.listeners.add(listener);
   return () => {
-    history.pushState = pushState;
-    history.replaceState = replaceState;
+    const current = historyObservers.get(history);
+    if (!current) return;
+    current.listeners.delete(listener);
+    if (current.listeners.size === 0) {
+      if (history.pushState === current.pushWrapper) history.pushState = current.pushState;
+      if (history.replaceState === current.replaceWrapper) history.replaceState = current.replaceState;
+      historyObservers.delete(history);
+    }
   };
 }
+
+interface HistoryObserverState {
+  listeners: Set<() => void>;
+  pushState: History["pushState"];
+  replaceState: History["replaceState"];
+  pushWrapper: History["pushState"];
+  replaceWrapper: History["replaceState"];
+}
+
+const historyObservers = new WeakMap<History, HistoryObserverState>();
 
 export function createStorefrontAnalytics(options: AnalyticsOptions): ChaosStorefrontAnalytics {
   return new ChaosStorefrontAnalytics(options);
@@ -822,7 +872,7 @@ function currentSourceUrl(
   windowRef: Window & typeof globalThis,
 ): string | undefined {
   const documentHref = documentRef.location?.href;
-  if (isHttpUrl(documentHref)) return documentHref;
+  if (isHttpUrl(documentHref)) return withoutUrlFragment(documentHref);
   const windowLocation = (windowRef as unknown as { location?: Location }).location;
   const origin = windowLocation?.origin;
   const path = documentRef.location?.pathname;
@@ -842,6 +892,12 @@ function isHttpUrl(value: string | undefined): value is string {
   } catch {
     return false;
   }
+}
+
+function withoutUrlFragment(value: string): string {
+  const url = new URL(value);
+  url.hash = "";
+  return url.toString();
 }
 
 function readCookie(documentRef: Document, name: string): string | undefined {
@@ -953,7 +1009,60 @@ function validQueuedEvent(value: unknown): value is QueuedEvent {
   return (
     isUuid(event.event_id) &&
     typeof event.event_name === "string" &&
+    isValidEventName(event.event_name) &&
     typeof event.occurred_at === "string" &&
-    Boolean(event.properties && typeof event.properties === "object")
+    Number.isFinite(Date.parse(event.occurred_at)) &&
+    isValidEventProperties(event.properties)
   );
+}
+
+function validateEventName(eventName: string): void {
+  if (!isValidEventName(eventName)) {
+    throw new TypeError("eventName must be 1-64 lowercase snake_case characters");
+  }
+}
+
+function isValidEventName(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value);
+}
+
+function validateEventProperties(properties: Record<string, unknown>): void {
+  if (!isValidEventProperties(properties)) {
+    throw new TypeError("event properties must be a JSON object no larger than 32768 bytes");
+  }
+}
+
+function isValidEventProperties(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" && new TextEncoder().encode(serialized).byteLength <= MAX_PROPERTIES_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+function isPermanentClientError(error: unknown): error is ChaosApiError {
+  return error instanceof ChaosApiError && error.status >= 400 && error.status < 500 && error.status !== 429;
+}
+
+function isSplittableClientError(error: unknown): error is ChaosApiError {
+  return error instanceof ChaosApiError && (error.status === 400 || error.status === 422);
+}
+
+function mergeCollectionResults(
+  first: AnalyticsCollectionResult | null,
+  second: AnalyticsCollectionResult | null,
+): AnalyticsCollectionResult | null {
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    received: first.received + second.received,
+    stored: first.stored + second.stored,
+    duplicates: first.duplicates + second.duplicates,
+  };
+}
+
+function isValidGa4EventName(eventName: string): boolean {
+  return eventName.length <= MAX_GA4_EVENT_NAME_BYTES && /^[A-Za-z][A-Za-z0-9_]*$/.test(eventName);
 }

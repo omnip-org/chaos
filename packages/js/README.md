@@ -43,7 +43,7 @@ const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
 const { data: product } = await chaos.catalog.getProduct("running-shoes");
 
 // Cart — the shopper token is acquired and persisted automatically on the
-// first mutating call, then reused for every subsequent Cart/Checkout call.
+// first shopper-scoped call, then reused for every subsequent Cart/Checkout call.
 const { data: cart } = await chaos.cart.create();
 await chaos.cart.addLine(cart.id, product.variants[0].id);
 // Cart mutations use the response version as an If-Match precondition. The
@@ -58,8 +58,8 @@ const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
   payment_provider: "stripe",
   return_url: "https://shop.example.com/checkout/success",
 });
-// The optional third argument is the UUID Idempotency-Key. The SDK generates
-// one when omitted, so retrying the same checkout does not create a new Order.
+// The optional third argument is the UUID Idempotency-Key. Reuse the same key
+// when retrying after a timeout so the server cannot create a duplicate Order.
 const action = session.client_action;
 // Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
@@ -88,7 +88,8 @@ collector entirely. Collection starts immediately when the analytics client is
 constructed.
 
 The client automatically acquires and persists the signed shopper token used to
-associate commerce operations and Analytics events. The collector automatically
+associate commerce operations and Analytics events on the first shopper-scoped
+request. The collector automatically
 captures bounded UTM fields and the Referrer host.
 It keeps first-touch, browser-session, and last-non-direct source facts.
 Unsent events survive reloads in session storage, retain stable IDs during
@@ -102,16 +103,17 @@ and order/cart IDs as the durable association keys. UTM fields remain first-part
 analytics data and are not forwarded as Meta custom parameters.
 The server owns `add_to_cart`, `initiate_checkout`, `add_payment_info`, and
 `purchase` ledger conversions; do not duplicate those names through generic
-`track()`. The SDK keeps generic server-authoritative names out of Meta Pixel,
-and the Meta CAPI adapter routes them only from server-origin events.
+`track()`. The SDK keeps generic server-authoritative names out of browser
+providers; the Meta CAPI adapter routes them only from server-origin events.
 
 Provider scripts are optional and load immediately when configured. For the
 Meta standard conversion events, Pixel receives the same event ID used by CAPI.
 A confirmed Purchase uses the Order ID in both paths and is projected only once
 per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration,
 refund state, and store-defined behavior events remain first-party ledger facts
-and are not sent to Meta. The collector records the full page URL and browser
-matching context (`fbc`, `fbp`, and user-agent) alongside the event; when a
+and are not sent to Meta. The collector records the page URL without its
+fragment, plus browser matching context (`fbc`, `fbp`, and user-agent),
+alongside the event; when a
 `fbclid` is present, the SDK also keeps the generated `_fbc` as a bounded
 first-party cookie. The API adds request cookies and proxy-provided client IP
 when available. GA4 automatic

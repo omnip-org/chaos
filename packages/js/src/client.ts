@@ -80,13 +80,6 @@ export class ChaosStorefrontClient {
       this.shopperTokenCache = null;
     }
 
-    if (globalThis.document) {
-      void this.ensureShopperToken().catch(() => {
-        // A transient identity request must not prevent catalog rendering;
-        // the next shopper-scoped request retries acquisition.
-      });
-    }
-
     this.catalog = new CatalogResource(this);
     this.shopperSession = new ShopperSessionResource(this);
     this.cart = new CartResource(this);

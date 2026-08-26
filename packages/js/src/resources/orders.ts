@@ -9,7 +9,7 @@ export class OrdersResource {
       method: "GET",
       requiresShopperToken: true,
     }).then((response) => {
-      if (response.data.status === "confirmed") {
+      if (response.data.status === "confirmed" && response.data.payment_status === "paid") {
         this.client.analytics?.purchase({
           orderId: response.data.id,
           valueMinor: response.data.total_amount_minor,
