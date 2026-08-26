@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Form, Query, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -264,7 +264,12 @@ async fn authorize(State(state): State<ApiState>, Query(query): Query<AuthorizeQ
     response
 }
 
-async fn consent(State(state): State<ApiState>, Json(body): Json<ConsentRequest>) -> Response {
+async fn consent(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<ConsentRequest>,
+) -> Response {
+    let request_id = request_id(&headers);
     let provider = match IdentityProvider::parse(&body.provider) {
         Ok(provider) => provider,
         Err(_) => {
@@ -275,44 +280,37 @@ async fn consent(State(state): State<ApiState>, Json(body): Json<ConsentRequest>
             );
         }
     };
-    let grant = match state
-        .identity_auth
-        .sign_in(provider, &secrecy::SecretString::from(body.identity_token))
-        .await
-    {
+    let transaction_id = body.transaction_id;
+    let identity_token = secrecy::SecretString::from(body.identity_token);
+    let grant = match state.identity_auth.sign_in(provider, &identity_token).await {
         Ok(grant) => grant,
-        Err(_) => {
-            return oauth_error(
-                StatusCode::UNAUTHORIZED,
-                "access_denied",
-                "identity verification failed",
-            );
+        Err(error) => {
+            return consent_identity_error_response(error, request_id, transaction_id, provider);
         }
     };
     let user_id = match state.identity_auth.authenticate(&grant.token) {
         Ok(user_id) => user_id,
-        Err(_) => {
-            return oauth_error(
-                StatusCode::UNAUTHORIZED,
-                "access_denied",
-                "identity verification failed",
+        Err(error) => {
+            return consent_access_token_error_response(
+                error,
+                request_id,
+                transaction_id,
+                provider,
             );
         }
     };
     match state
         .mcp_oauth
-        .finish_authorization(body.transaction_id, user_id)
+        .finish_authorization(transaction_id, user_id)
         .await
     {
         Ok(redirect) => Json(ConsentResponse {
             redirect_uri: redirect.location,
         })
         .into_response(),
-        Err(_) => oauth_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the authorization request expired",
-        ),
+        Err(error) => {
+            consent_authorization_error_response(error, request_id, transaction_id, provider)
+        }
     }
 }
 
@@ -555,6 +553,207 @@ fn metadata_response<T: Serialize>(body: Json<T>) -> Response {
     response
 }
 
+fn request_id(headers: &HeaderMap) -> &str {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("none")
+}
+
+fn consent_identity_error_response(
+    error: ApplicationError,
+    request_id: &str,
+    transaction_id: Uuid,
+    provider: IdentityProvider,
+) -> Response {
+    let error_kind = application_error_kind(&error);
+    match error {
+        ApplicationError::Unavailable { service, source } => oauth_dependency_error(
+            request_id,
+            transaction_id,
+            provider,
+            "identity_verification",
+            service,
+            source,
+        ),
+        ApplicationError::Unexpected(source) => oauth_unexpected_error(
+            request_id,
+            transaction_id,
+            provider,
+            "identity_verification",
+            source,
+        ),
+        _ => {
+            tracing::debug!(
+                request_id,
+                transaction_id = %transaction_id,
+                provider = %provider.as_str(),
+                stage = "identity_verification",
+                error_kind,
+                "OAuth identity verification rejected"
+            );
+            oauth_error(
+                StatusCode::UNAUTHORIZED,
+                "access_denied",
+                "identity verification failed",
+            )
+        }
+    }
+}
+
+fn consent_access_token_error_response(
+    error: ApplicationError,
+    request_id: &str,
+    transaction_id: Uuid,
+    provider: IdentityProvider,
+) -> Response {
+    match error {
+        ApplicationError::Unavailable { service, source } => oauth_dependency_error(
+            request_id,
+            transaction_id,
+            provider,
+            "access_token_authentication",
+            service,
+            source,
+        ),
+        ApplicationError::Unexpected(source) => oauth_unexpected_error(
+            request_id,
+            transaction_id,
+            provider,
+            "access_token_authentication",
+            source,
+        ),
+        error => {
+            tracing::error!(
+                request_id,
+                transaction_id = %transaction_id,
+                provider = %provider.as_str(),
+                stage = "access_token_authentication",
+                error_kind = application_error_kind(&error),
+                "issued OAuth access token could not be authenticated"
+            );
+            oauth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "an unexpected error occurred",
+            )
+        }
+    }
+}
+
+fn consent_authorization_error_response(
+    error: ApplicationError,
+    request_id: &str,
+    transaction_id: Uuid,
+    provider: IdentityProvider,
+) -> Response {
+    match error {
+        ApplicationError::Unauthorized => {
+            tracing::debug!(
+                request_id,
+                transaction_id = %transaction_id,
+                provider = %provider.as_str(),
+                stage = "authorization_transaction",
+                "OAuth authorization transaction expired or was already used"
+            );
+            oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the authorization request expired",
+            )
+        }
+        ApplicationError::Unavailable { service, source } => oauth_dependency_error(
+            request_id,
+            transaction_id,
+            provider,
+            "authorization_transaction",
+            service,
+            source,
+        ),
+        ApplicationError::Unexpected(source) => oauth_unexpected_error(
+            request_id,
+            transaction_id,
+            provider,
+            "authorization_transaction",
+            source,
+        ),
+        error => {
+            tracing::error!(
+                request_id,
+                transaction_id = %transaction_id,
+                provider = %provider.as_str(),
+                stage = "authorization_transaction",
+                error_kind = application_error_kind(&error),
+                "OAuth authorization transaction failed"
+            );
+            oauth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "an unexpected error occurred",
+            )
+        }
+    }
+}
+
+fn oauth_dependency_error(
+    request_id: &str,
+    transaction_id: Uuid,
+    provider: IdentityProvider,
+    stage: &'static str,
+    service: &'static str,
+    source: anyhow::Error,
+) -> Response {
+    tracing::warn!(
+        request_id,
+        transaction_id = %transaction_id,
+        provider = %provider.as_str(),
+        stage,
+        %service,
+        error = %source,
+        "OAuth dependency unavailable"
+    );
+    oauth_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "temporarily_unavailable",
+        "try again later",
+    )
+}
+
+fn oauth_unexpected_error(
+    request_id: &str,
+    transaction_id: Uuid,
+    provider: IdentityProvider,
+    stage: &'static str,
+    source: anyhow::Error,
+) -> Response {
+    tracing::error!(
+        request_id,
+        transaction_id = %transaction_id,
+        provider = %provider.as_str(),
+        stage,
+        error = %source,
+        "unexpected OAuth error"
+    );
+    oauth_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "server_error",
+        "an unexpected error occurred",
+    )
+}
+
+fn application_error_kind(error: &ApplicationError) -> &'static str {
+    match error {
+        ApplicationError::Validation { .. } => "validation",
+        ApplicationError::Unauthorized => "unauthorized",
+        ApplicationError::Forbidden => "forbidden",
+        ApplicationError::NotFound { .. } => "not_found",
+        ApplicationError::Conflict { .. } => "conflict",
+        ApplicationError::RateLimited { .. } => "rate_limited",
+        ApplicationError::Unavailable { .. } => "unavailable",
+        ApplicationError::Unexpected(_) => "unexpected",
+    }
+}
+
 fn application_error_response(error: ApplicationError) -> Response {
     match error {
         ApplicationError::Unauthorized => oauth_error(
@@ -691,5 +890,141 @@ impl From<OAuthClient> for RegisterResponse {
             token_endpoint_auth_method: client.token_endpoint_auth_method,
             application_type: client.application_type,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::http::{Method, StatusCode};
+    use chaos_core::contracts::{AccessTokenGrant, IdentityAuthentication};
+    use chaos_domain::identity::{IdentityProvider, UserId};
+    use secrecy::SecretString;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    use crate::http::{
+        router,
+        shared::test_support::{request, response_json, test_state},
+    };
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    enum SignInFailure {
+        Unavailable,
+        Unexpected,
+    }
+
+    struct FailingAuthentication {
+        failure: SignInFailure,
+    }
+
+    #[async_trait::async_trait]
+    impl IdentityAuthentication for FailingAuthentication {
+        async fn sign_in(
+            &self,
+            _provider: IdentityProvider,
+            _identity_token: &SecretString,
+        ) -> Result<AccessTokenGrant, ApplicationError> {
+            Err(match self.failure {
+                SignInFailure::Unavailable => ApplicationError::Unavailable {
+                    service: "identity_provider",
+                    source: anyhow::anyhow!("identity provider timed out"),
+                },
+                SignInFailure::Unexpected => {
+                    ApplicationError::Unexpected(anyhow::anyhow!("identity token state is invalid"))
+                }
+            })
+        }
+
+        fn authenticate(&self, _token: &SecretString) -> Result<UserId, ApplicationError> {
+            Err(ApplicationError::Unauthorized)
+        }
+    }
+
+    fn consent_request() -> serde_json::Value {
+        json!({
+            "transaction_id": Uuid::nil(),
+            "provider": "google",
+            "identity_token": "provider-token"
+        })
+    }
+
+    async fn consent_with_failure(failure: SignInFailure) -> (StatusCode, serde_json::Value) {
+        let mut state = test_state("postgres://localhost/chaos", UserId::new());
+        state.identity_auth = Arc::new(FailingAuthentication { failure });
+        let response = router(state)
+            .oneshot(request(
+                Method::POST,
+                "/oauth/authorize/consent",
+                Some("oauth-test-request"),
+                Some(consent_request()),
+            ))
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response_json(response).await)
+    }
+
+    #[tokio::test]
+    async fn reports_identity_provider_outages_as_temporary_unavailable() {
+        let (status, body) = consent_with_failure(SignInFailure::Unavailable).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "temporarily_unavailable");
+    }
+
+    #[tokio::test]
+    async fn reports_unexpected_identity_failures_as_server_errors() {
+        let (status, body) = consent_with_failure(SignInFailure::Unexpected).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "server_error");
+    }
+
+    #[tokio::test]
+    async fn keeps_invalid_identity_as_access_denied() {
+        let response = consent_identity_error_response(
+            ApplicationError::Unauthorized,
+            "oauth-test-request",
+            Uuid::nil(),
+            IdentityProvider::Google,
+        );
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response_json(response).await;
+        assert_eq!(body["error"], "access_denied");
+    }
+
+    #[tokio::test]
+    async fn distinguishes_authorization_transaction_failures() {
+        let expired = consent_authorization_error_response(
+            ApplicationError::Unauthorized,
+            "oauth-test-request",
+            Uuid::nil(),
+            IdentityProvider::Google,
+        );
+        assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
+
+        let unavailable = consent_authorization_error_response(
+            ApplicationError::Unavailable {
+                service: "postgresql",
+                source: anyhow::anyhow!("database unavailable"),
+            },
+            "oauth-test-request",
+            Uuid::nil(),
+            IdentityProvider::Google,
+        );
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let unexpected = consent_authorization_error_response(
+            ApplicationError::Unexpected(anyhow::anyhow!("database invariant failed")),
+            "oauth-test-request",
+            Uuid::nil(),
+            IdentityProvider::Google,
+        );
+        assert_eq!(unexpected.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
