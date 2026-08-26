@@ -9,7 +9,8 @@ use chaos_core::{
     },
     adapters::postgres::{
         PostgresAnalyticsDeliveryStore, PostgresEmailRepository, PostgresIntegrationQueue,
-        PostgresSearchIndexer, PostgresShippingRepository, PostgresStripeRepository,
+        PostgresMaintenance, PostgresSearchIndexer, PostgresShippingRepository,
+        PostgresStripeRepository,
     },
     adapters::security::provider_secrets::DynamicSecretResolver,
     runtime::{clock::SystemClock, config::Settings, state::AppState},
@@ -33,6 +34,7 @@ pub struct WorkerRuntime {
     pub shipping_workers: Arc<ShippingWorkers>,
     pub analytics_delivery_worker: Arc<AnalyticsDeliveryWorker>,
     pub search_indexer: Arc<PostgresSearchIndexer>,
+    pub maintenance: Arc<PostgresMaintenance>,
     pub clock: Arc<dyn Clock>,
 }
 
@@ -96,6 +98,10 @@ impl WorkerRuntime {
             shipping_workers: Arc::new(shipping_workers),
             analytics_delivery_worker,
             search_indexer: Arc::new(PostgresSearchIndexer::new(infrastructure.runtime_pool())),
+            maintenance: Arc::new(PostgresMaintenance::new(
+                infrastructure.runtime_pool(),
+                infrastructure.identity_pool(),
+            )),
             clock: Arc::new(SystemClock),
         })
     }

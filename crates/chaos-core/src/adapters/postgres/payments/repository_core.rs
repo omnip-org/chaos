@@ -308,6 +308,13 @@ fn corrupt_payment_state() -> ApplicationError {
     ))
 }
 
+fn payment_event_out_of_order() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "payment_event_out_of_order",
+        message: "a payment capture arrived after the Order was cancelled or failed",
+    }
+}
+
 fn corrupt_webhook_payload() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("verified webhook payload is invalid"))
 }

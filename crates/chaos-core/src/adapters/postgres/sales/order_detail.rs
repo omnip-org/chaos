@@ -25,6 +25,7 @@ use uuid::Uuid;
 #[derive(sqlx::FromRow)]
 struct OrderHeaderRow {
     id: Uuid,
+    order_number: String,
     shopper_id: Uuid,
     price_list_id: Uuid,
     currency: String,
@@ -112,7 +113,7 @@ pub(crate) async fn load(
     order_id: OrderId,
 ) -> Result<Option<OrderDetail>, ApplicationError> {
     let row = sqlx::query_as::<_, OrderHeaderRow>(
-        "SELECT order_row.id, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
+        "SELECT order_row.id, order_row.order_number, order_row.shopper_id, order_row.price_list_id, order_row.currency::text AS currency, \
                 order_row.status::text AS status, order_row.payment_status::text AS payment_status, \
                 order_row.shipping_status::text AS shipping_status, order_row.subtotal_amount_minor, \
                 order_row.discount_amount_minor, order_row.tax_amount_minor, \
@@ -143,14 +144,6 @@ pub(crate) async fn load(
         return Ok(None);
     };
 
-    let order_number: String = sqlx::query_scalar(
-        "SELECT order_number FROM commerce.orders WHERE store_id = $1 AND id = $2",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
     let identity = load_identity(transaction, store_id, order_id).await?;
     let lines = sqlx::query_as::<_, OrderLineRow>(
         "SELECT product_id, product_variant_id, product_title, variant_title, sku, \
@@ -186,10 +179,11 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let order_number = OrderNumber::parse(&row.order_number)?;
 
     Ok(Some(OrderDetail {
         id: OrderId::from_uuid(row.id),
-        order_number: OrderNumber::parse(order_number)?,
+        order_number,
         shopper_id: ShopperId::from_uuid(row.shopper_id),
         price_list_id: PriceListId::from_uuid(row.price_list_id),
         currency: CurrencyCode::parse(&row.currency)?,

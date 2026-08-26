@@ -183,11 +183,48 @@ fn payment_provider_unavailable() -> ApplicationError {
     }
 }
 
-fn payment_provider_mismatch() -> ApplicationError {
+fn idempotency_key_reused() -> ApplicationError {
     ApplicationError::Conflict {
-        code: "payment_provider_mismatch",
-        message: "the idempotent checkout request selected another Payment Provider",
+        code: "idempotency_key_reused",
+        message: "the idempotency key was already used with different checkout parameters",
     }
+}
+
+fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn checkout_request_fingerprint(
+    actor: &MachineActor,
+    cart_id: CartId,
+    email: Option<&str>,
+    request: &StripeCheckoutRequest,
+    cart: &Cart,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"chaos-checkout-request-v1");
+    fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
+    fingerprint_part(
+        &mut hasher,
+        actor
+            .sales_channel_id
+            .map(SalesChannelId::as_uuid)
+            .unwrap_or(Uuid::nil())
+            .as_bytes(),
+    );
+    fingerprint_part(&mut hasher, cart_id.as_uuid().as_bytes());
+    fingerprint_part(&mut hasher, cart.price_list_id().as_uuid().as_bytes());
+    fingerprint_part(&mut hasher, cart.currency().as_str().as_bytes());
+    fingerprint_part(&mut hasher, request.payment_provider.as_str().as_bytes());
+    fingerprint_part(&mut hasher, email.unwrap_or_default().as_bytes());
+    for line in cart.lines() {
+        fingerprint_part(&mut hasher, line.product_id().as_uuid().as_bytes());
+        fingerprint_part(&mut hasher, line.product_variant_id().as_uuid().as_bytes());
+        fingerprint_part(&mut hasher, &line.quantity().to_be_bytes());
+        fingerprint_part(&mut hasher, &line.unit_price().amount_minor().to_be_bytes());
+    }
+    hasher.finalize().into()
 }
 
 fn unexpected_conversion(

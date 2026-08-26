@@ -6,6 +6,7 @@ pub(crate) mod database;
 mod fulfillment;
 mod integrations;
 mod inventory;
+mod maintenance;
 mod payments;
 mod pricing;
 mod sales;
@@ -26,6 +27,7 @@ pub use integrations::{
     PostgresIntegrationWebhookRepository, PostgresShippingRepository,
 };
 pub use inventory::PostgresInventoryRepository;
+pub use maintenance::PostgresMaintenance;
 pub use payments::PostgresStripeRepository;
 pub use pricing::{PostgresPricingManagementRepository, PostgresPricingProvisioningRepository};
 pub use sales::{

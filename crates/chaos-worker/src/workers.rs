@@ -33,6 +33,10 @@ pub async fn run(
         runtime.clock.clone(),
         lifecycle.clone(),
     ));
+    let maintenance_worker = tokio::spawn(maintenance_worker_loop(
+        runtime.maintenance.clone(),
+        lifecycle.clone(),
+    ));
     tracing::info!("background worker started");
     shutdown_signal(lifecycle).await;
     tokio::join!(
@@ -41,6 +45,7 @@ pub async fn run(
         drain_worker("shipping", shipping_worker, worker_shutdown_timeout),
         drain_worker("analytics", analytics_worker, worker_shutdown_timeout),
         drain_worker("search", search_worker, worker_shutdown_timeout),
+        drain_worker("maintenance", maintenance_worker, worker_shutdown_timeout),
     );
 }
 
@@ -174,6 +179,29 @@ async fn search_worker_loop(
             }
         };
         tokio::time::sleep(backoff.observe(processed)).await;
+    }
+}
+
+async fn maintenance_worker_loop(
+    maintenance: std::sync::Arc<chaos_core::adapters::postgres::PostgresMaintenance>,
+    lifecycle: Lifecycle,
+) {
+    const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let mut next_cleanup = tokio::time::Instant::now();
+    while lifecycle.is_accepting_traffic() {
+        if tokio::time::Instant::now() >= next_cleanup {
+            match maintenance.cleanup_expired().await {
+                Ok(deleted) if deleted > 0 => {
+                    tracing::info!(deleted, "expired security records cleaned up")
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "expired security record cleanup failed"),
+            }
+            next_cleanup = tokio::time::Instant::now() + CLEANUP_INTERVAL;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 

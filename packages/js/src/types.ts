@@ -96,7 +96,6 @@ export interface Review {
   product_id: UUID;
   parent_id?: UUID;
   author_name: string;
-  author_email?: string;
   rating?: number;
   title?: string;
   content: string;

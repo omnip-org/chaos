@@ -304,12 +304,14 @@ async fn require_writable_store(
     transaction: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
 ) -> Result<(), ApplicationError> {
-    let writable: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM commerce.stores WHERE id = $1)")
-            .bind(store_id.as_uuid())
-            .fetch_one(&mut **transaction)
-            .await
-            .map_err(database_error)?;
+    let writable: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM commerce.stores \
+                             WHERE id = $1 AND status = 'active')",
+    )
+    .bind(store_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     if writable {
         Ok(())
     } else {

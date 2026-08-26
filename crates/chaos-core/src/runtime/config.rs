@@ -12,11 +12,9 @@ pub struct Settings {
     pub database_identity_url: String,
     pub database_max_connections: u32,
     pub database_identity_max_connections: u32,
-    pub database_analytics_max_connections: u32,
-    pub database_analytics_statement_timeout: Duration,
     pub database_acquire_timeout: Duration,
-    pub database_runtime_role: Option<String>,
-    pub database_identity_role: Option<String>,
+    pub database_runtime_role: String,
+    pub database_identity_role: String,
     pub redis_url: String,
     pub auth_jwt_issuer: String,
     pub auth_jwt_audience: String,
@@ -100,20 +98,12 @@ impl Settings {
             database_identity_url,
             database_max_connections: parse_or("DATABASE_MAX_CONNECTIONS", "20")?,
             database_identity_max_connections: parse_or("DATABASE_IDENTITY_MAX_CONNECTIONS", "5")?,
-            database_analytics_max_connections: parse_or(
-                "DATABASE_ANALYTICS_MAX_CONNECTIONS",
-                "3",
-            )?,
-            database_analytics_statement_timeout: Duration::from_millis(parse_or(
-                "DATABASE_ANALYTICS_STATEMENT_TIMEOUT_MS",
-                "2000",
-            )?),
             database_acquire_timeout: Duration::from_millis(parse_or(
                 "DATABASE_ACQUIRE_TIMEOUT_MS",
                 "2000",
             )?),
-            database_runtime_role: optional_role("DATABASE_RUNTIME_ROLE")?,
-            database_identity_role: optional_role("DATABASE_IDENTITY_ROLE")?,
+            database_runtime_role: required_role("DATABASE_RUNTIME_ROLE")?,
+            database_identity_role: required_role("DATABASE_IDENTITY_ROLE")?,
             redis_url: required("REDIS_URL")?,
             auth_jwt_issuer: required("AUTH_JWT_ISSUER")?,
             auth_jwt_audience: required("AUTH_JWT_AUDIENCE")?,
@@ -201,10 +191,8 @@ fn optional(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
-fn optional_role(name: &str) -> anyhow::Result<Option<String>> {
-    let Ok(value) = env::var(name) else {
-        return Ok(None);
-    };
+fn required_role(name: &str) -> anyhow::Result<String> {
+    let value = required(name)?;
     let value = value.trim();
     let mut bytes = value.bytes();
     let valid = bytes
@@ -214,7 +202,7 @@ fn optional_role(name: &str) -> anyhow::Result<Option<String>> {
     if !valid {
         bail!("environment variable {name} must be a safe lowercase PostgreSQL role name");
     }
-    Ok(Some(value.to_owned()))
+    Ok(value.to_owned())
 }
 
 fn required(name: &str) -> anyhow::Result<String> {

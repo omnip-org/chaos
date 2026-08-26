@@ -111,7 +111,10 @@ CREATE TABLE commerce.product_publications (
 
     CONSTRAINT product_publications_pkey                     PRIMARY KEY (store_id, product_id, sales_channel_id),
     CONSTRAINT product_publications_store_id_product_fkey    FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_publications_sales_channel_fkey       FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels (id) ON DELETE CASCADE
+    CONSTRAINT product_publications_store_id_sales_channel_fkey
+        FOREIGN KEY (store_id, sales_channel_id)
+        REFERENCES commerce.store_sales_channels (store_id, id)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.collections (
@@ -157,7 +160,10 @@ CREATE TABLE commerce.collection_publications (
 
     CONSTRAINT collection_publications_pkey                      PRIMARY KEY (store_id, collection_id, sales_channel_id),
     CONSTRAINT collection_publications_store_id_collection_fkey  FOREIGN KEY (store_id, collection_id) REFERENCES commerce.collections (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT collection_publications_sales_channel_fkey        FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels (id) ON DELETE CASCADE
+    CONSTRAINT collection_publications_store_id_sales_channel_fkey
+        FOREIGN KEY (store_id, sales_channel_id)
+        REFERENCES commerce.store_sales_channels (store_id, id)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE commerce.media_assets (
@@ -210,9 +216,12 @@ CREATE TABLE commerce.reviews (
     created_at        TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT reviews_store_id_id_key                    UNIQUE (store_id, id),
+    CONSTRAINT reviews_store_id_product_id_id_key          UNIQUE (store_id, product_id, id),
     CONSTRAINT reviews_store_id_product_fkey              FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT reviews_store_id_parent_review_fkey        FOREIGN KEY (store_id, parent_review_id) REFERENCES commerce.reviews (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT reviews_store_id_product_id_parent_review_fkey
+        FOREIGN KEY (store_id, product_id, parent_review_id)
+        REFERENCES commerce.reviews (store_id, product_id, id)
+        ON DELETE CASCADE,
     CONSTRAINT reviews_rating_shape_check                 CHECK ((is_staff_reply AND rating IS NULL AND parent_review_id IS NOT NULL) OR (NOT is_staff_reply AND rating IS NOT NULL AND rating BETWEEN 1 AND 5 AND parent_review_id IS NULL)),
     CONSTRAINT reviews_content_length_check               CHECK (length(content) BETWEEN 1 AND 10000),
     CONSTRAINT reviews_title_length_check                 CHECK (title IS NULL OR length(title) <= 255),
@@ -278,7 +287,9 @@ CREATE INDEX collection_publications_channel_collection_idx ON commerce.collecti
 CREATE UNIQUE INDEX media_assets_product_position_active_idx ON commerce.media_assets (store_id, product_id, position) WHERE status <> 'archived';
 CREATE INDEX media_assets_product_status_position_idx ON commerce.media_assets (store_id, product_id, status, position, id);
 CREATE INDEX reviews_product_status_idx ON commerce.reviews (store_id, product_id, status, created_at, id);
-CREATE INDEX reviews_parent_idx ON commerce.reviews (store_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
+CREATE INDEX reviews_parent_product_idx
+    ON commerce.reviews (store_id, product_id, parent_review_id)
+    WHERE parent_review_id IS NOT NULL;
 CREATE INDEX product_documents_search_idx ON commerce.product_documents USING GIN (document);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);

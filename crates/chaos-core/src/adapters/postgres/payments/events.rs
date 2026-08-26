@@ -146,7 +146,9 @@ fn payment_attempt_detail(
 /// Updates the Order's `payment_status` summary only when it still matches
 /// one of `from_statuses`, so an out-of-order or replayed webhook cannot
 /// clobber a state that has already moved on (e.g. a late `payment.captured`
-/// arriving after the Order was already refunded).
+/// arriving after the Order was already refunded). A capture is only valid
+/// while the Order is still pending; callers decide whether a no-op is a
+/// harmless replay or a terminal out-of-order event.
 async fn update_order_payment_status(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
@@ -311,16 +313,17 @@ async fn apply_payment_event(
     if !captured && !failed {
         return Err(corrupt_webhook_payload());
     }
-    let (order_status, shopper_id, currency): (String, Uuid, String) = sqlx::query_as(
-        "SELECT status::text, shopper_id, currency::text \
-         FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(|| order_not_found(order_id))?;
+    let (order_status, payment_status, shopper_id, currency): (String, String, Uuid, String) =
+        sqlx::query_as(
+            "SELECT status::text, payment_status::text, shopper_id, currency::text \
+             FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| order_not_found(order_id))?;
 
     let provider_bound = sqlx::query(
         "UPDATE commerce.orders \
@@ -340,16 +343,25 @@ async fn apply_payment_event(
     }
 
     if captured {
+        if order_status != "pending" {
+            if payment_status == "failed" || order_status == "cancelled" {
+                return Err(payment_event_out_of_order());
+            }
+            return Ok(order_id);
+        }
         let applied = update_order_payment_status(
             transaction,
             store_id,
             order_id,
-            &["pending", "failed"],
+            &["pending"],
             "paid",
             now,
         )
         .await?;
         if !applied {
+            if payment_status == "failed" {
+                return Err(payment_event_out_of_order());
+            }
             return Ok(order_id);
         }
         let mut event_amount: i64 = sqlx::query_scalar(

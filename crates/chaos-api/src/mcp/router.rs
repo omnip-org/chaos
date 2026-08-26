@@ -16,9 +16,10 @@ use secrecy::SecretString;
 use crate::http::ApiState;
 use crate::mcp::tools::ChaosMcp;
 
-/// Mounts the MCP Streamable HTTP surface. Sessions are held in-process
-/// (`LocalSessionManager`) since every tool call re-authenticates against its
-/// own `Authorization` header rather than relying on session-bound identity.
+/// Mounts the MCP Streamable HTTP surface. The transport is configured
+/// stateless; `LocalSessionManager` is retained only as the rmcp service's
+/// session-manager dependency, while every tool call re-authenticates its own
+/// `Authorization` header.
 pub fn router(state: ApiState) -> Router {
     // Every request carries its own MCP protocol context and is authenticated
     // independently, so it can land on any API replica without sticky sessions.

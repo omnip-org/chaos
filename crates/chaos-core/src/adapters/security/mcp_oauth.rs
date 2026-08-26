@@ -457,6 +457,16 @@ impl McpOAuthService {
         .ok_or(ApplicationError::Unauthorized)?;
         let (stored_client_id, user_id, scope, stored_resource, expires_at, revoked_at) = row;
         if revoked_at.is_some() {
+            // Do not let an invalid refresh request revoke another client's
+            // token family. The token row is locked, but the client and
+            // resource binding still must be checked before mass revocation.
+            if stored_client_id != client_id
+                || stored_resource != resource
+                || resource != self.resource
+            {
+                transaction.rollback().await.map_err(database_error)?;
+                return Err(ApplicationError::Unauthorized);
+            }
             // A rotated refresh token being replayed is a signal that the
             // token family may have been copied. Revoke the remaining family
             // before returning the generic invalid_grant response.
@@ -465,7 +475,7 @@ impl McpOAuthService {
                  SET revoked_at = CURRENT_TIMESTAMP
                  WHERE client_id = $1 AND user_id = $2 AND revoked_at IS NULL",
             )
-            .bind(client_id)
+            .bind(&stored_client_id)
             .bind(user_id)
             .execute(&mut *transaction)
             .await
@@ -475,7 +485,7 @@ impl McpOAuthService {
                  SET revoked_at = CURRENT_TIMESTAMP
                  WHERE client_id = $1 AND user_id = $2 AND revoked_at IS NULL",
             )
-            .bind(client_id)
+            .bind(&stored_client_id)
             .bind(user_id)
             .execute(&mut *transaction)
             .await

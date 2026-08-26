@@ -21,7 +21,7 @@ Review moderation is exposed through MCP tools authenticated with a User-owned A
 
 ## Consequences
 
-- The Storefront client's existing review data shape (id, product_id, parent_id, author_name, author_email, rating, title, content, images, status, is_staff_reply, created_at, updated_at, replies) is preserved field-for-field, with one deliberate addition: **`verified_buyer` is now a real field in the response** rather than a badge the client renders unconditionally. A client that previously assumed every returned review was verified must now read this field and gate the badge on it — a small, intentional change that makes the "Verified Buyer" claim strictly more honest than before, not less.
+- The Storefront review response deliberately omits the submitted `author_email`; it remains an internal moderation field and is accepted only on submission. The public shape otherwise stays stable, with one deliberate addition: **`verified_buyer` is now a real field in the response** rather than a badge the client renders unconditionally. A client that previously assumed every returned review was verified must now read this field and gate the badge on it — a small, intentional change that makes the "Verified Buyer" claim strictly more honest than before, not less.
 - Review-photo uploads are out of scope for this release; `images` is always `[]`. Chaos already has a direct-upload Media Asset mechanism (ADR 0018) that a future increment can reuse for review photos rather than building a second upload path.
 - MCP tools expose review listing, approval, rejection, and staff replies.
 - There is no rate limiting specific to review submission beyond the general request path; a Store that needs abuse resistance would need it added as a follow-up.

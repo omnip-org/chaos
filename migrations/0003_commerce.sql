@@ -78,7 +78,9 @@ CREATE TABLE commerce.store_publishable_keys (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT store_publishable_keys_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT store_publishable_keys_sales_channel_fkey    FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels (id),
+    CONSTRAINT store_publishable_keys_store_id_sales_channel_fkey
+        FOREIGN KEY (store_id, sales_channel_id)
+        REFERENCES commerce.store_sales_channels (store_id, id),
     CONSTRAINT store_publishable_keys_public_key_format     CHECK (public_key ~ '^pk_[1-9A-HJ-NP-Za-km-z]{24}$'),
     CONSTRAINT store_publishable_keys_name_length           CHECK (length(trim(name)) BETWEEN 1 AND 80)
 );

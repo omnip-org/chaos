@@ -490,24 +490,6 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION integration.set_provider_webhook_aggregate (
-    event_id           UUID,
-    resolved_type      TEXT,
-    resolved_aggregate UUID
-)
-RETURNS BOOLEAN
-LANGUAGE SQL
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-    UPDATE integration.provider_webhook_inbox
-    SET aggregate_type = resolved_type,
-        aggregate_id = resolved_aggregate
-    WHERE id = event_id
-    RETURNING true;
-$$;
-
 CREATE FUNCTION commerce.capture_product_change ()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -674,8 +656,6 @@ REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
-REVOKE ALL ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) FROM PUBLIC;
-
 REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
@@ -685,7 +665,6 @@ GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.prov
 GRANT EXECUTE ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products (UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 

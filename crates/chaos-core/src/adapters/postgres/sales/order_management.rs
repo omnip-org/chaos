@@ -53,7 +53,7 @@ impl PostgresOrderManagementRepository {
     ) -> Result<OrderPage, ApplicationError> {
         let mut transaction = self.begin_for_admin(&actor).await?;
         let ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT DISTINCT o.id FROM commerce.orders o \
+            "SELECT o.id FROM commerce.orders o \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
                AND ($3::text IS NULL OR o.status::text = $3) \

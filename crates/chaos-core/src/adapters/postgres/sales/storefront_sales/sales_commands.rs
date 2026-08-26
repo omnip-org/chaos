@@ -283,6 +283,8 @@ impl PostgresStorefrontSalesRepository {
         )?;
         let requested_order_id = OrderId::new();
         let subtotal = cart.total()?.amount_minor();
+        let request_fingerprint =
+            checkout_request_fingerprint(actor, cart_id, email, &request, &cart);
         let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM integration.provider_accounts \
@@ -303,9 +305,10 @@ impl PostgresStorefrontSalesRepository {
             "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, idempotency_key, \
               price_list_id, currency, payment_provider_account_id, contact_email, \
+              checkout_request_fingerprint, \
              subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
              shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0,0,0,0,$13,$13) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14) \
              ON CONFLICT (store_id, sales_channel_id, shopper_id, idempotency_key) DO NOTHING \
              RETURNING id",
         )
@@ -320,14 +323,16 @@ impl PostgresStorefrontSalesRepository {
         .bind(currency.as_str())
         .bind(payment_provider_account_id)
         .bind(email)
+        .bind(request_fingerprint.as_slice())
         .bind(subtotal)
         .bind(request.now)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
         let Some(_) = inserted_order_id else {
-            let existing = sqlx::query_as::<_, (Uuid, String, i64, String)>(
-                "SELECT order_row.id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text \
+            let existing = sqlx::query_as::<_, (Uuid, String, i64, String, Option<Vec<u8>>)>(
+                "SELECT order_row.id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text, \
+                        order_row.checkout_request_fingerprint \
                  FROM commerce.orders AS order_row \
                  INNER JOIN integration.provider_accounts AS account \
                    ON account.id = order_row.payment_provider_account_id \
@@ -343,8 +348,16 @@ impl PostgresStorefrontSalesRepository {
             .fetch_one(&mut *transaction)
             .await
             .map_err(database_error)?;
-            if existing.3 != request.payment_provider.as_str() {
-                return Err(payment_provider_mismatch());
+            // Orders created before the fingerprint column was introduced
+            // cannot be reconstructed reliably from their historical cart;
+            // preserve their provider-only idempotency behavior. Every new
+            // order carries the stronger request fingerprint.
+            let fingerprint_mismatch = existing
+                .4
+                .as_deref()
+                .is_some_and(|fingerprint| fingerprint != request_fingerprint.as_slice());
+            if existing.3 != request.payment_provider.as_str() || fingerprint_mismatch {
+                return Err(idempotency_key_reused());
             }
             transaction.commit().await.map_err(database_error)?;
             return Ok(StripeCheckoutDraft {

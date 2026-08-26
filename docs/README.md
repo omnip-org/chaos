@@ -80,7 +80,7 @@ not in application use cases.
 ## Contracts and operations
 
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
-- `migrations/0001_platform.sql` through `0007_integration_analytics.sql`
+- `migrations/0001_platform.sql` through `0008_identity_oauth.sql`
   are the fresh bootstrap schema. `0004_integration.sql` owns the shared
   Integration account, webhook inbox, and queue infrastructure; the commerce
   schema

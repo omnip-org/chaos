@@ -26,6 +26,20 @@ type ReviewRow = (
     OffsetDateTime,
 );
 
+type PublicReviewRow = (
+    Uuid,
+    Option<Uuid>,
+    Option<i16>,
+    Option<String>,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+
 #[derive(Clone)]
 pub struct PostgresReviewRepository {
     pool: PgPool,
@@ -267,9 +281,9 @@ impl PostgresReviewRepository {
         limit: u16,
     ) -> Result<Vec<ReviewSummary>, ApplicationError> {
         let mut tx = self.begin_machine(actor).await?;
-        let top_level = sqlx::query_as::<_, ReviewRow>(
+        let top_level = sqlx::query_as::<_, PublicReviewRow>(
             "SELECT id, parent_review_id, rating, title, content, author_name, \
-                    author_email::text, status::text, is_staff_reply, verified_buyer, \
+                    status::text, is_staff_reply, verified_buyer, \
                     created_at, updated_at \
              FROM commerce.reviews \
              WHERE store_id=$1 AND product_id=$2 \
@@ -288,9 +302,9 @@ impl PostgresReviewRepository {
         let replies = if parent_ids.is_empty() {
             Vec::new()
         } else {
-            sqlx::query_as::<_, ReviewRow>(
+            sqlx::query_as::<_, PublicReviewRow>(
                 "SELECT id, parent_review_id, rating, title, content, author_name, \
-                        author_email::text, status::text, is_staff_reply, verified_buyer, \
+                        status::text, is_staff_reply, verified_buyer, \
                         created_at, updated_at \
                  FROM commerce.reviews \
                  WHERE store_id=$1 AND status='approved' \
@@ -308,13 +322,49 @@ impl PostgresReviewRepository {
         let mut result = Vec::with_capacity(top_level.len() + replies.len());
         for row in top_level {
             let id = row.0;
-            result.push(row_to_summary(row, product_id)?);
+            result.push(public_row_to_summary(row, product_id)?);
             for reply in replies.iter().filter(|reply| reply.1 == Some(id)) {
-                result.push(row_to_summary(reply.clone(), product_id)?);
+                result.push(public_row_to_summary(reply.clone(), product_id)?);
             }
         }
         Ok(result)
     }
+}
+
+fn public_row_to_summary(
+    row: PublicReviewRow,
+    product_id: ProductId,
+) -> Result<ReviewSummary, ApplicationError> {
+    let (
+        id,
+        parent_review_id,
+        rating,
+        title,
+        content,
+        author_name,
+        status,
+        is_staff_reply,
+        verified_buyer,
+        created_at,
+        updated_at,
+    ) = row;
+    row_to_summary(
+        (
+            id,
+            parent_review_id,
+            rating,
+            title,
+            content,
+            author_name,
+            None,
+            status,
+            is_staff_reply,
+            verified_buyer,
+            created_at,
+            updated_at,
+        ),
+        product_id,
+    )
 }
 
 fn row_to_summary(

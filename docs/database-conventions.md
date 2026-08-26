@@ -18,6 +18,11 @@ security-definer routines rather than receiving direct access to extension-owned
 tables. Scheduled scans derived from current business state are not queues and
 may use short, recoverable row leases.
 
+The Worker runs bounded retention for expired OAuth requests, codes, bearer
+tokens, refresh tokens, and Order tracking capabilities. Pending media uploads
+are not deleted by database maintenance because their corresponding object-store
+object must be removed through the storage provider first.
+
 ## Names and identifiers
 
 - Use lowercase `snake_case` ASCII identifiers and plural table names.
@@ -76,7 +81,9 @@ Migration files use zero-padded sequence numbers and concise English names. Befo
 The bootstrap uses `0001_platform.sql`, `0002_identity.sql`,
 `0003_commerce.sql`, `0004_integration.sql`,
 `0005_commerce_products.sql`, `0006_commerce_orders.sql`, and
-`0007_integration_analytics.sql`. `0004_integration.sql` creates the shared
+`0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql`.
+Release-hardening constraints, capability checks, and cleanup routines are
+defined in the migration that creates each dependent object. `0004_integration.sql` creates the shared
 `integration.provider_accounts` and `integration.provider_webhook_inbox` structures;
 Commerce references those account IDs while retaining payment and fulfillment
 state transitions. Within each file, define objects in dependency order:

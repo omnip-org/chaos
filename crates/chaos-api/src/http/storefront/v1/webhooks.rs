@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     routing::post,
 };
@@ -23,6 +23,7 @@ pub(crate) fn routes() -> Router<ApiState> {
             "/webhooks/email/{provider}/{provider_account_id}",
             post(receive_email_webhook),
         )
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 
 #[derive(serde::Deserialize)]

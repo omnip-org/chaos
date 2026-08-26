@@ -288,8 +288,6 @@ struct ReviewData {
     parent_id: Option<Uuid>,
     author_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    author_email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     rating: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
@@ -378,7 +376,6 @@ fn review_data(item: ReviewSummary) -> ReviewData {
         product_id: item.product_id.as_uuid(),
         parent_id: item.parent_review_id.map(ReviewId::as_uuid),
         author_name: item.author_name,
-        author_email: item.author_email,
         rating: item.rating,
         title: item.title,
         content: item.content,

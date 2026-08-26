@@ -1,7 +1,16 @@
 #!/bin/sh
 set -eu
 
-export CHAOS_IMAGE="${CHAOS_IMAGE:-ghcr.io/omnip-org/chaos:latest}"
+if [ -z "${CHAOS_IMAGE:-}" ]; then
+    echo "ERROR: CHAOS_IMAGE must be set to a version-pinned image (tag or digest)." >&2
+    exit 1
+fi
+case "$CHAOS_IMAGE" in
+    *:latest)
+        echo "ERROR: CHAOS_IMAGE must not use the mutable :latest tag." >&2
+        exit 1
+        ;;
+esac
 export ACTIVE_UPSTREAM_FILE="${ACTIVE_UPSTREAM_FILE:-nginx/conf.d/active-upstream.conf}"
 
 if [ ! -f .env ]; then

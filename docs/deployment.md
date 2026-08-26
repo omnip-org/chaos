@@ -69,12 +69,12 @@ To deploy, on the host itself (`/opt/chaos` by convention), pull the latest comp
 ```bash
 git pull --ff-only
 cd deploy
-./deploy.sh
+CHAOS_IMAGE=ghcr.io/omnip-org/chaos:0.1.0 ./deploy.sh
 ```
 
 If the NGINX `server_name` is not `chaos.omnip.org`, pass the matching value as `ORIGIN_HOST` when invoking the script so its final public gateway health probe uses the correct host.
 
-With no `CHAOS_IMAGE` set, this deploys `ghcr.io/omnip-org/chaos:latest` — whatever Release most recently published. Pin a version for reproducible releases and rollbacks. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); applies migrations; starts the inactive API color; waits for its container readiness check; writes the active upstream fragment inside the mounted `nginx/conf.d` directory; validates and reloads NGINX to switch traffic; stops the old color; starts the Worker with a process health check; and probes public `/health/ready`. If the inactive color fails, the active color is left serving. Deployment-local state is stored in the ignored `deploy/.active-api` file and ignored `deploy/nginx/conf.d/active-upstream.conf` fragment.
+`CHAOS_IMAGE` is required and must use a version tag or image digest; the mutable `:latest` tag is rejected. The same command serves the first deploy and every subsequent one — there is no separate manual first-deploy procedure. `deploy.sh` creates the external volumes if absent; pulls the image (never builds locally — `docker-compose.yaml` has no `build:` stanza for the API image); applies migrations; starts the inactive API color; waits for its container readiness check; writes the active upstream fragment inside the mounted `nginx/conf.d` directory; validates and reloads NGINX to switch traffic; stops the old color; starts the Worker with a process health check; and probes public `/health/ready`. If the inactive color fails, the active color is left serving. Deployment-local state is stored in the ignored `deploy/.active-api` file and ignored `deploy/nginx/conf.d/active-upstream.conf` fragment.
 
 Rollback to a specific version:
 

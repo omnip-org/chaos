@@ -19,7 +19,7 @@ CREATE TABLE commerce.carts (
     CONSTRAINT carts_store_id_id_key                   UNIQUE (store_id, id),
     CONSTRAINT carts_store_id_id_shopper_id_key        UNIQUE (store_id, id, shopper_id),
     CONSTRAINT carts_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES commerce.stores (id),
-    CONSTRAINT carts_sales_channel_fkey                FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels (id),
+    CONSTRAINT carts_store_id_sales_channel_fkey       FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id),
     CONSTRAINT carts_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
     CONSTRAINT carts_store_id_price_list_fkey          FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
     CONSTRAINT carts_version_nonnegative_check         CHECK (version >= 0)
@@ -57,6 +57,7 @@ CREATE TABLE commerce.orders (
     cart_id                         UUID                               NOT NULL,
     shopper_id                      UUID                               NOT NULL,
     idempotency_key                 UUID                               NOT NULL,
+    checkout_request_fingerprint    BYTEA,
     price_list_id                   UUID                               NOT NULL,
     currency                        CHAR(3)                            NOT NULL,
     status                          commerce.order_status              NOT NULL DEFAULT 'pending',
@@ -101,12 +102,13 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_sales_channel_id_shopper_id_idempotency_key_key UNIQUE (store_id, sales_channel_id, shopper_id, idempotency_key),
     CONSTRAINT orders_store_id_cart_fkey                FOREIGN KEY (store_id, cart_id) REFERENCES commerce.carts (store_id, id),
     CONSTRAINT orders_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
-    CONSTRAINT orders_sales_channel_fkey                FOREIGN KEY (sales_channel_id) REFERENCES commerce.store_sales_channels (id),
+    CONSTRAINT orders_store_id_sales_channel_fkey       FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id),
     CONSTRAINT orders_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
     CONSTRAINT orders_store_id_payment_provider_account_fkey FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_idempotency_key_not_nil_check     CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CONSTRAINT orders_checkout_request_fingerprint_check CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
     CONSTRAINT orders_order_number_check                CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
     CONSTRAINT orders_amounts_check                     CHECK (subtotal_amount_minor >= 0 AND discount_amount_minor >= 0 AND tax_amount_minor >= 0 AND shipping_amount_minor >= 0 AND total_amount_minor >= 0 AND refunded_amount_minor >= 0 AND refunded_amount_minor <= total_amount_minor),
     CONSTRAINT orders_contact_email_length_check        CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
@@ -221,6 +223,137 @@ CREATE INDEX fulfillments_order_created_idx ON commerce.fulfillments (store_id, 
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
 CREATE INDEX orders_shipping_provider_account_idx ON commerce.orders (store_id, shipping_provider_account_id) WHERE shipping_provider_account_id IS NOT NULL;
 
+CREATE FUNCTION commerce.validate_payment_provider_account()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    account_capability TEXT;
+BEGIN
+    SELECT account.capability::text
+      INTO account_capability
+      FROM integration.provider_accounts AS account
+     WHERE account.store_id = NEW.store_id
+       AND account.id = NEW.payment_provider_account_id;
+
+    IF account_capability IS DISTINCT FROM 'payment' THEN
+        RAISE EXCEPTION 'payment_provider_account_id must reference a payment account'
+            USING ERRCODE = '23503';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION commerce.validate_shipping_provider_account()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    account_capability TEXT;
+BEGIN
+    IF NEW.shipping_provider_account_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT account.capability::text
+      INTO account_capability
+      FROM integration.provider_accounts AS account
+     WHERE account.store_id = NEW.store_id
+       AND account.id = NEW.shipping_provider_account_id;
+
+    IF account_capability IS DISTINCT FROM 'shipping' THEN
+        RAISE EXCEPTION 'shipping_provider_account_id must reference a shipping account'
+            USING ERRCODE = '23503';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER orders_payment_provider_capability_check
+    BEFORE INSERT OR UPDATE OF store_id, payment_provider_account_id
+    ON commerce.orders
+    FOR EACH ROW EXECUTE FUNCTION commerce.validate_payment_provider_account();
+
+CREATE TRIGGER orders_shipping_provider_capability_check
+    BEFORE INSERT OR UPDATE OF store_id, shipping_provider_account_id
+    ON commerce.orders
+    FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
+
+CREATE TRIGGER refunds_payment_provider_capability_check
+    BEFORE INSERT OR UPDATE OF store_id, payment_provider_account_id
+    ON commerce.refunds
+    FOR EACH ROW EXECUTE FUNCTION commerce.validate_payment_provider_account();
+
+CREATE TRIGGER fulfillments_shipping_provider_capability_check
+    BEFORE INSERT OR UPDATE OF store_id, shipping_provider_account_id
+    ON commerce.fulfillments
+    FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
+
+CREATE FUNCTION commerce.cleanup_expired_order_tracking_tokens(batch_size INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    IF batch_size IS NULL OR batch_size NOT BETWEEN 1 AND 10000 THEN
+        RAISE EXCEPTION 'batch_size must be between 1 and 10000'
+            USING ERRCODE = '22023';
+    END IF;
+
+    WITH candidates AS (
+        SELECT store_id, order_id
+        FROM commerce.order_tracking_tokens
+        WHERE expires_at < CURRENT_TIMESTAMP
+        ORDER BY expires_at, store_id, order_id
+        LIMIT batch_size
+    )
+    DELETE FROM commerce.order_tracking_tokens AS token
+     USING candidates
+     WHERE token.store_id = candidates.store_id
+       AND token.order_id = candidates.order_id;
+
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END
+$$;
+
+CREATE FUNCTION integration.set_provider_webhook_aggregate (
+    event_id           UUID,
+    resolved_type      TEXT,
+    resolved_aggregate UUID
+)
+RETURNS BOOLEAN
+LANGUAGE SQL
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+    WITH updated AS (
+        UPDATE integration.provider_webhook_inbox AS event
+           SET aggregate_type = resolved_type,
+               aggregate_id = resolved_aggregate
+         WHERE event.id = event_id
+           AND resolved_type = 'order'
+           AND event.processing_status = 'pending'
+           AND event.store_id = nullif(current_setting('app.store_id', true), '')::uuid
+           AND EXISTS (
+               SELECT 1
+               FROM commerce.orders AS order_row
+               WHERE order_row.store_id = event.store_id
+                 AND order_row.id = resolved_aggregate
+           )
+        RETURNING 1
+    )
+    SELECT EXISTS (SELECT 1 FROM updated);
+$$;
+
 ALTER TABLE commerce.carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.cart_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
@@ -273,6 +406,15 @@ REVOKE DELETE ON commerce.refunds FROM chaos_runtime;
 REVOKE DELETE ON commerce.fulfillments FROM chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
+
+REVOKE ALL ON FUNCTION commerce.validate_payment_provider_account() FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.validate_shipping_provider_account() FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION commerce.validate_payment_provider_account() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
