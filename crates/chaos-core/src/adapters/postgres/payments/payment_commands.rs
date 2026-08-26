@@ -515,10 +515,11 @@ impl PostgresStripeRepository {
             // webhook) is kept for refunds/lookups — so this call only
             // needs to confirm the Order still exists to create against.
             // total_amount_minor is not yet known at this point (it is a
-            // Stripe-reported fact filled in only once the session
-            // settles), so the add_payment_info event value uses the same
-            // subtotal_amount_minor reference amount as the checkout
-            // command that was just executed.
+            // Stripe-reported fact filled in only once the session settles).
+            // This legacy internal marker is recorded with the same subtotal
+            // reference as the checkout command, but is not sent to Meta:
+            // creating a Checkout Session is not payment-information
+            // submission.
             let order = sqlx::query_as::<_, (Uuid, i64, String)>(
                 "SELECT shopper_id, subtotal_amount_minor, currency::text \
                  FROM commerce.orders \

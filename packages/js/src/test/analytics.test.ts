@@ -154,6 +154,7 @@ test("stores the page URL without its fragment and Meta browser matching context
   const environment = harness([{ ok: true, status: 200 }], {
     cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.123.cookie-click",
     href: "https://shop.example/products?variant=1#token=secret-capability",
+    search: "?variant=1",
     userAgent: "ChaosBrowser/2.0",
   });
   environment.analytics.pageView();
@@ -163,6 +164,19 @@ test("stores the page URL without its fragment and Meta browser matching context
   assert.equal(event.properties._meta.fbc, "fb.1.123.cookie-click");
   assert.equal(event.properties._meta.fbp, "fb.1.123.browser");
   assert.equal(event.properties._meta.client_user_agent, "ChaosBrowser/2.0");
+});
+
+test("prefers a current fbclid over a stale _fbc cookie and writes seconds", async () => {
+  const environment = harness([{ ok: true, status: 200 }], {
+    cookie: "_fbc=fb.1.1.old-click",
+    search: "?fbclid=current-click",
+  });
+  environment.analytics.pageView();
+  await environment.analytics.flush();
+  const event = JSON.parse(environment.requests[0]!.options.body).events[0];
+  const expectedFbc = `fb.1.${Math.floor(Date.parse("2026-08-16T00:00:00Z") / 1_000)}.current-click`;
+  assert.equal(event.properties._meta.fbc, expectedFbc);
+  assert.match(environment.document.cookie, new RegExp(`_fbc=${encodeURIComponent(expectedFbc)}`));
 });
 
 test("does not lose valid events when a server rejects one event in a batch", async () => {
@@ -304,11 +318,37 @@ test("does not send duration, refund, or arbitrary events to Meta Pixel", () => 
   environment.analytics.track("view_duration", { active_milliseconds: 1_000 });
   environment.analytics.track("refund", { value_minor: 100, currency: "USD" });
   environment.analytics.track("add_to_cart", { product_id: "product-1" });
+  environment.analytics.track("initiate_checkout", { order_id: "order-1" });
+  environment.analytics.track("add_payment_info", { order_id: "order-1" });
   environment.analytics.track("wishlist_added", { product_id: "product-1" });
   const trackCalls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
     (call) => call[0] === "track",
   );
   assert.equal(trackCalls.length, 0);
+});
+
+test("maps browser Meta standard event payloads", () => {
+  const environment = harness([], {
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  const pageViewId = environment.analytics.pageView({ path: "/products", title: "Shoes" });
+  const viewContentId = environment.analytics.viewContent({
+    productId: "product-1",
+    productVariantId: "variant-1",
+  });
+  const searchId = environment.analytics.search({ query: "shoes" });
+  const calls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue;
+  const findCall = (name: string) => calls.find((call) => call[0] === "track" && call[1] === name);
+
+  assert.deepEqual(findCall("PageView")?.[2], { page_path: "/products" });
+  assert.deepEqual(findCall("ViewContent")?.[2], {
+    content_ids: ["variant-1"],
+    content_type: "product",
+  });
+  assert.deepEqual(findCall("Search")?.[2], { search_string: "shoes" });
+  assert.deepEqual(findCall("PageView")?.[3], { eventID: pageViewId });
+  assert.deepEqual(findCall("ViewContent")?.[3], { eventID: viewContentId });
+  assert.deepEqual(findCall("Search")?.[3], { eventID: searchId });
 });
 
 test("maps purchase items to Meta content fields", () => {
@@ -332,5 +372,28 @@ test("maps purchase items to Meta content fields", () => {
     currency: "USD",
     contents: [{ id: "variant-1", quantity: 2, item_price: 6.49 }],
     num_items: 2,
+  });
+});
+
+test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => {
+  const environment = harness([], {
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+  environment.analytics.purchase({
+    orderId: "00000000-0000-4000-8000-000000000998",
+    valueMinor: 1_299,
+    currency: "mga",
+    items: [{ itemId: "variant-1", quantity: 1, priceMinor: 1_299 }],
+  });
+  const purchase = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
+    (call) => call[0] === "track" && call[1] === "Purchase",
+  );
+  assert.deepEqual(purchase?.[2], {
+    content_ids: ["variant-1"],
+    content_type: "product",
+    value: 1_299,
+    currency: "MGA",
+    contents: [{ id: "variant-1", quantity: 1, item_price: 1_299 }],
+    num_items: 1,
   });
 });

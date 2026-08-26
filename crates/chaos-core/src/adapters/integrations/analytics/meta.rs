@@ -53,10 +53,11 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
         command: &AnalyticsDeliveryCommand,
     ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError> {
         // Keep the first-party ledger broader than Meta's optimization events.
-        // Engagement duration and refund state are useful internally, but they
-        // are not browser conversions and must not be sent as custom Meta
-        // events. Returning a successful filtered receipt makes the delivery
-        // durable without retrying an intentionally excluded event.
+        // Engagement duration, refund state, and the provisional payment
+        // session marker are useful internally, but they are not Meta
+        // conversion events. Returning a successful filtered receipt makes
+        // the delivery durable without retrying an intentionally excluded
+        // event.
         if !is_meta_event(command) {
             return Ok(AnalyticsDeliveryReceipt {
                 provider_reference: Some("filtered".into()),
@@ -174,13 +175,7 @@ struct MetaResponse {
 fn is_supported_meta_event(name: &str) -> bool {
     matches!(
         name,
-        "page_view"
-            | "view_content"
-            | "search"
-            | "add_to_cart"
-            | "initiate_checkout"
-            | "add_payment_info"
-            | "purchase"
+        "page_view" | "view_content" | "search" | "add_to_cart" | "initiate_checkout" | "purchase"
     )
 }
 
@@ -191,10 +186,10 @@ fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
         "page_view" | "view_content" | "search" => source != Some("server"),
         // These are authoritative commerce events. The browser only projects
         // Purchase directly with the Order ID; it does not enqueue a second
-        // browser conversion for these names.
-        "add_to_cart" | "initiate_checkout" | "add_payment_info" | "purchase" => {
-            source == Some("server")
-        }
+        // browser conversion for these names. AddPaymentInfo is intentionally
+        // absent: Checkout Session creation is not payment-information
+        // submission, so the internal marker is filtered from Meta.
+        "add_to_cart" | "initiate_checkout" | "purchase" => source == Some("server"),
         _ => false,
     }
 }
@@ -206,7 +201,6 @@ fn meta_event_name(name: &str) -> &str {
         "search" => "Search",
         "add_to_cart" => "AddToCart",
         "initiate_checkout" => "InitiateCheckout",
-        "add_payment_info" => "AddPaymentInfo",
         "purchase" => "Purchase",
         _ => name,
     }
@@ -424,8 +418,8 @@ fn minor_to_major(value_minor: i64, currency: &str) -> f64 {
 
 fn currency_exponent(currency: &str) -> i32 {
     match currency.to_ascii_uppercase().as_str() {
-        "BIF" | "CLP" | "DJF" | "GNF" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX" | "VND"
-        | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        "BIF" | "CLP" | "DJF" | "GNF" | "JPY" | "KMF" | "KRW" | "MGA" | "PYG" | "RWF" | "UGX"
+        | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => 0,
         "BHD" | "JOD" | "KWD" | "OMR" | "TND" => 3,
         _ => 2,
     }
@@ -493,6 +487,10 @@ mod tests {
         let jpy = custom_data(&command(1_299, "JPY"));
         assert_eq!(jpy["value"], json!(1_299.0));
         assert_eq!(jpy["currency"], json!("JPY"));
+
+        let mga = custom_data(&command(1_299, "mga"));
+        assert_eq!(mga["value"], json!(1_299.0));
+        assert_eq!(mga["currency"], json!("MGA"));
     }
 
     #[test]
@@ -538,6 +536,7 @@ mod tests {
     fn only_standard_conversion_events_are_sent_to_meta() {
         assert!(is_supported_meta_event("purchase"));
         assert!(is_supported_meta_event("page_view"));
+        assert!(!is_supported_meta_event("add_payment_info"));
         assert!(!is_supported_meta_event("view_duration"));
         assert!(!is_supported_meta_event("refund"));
         assert!(!is_supported_meta_event("wishlist_added"));
@@ -547,16 +546,96 @@ mod tests {
     fn routes_meta_events_by_authoritative_source() {
         let mut browser = command(1_299, "USD");
         browser.properties = json!({"_source": "browser"});
-        browser.event_name = "page_view".into();
-        assert!(is_meta_event(&browser));
-        browser.event_name = "add_to_cart".into();
-        assert!(!is_meta_event(&browser));
+        for event_name in ["page_view", "view_content", "search"] {
+            browser.event_name = event_name.into();
+            assert!(is_meta_event(&browser), "browser {event_name}");
+        }
+        for event_name in [
+            "add_to_cart",
+            "initiate_checkout",
+            "purchase",
+            "add_payment_info",
+        ] {
+            browser.event_name = event_name.into();
+            assert!(!is_meta_event(&browser), "browser {event_name}");
+        }
 
         let mut server = browser;
         server.properties = json!({"_source": "server"});
-        assert!(is_meta_event(&server));
-        server.event_name = "page_view".into();
-        assert!(!is_meta_event(&server));
+        for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
+            server.event_name = event_name.into();
+            assert!(is_meta_event(&server), "server {event_name}");
+        }
+        for event_name in ["page_view", "view_content", "search", "add_payment_info"] {
+            server.event_name = event_name.into();
+            assert!(!is_meta_event(&server), "server {event_name}");
+        }
+    }
+
+    #[test]
+    fn serializes_the_authoritative_purchase_payload_contract() {
+        let mut input = command(1_299, "USD");
+        input.properties = json!({
+            "_source": "server",
+            "_meta": {
+                "source_url": "https://shop.example/checkout",
+                "fbc": "fb.1.123.click",
+                "fbp": "fb.1.123.browser"
+            },
+            "value_minor": 1_299,
+            "currency": "USD",
+            "items": [{"item_id": "variant-1", "quantity": 2, "price_minor": 649}]
+        });
+        let payload = serde_json::to_value(MetaRequest {
+            data: [MetaEvent {
+                event_name: meta_event_name(&input.event_name),
+                event_time: input.occurred_at.unix_timestamp(),
+                event_id: input.event_id.to_string(),
+                action_source: "website",
+                event_source_url: source_url(&input.properties),
+                user_data: meta_user_data(&input),
+                custom_data: custom_data(&input),
+            }],
+            test_event_code: None,
+        })
+        .expect("Meta payload should serialize");
+
+        assert_eq!(payload["data"][0]["event_name"], json!("Purchase"));
+        assert_eq!(payload["data"][0]["event_time"], json!(0));
+        assert_eq!(
+            payload["data"][0]["event_id"],
+            json!(input.event_id.to_string())
+        );
+        assert_eq!(payload["data"][0]["action_source"], json!("website"));
+        assert_eq!(
+            payload["data"][0]["event_source_url"],
+            json!("https://shop.example/checkout")
+        );
+        assert_eq!(
+            payload["data"][0]["user_data"]["fbc"],
+            json!("fb.1.123.click")
+        );
+        assert_eq!(
+            payload["data"][0]["user_data"]["fbp"],
+            json!("fb.1.123.browser")
+        );
+        assert_eq!(payload["data"][0]["custom_data"]["value"], json!(12.99));
+        assert_eq!(payload["data"][0]["custom_data"]["currency"], json!("USD"));
+        assert_eq!(
+            payload["data"][0]["custom_data"]["contents"],
+            json!([{"id": "variant-1", "quantity": 2, "item_price": 6.49}])
+        );
+        assert_eq!(
+            payload["data"][0]["custom_data"]["content_ids"],
+            json!(["variant-1"])
+        );
+        assert_eq!(
+            payload["data"][0]["custom_data"]["content_type"],
+            json!("product")
+        );
+        assert_eq!(payload["data"][0]["custom_data"]["num_items"], json!(2));
+        assert!(payload["data"][0]["custom_data"].get("_source").is_none());
+        assert!(payload["data"][0]["custom_data"].get("_meta").is_none());
     }
 
     #[test]

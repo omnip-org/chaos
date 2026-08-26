@@ -386,6 +386,10 @@ impl PostgresStorefrontSalesRepository {
             .iter()
             .map(CartLine::quantity)
             .sum();
+        // Stripe calculates tax, promotions, shipping, and the final total
+        // inside Checkout. InitiateCheckout therefore reports the immutable
+        // item subtotal known when the provisional Order is created; Purchase
+        // reports the final provider-reconciled total later.
         append_event(
             &mut transaction,
             AnalyticsEventToAppend {

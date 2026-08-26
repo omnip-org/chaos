@@ -66,10 +66,12 @@ const action = session.client_action;
 // a Stripe-Account header or an account_reference field.
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
-// browser SDK. AddToCart, InitiateCheckout, AddPaymentInfo, Purchase, and
-// Refund are recorded by authoritative server workflows. The client does not
-// synthesize AddPaymentInfo because the server records it after Stripe creates
-// the Session. After the server confirms payment, project Purchase with Order data:
+// browser SDK. AddToCart, InitiateCheckout, Purchase, and Refund are recorded
+// by authoritative server workflows. The client does not synthesize
+// AddPaymentInfo: the current Stripe Embedded Checkout integration has no
+// reliable payment-information submission signal, so the internal provisional
+// marker is intentionally filtered from Meta. After the server confirms
+// payment, project Purchase with Order data:
 chaos.analytics?.purchase({
   orderId: order.id,
   valueMinor: order.total_amount_minor,
@@ -103,11 +105,14 @@ and order/cart IDs as the durable association keys. UTM fields remain first-part
 analytics data and are not forwarded as Meta custom parameters.
 The server owns `add_to_cart`, `initiate_checkout`, `add_payment_info`, and
 `purchase` ledger conversions; do not duplicate those names through generic
-`track()`. The SDK keeps generic server-authoritative names out of browser
-providers; the Meta CAPI adapter routes them only from server-origin events.
+`track()`. `add_payment_info` is currently an internal-only provisional
+marker and is not sent to Meta. The SDK keeps generic server-authoritative
+names out of browser providers; the Meta CAPI adapter routes only the
+authoritative Meta conversion subset from server-origin events.
 
-Provider scripts are optional and load immediately when configured. For the
-Meta standard conversion events, Pixel receives the same event ID used by CAPI.
+Provider scripts are optional and load immediately when configured. For Meta
+events that are projected to both browser Pixel and CAPI, Pixel receives the
+same event ID used by CAPI.
 A confirmed Purchase uses the Order ID in both paths and is projected only once
 per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration,
 refund state, and store-defined behavior events remain first-party ledger facts

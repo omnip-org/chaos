@@ -502,13 +502,14 @@ export class ChaosStorefrontAnalytics {
   private metaContext(): Record<string, unknown> {
     // Only build fbc from a click observed in the current landing/session.
     // Reusing a historical last-non-direct fbclid with a new timestamp would
-    // create an invalid click context. A persisted _fbc cookie remains valid
-    // across sessions and is preferred when available.
+    // create an invalid click context. A current landing fbclid takes
+    // precedence over a previous _fbc cookie; without a current click, the
+    // persisted cookie remains valid across sessions.
     const fbclid = this.traffic?.session.fbclid;
     const cookieFbc = readCookie(this.documentRef, "_fbc");
-    const fbc = cookieFbc ?? this.resolveFbc(fbclid);
+    const fbc = fbclid ? this.resolveFbc(fbclid) : cookieFbc;
     const boundedFbc = boundedText(fbc, 512);
-    if (!cookieFbc && boundedFbc) writeCookie(this.documentRef, "_fbc", boundedFbc);
+    if (boundedFbc && boundedFbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", boundedFbc);
     return compact({
       source_url: currentSourceUrl(this.documentRef, this.windowRef),
       fbc: boundedFbc,
@@ -529,7 +530,7 @@ export class ChaosStorefrontAnalytics {
     ) {
       return (stored as Record<string, string>).fbc;
     }
-    const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
+    const fbc = `fb.1.${Math.floor(this.now() / 1_000)}.${fbclid}`;
     writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, { fbclid, fbc });
     return fbc;
   }
@@ -646,7 +647,6 @@ function metaEvent(
     search: "Search",
     add_to_cart: "AddToCart",
     initiate_checkout: "InitiateCheckout",
-    add_payment_info: "AddPaymentInfo",
     purchase: "Purchase",
   };
   const contentIds = commerceItemIds(properties);
@@ -673,7 +673,6 @@ function isMetaEvent(eventName: string): boolean {
     "search",
     "add_to_cart",
     "initiate_checkout",
-    "add_payment_info",
     "purchase",
   ].includes(eventName);
 }
@@ -691,7 +690,6 @@ function ga4Event(
     view_content: "view_item",
     add_to_cart: "add_to_cart",
     initiate_checkout: "begin_checkout",
-    add_payment_info: "add_payment_info",
     purchase: "purchase",
   };
   const itemId = commerceItemId(properties);
@@ -715,9 +713,10 @@ function ga4Event(
 
 function providerValue(valueMinor: unknown, currency: unknown): number | undefined {
   if (typeof valueMinor !== "number" || typeof currency !== "string") return undefined;
+  const normalizedCurrency = currency.toUpperCase();
   const zeroDecimal = new Set(["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"]);
   const threeDecimal = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
-  const divisor = zeroDecimal.has(currency) ? 1 : threeDecimal.has(currency) ? 1_000 : 100;
+  const divisor = zeroDecimal.has(normalizedCurrency) ? 1 : threeDecimal.has(normalizedCurrency) ? 1_000 : 100;
   return valueMinor / divisor;
 }
 

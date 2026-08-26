@@ -48,7 +48,9 @@ while a Stripe Embedded Checkout session is pending. Chaos creates one Order and
 one Stripe Checkout Session per payment attempt; Stripe collects the checkout
 address and calculates tax, promotions, shipping, and the final total. Verified
 Stripe webhooks reconcile those facts onto the Order, while Chaos retains
-inventory and fulfillment state.
+inventory and fulfillment state. The server-side `InitiateCheckout` analytics
+event uses the item subtotal known when that provisional Order is created; the
+server-side `Purchase` event uses the final provider-reconciled total.
 
 ## Payment and Refund
 
