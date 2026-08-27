@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{brand_name}} · Order {{order_number}} confirmed</title>
+  </head>
+  <body style="margin:0;background:{{background_color}};color:{{text_color}};font-family:Arial,Helvetica,sans-serif;line-height:1.5">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px;background:{{background_color}}">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:{{surface_color}};border-radius:16px;padding:32px">
+            <tr>
+              <td>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="height:48px;margin:0 0 28px;color:{{primary_color}};font-size:20px;font-weight:700">
+                  <tr><td>{{brand_header_html}}</td></tr>
+                </table>
+                <p style="margin:0 0 8px;color:{{muted_text_color}};font-size:14px">Order confirmation</p>
+                <h1 style="margin:0 0 24px;color:{{text_color}};font-size:28px;line-height:1.2">Your order is confirmed</h1>
+                <p style="margin:0 0 24px;color:{{text_color}}">Thanks for your order. We have received your payment and are preparing the next step.</p>
+                <div style="margin:0 0 24px">{{line_items_html}}</div>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 24px;border:1px solid {{accent_color}};border-radius:8px">
+                  <tr>
+                    <td style="padding:12px 16px;color:{{muted_text_color}}">Order</td>
+                    <td align="right" style="padding:12px 16px;color:{{text_color}};font-weight:600">{{order_number}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:12px 16px;color:{{muted_text_color}};border-top:1px solid {{accent_color}}">Total</td>
+                    <td align="right" style="padding:12px 16px;color:{{text_color}};font-weight:600;border-top:1px solid {{accent_color}}">{{total_amount}} {{currency}}</td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 24px">
+                  <a href="{{tracking_url}}" style="display:inline-block;background:{{primary_color}};color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px">Track your order</a>
+                </p>
+                <p style="margin:0 0 12px;color:{{muted_text_color}};font-size:14px">{{support_html}}</p>
+                <p style="margin:0;color:{{muted_text_color}};font-size:14px">Thank you for your order.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

@@ -40,7 +40,9 @@ pub use collection::{
     CreateCollectionRecord, StorefrontCollectionItem,
 };
 pub use email::{
-    EmailDelivery, EmailMessage, EmailProvider, EmailWebhookVerifier, VerifiedEmailWebhook,
+    EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailDelivery,
+    EmailMessage, EmailOrderLineItem, EmailProvider, EmailProviderAccountDetail,
+    EmailProviderAccountPage, EmailWebhookVerifier, VerifiedEmailWebhook,
 };
 pub use fulfillment::{FulfillmentDetail, ShippingProviderAccountDetail};
 pub use identity::{

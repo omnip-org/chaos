@@ -22,6 +22,7 @@ pub use catalog::{
     PostgresReviewRepository,
 };
 pub use fulfillment::PostgresFulfillmentRepository;
+pub(crate) use integrations::{EmailBrandWrite, EmailProviderAccountWrite};
 pub use integrations::{
     PostgresEmailRepository, PostgresIntegrationAccountRepository, PostgresIntegrationQueue,
     PostgresIntegrationWebhookRepository, PostgresShippingRepository,

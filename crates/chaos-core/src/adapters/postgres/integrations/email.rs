@@ -1,11 +1,22 @@
 use crate::{
     ApplicationError,
-    contracts::{EmailMessage, QueueJob},
+    contracts::{
+        EmailAccountConfiguration, EmailBrandConfiguration, EmailBrandDetail, EmailMessage,
+        EmailOrderLineItem, EmailProviderAccountDetail, EmailProviderAccountPage, QueueJob,
+    },
+    email_templates::{
+        OrderConfirmationTemplateData, default_order_confirmation_template,
+        render_order_confirmation,
+    },
     error::database_error,
+    store::StoreActor,
 };
-use chaos_domain::store::StorefrontOrigin;
-use serde_json::Value;
-use sqlx::PgPool;
+use chaos_domain::{
+    identity::Email,
+    store::{StoreId, StorefrontOrigin},
+};
+use serde_json::{Value, json};
+use sqlx::{PgPool, Postgres, Transaction};
 use url::Url;
 use uuid::Uuid;
 
@@ -14,9 +25,226 @@ pub struct PostgresEmailRepository {
     pool: PgPool,
 }
 
+pub(crate) struct EmailProviderAccountWrite<'a> {
+    pub display_name: &'a str,
+    pub credential_secret_reference: &'a str,
+    pub webhook_secret_reference: Option<&'a str>,
+    pub configuration: &'a EmailAccountConfiguration,
+    pub enabled: bool,
+}
+
+pub(crate) struct EmailBrandWrite {
+    pub brand_name: Option<String>,
+    pub logo_url: Option<String>,
+    pub primary_color: String,
+    pub accent_color: String,
+    pub background_color: String,
+    pub surface_color: String,
+    pub text_color: String,
+    pub muted_text_color: String,
+    pub support_email: Option<String>,
+    pub support_url: Option<String>,
+}
+
 impl PostgresEmailRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    async fn begin_human(
+        &self,
+        actor: StoreActor,
+    ) -> Result<Transaction<'static, Postgres>, ApplicationError> {
+        let mut transaction = self.pool.begin().await.map_err(database_error)?;
+        crate::adapters::postgres::database::set_admin_context(
+            &mut transaction,
+            Some(actor.user_id()),
+            actor.store_id(),
+        )
+        .await
+        .map_err(database_error)?;
+        Ok(transaction)
+    }
+
+    pub(crate) async fn list_provider_accounts(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        after: Option<Uuid>,
+        limit: u16,
+    ) -> Result<EmailProviderAccountPage, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let rows = sqlx::query_as::<_, EmailProviderAccountRow>(
+            "SELECT id, provider, display_name, enabled, \
+                    credential_secret_reference IS NOT NULL, \
+                    webhook_secret_reference IS NOT NULL, configuration, \
+                    created_at, updated_at \
+             FROM integration.provider_accounts \
+             WHERE store_id = $1 AND capability = 'email' \
+               AND ($2::uuid IS NULL OR id < $2) \
+             ORDER BY id DESC LIMIT $3",
+        )
+        .bind(store_id.as_uuid())
+        .bind(after)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let has_more = rows.len() > usize::from(limit);
+        let items = rows
+            .into_iter()
+            .take(usize::from(limit))
+            .map(email_provider_account_detail)
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(EmailProviderAccountPage { items, has_more })
+    }
+
+    pub(crate) async fn get_provider_account(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        id: Uuid,
+    ) -> Result<Option<EmailProviderAccountDetail>, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let value = load_email_provider_account(&mut transaction, store_id, id).await?;
+        transaction.commit().await.map_err(database_error)?;
+        value.map(email_provider_account_detail).transpose()
+    }
+
+    pub(crate) async fn create_provider_account(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        input: EmailProviderAccountWrite<'_>,
+    ) -> Result<EmailProviderAccountDetail, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO integration.provider_accounts \
+             (id, store_id, capability, provider, display_name, \
+              credential_secret_reference, webhook_secret_reference, configuration, enabled) \
+             VALUES ($1, $2, 'email', 'resend', $3, $4, $5, $6, $7)",
+        )
+        .bind(id)
+        .bind(store_id.as_uuid())
+        .bind(input.display_name)
+        .bind(input.credential_secret_reference)
+        .bind(input.webhook_secret_reference)
+        .bind(email_configuration_json(input.configuration))
+        .bind(input.enabled)
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_email_provider_account_write_error)?;
+        let value = load_email_provider_account(&mut transaction, store_id, id)
+            .await?
+            .ok_or_else(email_provider_account_corrupt_state)?;
+        transaction.commit().await.map_err(database_error)?;
+        email_provider_account_detail(value)
+    }
+
+    pub(crate) async fn update_provider_account(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        id: Uuid,
+        input: EmailProviderAccountWrite<'_>,
+    ) -> Result<EmailProviderAccountDetail, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let result = sqlx::query(
+            "UPDATE integration.provider_accounts SET display_name = $3, \
+                    credential_secret_reference = $4, \
+                    webhook_secret_reference = $5, configuration = configuration || $6, \
+                    enabled = $7, updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND id = $2 AND capability = 'email'",
+        )
+        .bind(store_id.as_uuid())
+        .bind(id)
+        .bind(input.display_name)
+        .bind(input.credential_secret_reference)
+        .bind(input.webhook_secret_reference)
+        .bind(email_configuration_json(input.configuration))
+        .bind(input.enabled)
+        .execute(&mut *transaction)
+        .await
+        .map_err(map_email_provider_account_write_error)?;
+        if result.rows_affected() != 1 {
+            return Err(email_provider_account_not_found(id));
+        }
+        let value = load_email_provider_account(&mut transaction, store_id, id)
+            .await?
+            .ok_or_else(email_provider_account_corrupt_state)?;
+        transaction.commit().await.map_err(database_error)?;
+        email_provider_account_detail(value)
+    }
+
+    pub(crate) async fn get_email_brand(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+    ) -> Result<EmailBrandDetail, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let row = load_email_brand(&mut transaction, store_id)
+            .await?
+            .ok_or_else(email_provider_account_not_found_for_brand)?;
+        let detail = email_brand_detail(row)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(detail)
+    }
+
+    pub(crate) async fn upsert_email_brand(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+        input: &EmailBrandWrite,
+    ) -> Result<EmailBrandDetail, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let result = sqlx::query(
+            "UPDATE integration.provider_accounts \
+             SET configuration = configuration || jsonb_build_object('brand', $2::jsonb), \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND capability = 'email' AND provider = 'resend'",
+        )
+        .bind(store_id.as_uuid())
+        .bind(email_brand_configuration_json(input))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if result.rows_affected() != 1 {
+            return Err(email_provider_account_not_found_for_brand());
+        }
+        let row = load_email_brand(&mut transaction, store_id)
+            .await?
+            .ok_or_else(email_provider_account_not_found_for_brand)?;
+        let detail = email_brand_detail(row)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(detail)
+    }
+
+    pub(crate) async fn reset_email_brand(
+        &self,
+        actor: StoreActor,
+        store_id: StoreId,
+    ) -> Result<EmailBrandDetail, ApplicationError> {
+        let mut transaction = self.begin_human(actor).await?;
+        let result = sqlx::query(
+            "UPDATE integration.provider_accounts \
+             SET configuration = configuration - 'brand', updated_at = CURRENT_TIMESTAMP \
+             WHERE store_id = $1 AND capability = 'email' AND provider = 'resend'",
+        )
+        .bind(store_id.as_uuid())
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if result.rows_affected() != 1 {
+            return Err(email_provider_account_not_found_for_brand());
+        }
+        let row = load_email_brand(&mut transaction, store_id)
+            .await?
+            .ok_or_else(email_provider_account_not_found_for_brand)?;
+        let detail = email_brand_detail(row)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(detail)
     }
 
     /// Returns `None` when the Order has no contact email yet (the shopper's
@@ -46,12 +274,11 @@ impl PostgresEmailRepository {
             .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
-        let row =
-            sqlx::query_as::<_, (Option<String>, String, i64, String, String, String, String)>(
-                "SELECT order_row.contact_email::text, order_row.order_number, \
+        let row = sqlx::query_as::<_, EmailOrderConfirmationRow>(
+            "SELECT order_row.contact_email::text, order_row.order_number, \
                     order_row.total_amount_minor, order_row.currency::text, \
                     channel.storefront_origin, \
-                    account.provider, account.credential_secret_reference \
+                    account.provider, account.credential_secret_reference, account.configuration \
              FROM commerce.orders AS order_row \
              INNER JOIN commerce.store_sales_channels AS channel \
                ON channel.store_id = order_row.store_id \
@@ -59,45 +286,378 @@ impl PostgresEmailRepository {
              INNER JOIN integration.provider_accounts AS account \
                ON account.store_id = order_row.store_id \
               AND account.capability = 'email' \
+              AND account.provider = 'resend' \
               AND account.enabled \
               AND account.credential_secret_reference IS NOT NULL \
              WHERE order_row.store_id = $1 AND order_row.id = $2 \
              ORDER BY account.id LIMIT 1",
-            )
-            .bind(job.store_id)
-            .bind(order_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(database_error)?
-            .ok_or_else(email_provider_unavailable)?;
-        transaction.commit().await.map_err(database_error)?;
-        let Some(contact_email) = row.0 else {
+        )
+        .bind(job.store_id)
+        .bind(order_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(email_provider_unavailable)?;
+        let (
+            contact_email,
+            order_number,
+            total_amount_minor,
+            currency,
+            storefront_origin,
+            provider,
+            credential_secret_reference,
+            account_configuration,
+        ) = row;
+        let Some(contact_email) = contact_email else {
+            transaction.commit().await.map_err(database_error)?;
             return Ok(None);
         };
-        let sender = job
-            .payload
-            .get("sender")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("orders@chaos.example");
-        let tracking_url = order_tracking_url(&row.4, tracking_token)?;
-        let text = format!(
-            "Your order {} has been confirmed. Total: {} {}. Track your order: {}",
-            row.1, row.2, row.3, tracking_url
+        let sender = parse_email_account_configuration(account_configuration)?.sender();
+        let tracking_url = order_tracking_url(&storefront_origin, tracking_token)?;
+        let brand = load_email_brand(&mut transaction, StoreId::from_uuid(job.store_id))
+            .await?
+            .ok_or_else(email_provider_account_not_found_for_brand)
+            .and_then(email_brand_detail)?
+            .configuration;
+        let line_items = sqlx::query_as::<_, EmailOrderLineRow>(
+            "SELECT product_title, variant_title, sku, quantity, \
+                    unit_price_amount_minor, subtotal_amount_minor \
+             FROM commerce.order_lines \
+             WHERE store_id = $1 AND order_id = $2 \
+             ORDER BY position",
+        )
+        .bind(job.store_id)
+        .bind(order_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .map(email_order_line_item)
+        .collect::<Vec<_>>();
+        transaction.commit().await.map_err(database_error)?;
+        let template = render_order_confirmation(
+            &default_order_confirmation_template(),
+            &OrderConfirmationTemplateData {
+                order_number: &order_number,
+                total_amount_minor,
+                currency: &currency,
+                tracking_url: tracking_url.as_str(),
+                brand: &brand,
+                line_items: &line_items,
+            },
         );
         Ok(Some((
-            row.5,
-            row.6,
+            provider,
+            credential_secret_reference,
             EmailMessage {
                 from: sender.to_owned(),
                 to: contact_email,
-                subject: format!("Order {} confirmed", row.1),
-                text,
-                html: None,
+                subject: template.subject,
+                text: template.text,
+                html: Some(template.html),
                 idempotency_key: format!("order-confirmed-{}", order_id.simple()),
             },
         )))
     }
+}
+
+type EmailProviderAccountRow = (
+    Uuid,
+    String,
+    String,
+    bool,
+    bool,
+    bool,
+    Value,
+    time::OffsetDateTime,
+    time::OffsetDateTime,
+);
+
+type EmailOrderConfirmationRow = (
+    Option<String>,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    Value,
+);
+
+type EmailOrderLineRow = (String, String, Option<String>, i32, i64, i64);
+
+type EmailBrandRow = (String, Value);
+
+async fn load_email_brand(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+) -> Result<Option<EmailBrandRow>, ApplicationError> {
+    sqlx::query_as::<_, EmailBrandRow>(
+        "SELECT store.name, account.configuration \
+         FROM commerce.stores AS store \
+         INNER JOIN integration.provider_accounts AS account \
+           ON account.store_id = store.id \
+          AND account.capability = 'email' \
+          AND account.provider = 'resend' \
+         WHERE store.id = $1 \
+         ORDER BY account.id LIMIT 1",
+    )
+    .bind(store_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+fn email_brand_detail(row: EmailBrandRow) -> Result<EmailBrandDetail, ApplicationError> {
+    let (store_name, value) = row;
+    let store_name = valid_brand_name(store_name)?;
+    let Some(brand) = value.get("brand") else {
+        return Ok(EmailBrandDetail {
+            configuration: EmailBrandConfiguration::defaults(store_name),
+            customized: false,
+        });
+    };
+    let brand = brand.as_object().ok_or_else(email_brand_corrupt_state)?;
+    let configuration = EmailBrandConfiguration {
+        brand_name: brand_name(brand, &store_name)?,
+        logo_url: optional_brand_url(brand, "logo_url")?,
+        primary_color: required_brand_color(brand, "primary_color")?,
+        accent_color: required_brand_color(brand, "accent_color")?,
+        background_color: required_brand_color(brand, "background_color")?,
+        surface_color: required_brand_color(brand, "surface_color")?,
+        text_color: required_brand_color(brand, "text_color")?,
+        muted_text_color: required_brand_color(brand, "muted_text_color")?,
+        support_email: optional_brand_email(brand, "support_email")?,
+        support_url: optional_brand_url(brand, "support_url")?,
+    };
+    Ok(EmailBrandDetail {
+        configuration,
+        customized: true,
+    })
+}
+
+fn required_brand_string(
+    brand: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, ApplicationError> {
+    brand
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(email_brand_corrupt_state)
+}
+
+fn brand_name(
+    brand: &serde_json::Map<String, Value>,
+    fallback: &str,
+) -> Result<String, ApplicationError> {
+    match brand.get("brand_name") {
+        None | Some(Value::Null) => Ok(fallback.to_owned()),
+        Some(Value::String(value)) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Ok(fallback.to_owned())
+            } else if value.chars().count() > 120 || value.chars().any(char::is_control) {
+                Err(email_brand_corrupt_state())
+            } else {
+                Ok(value.to_owned())
+            }
+        }
+        _ => Err(email_brand_corrupt_state()),
+    }
+}
+
+fn valid_brand_name(value: String) -> Result<String, ApplicationError> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 120 || value.chars().any(char::is_control) {
+        return Err(email_brand_corrupt_state());
+    }
+    Ok(value.to_owned())
+}
+
+fn required_brand_color(
+    brand: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<String, ApplicationError> {
+    let value = required_brand_string(brand, key)?;
+    if value.len() != 7
+        || !value.starts_with('#')
+        || !value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(email_brand_corrupt_state());
+    }
+    Ok(value.to_ascii_uppercase())
+}
+
+fn optional_brand_string(
+    brand: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, ApplicationError> {
+    match brand.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        _ => Err(email_brand_corrupt_state()),
+    }
+}
+
+fn optional_brand_url(
+    brand: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, ApplicationError> {
+    let Some(value) = optional_brand_string(brand, key)? else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    let parsed = Url::parse(value).map_err(|_| email_brand_corrupt_state())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || value.len() > 2048
+        || value.chars().any(char::is_control)
+    {
+        return Err(email_brand_corrupt_state());
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn optional_brand_email(
+    brand: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, ApplicationError> {
+    optional_brand_string(brand, key)?
+        .map(|value| {
+            Email::parse(value)
+                .map(|email| email.as_str().to_owned())
+                .map_err(|_| email_brand_corrupt_state())
+        })
+        .transpose()
+}
+
+fn email_order_line_item(row: EmailOrderLineRow) -> EmailOrderLineItem {
+    EmailOrderLineItem {
+        product_title: row.0,
+        variant_title: row.1,
+        sku: row.2,
+        quantity: row.3,
+        unit_price_amount_minor: row.4,
+        subtotal_amount_minor: row.5,
+    }
+}
+
+async fn load_email_provider_account(
+    transaction: &mut Transaction<'static, Postgres>,
+    store_id: StoreId,
+    id: Uuid,
+) -> Result<Option<EmailProviderAccountRow>, ApplicationError> {
+    sqlx::query_as::<_, EmailProviderAccountRow>(
+        "SELECT id, provider, display_name, enabled, \
+                credential_secret_reference IS NOT NULL, \
+                webhook_secret_reference IS NOT NULL, configuration, \
+                created_at, updated_at \
+         FROM integration.provider_accounts \
+         WHERE store_id = $1 AND id = $2 AND capability = 'email'",
+    )
+    .bind(store_id.as_uuid())
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+fn email_provider_account_detail(
+    row: EmailProviderAccountRow,
+) -> Result<EmailProviderAccountDetail, ApplicationError> {
+    Ok(EmailProviderAccountDetail {
+        id: row.0,
+        provider: row.1,
+        display_name: row.2,
+        enabled: row.3,
+        credentials_configured: row.4,
+        webhook_configured: row.5,
+        configuration: parse_email_account_configuration(row.6)?,
+        created_at: row.7,
+        updated_at: row.8,
+    })
+}
+
+fn email_configuration_json(configuration: &EmailAccountConfiguration) -> Value {
+    json!({
+        "from_email": configuration.from_email,
+        "from_name": configuration.from_name,
+    })
+}
+
+fn email_brand_configuration_json(configuration: &EmailBrandWrite) -> Value {
+    json!({
+        "brand_name": configuration.brand_name,
+        "logo_url": configuration.logo_url,
+        "primary_color": configuration.primary_color,
+        "accent_color": configuration.accent_color,
+        "background_color": configuration.background_color,
+        "surface_color": configuration.surface_color,
+        "text_color": configuration.text_color,
+        "muted_text_color": configuration.muted_text_color,
+        "support_email": configuration.support_email,
+        "support_url": configuration.support_url,
+    })
+}
+
+fn parse_email_account_configuration(
+    value: Value,
+) -> Result<EmailAccountConfiguration, ApplicationError> {
+    let from_email = value
+        .get("from_email")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(email_provider_account_corrupt_state)?;
+    let from_name = match value.get("from_name") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+        _ => return Err(email_provider_account_corrupt_state()),
+    };
+    Ok(EmailAccountConfiguration {
+        from_email: from_email.to_owned(),
+        from_name,
+    })
+}
+
+fn map_email_provider_account_write_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(database) = &error
+        && database.constraint() == Some("provider_accounts_store_capability_provider_key")
+    {
+        return ApplicationError::Conflict {
+            code: "email_provider_already_configured",
+            message: "the Resend Email Provider is already configured for this Store",
+        };
+    }
+    database_error(error)
+}
+
+fn email_provider_account_not_found(id: Uuid) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "email_provider_account",
+        id: id.to_string(),
+    }
+}
+
+fn email_provider_account_corrupt_state() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "database contains invalid Email Provider account state"
+    ))
+}
+
+fn email_provider_account_not_found_for_brand() -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "email_provider_account",
+        id: "email_brand".into(),
+    }
+}
+
+fn email_brand_corrupt_state() -> ApplicationError {
+    ApplicationError::Unexpected(anyhow::anyhow!(
+        "database contains invalid Email brand state"
+    ))
 }
 
 fn order_tracking_url(origin: &str, tracking_token: &str) -> Result<Url, ApplicationError> {
@@ -130,7 +690,9 @@ fn invalid_email_url(error: String) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use super::order_tracking_url;
+    use serde_json::json;
+
+    use super::{email_brand_detail, order_tracking_url};
 
     #[test]
     fn tracking_url_uses_the_sales_channel_origin() {
@@ -145,5 +707,56 @@ mod tests {
             second.as_str(),
             "https://second.example.test/orders/track#token=ot_second"
         );
+    }
+
+    #[test]
+    fn reads_the_embedded_brand_configuration() {
+        let detail = email_brand_detail((
+            "Store fallback".into(),
+            json!({
+                "brand": {
+                    "brand_name": "  Example Brand  ",
+                    "logo_url": "https://cdn.example/logo.png",
+                    "primary_color": "#175cd3",
+                    "accent_color": "#0e7490",
+                    "background_color": "#f4f6f8",
+                    "surface_color": "#ffffff",
+                    "text_color": "#17202a",
+                    "muted_text_color": "#667085",
+                    "support_email": "SUPPORT@example.com",
+                    "support_url": "https://example.com/help"
+                }
+            }),
+        ))
+        .unwrap();
+
+        assert!(detail.customized);
+        assert_eq!(detail.configuration.brand_name, "Example Brand");
+        assert_eq!(detail.configuration.primary_color, "#175CD3");
+        assert_eq!(
+            detail.configuration.support_email.as_deref(),
+            Some("support@example.com")
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_embedded_brand_values() {
+        let result = email_brand_detail((
+            "Store fallback".into(),
+            json!({
+                "brand": {
+                    "brand_name": "Example Brand",
+                    "logo_url": "javascript:alert(1)",
+                    "primary_color": "#175CD3",
+                    "accent_color": "#0E7490",
+                    "background_color": "#F4F6F8",
+                    "surface_color": "#FFFFFF",
+                    "text_color": "#17202A",
+                    "muted_text_color": "not-a-color"
+                }
+            }),
+        ));
+
+        assert!(result.is_err());
     }
 }

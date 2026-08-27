@@ -34,7 +34,7 @@ impl ChaosMcp {
         router
     }
 
-    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 15] {
+    fn capability_tool_routers() -> [ToolRouter<ChaosMcp>; 16] {
         [
             Self::products_tool_router(),
             Self::stores_tool_router(),
@@ -49,6 +49,7 @@ impl ChaosMcp {
             Self::reviews_tool_router(),
             Self::publishable_keys_tool_router(),
             Self::analytics_tool_router(),
+            Self::email_tool_router(),
             Self::provider_secrets_tool_router(),
             Self::fulfillment_tool_router(),
         ]
@@ -117,6 +118,13 @@ mod tests {
         assert!(aggregate_router.has_route("attach_product_meta_media"));
         assert!(aggregate_router.has_route("list_product_meta_media"));
         assert!(aggregate_router.has_route("archive_product_meta_media"));
+        assert!(aggregate_router.has_route("list_email_accounts"));
+        assert!(aggregate_router.has_route("get_email_account"));
+        assert!(aggregate_router.has_route("create_email_account"));
+        assert!(aggregate_router.has_route("update_email_account"));
+        assert!(aggregate_router.has_route("get_email_brand"));
+        assert!(aggregate_router.has_route("configure_email_brand"));
+        assert!(aggregate_router.has_route("reset_email_brand"));
         assert!(aggregate_router.has_route("list_review_media"));
         assert!(aggregate_router.has_route("archive_review_media"));
         assert!(aggregate_router.has_route("create_manual_review"));

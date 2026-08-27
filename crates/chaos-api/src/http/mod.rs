@@ -16,7 +16,7 @@ use chaos_core::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
         PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
         PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresFulfillmentRepository,
+        PostgresCollectionRepository, PostgresEmailRepository, PostgresFulfillmentRepository,
         PostgresIntegrationAccountRepository, PostgresIntegrationWebhookRepository,
         PostgresInventoryRepository, PostgresMediaAssetRepository,
         PostgresOrderManagementRepository, PostgresPricingManagementRepository,
@@ -51,7 +51,7 @@ use chaos_core::{
         Clock, IdentityAuthentication, MediaStorage, PaymentWebhookVerifierRegistry,
         ShopperCredentialCodec,
     },
-    email::EmailWebhooks,
+    email::{EmailBrandAdministration, EmailProviderAccountAdministration, EmailWebhooks},
     fulfillment::FulfillmentManagement,
     identity::{AccessKeyAuthentication, AccessKeyManagement, IdentityService},
     inventory::InventoryManagement,
@@ -112,6 +112,8 @@ pub struct ApiState {
     pub order_management: Arc<OrderManagement>,
     pub payment_service: Arc<PaymentService>,
     pub email_webhooks: Arc<EmailWebhooks>,
+    pub email_provider_account_administration: Arc<EmailProviderAccountAdministration>,
+    pub email_brand_administration: Arc<EmailBrandAdministration>,
     pub stripe_account_administration: Arc<StripeAccountAdministration>,
     pub fulfillment_management: Arc<FulfillmentManagement>,
     pub clock: Arc<dyn Clock>,
@@ -318,6 +320,11 @@ impl ApiState {
             )),
             [resend_provider],
         );
+        let email_repository =
+            Arc::new(PostgresEmailRepository::new(infrastructure.runtime_pool()));
+        let email_provider_account_administration =
+            EmailProviderAccountAdministration::new(email_repository.clone());
+        let email_brand_administration = EmailBrandAdministration::new(email_repository);
         let stripe_account_administration =
             StripeAccountAdministration::new(payment_repository.clone());
         let fulfillment_management = FulfillmentManagement::new(Arc::new(
@@ -360,6 +367,8 @@ impl ApiState {
             order_management: Arc::new(order_management),
             payment_service: Arc::new(payment_service),
             email_webhooks: Arc::new(email_webhooks),
+            email_provider_account_administration: Arc::new(email_provider_account_administration),
+            email_brand_administration: Arc::new(email_brand_administration),
             stripe_account_administration: Arc::new(stripe_account_administration),
             fulfillment_management: Arc::new(fulfillment_management),
             clock: Arc::new(SystemClock),

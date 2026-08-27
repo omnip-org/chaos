@@ -15,6 +15,7 @@ mod shipping;
 mod webhooks;
 pub use accounts::PostgresIntegrationAccountRepository;
 pub use email::PostgresEmailRepository;
+pub(crate) use email::{EmailBrandWrite, EmailProviderAccountWrite};
 pub use shipping::PostgresShippingRepository;
 pub use webhooks::PostgresIntegrationWebhookRepository;
 

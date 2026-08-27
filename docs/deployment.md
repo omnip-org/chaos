@@ -50,6 +50,26 @@ An owner uploads a Provider Key with the `create_provider_secret` MCP tool. The 
 
 The response contains a newly generated `enc://...` reference. The plaintext is not returned again or stored anywhere in plaintext. Use that reference in the existing Provider account create/update request.
 
+For transactional Email, create an `email_credential` secret with the Resend API
+key, optionally create an `email_webhook` secret with the Resend signing secret,
+then call `create_email_account` with those references and a sender address that
+has been verified in Resend. The tool returns the Store-specific webhook URL;
+delivery webhooks use the `svix-id`, `svix-timestamp`, and `svix-signature`
+headers. `update_email_account` rotates the references and sender configuration
+without exposing either secret.
+
+Transactional Email uses one platform-owned template per notification type.
+The order-confirmation template always renders the order snapshot, product
+lines, totals, currency, and tracking URL in server code; Stores cannot replace
+that HTML and accidentally omit business logic. Store-specific brand tokens
+are persisted under the `brand` key in the Email account's
+`integration.provider_accounts.configuration` JSONB. Use `get_email_brand` to
+inspect them, `configure_email_brand` to save a Store name, public HTTPS logo,
+colors, and optional support contacts, and `reset_email_brand` to restore the
+defaults. The global source template files live in
+`crates/chaos-core/templates/email/`: `order-confirmed.subject.txt`,
+`order-confirmed.txt`, and `order-confirmed.html`.
+
 Adding or changing an encrypted Provider Key takes effect on the next Provider operation. It does not require a deployment or restart. Submit a new value through MCP and update the Provider account reference when the 24-hour application-level overlap is required.
 
 ## Deployment
@@ -118,6 +138,6 @@ The legacy bootstrap remains available for clients that cannot use OAuth:
 
 ## Deployment secrets and rotation
 
-The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, provider API base URLs, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Order-confirmation email delivery runs in the Worker from the Store's `integration.provider_accounts` row; verified delivery callbacks are retained in `integration.provider_webhook_inbox`, while a separate notification projection is not yet maintained. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
+The host's `.env` (mode `0600`, git-ignored, never leaves the host) contains platform bootstrap configuration only: database access, token signing, media storage, provider API base URLs, and `CHAOS_PROVIDER_SECRET_KEY`. Identity does not use email delivery. Order-confirmation email delivery runs in the Worker from the Store's `integration.provider_accounts` account and its nested `configuration.brand` values; verified delivery callbacks are retained in `integration.provider_webhook_inbox`, while a separate notification projection is not yet maintained. The file is created once from `.env.example` during host bootstrap and edited by hand thereafter; nothing writes to it automatically. Store-specific Provider Key plaintext is never copied into `.env` or anywhere else — only the encryption key that seals it in PostgreSQL lives there.
 
 Editing `.env` and re-running `./deploy.sh` performs a normal blue/green API rollout and restarts the Worker with the same image. Changing or adding an encrypted Provider secret through MCP does not require a deploy.

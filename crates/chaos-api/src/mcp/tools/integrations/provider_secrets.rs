@@ -44,14 +44,14 @@ pub struct CreateProviderSecretParams {
 #[tool_router(router = provider_secrets_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(
-        description = "Store a provider secret (payment/shipping/analytics credential) in the \
+        description = "Store a provider secret (payment/email/shipping/analytics credential or webhook secret) in the \
                         selected Store. For Stripe, payment_credential must be JSON with \
                         secret_key and publishable_key, while payment_webhook must be the raw \
-                        Stripe whsec_... endpoint signing secret. The value is encrypted at rest and \
-                        referenced by an opaque string thereafter; it cannot be read back. \
-                        Calling it twice creates two independent \
-                        secret references. There is no update or \
-                        delete tool for provider secrets; create a new one to rotate. Requires \
+                        Stripe whsec_... endpoint signing secret. For Resend, email_credential is the \
+                        raw Resend API key and email_webhook is the raw Resend signing secret. The value \
+                        is encrypted at rest and referenced by an opaque string thereafter; it cannot be \
+                        read back. Calling it twice creates two independent secret references. There is no \
+                        update or delete tool for provider secrets; create a new one to rotate. Requires \
                         confirm: true."
     )]
     async fn create_provider_secret(

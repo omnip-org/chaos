@@ -15,6 +15,7 @@ pub mod sales;
 pub mod shipping;
 pub mod store;
 
+mod email_templates;
 mod error;
 
 pub use error::ApplicationError;
