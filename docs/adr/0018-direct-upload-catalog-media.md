@@ -9,20 +9,21 @@ Catalog images and videos are large binary objects with different scaling, avail
 
 ## Decision
 
-Catalog owns Media Asset metadata and its attachment to one Product and optional Variant in the same Store. Object bytes live behind a provider-neutral `MediaStorage` application port implemented by an S3-compatible infrastructure adapter.
+Catalog owns reusable Media Asset metadata and its typed attachment to a Product, Review, or Product metadata path in the same Store. Product, Review, and Product metadata attachment tables own target-specific fields such as position, alt text, and JSON Pointer path. Object bytes live behind a provider-neutral `MediaStorage` application port implemented by an S3-compatible infrastructure adapter.
 
-Creation records a `pending_upload` asset with a server-generated object key, normalized file name, allowlisted media type, bounded byte count, expected SHA-256 digest, alt text, and stable position. The application returns a short-lived presigned PUT request whose signed headers bind the content type, content length, and checksum. An expired upload request can be refreshed only while the asset remains pending.
+Creation records a `pending_upload` asset with a server-generated object key, normalized file name, allowlisted media type, bounded byte count, and expected SHA-256 digest. The application returns a short-lived presigned PUT request whose signed headers bind the content type, content length, and checksum. An expired upload request can be refreshed only while the asset remains pending. Target-specific placement and alt text are added later through typed attachment operations.
 
 Completion performs a bounded object metadata request through the storage port and compares object key, media type, byte count, and checksum with the authoritative pending record. Only an exact match transitions the asset to `ready`. Missing or mismatched objects remain pending and return a conflict. `archived` is terminal and immediately removes the asset from Storefront reads. Runtime writes append immutable Media events and cannot delete Media roots or audit evidence.
 
 The public URL is derived from the configured asset origin and server-owned object key; clients cannot submit it. The API never fetches client-controlled URLs. Storefront media is returned only when the parent Store, Sales Channel, Product, Product publication, and Media Asset are all active or ready as applicable.
 
-The MCP surface follows the same split: `prepare_product_media_upload` accepts
-only file metadata and returns a short-lived presigned PUT request;
-the MCP Host uploads the original bytes directly to object storage; and
-`complete_product_media_upload` verifies the stored object before the asset
-becomes ready. `refresh_product_media_upload` reissues the PUT request while
-the asset is still pending. No MCP tool accepts inline Base64 media bytes.
+The MCP surface follows the same split: `prepare_media_upload` accepts only
+file metadata and returns a short-lived presigned PUT request; the MCP Host
+uploads the original bytes directly to object storage; and
+`complete_media_upload` verifies the stored object before the asset becomes
+ready. `refresh_media_upload` reissues the PUT request while the asset is still
+pending. A ready asset is then attached through a typed Product, Review, or
+Product metadata tool. No MCP tool accepts inline Base64 media bytes.
 The upload request is carried in the Host metadata channel under
 `com.omniporg.chaos/media-upload`; the model-facing tool content contains only
 the pending asset and next-step information. Hosts must treat the metadata as a
@@ -35,6 +36,8 @@ short-lived bearer credential and must not log or expose it.
 - A successful client PUT is not treated as ready until storage metadata is verified.
 - Storage-provider SDK types stay in infrastructure.
 - Image transformation and CDN cache policy can evolve behind the asset origin without changing Catalog identity.
+- Product, Review, and Product metadata images share one verified object lifecycle without allowing Review images to leak into Product gallery reads.
+- Product metadata stores a stable `media_asset_id` reference, while Storefront reads resolve the current public URL from the ready Media Asset. A typed metadata link preserves lifecycle and prevents a managed reference from being silently overwritten.
 
 ## Rejected alternatives
 

@@ -11,7 +11,7 @@ use chaos_core::{
         StorefrontSelectedOption,
     },
 };
-use chaos_domain::catalog::{ProductId, ReviewId};
+use chaos_domain::catalog::{MediaAssetStatus, ProductId, ReviewId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -379,7 +379,12 @@ fn review_data(item: ReviewSummary) -> ReviewData {
         rating: item.rating,
         title: item.title,
         content: item.content,
-        images: Vec::new(),
+        images: item
+            .images
+            .into_iter()
+            .filter(|image| image.status == MediaAssetStatus::Ready)
+            .filter_map(|image| image.public_url)
+            .collect(),
         status: item.status.as_str(),
         is_staff_reply: item.is_staff_reply,
         verified_buyer: item.verified_buyer,

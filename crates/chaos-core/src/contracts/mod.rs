@@ -54,13 +54,16 @@ pub use integration::{
 };
 pub use inventory::{InventoryAdjustment, VariantInventoryView};
 pub use media::{
-    CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaStorage, MediaUploadRequest,
-    PendingMediaUpload, StoredMediaObject,
+    CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetStorageRecord,
+    MediaStorage, MediaUploadRequest, ProductMediaAssetItem, ProductMediaAssetLinkRecord,
+    ProductMediaAssetMutation, ProductMetaMediaAssetItem, ProductMetaMediaAssetLinkRecord,
+    ProductMetaMediaAssetMutation, ReviewMediaAssetItem, ReviewMediaAssetLinkRecord,
+    ReviewMediaAssetMutation, StoredMediaObject,
 };
 pub use pricing::{PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem};
 pub use provider_secret::{IntegrationSecretResolver, ProviderSecretKind, ProviderSecretWriter};
 pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyListItem};
-pub use review::{ReviewSummary, SubmitReviewRecord};
+pub use review::{CreateManualReviewRecord, ReviewMediaSummary, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, OrderDetail, OrderFulfillmentItem, OrderLineItem, OrderListFilter,
     OrderPage, OrderPaymentAttemptItem, OrderRefundItem, StripeCheckoutDraft,

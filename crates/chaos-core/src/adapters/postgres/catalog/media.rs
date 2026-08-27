@@ -1,15 +1,21 @@
 use crate::{
     ApplicationError,
+    catalog::parse_json_pointer,
     contracts::{
-        AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, PendingMediaUpload,
+        AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
+        MediaAssetStorageRecord, ProductMediaAssetItem, ProductMediaAssetLinkRecord,
+        ProductMediaAssetMutation, ProductMetaMediaAssetItem, ProductMetaMediaAssetLinkRecord,
+        ProductMetaMediaAssetMutation, ReviewMediaAssetItem, ReviewMediaAssetLinkRecord,
+        ReviewMediaAssetMutation,
     },
     error::database_error,
 };
 use chaos_domain::{
     FieldViolation,
-    catalog::{MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductVariantId},
+    catalog::{MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductVariantId, ReviewId},
     store::StoreId,
 };
+use serde_json::{Map, Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -23,6 +29,7 @@ impl PostgresMediaAssetRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
     async fn begin(
         &self,
         actor: &AdminActor,
@@ -43,69 +50,114 @@ impl PostgresMediaAssetRepository {
 struct MediaRow {
     id: Uuid,
     store_id: Uuid,
-    product_id: Uuid,
-    product_variant_id: Option<Uuid>,
     object_key: String,
     file_name: String,
     media_type: String,
     media_kind: String,
     byte_size: i64,
     sha256_digest: Vec<u8>,
-    alt_text: String,
-    position: i16,
     status: String,
     public_url: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
 
+#[derive(FromRow)]
+struct ProductMediaRow {
+    asset_id: Uuid,
+    store_id: Uuid,
+    product_id: Uuid,
+    product_variant_id: Option<Uuid>,
+    file_name: String,
+    media_type: String,
+    media_kind: String,
+    byte_size: i64,
+    sha256_digest: Vec<u8>,
+    status: String,
+    public_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    alt_text: String,
+    position: i16,
+    link_archived_at: Option<OffsetDateTime>,
+    object_key: String,
+}
+
+#[derive(FromRow)]
+struct ReviewMediaRow {
+    asset_id: Uuid,
+    store_id: Uuid,
+    review_id: Uuid,
+    file_name: String,
+    media_type: String,
+    media_kind: String,
+    byte_size: i64,
+    sha256_digest: Vec<u8>,
+    status: String,
+    public_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    alt_text: String,
+    position: i16,
+    link_archived_at: Option<OffsetDateTime>,
+    object_key: String,
+}
+
+#[derive(FromRow)]
+struct ProductMetaMediaRow {
+    asset_id: Uuid,
+    store_id: Uuid,
+    product_id: Uuid,
+    meta_path: String,
+    file_name: String,
+    media_type: String,
+    media_kind: String,
+    byte_size: i64,
+    sha256_digest: Vec<u8>,
+    status: String,
+    public_url: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    alt_text: String,
+    link_archived_at: Option<OffsetDateTime>,
+    object_key: String,
+}
+
 impl PostgresMediaAssetRepository {
-    pub(crate) async fn create(
+    pub(crate) async fn create_asset(
         &self,
         actor: AdminActor,
         record: CreateMediaAssetRecord,
-    ) -> Result<PendingMediaUpload, ApplicationError> {
+    ) -> Result<MediaAssetStorageRecord, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let product_exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2 AND status<>'archived')").bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
-        if !product_exists {
-            return Err(ApplicationError::NotFound {
-                resource: "product",
-                id: record.product_id.as_uuid().to_string(),
-            });
-        }
-        if let Some(variant) = record.product_variant_id {
-            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM commerce.product_variants WHERE store_id=$1 AND product_id=$2 AND id=$3)").bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(variant.as_uuid()).fetch_one(&mut *tx).await.map_err(database_error)?;
-            if !valid {
-                return Err(ApplicationError::Validation {
-                    violations: vec![FieldViolation {
-                        field: "product_variant_id",
-                        reason: "must identify a Variant of the same Product".into(),
-                    }],
-                });
-            }
-        }
-        let digest = decode_digest(record.descriptor.sha256_hex())?;
-        sqlx::query("INSERT INTO commerce.media_assets (id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind,byte_size,sha256_digest,alt_text,position,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::commerce.media_kind,$9,$10,$11,$12,'pending_upload',$13,$13)")
-            .bind(record.id.as_uuid()).bind(record.store_id.as_uuid()).bind(record.product_id.as_uuid()).bind(record.product_variant_id.map(ProductVariantId::as_uuid)).bind(&record.object_key).bind(record.descriptor.file_name()).bind(record.descriptor.media_type()).bind(record.descriptor.kind().as_str()).bind(i64::try_from(record.descriptor.byte_size()).map_err(|_|invalid_snapshot())?).bind(digest.as_slice()).bind(record.descriptor.alt_text()).bind(i16::try_from(record.position).map_err(|_|invalid_snapshot())?).bind(record.created_at).execute(&mut *tx).await.map_err(map_media_error)?;
-        let row = load(
-            &mut tx,
-            &actor,
-            record.store_id,
-            record.product_id,
-            record.id,
-        )
-        .await?
-        .ok_or_else(invalid_snapshot)?;
+        insert_asset(&mut tx, &record).await?;
+        let row = load_asset(&mut tx, record.store_id, record.id)
+            .await?
+            .ok_or_else(invalid_snapshot)?;
         tx.commit().await.map_err(database_error)?;
-        pending(row)
+        storage_record(row)
     }
 
-    pub(crate) async fn list(
+    pub(crate) async fn asset(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        media_asset_id: MediaAssetId,
+    ) -> Result<MediaAssetStorageRecord, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        let row = load_asset(&mut tx, store_id, media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        storage_record(row)
+    }
+
+    pub(crate) async fn list_product(
         &self,
         actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
-    ) -> Result<Option<Vec<MediaAssetItem>>, ApplicationError> {
+    ) -> Result<Option<Vec<ProductMediaAssetItem>>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2)",
@@ -118,8 +170,18 @@ impl PostgresMediaAssetRepository {
         if !exists {
             return Ok(None);
         }
-        let rows = sqlx::query_as::<_, MediaRow>(
-            "SELECT id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind::text,byte_size,sha256_digest,alt_text,position,status::text,public_url,created_at,updated_at FROM commerce.media_assets WHERE store_id=$1 AND product_id=$2 ORDER BY position,id",
+        let rows = sqlx::query_as::<_, ProductMediaRow>(
+            "SELECT media.id AS asset_id, media.store_id, link.product_id, \
+                    link.product_variant_id, media.file_name, media.media_type, \
+                    media.media_kind::text, media.byte_size, media.sha256_digest, \
+                    media.status::text, media.public_url, media.created_at, media.updated_at, \
+                    link.alt_text, link.position, link.archived_at AS link_archived_at, \
+                    media.object_key \
+             FROM commerce.product_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+             ORDER BY link.position, media.id",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -128,24 +190,284 @@ impl PostgresMediaAssetRepository {
         .map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
         rows.into_iter()
-            .map(item)
+            .map(product_item)
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
     }
 
-    pub(crate) async fn pending_upload(
+    pub(crate) async fn list_review(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        review_id: ReviewId,
+    ) -> Result<Option<Vec<ReviewMediaAssetItem>>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2)",
+        )
+        .bind(store_id.as_uuid())
+        .bind(review_id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if !exists {
+            return Ok(None);
+        }
+        let rows = sqlx::query_as::<_, ReviewMediaRow>(
+            "SELECT media.id AS asset_id, media.store_id, link.review_id, media.file_name, \
+                    media.media_type, media.media_kind::text, media.byte_size, \
+                    media.sha256_digest, media.status::text, media.public_url, \
+                    media.created_at, media.updated_at, link.alt_text, link.position, \
+                    link.archived_at AS link_archived_at, media.object_key \
+             FROM commerce.review_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             WHERE link.store_id=$1 AND link.review_id=$2 \
+             ORDER BY link.position, media.id",
+        )
+        .bind(store_id.as_uuid())
+        .bind(review_id.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter()
+            .map(review_item)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) async fn list_product_meta(
         &self,
         actor: AdminActor,
         store_id: StoreId,
         product_id: ProductId,
-        media_asset_id: MediaAssetId,
-    ) -> Result<PendingMediaUpload, ApplicationError> {
+    ) -> Result<Option<Vec<ProductMetaMediaAssetItem>>, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let row = load(&mut tx, &actor, store_id, product_id, media_asset_id)
-            .await?
-            .ok_or_else(|| not_found(media_asset_id))?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2)",
+        )
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        if !exists {
+            return Ok(None);
+        }
+        let rows = sqlx::query_as::<_, ProductMetaMediaRow>(
+            "SELECT media.id AS asset_id, media.store_id, link.product_id, link.meta_path, \
+                    media.file_name, media.media_type, media.media_kind::text, media.byte_size, \
+                    media.sha256_digest, media.status::text, media.public_url, \
+                    media.created_at, media.updated_at, link.alt_text, \
+                    link.archived_at AS link_archived_at, media.object_key \
+             FROM commerce.product_meta_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+             ORDER BY link.meta_path, media.id",
+        )
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(database_error)?;
         tx.commit().await.map_err(database_error)?;
-        pending(row)
+        rows.into_iter()
+            .map(product_meta_item)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) async fn attach_product(
+        &self,
+        actor: AdminActor,
+        record: ProductMediaAssetLinkRecord,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.product_variant_id,
+        )
+        .await?;
+        ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
+        sqlx::query(
+            "INSERT INTO commerce.product_media_assets \
+             (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
+             VALUES ($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT (store_id, product_id, media_asset_id) DO UPDATE \
+                 SET product_variant_id=EXCLUDED.product_variant_id, \
+                     alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(record.product_variant_id.map(ProductVariantId::as_uuid))
+        .bind(record.media_asset_id.as_uuid())
+        .bind(&record.alt_text)
+        .bind(i16::try_from(record.position).map_err(|_| invalid_snapshot())?)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_product_media_error)?;
+        let row = load_product(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(record.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_item(row)
+    }
+
+    pub(crate) async fn attach_review(
+        &self,
+        actor: AdminActor,
+        record: ReviewMediaAssetLinkRecord,
+    ) -> Result<ReviewMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_review_can_receive_media(&mut tx, record.review_id, record.store_id).await?;
+        ensure_ready_asset(
+            &mut tx,
+            record.store_id,
+            record.media_asset_id,
+            Some(MediaKind::Image),
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO commerce.review_media_assets \
+             (store_id, review_id, media_asset_id, alt_text, position) \
+             VALUES ($1,$2,$3,$4,$5) \
+             ON CONFLICT (store_id, review_id, media_asset_id) DO UPDATE \
+                 SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.review_id.as_uuid())
+        .bind(record.media_asset_id.as_uuid())
+        .bind(&record.alt_text)
+        .bind(i16::try_from(record.position).map_err(|_| invalid_snapshot())?)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_review_media_error)?;
+        let row = load_review(
+            &mut tx,
+            record.store_id,
+            record.review_id,
+            record.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(record.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        review_item(row)
+    }
+
+    pub(crate) async fn attach_product_meta(
+        &self,
+        actor: AdminActor,
+        record: ProductMetaMediaAssetLinkRecord,
+    ) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, record.store_id, record.product_id, None).await?;
+        let segments = parse_json_pointer(&record.meta_path)?;
+        let (metadata,) = sqlx::query_as::<_, (Option<Value>,)>(
+            "SELECT meta FROM commerce.products \
+             WHERE store_id=$1 AND id=$2 FOR UPDATE",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| not_found_product(record.product_id))?;
+        ensure_ready_asset(
+            &mut tx,
+            record.store_id,
+            record.media_asset_id,
+            Some(MediaKind::Image),
+        )
+        .await?;
+
+        let previous_asset_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT media_asset_id FROM commerce.product_meta_media_assets \
+             WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND archived_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(&record.meta_path)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?;
+
+        let mut metadata = metadata.unwrap_or_else(|| json!({}));
+        set_media_reference(
+            &mut metadata,
+            &segments,
+            record.media_asset_id.as_uuid(),
+            &record.alt_text,
+        )?;
+        sqlx::query(
+            "UPDATE commerce.products SET meta=$3::jsonb, updated_at=CURRENT_TIMESTAMP \
+             WHERE store_id=$1 AND id=$2",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(&metadata)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+
+        if previous_asset_id.is_some_and(|id| id != record.media_asset_id.as_uuid()) {
+            sqlx::query(
+                "UPDATE commerce.product_meta_media_assets SET archived_at=CURRENT_TIMESTAMP \
+                 WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND archived_at IS NULL",
+            )
+            .bind(record.store_id.as_uuid())
+            .bind(record.product_id.as_uuid())
+            .bind(&record.meta_path)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        }
+        sqlx::query(
+            "INSERT INTO commerce.product_meta_media_assets \
+             (store_id, product_id, media_asset_id, meta_path, alt_text) \
+             VALUES ($1,$2,$3,$4,$5) \
+             ON CONFLICT (store_id, product_id, meta_path, media_asset_id) DO UPDATE \
+                 SET alt_text=EXCLUDED.alt_text, archived_at=NULL",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(record.media_asset_id.as_uuid())
+        .bind(&record.meta_path)
+        .bind(&record.alt_text)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_product_meta_media_error)?;
+        if let Some(previous_asset_id) =
+            previous_asset_id.filter(|id| *id != record.media_asset_id.as_uuid())
+        {
+            archive_unreferenced_asset(
+                &mut tx,
+                record.store_id,
+                MediaAssetId::from_uuid(previous_asset_id),
+                record.changed_at,
+            )
+            .await?;
+        }
+        let row = load_product_meta(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            &record.meta_path,
+            record.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(record.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_meta_item(row)
     }
 
     pub(crate) async fn mark_ready(
@@ -155,16 +477,22 @@ impl PostgresMediaAssetRepository {
         public_url: &str,
     ) -> Result<MediaAssetItem, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        let changed=sqlx::query("UPDATE commerce.media_assets SET status='ready',public_url=$4,ready_at=$5,updated_at=$5 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status='pending_upload'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(public_url).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?.rows_affected();
-        let row = load(
-            &mut tx,
-            &actor,
-            mutation.store_id,
-            mutation.product_id,
-            mutation.media_asset_id,
+        let changed = sqlx::query(
+            "UPDATE commerce.media_assets \
+             SET status='ready', public_url=$3, ready_at=$4, updated_at=$4 \
+             WHERE store_id=$1 AND id=$2 AND status='pending_upload'",
         )
-        .await?
-        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.media_asset_id.as_uuid())
+        .bind(public_url)
+        .bind(mutation.changed_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?
+        .rows_affected();
+        let row = load_asset(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
         if changed == 0 && row.status != "ready" {
             return Err(ApplicationError::Conflict {
                 code: "media_asset_not_pending",
@@ -175,16 +503,96 @@ impl PostgresMediaAssetRepository {
         item(row)
     }
 
-    pub(crate) async fn archive(
+    pub(crate) async fn archive_asset(
         &self,
         actor: AdminActor,
         mutation: MediaAssetMutation,
     ) -> Result<MediaAssetItem, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        sqlx::query("UPDATE commerce.media_assets SET status='archived',archived_at=$4,updated_at=$4 WHERE store_id=$1 AND product_id=$2 AND id=$3 AND status<>'archived'").bind(mutation.store_id.as_uuid()).bind(mutation.product_id.as_uuid()).bind(mutation.media_asset_id.as_uuid()).bind(mutation.changed_at).execute(&mut *tx).await.map_err(database_error)?;
-        let row = load(
+        let row = load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        if row.status != "archived" {
+            let in_use: bool = sqlx::query_scalar(
+                "SELECT EXISTS ( \
+                    SELECT 1 FROM commerce.product_media_assets \
+                    WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
+                    UNION ALL \
+                    SELECT 1 FROM commerce.review_media_assets \
+                    WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
+                    UNION ALL \
+                    SELECT 1 FROM commerce.product_meta_media_assets \
+                    WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
+                )",
+            )
+            .bind(mutation.store_id.as_uuid())
+            .bind(mutation.media_asset_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(database_error)?;
+            if in_use {
+                return Err(ApplicationError::Conflict {
+                    code: "media_asset_in_use",
+                    message: "detach the Media Asset from every target before archiving it",
+                });
+            }
+            sqlx::query(
+                "UPDATE commerce.media_assets SET status='archived', archived_at=$3, updated_at=$3 \
+                 WHERE store_id=$1 AND id=$2 AND status<>'archived'",
+            )
+            .bind(mutation.store_id.as_uuid())
+            .bind(mutation.media_asset_id.as_uuid())
+            .bind(mutation.changed_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        }
+        let row = load_asset(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        item(row)
+    }
+
+    pub(crate) async fn archive_product(
+        &self,
+        actor: AdminActor,
+        mutation: ProductMediaAssetMutation,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        lock_product(&mut tx, mutation.store_id, mutation.product_id).await?;
+        load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        load_product(
             &mut tx,
-            &actor,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        sqlx::query(
+            "UPDATE commerce.product_media_assets \
+             SET archived_at=COALESCE(archived_at,$4) \
+             WHERE store_id=$1 AND product_id=$2 AND media_asset_id=$3",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.product_id.as_uuid())
+        .bind(mutation.media_asset_id.as_uuid())
+        .bind(mutation.changed_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        archive_unreferenced_asset(
+            &mut tx,
+            mutation.store_id,
+            mutation.media_asset_id,
+            mutation.changed_at,
+        )
+        .await?;
+        let row = load_product(
+            &mut tx,
             mutation.store_id,
             mutation.product_id,
             mutation.media_asset_id,
@@ -192,30 +600,548 @@ impl PostgresMediaAssetRepository {
         .await?
         .ok_or_else(|| not_found(mutation.media_asset_id))?;
         tx.commit().await.map_err(database_error)?;
-        item(row)
+        product_item(row)
+    }
+
+    pub(crate) async fn archive_review(
+        &self,
+        actor: AdminActor,
+        mutation: ReviewMediaAssetMutation,
+    ) -> Result<ReviewMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        lock_review(&mut tx, mutation.store_id, mutation.review_id).await?;
+        load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        load_review(
+            &mut tx,
+            mutation.store_id,
+            mutation.review_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        sqlx::query(
+            "UPDATE commerce.review_media_assets \
+             SET archived_at=COALESCE(archived_at,$3) \
+             WHERE store_id=$1 AND review_id=$2 AND media_asset_id=$4",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.review_id.as_uuid())
+        .bind(mutation.changed_at)
+        .bind(mutation.media_asset_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        archive_unreferenced_asset(
+            &mut tx,
+            mutation.store_id,
+            mutation.media_asset_id,
+            mutation.changed_at,
+        )
+        .await?;
+        let row = load_review(
+            &mut tx,
+            mutation.store_id,
+            mutation.review_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        review_item(row)
+    }
+
+    pub(crate) async fn archive_product_meta(
+        &self,
+        actor: AdminActor,
+        mutation: ProductMetaMediaAssetMutation,
+    ) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        let segments = parse_json_pointer(&mutation.meta_path)?;
+        let (metadata,) = sqlx::query_as::<_, (Option<Value>,)>(
+            "SELECT meta FROM commerce.products \
+             WHERE store_id=$1 AND id=$2 FOR UPDATE",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.product_id.as_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| not_found_product(mutation.product_id))?;
+        load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        load_product_meta(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            &mutation.meta_path,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        sqlx::query(
+            "UPDATE commerce.product_meta_media_assets \
+             SET archived_at=COALESCE(archived_at,$5) \
+             WHERE store_id=$1 AND product_id=$2 AND meta_path=$3 AND media_asset_id=$4",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.product_id.as_uuid())
+        .bind(&mutation.meta_path)
+        .bind(mutation.media_asset_id.as_uuid())
+        .bind(mutation.changed_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+
+        let mut metadata = metadata.unwrap_or_else(|| json!({}));
+        if pointer_media_asset_id(&metadata, &segments) == Some(mutation.media_asset_id.as_uuid())
+            && clear_media_reference(&mut metadata, &segments)
+        {
+            sqlx::query(
+                "UPDATE commerce.products SET meta=$3::jsonb, updated_at=CURRENT_TIMESTAMP \
+                 WHERE store_id=$1 AND id=$2",
+            )
+            .bind(mutation.store_id.as_uuid())
+            .bind(mutation.product_id.as_uuid())
+            .bind(&metadata)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        }
+        archive_unreferenced_asset(
+            &mut tx,
+            mutation.store_id,
+            mutation.media_asset_id,
+            mutation.changed_at,
+        )
+        .await?;
+        let row = load_product_meta(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            &mutation.meta_path,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_meta_item(row)
     }
 }
 
-async fn load(
+async fn insert_asset(
     tx: &mut Transaction<'_, Postgres>,
-    _actor: &AdminActor,
-    store: StoreId,
-    product: ProductId,
-    id: MediaAssetId,
-) -> Result<Option<MediaRow>, ApplicationError> {
-    sqlx::query_as(
-        "SELECT id,store_id,product_id,product_variant_id,object_key,file_name,media_type,media_kind::text,byte_size,sha256_digest,alt_text,position,status::text,public_url,created_at,updated_at FROM commerce.media_assets WHERE store_id=$1 AND product_id=$2 AND id=$3",
+    record: &CreateMediaAssetRecord,
+) -> Result<(), ApplicationError> {
+    let digest = decode_digest(record.descriptor.sha256_hex())?;
+    sqlx::query(
+        "INSERT INTO commerce.media_assets \
+         (id, store_id, object_key, file_name, media_type, media_kind, byte_size, \
+          sha256_digest, status, created_at, updated_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::bytea,'pending_upload',$9,$9)",
     )
-    .bind(store.as_uuid())
-    .bind(product.as_uuid())
-    .bind(id.as_uuid())
+    .bind(record.id.as_uuid())
+    .bind(record.store_id.as_uuid())
+    .bind(&record.object_key)
+    .bind(record.descriptor.file_name())
+    .bind(record.descriptor.media_type())
+    .bind(record.descriptor.kind().as_str())
+    .bind(i64::try_from(record.descriptor.byte_size()).map_err(|_| invalid_snapshot())?)
+    .bind(digest.as_slice())
+    .bind(record.created_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn ensure_product(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: Option<ProductVariantId>,
+) -> Result<(), ApplicationError> {
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT status::text FROM commerce.products \
+         WHERE store_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    if status.as_deref() == Some("archived") || status.is_none() {
+        return Err(not_found_product(product_id));
+    }
+    if let Some(variant) = product_variant_id {
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM commerce.product_variants \
+             WHERE store_id=$1 AND product_id=$2 AND id=$3)",
+        )
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .bind(variant.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(database_error)?;
+        if !valid {
+            return Err(ApplicationError::Validation {
+                violations: vec![FieldViolation {
+                    field: "product_variant_id",
+                    reason: "must identify a Variant of the same Product".into(),
+                }],
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn lock_product(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+) -> Result<(), ApplicationError> {
+    let exists =
+        sqlx::query("SELECT 1 FROM commerce.products WHERE store_id=$1 AND id=$2 FOR UPDATE")
+            .bind(store_id.as_uuid())
+            .bind(product_id.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(database_error)?
+            .is_some();
+    if !exists {
+        return Err(not_found_product(product_id));
+    }
+    Ok(())
+}
+
+async fn lock_review(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    review_id: ReviewId,
+) -> Result<(), ApplicationError> {
+    let exists =
+        sqlx::query("SELECT 1 FROM commerce.reviews WHERE store_id=$1 AND id=$2 FOR UPDATE")
+            .bind(store_id.as_uuid())
+            .bind(review_id.as_uuid())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(database_error)?
+            .is_some();
+    if !exists {
+        return Err(not_found_review(review_id));
+    }
+    Ok(())
+}
+
+async fn ensure_review_can_receive_media(
+    tx: &mut Transaction<'_, Postgres>,
+    review_id: ReviewId,
+    store_id: StoreId,
+) -> Result<(), ApplicationError> {
+    let row = sqlx::query_as::<_, (String, bool)>(
+        "SELECT status::text, is_staff_reply FROM commerce.reviews \
+         WHERE store_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(review_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    let Some((status, is_staff_reply)) = row else {
+        return Err(ApplicationError::NotFound {
+            resource: "review",
+            id: review_id.as_uuid().to_string(),
+        });
+    };
+    if is_staff_reply || status != "pending" {
+        return Err(ApplicationError::Conflict {
+            code: "review_media_not_uploadable",
+            message: "review media can be attached only to a pending top-level review",
+        });
+    }
+    Ok(())
+}
+
+async fn ensure_ready_asset(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    media_asset_id: MediaAssetId,
+    expected_kind: Option<MediaKind>,
+) -> Result<(), ApplicationError> {
+    let row = load_asset_for_update(tx, store_id, media_asset_id)
+        .await?
+        .ok_or_else(|| not_found(media_asset_id))?;
+    if row.status != MediaAssetStatus::Ready.as_str() {
+        return Err(ApplicationError::Conflict {
+            code: "media_asset_not_ready",
+            message: "only a ready Media Asset can be attached",
+        });
+    }
+    if expected_kind.is_some_and(|kind| row.media_kind != kind.as_str()) {
+        return Err(ApplicationError::Validation {
+            violations: vec![FieldViolation {
+                field: "media_asset_id",
+                reason: "the Media Asset kind is not valid for this attachment".into(),
+            }],
+        });
+    }
+    Ok(())
+}
+
+async fn archive_unreferenced_asset(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    media_asset_id: MediaAssetId,
+    changed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "UPDATE commerce.media_assets AS media \
+         SET status='archived', archived_at=$3, updated_at=$3 \
+         WHERE media.store_id=$1 AND media.id=$2 AND media.status<>'archived' \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM commerce.product_media_assets AS product_link \
+             WHERE product_link.store_id=media.store_id \
+               AND product_link.media_asset_id=media.id \
+               AND product_link.archived_at IS NULL \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM commerce.review_media_assets AS review_link \
+             WHERE review_link.store_id=media.store_id \
+               AND review_link.media_asset_id=media.id \
+               AND review_link.archived_at IS NULL \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM commerce.product_meta_media_assets AS meta_link \
+             WHERE meta_link.store_id=media.store_id \
+               AND meta_link.media_asset_id=media.id \
+               AND meta_link.archived_at IS NULL \
+           )",
+    )
+    .bind(store_id.as_uuid())
+    .bind(media_asset_id.as_uuid())
+    .bind(changed_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn load_asset(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<MediaRow>, ApplicationError> {
+    sqlx::query_as::<_, MediaRow>(
+        "SELECT id, store_id, object_key, file_name, media_type, media_kind::text, \
+                byte_size, sha256_digest, status::text, public_url, created_at, updated_at \
+         FROM commerce.media_assets WHERE store_id=$1 AND id=$2",
+    )
+    .bind(store_id.as_uuid())
+    .bind(media_asset_id.as_uuid())
     .fetch_optional(&mut **tx)
     .await
     .map_err(database_error)
 }
+
+async fn load_asset_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<MediaRow>, ApplicationError> {
+    sqlx::query_as::<_, MediaRow>(
+        "SELECT id, store_id, object_key, file_name, media_type, media_kind::text, \
+                byte_size, sha256_digest, status::text, public_url, created_at, updated_at \
+         FROM commerce.media_assets WHERE store_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(media_asset_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+async fn load_product(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<ProductMediaRow>, ApplicationError> {
+    sqlx::query_as::<_, ProductMediaRow>(
+        "SELECT media.id AS asset_id, media.store_id, link.product_id, \
+                link.product_variant_id, media.file_name, media.media_type, \
+                media.media_kind::text, media.byte_size, media.sha256_digest, \
+                media.status::text, media.public_url, media.created_at, media.updated_at, \
+                link.alt_text, link.position, link.archived_at AS link_archived_at, \
+                media.object_key \
+         FROM commerce.product_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.product_id=$2 AND link.media_asset_id=$3",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(media_asset_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+async fn load_review(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    review_id: ReviewId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<ReviewMediaRow>, ApplicationError> {
+    sqlx::query_as::<_, ReviewMediaRow>(
+        "SELECT media.id AS asset_id, media.store_id, link.review_id, media.file_name, \
+                media.media_type, media.media_kind::text, media.byte_size, \
+                media.sha256_digest, media.status::text, media.public_url, \
+                media.created_at, media.updated_at, link.alt_text, link.position, \
+                link.archived_at AS link_archived_at, media.object_key \
+         FROM commerce.review_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.review_id=$2 AND link.media_asset_id=$3",
+    )
+    .bind(store_id.as_uuid())
+    .bind(review_id.as_uuid())
+    .bind(media_asset_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+async fn load_product_meta(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    meta_path: &str,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<ProductMetaMediaRow>, ApplicationError> {
+    sqlx::query_as::<_, ProductMetaMediaRow>(
+        "SELECT media.id AS asset_id, media.store_id, link.product_id, link.meta_path, \
+                media.file_name, media.media_type, media.media_kind::text, media.byte_size, \
+                media.sha256_digest, media.status::text, media.public_url, \
+                media.created_at, media.updated_at, link.alt_text, \
+                link.archived_at AS link_archived_at, media.object_key \
+         FROM commerce.product_meta_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.product_id=$2 AND link.meta_path=$3 \
+           AND link.media_asset_id=$4",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(meta_path)
+    .bind(media_asset_id.as_uuid())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+fn storage_record(row: MediaRow) -> Result<MediaAssetStorageRecord, ApplicationError> {
+    let object_key = row.object_key.clone();
+    Ok(MediaAssetStorageRecord {
+        asset: media_item(row)?,
+        object_key,
+    })
+}
+
 fn item(row: MediaRow) -> Result<MediaAssetItem, ApplicationError> {
+    media_item(row)
+}
+
+fn product_item(row: ProductMediaRow) -> Result<ProductMediaAssetItem, ApplicationError> {
+    Ok(ProductMediaAssetItem {
+        asset: media_item_from_product(&row)?,
+        product_id: ProductId::from_uuid(row.product_id),
+        product_variant_id: row.product_variant_id.map(ProductVariantId::from_uuid),
+        alt_text: row.alt_text,
+        position: u16::try_from(row.position).map_err(|_| invalid_snapshot())?,
+        archived_at: row.link_archived_at,
+    })
+}
+
+fn review_item(row: ReviewMediaRow) -> Result<ReviewMediaAssetItem, ApplicationError> {
+    Ok(ReviewMediaAssetItem {
+        asset: media_item_from_review(&row)?,
+        review_id: ReviewId::from_uuid(row.review_id),
+        alt_text: row.alt_text,
+        position: u16::try_from(row.position).map_err(|_| invalid_snapshot())?,
+        archived_at: row.link_archived_at,
+    })
+}
+
+fn product_meta_item(
+    row: ProductMetaMediaRow,
+) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
+    Ok(ProductMetaMediaAssetItem {
+        asset: media_item_from_product_meta(&row)?,
+        product_id: ProductId::from_uuid(row.product_id),
+        meta_path: row.meta_path,
+        alt_text: row.alt_text,
+        archived_at: row.link_archived_at,
+    })
+}
+
+fn media_item_from_product(row: &ProductMediaRow) -> Result<MediaAssetItem, ApplicationError> {
+    media_item(MediaRow {
+        id: row.asset_id,
+        store_id: row.store_id,
+        object_key: row.object_key.clone(),
+        file_name: row.file_name.clone(),
+        media_type: row.media_type.clone(),
+        media_kind: row.media_kind.clone(),
+        byte_size: row.byte_size,
+        sha256_digest: row.sha256_digest.clone(),
+        status: row.status.clone(),
+        public_url: row.public_url.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn media_item_from_review(row: &ReviewMediaRow) -> Result<MediaAssetItem, ApplicationError> {
+    media_item(MediaRow {
+        id: row.asset_id,
+        store_id: row.store_id,
+        object_key: row.object_key.clone(),
+        file_name: row.file_name.clone(),
+        media_type: row.media_type.clone(),
+        media_kind: row.media_kind.clone(),
+        byte_size: row.byte_size,
+        sha256_digest: row.sha256_digest.clone(),
+        status: row.status.clone(),
+        public_url: row.public_url.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn media_item_from_product_meta(
+    row: &ProductMetaMediaRow,
+) -> Result<MediaAssetItem, ApplicationError> {
+    media_item(MediaRow {
+        id: row.asset_id,
+        store_id: row.store_id,
+        object_key: row.object_key.clone(),
+        file_name: row.file_name.clone(),
+        media_type: row.media_type.clone(),
+        media_kind: row.media_kind.clone(),
+        byte_size: row.byte_size,
+        sha256_digest: row.sha256_digest.clone(),
+        status: row.status.clone(),
+        public_url: row.public_url.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn media_item(row: MediaRow) -> Result<MediaAssetItem, ApplicationError> {
     let byte_size = u64::try_from(row.byte_size).map_err(|_| invalid_snapshot())?;
-    let position = u16::try_from(row.position).map_err(|_| invalid_snapshot())?;
     let kind = match row.media_kind.as_str() {
         "image" => MediaKind::Image,
         "video" => MediaKind::Video,
@@ -225,34 +1151,211 @@ fn item(row: MediaRow) -> Result<MediaAssetItem, ApplicationError> {
     Ok(MediaAssetItem {
         id: MediaAssetId::from_uuid(row.id),
         store_id: StoreId::from_uuid(row.store_id),
-        product_id: ProductId::from_uuid(row.product_id),
-        product_variant_id: row.product_variant_id.map(ProductVariantId::from_uuid),
         file_name: row.file_name,
         media_type: row.media_type,
         kind,
         byte_size,
         sha256_hex: encode_digest(&row.sha256_digest)?,
-        alt_text: row.alt_text,
-        position,
         status,
         public_url: row.public_url,
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
 }
-fn pending(row: MediaRow) -> Result<PendingMediaUpload, ApplicationError> {
-    if row.status == "archived" {
-        return Err(ApplicationError::Conflict {
-            code: "media_asset_archived",
-            message: "an archived Media Asset cannot be uploaded",
-        });
+
+fn set_json_pointer(
+    root: &mut Value,
+    segments: &[String],
+    replacement: Value,
+) -> Result<(), ApplicationError> {
+    if !root.is_object() {
+        return Err(meta_path_violation(
+            "the Product metadata root must be an object",
+        ));
     }
-    let object_key = row.object_key.clone();
-    Ok(PendingMediaUpload {
-        asset: item(row)?,
-        object_key,
-    })
+    set_json_pointer_at(root, segments, replacement)
 }
+
+fn json_pointer_mut<'a>(root: &'a mut Value, segments: &[String]) -> Option<&'a mut Value> {
+    let mut current = root;
+    for segment in segments {
+        current = match current {
+            Value::Object(map) => map.get_mut(segment)?,
+            Value::Array(array) => array.get_mut(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+fn set_media_reference(
+    root: &mut Value,
+    segments: &[String],
+    media_asset_id: Uuid,
+    alt_text: &str,
+) -> Result<(), ApplicationError> {
+    let replacement = json!({
+        "media_asset_id": media_asset_id,
+        "alt_text": alt_text,
+    });
+    if let Some(node) = json_pointer_mut(root, segments) {
+        match node {
+            Value::Object(map) => {
+                map.remove("url");
+                map.remove("media_type");
+                map.insert("media_asset_id".into(), json!(media_asset_id));
+                map.insert("alt_text".into(), json!(alt_text));
+            }
+            _ => *node = replacement,
+        }
+        return Ok(());
+    }
+    set_json_pointer(root, segments, replacement)
+}
+
+fn set_json_pointer_at(
+    current: &mut Value,
+    segments: &[String],
+    replacement: Value,
+) -> Result<(), ApplicationError> {
+    let Some(segment) = segments.first() else {
+        return Err(meta_path_violation(
+            "the Media path must not point to the metadata root",
+        ));
+    };
+    if segments.len() == 1 {
+        match current {
+            Value::Object(map) => {
+                map.insert(segment.clone(), replacement);
+                Ok(())
+            }
+            Value::Array(array) => {
+                let index = array_index(segment)?;
+                let Some(slot) = array.get_mut(index) else {
+                    return Err(meta_path_violation(
+                        "the Media path array index is out of range",
+                    ));
+                };
+                *slot = replacement;
+                Ok(())
+            }
+            _ => Err(meta_path_violation(
+                "the Media path traverses a non-container metadata value",
+            )),
+        }
+    } else {
+        match current {
+            Value::Object(map) => {
+                let child = map
+                    .entry(segment.clone())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if child.is_null() {
+                    return Err(meta_path_violation(
+                        "the Media path traverses a null metadata value",
+                    ));
+                }
+                set_json_pointer_at(child, &segments[1..], replacement)
+            }
+            Value::Array(array) => {
+                let index = array_index(segment)?;
+                let Some(child) = array.get_mut(index) else {
+                    return Err(meta_path_violation(
+                        "the Media path array index is out of range",
+                    ));
+                };
+                set_json_pointer_at(child, &segments[1..], replacement)
+            }
+            _ => Err(meta_path_violation(
+                "the Media path traverses a non-container metadata value",
+            )),
+        }
+    }
+}
+
+fn pointer_media_asset_id(root: &Value, segments: &[String]) -> Option<Uuid> {
+    let mut current = root;
+    for segment in segments {
+        current = match current {
+            Value::Object(map) => map.get(segment)?,
+            Value::Array(array) => array.get(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    current
+        .get("media_asset_id")?
+        .as_str()?
+        .parse::<Uuid>()
+        .ok()
+}
+
+fn remove_json_pointer(root: &mut Value, segments: &[String]) -> bool {
+    let Some(segment) = segments.first() else {
+        return false;
+    };
+    if segments.len() == 1 {
+        return match root {
+            Value::Object(map) => map.remove(segment).is_some(),
+            Value::Array(array) => match segment.parse::<usize>() {
+                Ok(index) => array
+                    .get_mut(index)
+                    .map(|slot| {
+                        *slot = Value::Null;
+                        true
+                    })
+                    .unwrap_or(false),
+                Err(_) => false,
+            },
+            _ => false,
+        };
+    }
+    match root {
+        Value::Object(map) => map
+            .get_mut(segment)
+            .is_some_and(|child| remove_json_pointer(child, &segments[1..])),
+        Value::Array(array) => match segment.parse::<usize>() {
+            Ok(index) => array
+                .get_mut(index)
+                .is_some_and(|child| remove_json_pointer(child, &segments[1..])),
+            Err(_) => false,
+        },
+        _ => false,
+    }
+}
+
+fn clear_media_reference(root: &mut Value, segments: &[String]) -> bool {
+    let remove_node = match json_pointer_mut(root, segments) {
+        Some(Value::Object(map)) => {
+            map.remove("media_asset_id");
+            map.remove("alt_text");
+            map.remove("media_type");
+            map.remove("url");
+            map.is_empty()
+        }
+        Some(_) => true,
+        None => return false,
+    };
+    if remove_node {
+        remove_json_pointer(root, segments)
+    } else {
+        true
+    }
+}
+
+fn array_index(value: &str) -> Result<usize, ApplicationError> {
+    value
+        .parse::<usize>()
+        .map_err(|_| meta_path_violation("array path segments must be non-negative integers"))
+}
+
+fn meta_path_violation(reason: &'static str) -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![FieldViolation {
+            field: "meta_path",
+            reason: reason.into(),
+        }],
+    }
+}
+
 fn decode_digest(value: &str) -> Result<[u8; 32], ApplicationError> {
     let mut output = [0_u8; 32];
     for (index, slot) in output.iter_mut().enumerate() {
@@ -261,31 +1364,125 @@ fn decode_digest(value: &str) -> Result<[u8; 32], ApplicationError> {
     }
     Ok(output)
 }
+
 fn encode_digest(value: &[u8]) -> Result<String, ApplicationError> {
     if value.len() != 32 {
         return Err(invalid_snapshot());
     }
     Ok(value.iter().map(|byte| format!("{byte:02x}")).collect())
 }
-fn map_media_error(error: sqlx::Error) -> ApplicationError {
+
+fn map_product_media_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(db) = &error {
+        if db.constraint() == Some("product_media_assets_position_active_idx") {
+            return ApplicationError::Conflict {
+                code: "media_position_taken",
+                message: "the Media position is already occupied for this Product",
+            };
+        }
+        if db.constraint() == Some("product_media_assets_store_id_product_variant_fkey") {
+            return ApplicationError::Validation {
+                violations: vec![FieldViolation {
+                    field: "product_variant_id",
+                    reason: "must identify a Variant of the same Product".into(),
+                }],
+            };
+        }
+    }
+    database_error(error)
+}
+
+fn map_review_media_error(error: sqlx::Error) -> ApplicationError {
     if let sqlx::Error::Database(db) = &error
-        && db.constraint() == Some("media_assets_product_position_active_idx")
+        && db.constraint() == Some("review_media_assets_position_active_idx")
     {
         return ApplicationError::Conflict {
-            code: "media_position_taken",
-            message: "the Media position is already occupied for this Product",
+            code: "review_media_position_taken",
+            message: "the Media position is already occupied for this Review",
         };
     }
     database_error(error)
 }
+
+fn map_product_meta_media_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(db) = &error
+        && db.constraint() == Some("product_meta_media_assets_path_active_idx")
+    {
+        return ApplicationError::Conflict {
+            code: "product_meta_media_path_taken",
+            message: "the Product metadata path is already occupied by another Media Asset",
+        };
+    }
+    database_error(error)
+}
+
 fn not_found(id: MediaAssetId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "media_asset",
         id: id.as_uuid().to_string(),
     }
 }
+
+fn not_found_product(id: ProductId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "product",
+        id: id.as_uuid().to_string(),
+    }
+}
+
+fn not_found_review(id: ReviewId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "review",
+        id: id.as_uuid().to_string(),
+    }
+}
+
 fn invalid_snapshot() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!(
         "the Media Asset persistence snapshot is invalid"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_metadata_pointer_is_set_and_removed_without_inline_media_bytes() {
+        let segments = parse_json_pointer("/landing_page/hero/image").unwrap();
+        let mut metadata = json!({
+            "landing_page": {
+                "hero": {
+                    "image": {
+                        "crop": "cover",
+                        "url": "https://stale.example/image.jpg",
+                        "media_type": "image/jpeg"
+                    }
+                }
+            }
+        });
+        let asset_id = Uuid::now_v7();
+        set_media_reference(&mut metadata, &segments, asset_id, "Hero").unwrap();
+
+        assert_eq!(pointer_media_asset_id(&metadata, &segments), Some(asset_id));
+        assert_eq!(metadata["landing_page"]["hero"]["image"]["crop"], "cover");
+        assert!(clear_media_reference(&mut metadata, &segments));
+        assert_eq!(
+            metadata,
+            json!({
+                "landing_page": {
+                    "hero": {
+                        "image": {"crop": "cover"}
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn metadata_pointer_rejects_invalid_escape_sequences() {
+        assert!(parse_json_pointer("/landing_page/~2image").is_err());
+        assert!(parse_json_pointer("/landing_page//image").is_err());
+        assert!(parse_json_pointer("landing_page/hero").is_err());
+    }
 }

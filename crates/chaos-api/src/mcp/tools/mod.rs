@@ -107,9 +107,21 @@ mod tests {
         let aggregate_router = ChaosMcp::tool_router();
 
         assert_eq!(aggregate_router.map.len(), expected_route_count);
-        assert!(aggregate_router.has_route("prepare_product_media_upload"));
-        assert!(aggregate_router.has_route("refresh_product_media_upload"));
-        assert!(aggregate_router.has_route("complete_product_media_upload"));
+        assert!(aggregate_router.has_route("prepare_media_upload"));
+        assert!(aggregate_router.has_route("refresh_media_upload"));
+        assert!(aggregate_router.has_route("complete_media_upload"));
+        assert!(aggregate_router.has_route("get_media_asset"));
+        assert!(aggregate_router.has_route("archive_media_asset"));
+        assert!(aggregate_router.has_route("attach_product_media"));
+        assert!(aggregate_router.has_route("attach_review_media"));
+        assert!(aggregate_router.has_route("attach_product_meta_media"));
+        assert!(aggregate_router.has_route("list_product_meta_media"));
+        assert!(aggregate_router.has_route("archive_product_meta_media"));
+        assert!(aggregate_router.has_route("list_review_media"));
+        assert!(aggregate_router.has_route("archive_review_media"));
+        assert!(aggregate_router.has_route("create_manual_review"));
+        assert!(!aggregate_router.has_route("prepare_product_media_upload"));
+        assert!(!aggregate_router.has_route("prepare_review_media_upload"));
         assert!(!aggregate_router.has_route("upload_product_media"));
         for capability_router in capability_routers {
             for name in capability_router.map.keys() {

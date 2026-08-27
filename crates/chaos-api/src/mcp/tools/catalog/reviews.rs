@@ -1,5 +1,7 @@
-use chaos_core::catalog::{AddReviewReplyInput, ApproveReviewInput, RejectReviewInput};
-use chaos_domain::catalog::{ReviewId, ReviewStatus};
+use chaos_core::catalog::{
+    AddReviewReplyInput, ApproveReviewInput, CreateManualReviewInput, RejectReviewInput,
+};
+use chaos_domain::catalog::{ProductId, ReviewId, ReviewStatus};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -41,6 +43,32 @@ pub struct ListReviewsParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+pub struct CreateManualReviewParams {
+    /// The Store UUID containing the Product.
+    pub store_id: String,
+    /// The Product UUID the customer reviewed.
+    pub product_id: String,
+    /// The customer's explicit rating, from 1 to 5. Do not infer this from prose.
+    pub rating: u8,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The review text transcribed from the customer's message.
+    pub content: String,
+    pub author_name: String,
+    #[serde(default)]
+    pub author_email: Option<String>,
+    /// The source channel, e.g. "wechat", "instagram_dm", "email", or "phone".
+    pub source_channel: String,
+    /// An internal conversation or ticket reference. Do not put the full private message here.
+    #[serde(default)]
+    pub source_reference: Option<String>,
+    /// Must be explicitly set to true after the customer agreed to public display.
+    pub publication_consent_confirmed: bool,
+    /// Must be explicitly set to true. This creates a pending review.
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct ApproveReviewParams {
     /// The Store UUID containing the review.
     pub store_id: String,
@@ -76,6 +104,68 @@ pub struct AddReviewReplyParams {
 
 #[tool_router(router = reviews_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
+    #[tool(
+        description = "Create a customer review imported manually from an external channel such \
+                        as a private message, email, or phone call. The review starts pending and \
+                        remains invisible on the Storefront until approved. The rating must be \
+                        explicitly supplied; do not infer it. This tool does not mark the customer \
+                        as a verified buyer. Set publication_consent_confirmed: true only after \
+                        the customer agreed that the review and attached images may be published. \
+                        Requires confirm: true."
+    )]
+    async fn create_manual_review(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<CreateManualReviewParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::mcp::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            &parts,
+            &params.store_id,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let product_id = match parse_uuid_field(&params.product_id, "product_id") {
+            Ok(id) => ProductId::from_uuid(id),
+            Err(result) => return Ok(result),
+        };
+        let store_id = actor.store_id();
+        match self
+            .state
+            .review_administration
+            .create_manual(CreateManualReviewInput {
+                actor,
+                store_id,
+                product_id,
+                rating: params.rating,
+                title: params.title,
+                content: params.content,
+                author_name: params.author_name,
+                author_email: params.author_email,
+                source_channel: params.source_channel,
+                source_reference: params.source_reference,
+                publication_consent_confirmed: params.publication_consent_confirmed,
+                now: self.state.clock.now(),
+            })
+            .await
+        {
+            Ok(id) => Ok(text_result(json!({
+                "id": id.as_uuid(),
+                "status": "pending",
+                "origin": "manual",
+                "next_step": "Optionally prepare and complete images with the generic media upload tools, attach them with attach_review_media, then approve_review after moderation.",
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
     #[tool(
         description = "List reviews in the selected Store, filtered by status \
                         (defaults to pending). Paginated; use the returned next_cursor for \
@@ -142,8 +232,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Approve a pending review in the selected Store, making it \
-                        visible on the product page. Requires confirm: true and an \
-                        confirm: true."
+                        visible on the product page. Requires confirm: true."
     )]
     async fn approve_review(
         &self,
@@ -190,8 +279,7 @@ impl ChaosMcp {
 
     #[tool(
         description = "Reject a pending review in the selected Store, keeping it \
-                        hidden from the product page. Requires confirm: true and an \
-                        confirm: true."
+                        hidden from the product page. Requires confirm: true."
     )]
     async fn reject_review(
         &self,
@@ -294,8 +382,24 @@ fn review_summary(item: chaos_core::contracts::ReviewSummary) -> serde_json::Val
         "status": item.status.as_str(),
         "is_staff_reply": item.is_staff_reply,
         "verified_buyer": item.verified_buyer,
+        "origin": item.origin.as_str(),
+        "source_channel": item.source_channel,
+        "source_reference": item.source_reference,
+        "images": item.images.into_iter().map(review_image).collect::<Vec<_>>(),
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),
+    })
+}
+
+fn review_image(item: chaos_core::contracts::ReviewMediaSummary) -> serde_json::Value {
+    json!({
+        "id": item.id.as_uuid(),
+        "media_type": item.media_type,
+        "kind": item.kind.as_str(),
+        "alt_text": item.alt_text,
+        "position": item.position,
+        "status": item.status.as_str(),
+        "public_url": item.public_url,
     })
 }
 

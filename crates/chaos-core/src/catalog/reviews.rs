@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    catalog::{ProductId, ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent},
+    catalog::{
+        ProductId, ReviewContent, ReviewId, ReviewOrigin, ReviewRating, ReviewStatus,
+        StaffReplyContent,
+    },
     identity::Email,
     store::StoreId,
 };
@@ -22,6 +25,21 @@ pub struct SubmitReviewInput {
     pub content: String,
     pub author_name: String,
     pub author_email: Option<String>,
+    pub now: OffsetDateTime,
+}
+
+pub struct CreateManualReviewInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub rating: u8,
+    pub title: Option<String>,
+    pub content: String,
+    pub author_name: String,
+    pub author_email: Option<String>,
+    pub source_channel: String,
+    pub source_reference: Option<String>,
+    pub publication_consent_confirmed: bool,
     pub now: OffsetDateTime,
 }
 
@@ -80,6 +98,55 @@ impl ReviewAdministration {
                     store_id: input.actor.store_id,
                     product_id: input.product_id,
                     content,
+                    origin: ReviewOrigin::Storefront,
+                    source_channel: None,
+                    source_reference: None,
+                    publication_consent_confirmed: true,
+                    created_by_user_id: None,
+                    created_at: input.now,
+                },
+            )
+            .await
+    }
+
+    pub async fn create_manual(
+        &self,
+        input: CreateManualReviewInput,
+    ) -> Result<ReviewId, ApplicationError> {
+        input.actor.require_human()?;
+        if !input.publication_consent_confirmed {
+            return Err(validation(
+                "publication_consent_confirmed",
+                "must be true for a manually imported review",
+            ));
+        }
+        let source_channel = input.source_channel.trim().to_owned();
+        validate_bounded_text(&source_channel, "source_channel", 80)?;
+        let source_reference = input.source_reference.map(|value| value.trim().to_owned());
+        if let Some(source_reference) = &source_reference {
+            validate_bounded_text(source_reference, "source_reference", 255)?;
+        }
+        let rating = ReviewRating::parse(input.rating)?;
+        let author_email = input.author_email.map(Email::parse).transpose()?;
+        let content = ReviewContent::new(
+            rating,
+            input.title,
+            input.content,
+            input.author_name,
+            author_email,
+        )?;
+        self.repository
+            .create_manual(
+                input.actor.clone(),
+                crate::contracts::CreateManualReviewRecord {
+                    id: ReviewId::new(),
+                    store_id: input.store_id,
+                    product_id: input.product_id,
+                    content,
+                    source_channel,
+                    source_reference,
+                    publication_consent_confirmed: input.publication_consent_confirmed,
+                    created_by_user_id: input.actor.audit_user_id(),
                     created_at: input.now,
                 },
             )
@@ -154,6 +221,30 @@ impl ReviewAdministration {
                 input.now,
             )
             .await
+    }
+}
+
+fn validate_bounded_text(
+    value: &str,
+    field: &'static str,
+    maximum: usize,
+) -> Result<(), ApplicationError> {
+    let empty = value.trim().is_empty();
+    if empty || value.chars().count() > maximum || value.chars().any(char::is_control) {
+        return Err(validation(
+            field,
+            "must contain non-control characters within the allowed length",
+        ));
+    }
+    Ok(())
+}
+
+fn validation(field: &'static str, reason: &'static str) -> ApplicationError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field,
+            reason: reason.into(),
+        }],
     }
 }
 

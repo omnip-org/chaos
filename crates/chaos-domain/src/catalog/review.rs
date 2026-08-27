@@ -152,6 +152,29 @@ impl ReviewStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewOrigin {
+    Storefront,
+    Manual,
+}
+
+impl ReviewOrigin {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Storefront => "storefront",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "storefront" => Some(Self::Storefront),
+            "manual" => Some(Self::Manual),
+            _ => None,
+        }
+    }
+}
+
 fn validation(field: &'static str, reason: &str) -> DomainError {
     DomainError::Validation(vec![FieldViolation {
         field,
@@ -210,5 +233,13 @@ mod tests {
             assert_eq!(ReviewStatus::parse(status.as_str()), Some(status));
         }
         assert_eq!(ReviewStatus::parse("unknown"), None);
+    }
+
+    #[test]
+    fn review_origin_round_trips_through_as_str_and_parse() {
+        for origin in [ReviewOrigin::Storefront, ReviewOrigin::Manual] {
+            assert_eq!(ReviewOrigin::parse(origin.as_str()), Some(origin));
+        }
+        assert_eq!(ReviewOrigin::parse("unknown"), None);
     }
 }

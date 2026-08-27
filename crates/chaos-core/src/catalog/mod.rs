@@ -22,6 +22,64 @@ pub(crate) fn parse_metadata(
         .transpose()
 }
 
+pub(crate) fn parse_json_pointer(value: &str) -> Result<Vec<String>, ApplicationError> {
+    if value.chars().count() > 512
+        || value.len() < 2
+        || !value.starts_with('/')
+        || value.chars().any(char::is_control)
+    {
+        return Err(ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field: "meta_path",
+                reason: "must be a non-root RFC 6901 JSON Pointer of at most 512 characters without control characters".into(),
+            }],
+        });
+    }
+    value
+        .split('/')
+        .skip(1)
+        .map(|segment| {
+            if segment.is_empty() {
+                return Err(ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "meta_path",
+                        reason: "must not contain empty path segments".into(),
+                    }],
+                });
+            }
+            let mut decoded = String::with_capacity(segment.len());
+            let mut chars = segment.chars();
+            while let Some(character) = chars.next() {
+                if character != '~' {
+                    decoded.push(character);
+                    continue;
+                }
+                match chars.next() {
+                    Some('0') => decoded.push('~'),
+                    Some('1') => decoded.push('/'),
+                    _ => {
+                        return Err(ApplicationError::Validation {
+                            violations: vec![chaos_domain::FieldViolation {
+                                field: "meta_path",
+                                reason: "must use valid RFC 6901 escape sequences".into(),
+                            }],
+                        });
+                    }
+                }
+            }
+            if decoded.is_empty() {
+                return Err(ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "meta_path",
+                        reason: "must not contain empty path segments".into(),
+                    }],
+                });
+            }
+            Ok(decoded)
+        })
+        .collect()
+}
+
 pub use collections::{
     ChangeCollectionStatusInput, CollectionAdministration, CollectionPublicationInput,
     CreateCollectionInput, ReplaceCollectionProductsInput, StorefrontCollections,
@@ -36,12 +94,14 @@ pub use management::{
     UpdateProductVariantInput,
 };
 pub use media::{
-    CreateMediaAssetInput, CreatedMediaAsset, MediaAdministration, MediaAssetActionInput,
-    RefreshMediaUploadInput,
+    ArchiveMediaAssetInput, ArchiveProductMediaInput, ArchiveProductMetaMediaInput,
+    ArchiveReviewMediaInput, AttachProductMediaInput, AttachProductMetaMediaInput,
+    AttachReviewMediaInput, CompleteMediaUploadInput, CreateMediaUploadInput, CreatedMediaAsset,
+    MediaAdministration, RefreshMediaUploadInput,
 };
 pub use queries::{CatalogQueries, ProductPage};
 pub use reviews::{
-    AddReviewReplyInput, ApproveReviewInput, RejectReviewInput, ReviewAdministration,
-    StorefrontReviews, SubmitReviewInput,
+    AddReviewReplyInput, ApproveReviewInput, CreateManualReviewInput, RejectReviewInput,
+    ReviewAdministration, StorefrontReviews, SubmitReviewInput,
 };
 pub use storefront::{StorefrontCatalog, StorefrontProductPage};

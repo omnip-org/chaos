@@ -10,6 +10,7 @@ use chaos_domain::{
     },
     store::{SalesChannelId, StoreId},
 };
+use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 
 #[derive(Clone)]
@@ -92,6 +93,8 @@ impl PostgresCatalogManagementTransaction {
         &mut self,
         content: &ProductContent,
     ) -> Result<bool, ApplicationError> {
+        self.ensure_media_references_preserved(content.metadata())
+            .await?;
         let result = sqlx::query(
             "UPDATE commerce.products \
              SET handle = $3, title = $4, description = $5, meta = $6::jsonb, \
@@ -108,6 +111,48 @@ impl PostgresCatalogManagementTransaction {
         .await
         .map_err(map_catalog_write_error)?;
         Ok(result.rows_affected() == 1)
+    }
+
+    async fn ensure_media_references_preserved(
+        &mut self,
+        metadata: Option<&CatalogMetadata>,
+    ) -> Result<(), ApplicationError> {
+        let links = sqlx::query_as::<_, (String, uuid::Uuid, String)>(
+            "SELECT meta_path, media_asset_id, alt_text \
+             FROM commerce.product_meta_media_assets \
+             WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
+        )
+        .bind(self.store_id.as_uuid())
+        .bind(self.product_id.as_uuid())
+        .fetch_all(&mut *self.transaction)
+        .await
+        .map_err(database_error)?;
+        if links.is_empty() {
+            return Ok(());
+        }
+        let metadata = metadata
+            .map(|value| serde_json::from_str::<Value>(value.as_str()))
+            .transpose()
+            .map_err(|error| ApplicationError::Unexpected(error.into()))?;
+        for (meta_path, media_asset_id, alt_text) in links {
+            let expected = media_asset_id.to_string();
+            let actual = metadata
+                .as_ref()
+                .and_then(|value| value.pointer(&meta_path))
+                .map(|value| {
+                    (
+                        value.get("media_asset_id").and_then(Value::as_str),
+                        value.get("alt_text").and_then(Value::as_str),
+                    )
+                });
+            if actual != Some((Some(expected.as_str()), Some(alt_text.as_str()))) {
+                return Err(ApplicationError::Conflict {
+                    code: "product_meta_media_reference_managed",
+                    message: "use the Product metadata Media attachment tool to replace or remove a managed Media reference",
+                });
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn update_variant_content(

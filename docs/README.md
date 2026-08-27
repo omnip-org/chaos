@@ -14,7 +14,7 @@ preserve the dependency direction in
 | [`capability-map.md`](capability-map.md) | File-level navigation map for AI-assisted changes and cross-layer flows |
 | [`database-conventions.md`](database-conventions.md) | Required schema, SQL, isolation, migration, money, and time rules |
 | [`deployment.md`](deployment.md) | Production topology, secrets, bootstrap, rollout, and rollback |
-| [`media-upload.md`](media-upload.md) | MCP Host direct-upload flow for Catalog media |
+| [`media-upload.md`](media-upload.md) | MCP Host direct-upload flow for reusable Product, Review, and metadata media |
 | [`postgresql-extensions.md`](postgresql-extensions.md) | PostgreSQL image and extension lifecycle |
 | [`adr/`](adr/) | Historical decisions and their status; an amended ADR must be read with its named successor |
 
@@ -81,11 +81,11 @@ not in application use cases.
 ## Contracts and operations
 
 - `packages/js/` is the typed Storefront JavaScript client and public HTTP contract.
-- `migrations/0001_platform.sql` through `0008_identity_oauth.sql`
-  are the fresh bootstrap schema. `0004_integration.sql` owns the shared
-  Integration account, webhook inbox, and queue infrastructure; the commerce
-  schema
-  schema persists one `commerce.shoppers` identity per website visit; cart,
+- `migrations/0001_platform.sql` through `0008_identity_oauth.sql` are the
+  fresh bootstrap schema. Catalog media attachments and manual-review
+  provenance are defined in `0005_commerce_products.sql`. `0004_integration.sql`
+  owns the shared Integration account, webhook inbox, and queue infrastructure;
+  the commerce schema persists one `commerce.shoppers` identity per website visit; cart,
   checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS
   certificate used behind Cloudflare.

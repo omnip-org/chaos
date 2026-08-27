@@ -11,9 +11,9 @@ Storefront clients need to attach merchandising content to a Product, ProductVar
 
 Product, ProductVariant, and Collection each gain a nullable `metadata JSONB` column. The domain layer treats metadata as an opaque, bounded value rather than a structured type: `CatalogMetadata` (`crates/chaos-domain/src/catalog/metadata.rs`) wraps canonical JSON text and enforces only a 32 KiB upper bound, matching the order of magnitude of other bounded payloads in this codebase (e.g. the analytics event body limit). Structural JSON validity is guaranteed upstream by the API layer's typed `serde_json::Value` deserialization before a `CatalogMetadata` is ever constructed, so the domain never needs a JSON parser dependency.
 
-Metadata is set at write time through the existing Product, Variant, and Collection create/update operations — there is no separate metadata endpoint. `ProductContent` and `CollectionContent` carry an optional `CatalogMetadata` alongside their existing title/description validation; `ProductVariant` carries its own, set at variant-creation time (variants have no standalone update endpoint in this release, matching their existing create-only lifecycle). A 32 KiB PostgreSQL `CHECK` constraint on each table backstops the domain bound.
+Metadata is set at write time through the existing Product, Variant, and Collection create/update operations — there is no general-purpose metadata endpoint. `ProductContent` and `CollectionContent` carry an optional `CatalogMetadata` alongside their existing title/description validation; `ProductVariant` carries its own, set at variant-creation time (variants have no standalone update endpoint in this release, matching their existing create-only lifecycle). A 32 KiB PostgreSQL `CHECK` constraint on each table backstops the domain bound. Product media references are the exception: `attach_product_meta_media` updates one RFC 6901 path transactionally and records a typed `product_meta_media_assets` link so the Media lifecycle remains correct.
 
-MCP Product/Variant/Collection detail results and Storefront Product/Variant/Collection responses both include `metadata` when present; list results omit it, matching the existing convention that list rows exclude `description`. The field is deliberately schema-agnostic on the wire: Chaos stores and returns exactly the JSON object a client sent, with no interpretation, translation, or validation of its internal shape.
+MCP Product/Variant/Collection detail results and Storefront Product/Variant/Collection responses both include `metadata` when present; list results omit it, matching the existing convention that list rows exclude `description`. The field is deliberately schema-agnostic on the wire: Chaos stores and returns exactly the JSON object a client sent, with no interpretation, translation, or validation of its internal shape, except that managed Product metadata media references are enriched with the current ready asset URL at Storefront read time.
 
 ## Consequences
 
@@ -21,6 +21,7 @@ MCP Product/Variant/Collection detail results and Storefront Product/Variant/Col
 - The 32 KiB bound is enforced identically in the domain (before any write) and in PostgreSQL (as defense in depth against a future write path that bypasses the domain type), so a stored value is never larger than what the domain already accepted.
 - MCP product and collection create/update tools expose metadata directly. Metadata is not part of the Storefront write surface.
 - Metadata is not translated by the Store-scoped Catalog localization introduced in ADR 0019. A client that needs localized merchandising content must currently encode that inside the JSON value itself.
+- Product metadata media references should be changed through the typed Media tools. Wholesale Product metadata replacement cannot silently remove or alter an active managed reference.
 
 ## Rejected alternatives
 

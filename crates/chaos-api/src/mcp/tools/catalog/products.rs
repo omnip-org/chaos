@@ -129,7 +129,8 @@ pub struct UpdateProductParams {
     /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
     /// tracking fields. Not shown to shoppers. This replaces the product's entire
     /// metadata, like every other field on this call; omit it (or pass null) to clear
-    /// existing metadata rather than to preserve it.
+    /// existing metadata rather than to preserve it. Managed Product metadata media
+    /// references must be preserved exactly; use the Media tools to change them.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -401,7 +402,8 @@ impl ChaosMcp {
                         selected Store. These are canonical product fields only: this does not \
                         update variant titles, option names or values. \
                         Every field is replaced wholesale, including metadata (omit it to clear \
-                        existing metadata). Requires confirm: true."
+                        existing metadata). Managed Product metadata media references must be \
+                        preserved exactly; use the Media tools to change them. Requires confirm: true."
     )]
     async fn update_product(
         &self,

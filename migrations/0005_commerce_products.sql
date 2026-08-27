@@ -4,6 +4,7 @@ CREATE TYPE commerce.collection_status AS ENUM ('draft', 'active', 'archived');
 CREATE TYPE commerce.media_kind AS ENUM ('image', 'video');
 CREATE TYPE commerce.media_asset_status AS ENUM ('pending_upload', 'ready', 'archived');
 CREATE TYPE commerce.review_status AS ENUM ('pending', 'approved', 'rejected');
+CREATE TYPE commerce.review_origin AS ENUM ('storefront', 'manual');
 CREATE TYPE commerce.price_list_status AS ENUM ('draft', 'active', 'archived');
 
 CREATE TABLE commerce.products (
@@ -169,16 +170,12 @@ CREATE TABLE commerce.collection_publications (
 CREATE TABLE commerce.media_assets (
     id                 UUID                        NOT NULL PRIMARY KEY,
     store_id           UUID                        NOT NULL,
-    product_id         UUID                        NOT NULL,
-    product_variant_id UUID,
     object_key         TEXT                        NOT NULL UNIQUE,
     file_name          TEXT                        NOT NULL,
     media_type         TEXT                        NOT NULL,
     media_kind         commerce.media_kind         NOT NULL,
     byte_size          BIGINT                      NOT NULL,
     sha256_digest      BYTEA                       NOT NULL,
-    alt_text           TEXT                        NOT NULL DEFAULT '',
-    position           SMALLINT                    NOT NULL,
     status             commerce.media_asset_status NOT NULL DEFAULT 'pending_upload',
     public_url         TEXT,
     ready_at           TIMESTAMPTZ,
@@ -187,16 +184,47 @@ CREATE TABLE commerce.media_assets (
     updated_at         TIMESTAMPTZ                 NOT NULL,
 
     CONSTRAINT media_assets_store_id_id_key                        UNIQUE (store_id, id),
-    CONSTRAINT media_assets_store_id_product_fkey                  FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT media_assets_store_id_product_variant_fkey          FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants (store_id, product_id, id),
+    CONSTRAINT media_assets_store_id_fkey                          FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT media_assets_object_key_check                       CHECK (length(object_key) BETWEEN 20 AND 255 AND object_key ~ '^stores/[0-9a-f-]{36}/media/[0-9a-f-]{36}/original$'),
     CONSTRAINT media_assets_file_name_check                        CHECK (length(trim(file_name)) BETWEEN 1 AND 255 AND file_name !~ '[[:cntrl:]/\\]'),
     CONSTRAINT media_assets_type_kind_check                        CHECK ((media_kind = 'image' AND media_type IN ('image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif') AND byte_size BETWEEN 1 AND 26214400) OR (media_kind = 'video' AND media_type IN ('video/mp4', 'video/webm') AND byte_size BETWEEN 1 AND 524288000)),
     CONSTRAINT media_assets_sha256_check                           CHECK (octet_length(sha256_digest) = 32),
-    CONSTRAINT media_assets_alt_text_check                         CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
-    CONSTRAINT media_assets_position_check                         CHECK (position BETWEEN 0 AND 99),
     CONSTRAINT media_assets_public_url_check                       CHECK (public_url IS NULL OR (length(public_url) BETWEEN 12 AND 2048 AND public_url ~ '^https://')),
     CONSTRAINT media_assets_lifecycle_check                        CHECK ((status = 'pending_upload' AND public_url IS NULL AND ready_at IS NULL AND archived_at IS NULL) OR (status = 'ready' AND public_url IS NOT NULL AND ready_at IS NOT NULL AND archived_at IS NULL) OR (status = 'archived' AND archived_at IS NOT NULL AND ((public_url IS NULL AND ready_at IS NULL) OR (public_url IS NOT NULL AND ready_at IS NOT NULL))))
+);
+
+CREATE TABLE commerce.product_media_assets (
+    store_id           UUID         NOT NULL,
+    product_id         UUID         NOT NULL,
+    product_variant_id UUID,
+    media_asset_id     UUID         NOT NULL,
+    alt_text           TEXT         NOT NULL DEFAULT '',
+    position           SMALLINT     NOT NULL,
+    archived_at        TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT product_media_assets_pkey PRIMARY KEY (store_id, product_id, media_asset_id),
+    CONSTRAINT product_media_assets_store_id_product_fkey FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_store_id_product_variant_fkey FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants (store_id, product_id, id),
+    CONSTRAINT product_media_assets_store_id_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_alt_text_check CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT product_media_assets_position_check CHECK (position BETWEEN 0 AND 99)
+);
+
+CREATE TABLE commerce.product_meta_media_assets (
+    store_id       UUID        NOT NULL,
+    product_id     UUID        NOT NULL,
+    media_asset_id UUID        NOT NULL,
+    meta_path      TEXT        NOT NULL,
+    alt_text       TEXT        NOT NULL DEFAULT '',
+    archived_at    TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT product_meta_media_assets_pkey PRIMARY KEY (store_id, product_id, meta_path, media_asset_id),
+    CONSTRAINT product_meta_media_assets_store_id_product_fkey FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_meta_media_assets_store_id_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_meta_media_assets_path_check CHECK (length(meta_path) BETWEEN 2 AND 512 AND left(meta_path, 1) = '/' AND meta_path !~ '[[:cntrl:]]'),
+    CONSTRAINT product_meta_media_assets_alt_text_check CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]')
 );
 
 CREATE TABLE commerce.reviews (
@@ -212,6 +240,11 @@ CREATE TABLE commerce.reviews (
     status            commerce.review_status NOT NULL DEFAULT 'pending',
     is_staff_reply    BOOLEAN                NOT NULL DEFAULT false,
     verified_buyer    BOOLEAN                NOT NULL DEFAULT false,
+    origin            commerce.review_origin NOT NULL DEFAULT 'storefront',
+    source_channel    TEXT,
+    source_reference  TEXT,
+    publication_consent_confirmed BOOLEAN NOT NULL DEFAULT true,
+    created_by_user_id UUID,
     approved_at       TIMESTAMPTZ,
     created_at        TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -227,7 +260,51 @@ CREATE TABLE commerce.reviews (
     CONSTRAINT reviews_title_length_check                 CHECK (title IS NULL OR length(title) <= 255),
     CONSTRAINT reviews_author_name_length_check           CHECK (length(trim(author_name)) BETWEEN 1 AND 120),
     CONSTRAINT reviews_approval_shape_check               CHECK ((status = 'approved') = (approved_at IS NOT NULL)),
-    CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (NOT verified_buyer OR status = 'approved')
+    CONSTRAINT reviews_verified_buyer_requires_approval_check CHECK (NOT verified_buyer OR status = 'approved'),
+    CONSTRAINT reviews_source_channel_check               CHECK (source_channel IS NULL OR (length(trim(source_channel)) BETWEEN 1 AND 80 AND source_channel !~ '[[:cntrl:]]')),
+    CONSTRAINT reviews_source_reference_check             CHECK (source_reference IS NULL OR (length(trim(source_reference)) BETWEEN 1 AND 255 AND source_reference !~ '[[:cntrl:]]')),
+    CONSTRAINT reviews_created_by_user_fkey               FOREIGN KEY (created_by_user_id) REFERENCES identity.users (id),
+    CONSTRAINT reviews_origin_provenance_check            CHECK (
+        (
+            is_staff_reply
+            AND origin = 'storefront'
+            AND source_channel IS NULL
+            AND source_reference IS NULL
+            AND created_by_user_id IS NULL
+            AND publication_consent_confirmed
+        )
+        OR (
+            NOT is_staff_reply
+            AND origin = 'manual'
+            AND source_channel IS NOT NULL
+            AND created_by_user_id IS NOT NULL
+            AND publication_consent_confirmed
+        )
+        OR (
+            NOT is_staff_reply
+            AND origin = 'storefront'
+            AND source_channel IS NULL
+            AND source_reference IS NULL
+            AND created_by_user_id IS NULL
+            AND publication_consent_confirmed
+        )
+    )
+);
+
+CREATE TABLE commerce.review_media_assets (
+    store_id       UUID        NOT NULL,
+    review_id      UUID        NOT NULL,
+    media_asset_id UUID        NOT NULL,
+    alt_text       TEXT        NOT NULL DEFAULT '',
+    position       SMALLINT    NOT NULL,
+    archived_at    TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT review_media_assets_pkey PRIMARY KEY (store_id, review_id, media_asset_id),
+    CONSTRAINT review_media_assets_store_id_review_fkey FOREIGN KEY (store_id, review_id) REFERENCES commerce.reviews (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT review_media_assets_store_id_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT review_media_assets_alt_text_check CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT review_media_assets_position_check CHECK (position BETWEEN 0 AND 99)
 );
 
 CREATE TABLE commerce.product_documents (
@@ -284,12 +361,18 @@ CREATE INDEX product_publications_channel_product_idx ON commerce.product_public
 CREATE INDEX collections_store_status_created_idx ON commerce.collections (store_id, status, created_at DESC, id DESC);
 CREATE INDEX collection_products_product_idx ON commerce.collection_products (store_id, product_id, collection_id);
 CREATE INDEX collection_publications_channel_collection_idx ON commerce.collection_publications (store_id, sales_channel_id, collection_id);
-CREATE UNIQUE INDEX media_assets_product_position_active_idx ON commerce.media_assets (store_id, product_id, position) WHERE status <> 'archived';
-CREATE INDEX media_assets_product_status_position_idx ON commerce.media_assets (store_id, product_id, status, position, id);
+CREATE INDEX media_assets_store_status_idx ON commerce.media_assets (store_id, status, created_at, id);
+CREATE UNIQUE INDEX product_media_assets_position_active_idx ON commerce.product_media_assets (store_id, product_id, position) WHERE archived_at IS NULL;
+CREATE INDEX product_media_assets_product_idx ON commerce.product_media_assets (store_id, product_id, position, media_asset_id);
+CREATE UNIQUE INDEX product_meta_media_assets_path_active_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path) WHERE archived_at IS NULL;
+CREATE INDEX product_meta_media_assets_product_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path, media_asset_id);
 CREATE INDEX reviews_product_status_idx ON commerce.reviews (store_id, product_id, status, created_at, id);
 CREATE INDEX reviews_parent_product_idx
     ON commerce.reviews (store_id, product_id, parent_review_id)
     WHERE parent_review_id IS NOT NULL;
+CREATE INDEX reviews_parent_idx ON commerce.reviews (store_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
+CREATE UNIQUE INDEX review_media_assets_position_active_idx ON commerce.review_media_assets (store_id, review_id, position) WHERE archived_at IS NULL;
+CREATE INDEX review_media_assets_review_idx ON commerce.review_media_assets (store_id, review_id, position, media_asset_id);
 CREATE INDEX product_documents_search_idx ON commerce.product_documents USING GIN (document);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
@@ -358,7 +441,10 @@ ALTER TABLE commerce.collections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.collection_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.collection_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.product_media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.product_meta_media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.review_media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
@@ -403,7 +489,19 @@ CREATE POLICY store_isolation ON commerce.media_assets
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
+CREATE POLICY store_isolation ON commerce.product_media_assets
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.product_meta_media_assets
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 CREATE POLICY store_isolation ON commerce.reviews
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.review_media_assets
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -432,13 +530,18 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.collection_products,
        commerce.collection_publications,
        commerce.media_assets,
+       commerce.product_media_assets,
+       commerce.product_meta_media_assets,
        commerce.reviews,
+       commerce.review_media_assets,
        commerce.product_documents,
        commerce.price_lists,
        commerce.prices
     TO chaos_runtime;
 
-REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.reviews FROM chaos_runtime;
+REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.product_media_assets,
+                commerce.product_meta_media_assets,
+                commerce.reviews, commerce.review_media_assets FROM chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products (UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

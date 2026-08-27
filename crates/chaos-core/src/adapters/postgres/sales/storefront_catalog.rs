@@ -210,7 +210,14 @@ impl PostgresStorefrontCatalogRepository {
         product_id: ProductId,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
-            "SELECT id,product_variant_id,media_type,media_kind::text,alt_text,position,public_url FROM commerce.media_assets WHERE store_id=$1 AND product_id=$2 AND status='ready' ORDER BY position,id",
+            "SELECT media.id,link.product_variant_id,media.media_type,media.media_kind::text,\
+                    link.alt_text,link.position,media.public_url \
+             FROM commerce.product_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+               AND link.archived_at IS NULL AND media.status='ready' \
+             ORDER BY link.position,media.id",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -242,6 +249,66 @@ impl PostgresStorefrontCatalogRepository {
                 })
             })
             .collect()
+    }
+
+    async fn metadata(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_id: ProductId,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, ApplicationError> {
+        let rows = sqlx::query_as::<_, (String, Uuid, String, Option<String>)>(
+            "SELECT link.meta_path, media.id, media.media_type, media.public_url \
+             FROM commerce.product_meta_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+               AND link.archived_at IS NULL AND media.status='ready' \
+             ORDER BY link.meta_path, media.id",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if rows.is_empty() {
+            return Ok(metadata);
+        }
+        let mut metadata = metadata.ok_or_else(|| {
+            ApplicationError::Unexpected(anyhow::anyhow!(
+                "Product metadata Media attachment has no Product metadata object"
+            ))
+        })?;
+        for (meta_path, asset_id, media_type, public_url) in rows {
+            let public_url = public_url.ok_or_else(|| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "ready Product metadata Media attachment has no public URL"
+                ))
+            })?;
+            let node = metadata.pointer_mut(&meta_path).ok_or_else(|| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "Product metadata Media attachment points to a missing metadata path"
+                ))
+            })?;
+            let expected_asset_id = asset_id.to_string();
+            let Some(node) = node.as_object_mut() else {
+                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                    "Product metadata Media attachment does not point to an object"
+                )));
+            };
+            if node
+                .get("media_asset_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_asset_id.as_str())
+            {
+                return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                    "Product metadata Media attachment does not match its metadata reference"
+                )));
+            }
+            node.insert("media_type".into(), serde_json::Value::String(media_type));
+            node.insert("url".into(), serde_json::Value::String(public_url));
+        }
+        Ok(Some(metadata))
     }
 
     async fn collections(
@@ -384,6 +451,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                     let options = Self::options(&mut transaction, actor, id).await?;
                     let media = Self::media(&mut transaction, actor, id).await?;
                     let collections = Self::collections(&mut transaction, actor, id).await?;
+                    let metadata = Self::metadata(&mut transaction, actor, id, metadata).await?;
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
@@ -449,6 +517,7 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
         let options = Self::options(&mut transaction, actor, id).await?;
         let media = Self::media(&mut transaction, actor, id).await?;
         let collections = Self::collections(&mut transaction, actor, id).await?;
+        let metadata = Self::metadata(&mut transaction, actor, id, metadata).await?;
         transaction.commit().await.map_err(database_error)?;
         if variants.is_empty() {
             return Ok(None);

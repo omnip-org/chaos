@@ -12,4 +12,6 @@ pub use product::{
     ProductOptionId, ProductOptionValue, ProductOptionValueId, ProductStatus, ProductVariant,
     ProductVariantContent, ProductVariantId, SelectedOptionValue, Sku, VariantStatus,
 };
-pub use review::{ReviewContent, ReviewId, ReviewRating, ReviewStatus, StaffReplyContent};
+pub use review::{
+    ReviewContent, ReviewId, ReviewOrigin, ReviewRating, ReviewStatus, StaffReplyContent,
+};

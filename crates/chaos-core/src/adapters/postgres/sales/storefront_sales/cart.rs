@@ -199,9 +199,9 @@ async fn load_cart(
 }
 
 /// Media for the exact Product+Variant of each Cart line: a variant-specific
-/// asset (`media.product_variant_id` matching this line's variant) plus every
-/// product-level asset (`media.product_variant_id IS NULL`), so a line for
-/// one variant never shows another variant's exclusive photos.
+/// attachment (`link.product_variant_id` matching this line's variant) plus
+/// every product-level attachment (`link.product_variant_id IS NULL`), so a
+/// line for one variant never shows another variant's exclusive photos.
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -212,12 +212,14 @@ async fn load_cart_media(
         return Ok(HashMap::new());
     }
     let rows = sqlx::query_as::<_, CartMediaRow>(
-        "SELECT media.product_id, media.id, media.product_variant_id, media.media_type, \
-                media.media_kind::text, media.alt_text, \
-                media.position, media.public_url \
-         FROM commerce.media_assets AS media \
-         WHERE media.store_id = $1 AND media.product_id = ANY($2) AND media.status = 'ready' \
-         ORDER BY media.product_id, media.position, media.id",
+        "SELECT link.product_id, media.id, link.product_variant_id, media.media_type, \
+                media.media_kind::text, link.alt_text, link.position, media.public_url \
+         FROM commerce.product_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id = $1 AND link.product_id = ANY($2) \
+           AND link.archived_at IS NULL AND media.status = 'ready' \
+         ORDER BY link.product_id, link.position, media.id",
     )
     .bind(actor.store_id.as_uuid())
     .bind(&product_ids)
