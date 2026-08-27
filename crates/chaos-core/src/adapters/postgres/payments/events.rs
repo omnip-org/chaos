@@ -519,7 +519,7 @@ impl StripeCheckoutSnapshot {
         let email = customer_details
             .and_then(|value| value.get("email"))
             .and_then(Value::as_str)
-            .map(str::to_owned);
+            .and_then(non_empty_text);
         let phone = customer_details
             .and_then(|value| value.get("phone"))
             .and_then(Value::as_str)
@@ -569,40 +569,47 @@ fn stripe_address(
     value: &Value,
     name: Option<&str>,
 ) -> Result<Option<StripeAddressSnapshot>, ApplicationError> {
-    let Some(line1) = value.get("line1").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let Some(city) = value.get("city").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let Some(country) = value.get("country").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let Some(full_name) = name.filter(|value| !value.trim().is_empty()) else {
-        return Ok(None);
-    };
+	let Some(line1) = value.get("line1").and_then(Value::as_str).and_then(non_empty_text)
+	else {
+		return Ok(None);
+	};
+	let Some(city) = value.get("city").and_then(Value::as_str).and_then(non_empty_text) else {
+		return Ok(None);
+	};
+	let Some(country) = value.get("country").and_then(Value::as_str).and_then(non_empty_text)
+	else {
+		return Ok(None);
+	};
+	let Some(full_name) = name.and_then(non_empty_text) else {
+		return Ok(None);
+	};
     let country = country.to_ascii_uppercase();
     if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
         return Err(corrupt_webhook_payload());
-    }
-    Ok(Some(StripeAddressSnapshot {
-        full_name: full_name.to_owned(),
-        line1: line1.to_owned(),
-        line2: value
-            .get("line2")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        city: city.to_owned(),
-        state: value
-            .get("state")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        postal_code: value
-            .get("postal_code")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        country,
-    }))
+	}
+	Ok(Some(StripeAddressSnapshot {
+		full_name,
+		line1,
+		line2: value
+			.get("line2")
+			.and_then(Value::as_str)
+			.and_then(non_empty_text),
+		city,
+		state: value
+			.get("state")
+			.and_then(Value::as_str)
+			.and_then(non_empty_text),
+		postal_code: value
+			.get("postal_code")
+			.and_then(Value::as_str)
+			.and_then(non_empty_text),
+		country,
+	}))
+}
+
+fn non_empty_text(value: &str) -> Option<String> {
+	let value = value.trim();
+	(!value.is_empty()).then(|| value.to_owned())
 }
 
 fn valid_e164(value: &str) -> bool {
@@ -1340,7 +1347,7 @@ impl PostgresStripeRepository {
 
 #[cfg(test)]
 mod refund_reconciliation_tests {
-    use super::{PaymentRefundStatus, reconcile_refund_status};
+    use super::{PaymentRefundStatus, non_empty_text, reconcile_refund_status};
 
     #[test]
     fn stale_provider_snapshots_do_not_reopen_terminal_refunds() {
@@ -1356,5 +1363,11 @@ mod refund_reconciliation_tests {
             reconcile_refund_status("succeeded", PaymentRefundStatus::Canceled),
             "failed"
         );
+    }
+
+    #[test]
+    fn blank_optional_stripe_text_is_stored_as_absent() {
+        assert_eq!(non_empty_text("  "), None);
+        assert_eq!(non_empty_text(" Suite 100 "), Some("Suite 100".into()));
     }
 }

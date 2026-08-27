@@ -249,7 +249,10 @@ async fn load_identity(
     .map_err(database_error)?
     .ok_or_else(corrupt_state)?;
     Ok(OrderIdentity::new(
-        OrderContact::new(row.contact_email, row.contact_phone)?,
+        OrderContact::new(
+            normalize_optional_text(row.contact_email),
+            normalize_optional_text(row.contact_phone),
+        )?,
         optional_address(
             row.billing_full_name,
             row.billing_company,
@@ -284,6 +287,14 @@ fn optional_address(
     postal_code: Option<String>,
     country_code: Option<String>,
 ) -> Result<Option<PostalAddress>, ApplicationError> {
+    let full_name = normalize_optional_text(full_name);
+    let company = normalize_optional_text(company);
+    let address_line1 = normalize_optional_text(address_line1);
+    let address_line2 = normalize_optional_text(address_line2);
+    let locality = normalize_optional_text(locality);
+    let administrative_area = normalize_optional_text(administrative_area);
+    let postal_code = normalize_optional_text(postal_code);
+    let country_code = normalize_optional_text(country_code);
     let any = full_name.is_some()
         || company.is_some()
         || address_line1.is_some()
@@ -308,6 +319,13 @@ fn optional_address(
         }
         _ => Err(corrupt_state()),
     }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 fn order_line_item(row: OrderLineRow) -> Result<OrderLineItem, ApplicationError> {
@@ -380,4 +398,18 @@ fn fulfillment_item(row: FulfillmentRow) -> Result<OrderFulfillmentItem, Applica
 
 fn corrupt_state() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown order state"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_optional_text;
+
+    #[test]
+    fn normalizes_blank_database_optional_text() {
+        assert_eq!(normalize_optional_text(Some("  ".into())), None);
+        assert_eq!(
+            normalize_optional_text(Some(" Suite 100 ".into())),
+            Some("Suite 100".into())
+        );
+    }
 }

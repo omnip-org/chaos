@@ -146,6 +146,7 @@ test("refreshes a stale shopper token once and retries the request", async () =>
     publishableKey: "public_test",
     storage,
     analytics: false,
+    retryInvalidShopperToken: true,
     fetch: (async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
       requests.push({ url, token: headers.get("x-chaos-shopper-token") ?? undefined });
@@ -165,6 +166,105 @@ test("refreshes a stale shopper token once and retries the request", async () =>
     ["stale-token", undefined, "fresh-token"],
   );
   assert.equal(client.getShopperToken(), "fresh-token");
+});
+
+test("can fail on a stale shopper token without silently changing identity", async () => {
+  const requests: string[] = [];
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    baseUrl: "https://shop.example.com/storefront/v1",
+    storage: null,
+    analytics: false,
+    retryInvalidShopperToken: false,
+    fetch: (async (url: string) => {
+      requests.push(url);
+      return jsonResponse(401, { error: { code: "unauthorized" } });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("stale-token");
+
+  await assert.rejects(client.cart.get("cart-1"), (error: unknown) => {
+    return error instanceof ChaosApiError && error.status === 401;
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(client.getShopperToken(), "stale-token");
+});
+
+test("can require an explicitly seeded shopper token", async () => {
+  let requestCount = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    autoAcquireShopperToken: false,
+    fetch: (async () => {
+      requestCount += 1;
+      return jsonResponse(200, { data: {} });
+    }) as unknown as typeof fetch,
+  });
+
+  await assert.rejects(client.cart.get("cart-1"), (error: unknown) => {
+    return error instanceof ChaosApiError && error.code === "shopper_token_required";
+  });
+
+  assert.equal(requestCount, 0);
+});
+
+test("creates a fresh cart when the stored cart has completed checkout", async () => {
+  const requests: Array<{ url: string; token: string | null }> = [];
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    baseUrl: "https://shop.example.com/storefront/v1",
+    storage: null,
+    analytics: false,
+    fetch: (async (url: string, init: RequestInit) => {
+      const token = new Headers(init.headers).get("x-chaos-shopper-token");
+      requests.push({ url, token });
+      if (url.endsWith("/carts/completed-cart")) {
+        return jsonResponse(200, { data: { id: "completed-cart", status: "completed", lines: [] } });
+      }
+      return jsonResponse(201, { data: { id: "fresh-cart", status: "active", lines: [] } });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("stable-shopper-token");
+
+  const response = await client.cart.getOrCreate("completed-cart");
+
+  assert.equal(response.data.id, "fresh-cart");
+  assert.deepEqual(
+    requests.map((request) => [request.url, request.token]),
+    [
+      ["https://shop.example.com/storefront/v1/carts/completed-cart", "stable-shopper-token"],
+      ["https://shop.example.com/storefront/v1/carts", "stable-shopper-token"],
+    ],
+  );
+  assert.equal(client.getShopperToken(), "stable-shopper-token");
+});
+
+test("shares one shopper-session request across concurrent explicit acquisitions", async () => {
+  let sessionRequests = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/shopper/sessions")) {
+        sessionRequests += 1;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return jsonResponse(201, { data: { shopper_token: "shared-token" } });
+      }
+      return jsonResponse(200, { data: {} });
+    }) as unknown as typeof fetch,
+  });
+
+  const tokens = await Promise.all([
+    client.acquireShopperToken(),
+    client.acquireShopperToken(),
+  ]);
+
+  assert.deepEqual(tokens, ["shared-token", "shared-token"]);
+  assert.equal(sessionRequests, 1);
 });
 
 test("serializes concurrent addLine calls for one cart", async () => {

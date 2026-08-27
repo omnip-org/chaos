@@ -1,3 +1,4 @@
+import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontClient } from "../client.js";
 import type { Cart, CreateCartRequest, DataEnvelope, SetCartLineRequest } from "../types.js";
 
@@ -19,6 +20,63 @@ export class CartResource {
       method: "GET",
       requiresShopperToken: true,
     });
+  }
+
+  /**
+   * Reads a cart only when it is still active. A missing, completed, or
+   * abandoned cart returns null without creating a replacement.
+   *
+   * Invalid shopper credentials are cleared from the configured token
+   * storage, but this method never mints a new identity as a side effect.
+  */
+  async getActive(cartId: string): Promise<DataEnvelope<Cart> | null> {
+    if (!this.client.getShopperToken()) return null;
+    try {
+      const response = await this.get(cartId);
+      return response.data.status === "active" ? response : null;
+    } catch (error) {
+      if (
+        error instanceof ChaosApiError &&
+        (error.status === 401 || error.status === 403 || error.status === 404)
+      ) {
+        if (error.status === 401 || error.status === 403) {
+          this.client.setShopperToken(null);
+        }
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Returns an active cart for the current shopper, creating one when the
+   * supplied cart id is stale or belongs to a completed checkout. Shopper
+   * identity recovery is explicit and persists through the client's configured
+   * token storage.
+   */
+  async getOrCreate(cartId?: string): Promise<DataEnvelope<Cart>> {
+    if (cartId) {
+      const current = await this.getActive(cartId);
+      if (current) return current;
+    }
+
+    if (!this.client.getShopperToken()) {
+      await this.client.acquireShopperToken();
+    }
+
+    try {
+      return await this.create();
+    } catch (error) {
+      if (
+        !(error instanceof ChaosApiError) ||
+        (error.status !== 401 && error.status !== 403)
+      ) {
+        throw error;
+      }
+      this.client.setShopperToken(null);
+      await this.client.acquireShopperToken();
+      return this.create();
+    }
   }
 
   async setLine(

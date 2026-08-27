@@ -3,7 +3,7 @@ use chaos_domain::store::StoreId;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 pub struct PostgresAnalyticsEventStore {
@@ -40,7 +40,8 @@ impl PostgresAnalyticsDeliveryStore {
 struct DeliverySnapshot {
     provider: String,
     status: String,
-    delivered_at: Option<OffsetDateTime>,
+    // jsonb_build_object serializes PostgreSQL timestamps as RFC3339 strings.
+    delivered_at: Option<String>,
     provider_reference: Option<String>,
     last_error: Option<String>,
 }
@@ -420,8 +421,22 @@ impl PostgresAnalyticsEventStore {
                     received_at,
                     properties,
                     deliveries,
-                )| {
-                    AnalyticsEventRecord {
+                )|
+                 -> Result<AnalyticsEventRecord, ApplicationError> {
+                    let deliveries = deliveries
+                        .0
+                        .into_iter()
+                        .map(|delivery| {
+                            Ok(AnalyticsEventDelivery {
+                                provider: delivery.provider,
+                                status: delivery.status,
+                                delivered_at: parse_optional_rfc3339(delivery.delivered_at)?,
+                                provider_reference: delivery.provider_reference,
+                                last_error: delivery.last_error,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, ApplicationError>>()?;
+                    Ok(AnalyticsEventRecord {
                         id,
                         event_id,
                         event_name,
@@ -429,22 +444,27 @@ impl PostgresAnalyticsEventStore {
                         occurred_at,
                         received_at,
                         properties,
-                        deliveries: deliveries
-                            .0
-                            .into_iter()
-                            .map(|delivery| AnalyticsEventDelivery {
-                                provider: delivery.provider,
-                                status: delivery.status,
-                                delivered_at: delivery.delivered_at,
-                                provider_reference: delivery.provider_reference,
-                                last_error: delivery.last_error,
-                            })
-                            .collect(),
-                    }
+                        deliveries,
+                    })
                 },
             )
-            .collect();
+            .collect::<Result<Vec<_>, ApplicationError>>()?;
         Ok(AnalyticsEventPage { events, has_more })
+    }
+}
+
+fn parse_optional_rfc3339(
+    value: Option<String>,
+) -> Result<Option<OffsetDateTime>, ApplicationError> {
+    match value {
+        Some(value) => OffsetDateTime::parse(&value, &Rfc3339)
+            .map(Some)
+            .map_err(|error| {
+                ApplicationError::Unexpected(anyhow::anyhow!(
+                    "invalid analytics delivery timestamp {value:?}: {error}"
+                ))
+            }),
+        None => Ok(None),
     }
 }
 
@@ -655,4 +675,23 @@ impl PostgresAnalyticsDeliveryStore {
 
 fn db(error: sqlx::Error) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_optional_rfc3339;
+
+    #[test]
+    fn parses_json_delivery_timestamps() {
+        let timestamp = parse_optional_rfc3339(Some("2026-08-27T09:15:53.535416+00:00".into()))
+            .expect("timestamp should parse")
+            .expect("timestamp should be present");
+        assert_eq!(timestamp.year(), 2026);
+        assert_eq!(timestamp.hour(), 9);
+        assert_eq!(timestamp.minute(), 15);
+        assert_eq!(
+            parse_optional_rfc3339(None).expect("null should parse"),
+            None
+        );
+    }
 }

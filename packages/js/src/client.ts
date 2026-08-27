@@ -1,5 +1,5 @@
 import { ChaosStorefrontAnalytics, type AnalyticsOptions } from "./analytics.js";
-import { throwForResponse } from "./errors.js";
+import { ChaosApiError, throwForResponse } from "./errors.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
 import { OrdersResource } from "./resources/orders.js";
@@ -18,6 +18,18 @@ export interface ClientOptions {
   /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   randomUUID?: () => string;
+  /**
+   * Disables implicit shopper-session creation for server-side callers that
+   * need to distinguish a missing token from a new anonymous session.
+   * Defaults to true for browser compatibility.
+   */
+  autoAcquireShopperToken?: boolean;
+  /**
+   * Retries one 401/403 shopper request with a newly issued token. This is
+   * opt-in because changing shopper identity can orphan a cart or hide an
+   * order; use CartResource.getOrCreate for explicit cart recovery.
+   */
+  retryInvalidShopperToken?: boolean;
   /**
    * Options forwarded to the bundled analytics collector, minus
    * publishableKey/fetch/randomUUID (inherited from this client). Pass
@@ -46,6 +58,8 @@ export class ChaosStorefrontClient {
   private readonly fetchImpl: typeof fetch;
   private readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   private readonly shopperTokenStorageKey: string;
+  private readonly autoAcquireShopperToken: boolean;
+  private readonly retryInvalidShopperToken: boolean;
   readonly randomUUID: () => string;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
@@ -67,6 +81,8 @@ export class ChaosStorefrontClient {
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.storage = options.storage !== undefined ? options.storage : (globalThis.localStorage ?? null);
     this.shopperTokenStorageKey = scopedShopperTokenKey(this.baseUrl, this.publishableKey);
+    this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
+    this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
     this.randomUUID = options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     if (!this.fetchImpl) {
       throw new TypeError("fetch is required (pass options.fetch in environments without a global fetch)");
@@ -118,7 +134,11 @@ export class ChaosStorefrontClient {
     }
   }
 
-  private async ensureShopperToken(): Promise<string> {
+  /**
+   * Explicitly acquires a shopper session when one is not already cached.
+   * Concurrent callers share the same in-flight request.
+   */
+  async acquireShopperToken(): Promise<string> {
     if (this.shopperTokenCache) return this.shopperTokenCache;
     if (!this.pendingShopperSession) {
       this.pendingShopperSession = this.createShopperSession().finally(() => {
@@ -126,6 +146,18 @@ export class ChaosStorefrontClient {
       });
     }
     return this.pendingShopperSession;
+  }
+
+  private async ensureShopperToken(): Promise<string> {
+    if (this.shopperTokenCache) return this.shopperTokenCache;
+    if (!this.autoAcquireShopperToken) {
+      throw new ChaosApiError(
+        401,
+        "shopper_token_required",
+        "a shopper token is required for this request",
+      );
+    }
+    return this.acquireShopperToken();
   }
 
   private async createShopperSession(): Promise<string> {
@@ -138,7 +170,7 @@ export class ChaosStorefrontClient {
     path: string,
     options: RequestOptions<Query> = {},
   ): Promise<T> {
-    return this.requestWithShopperTokenRetry(path, options, true);
+    return this.requestWithShopperTokenRetry(path, options, this.retryInvalidShopperToken);
   }
 
   private async requestWithShopperTokenRetry<T, Query extends object = Record<string, never>>(

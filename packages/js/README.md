@@ -46,6 +46,9 @@ const { data: product } = await chaos.catalog.getProduct("running-shoes");
 // first shopper-scoped call, then reused for every subsequent Cart/Checkout call.
 const { data: cart } = await chaos.cart.create();
 await chaos.cart.addLine(cart.id, product.variants[0].id);
+// If a persisted cart has already completed checkout, getOrCreate returns a
+// fresh active cart without changing the shopper identity.
+const { data: activeCart } = await chaos.cart.getOrCreate(cart.id);
 // Cart mutations use the response version as an If-Match precondition. The
 // SDK reads and sends it automatically; direct HTTP callers must send the
 // current Cart version in the If-Match header.
@@ -91,7 +94,10 @@ constructed.
 
 The client automatically acquires and persists the signed shopper token used to
 associate commerce operations and Analytics events on the first shopper-scoped
-request. The collector automatically
+request. `cart.getActive()` reads only an active cart, while
+`cart.getOrCreate()` explicitly recovers from a missing or completed cart.
+Invalid shopper-token retries are opt-in because silently minting a replacement
+can orphan a cart or hide an order. The collector automatically
 captures bounded UTM fields and the Referrer host.
 It keeps first-touch, browser-session, and last-non-direct source facts.
 Unsent events survive reloads in session storage, retain stable IDs during
