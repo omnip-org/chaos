@@ -52,7 +52,8 @@ pub struct CreateCollectionParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Arbitrary JSON (up to 32KB) for automation bookkeeping. Not shown to shoppers.
+    /// Optional JSON object (up to 32KB) for automation bookkeeping. Nested arrays and values
+    /// are allowed, but the root must be an object. Not shown to shoppers.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -69,7 +70,8 @@ pub struct UpdateCollectionParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Replaces the collection's metadata; omit or pass null to clear it.
+    /// Optional JSON object (up to 32KB). Nested arrays and values are allowed, but the root
+    /// must be an object. Replaces the collection's metadata; omit or pass null to clear it.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -234,7 +236,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Create a draft collection in the selected Store. Requires confirm: true."
+        description = "Create a draft collection in the selected Store. Optional metadata must \
+                        be a JSON object at the root; nested arrays are allowed. Requires confirm: true."
     )]
     async fn create_collection(
         &self,
@@ -276,7 +279,10 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Update a collection's handle, title, and description in the selected Store. Requires confirm: true."
+        description = "Update a collection's handle, title, description, and metadata in the \
+                        selected Store. Metadata, when provided, must be a JSON object at the root; \
+                        nested arrays are allowed. Metadata is replaced wholesale; omit it or pass \
+                        null to clear it. Requires confirm: true."
     )]
     async fn update_collection(
         &self,

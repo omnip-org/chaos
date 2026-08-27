@@ -15,6 +15,15 @@ pub(crate) fn parse_metadata(
 ) -> Result<Option<CatalogMetadata>, ApplicationError> {
     value
         .map(|value| {
+            if !value.is_object() {
+                return Err(ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "metadata",
+                        reason: "must be a JSON object; nested arrays and values are allowed"
+                            .into(),
+                    }],
+                });
+            }
             let text = serde_json::to_string(&value)
                 .map_err(|error| ApplicationError::Unexpected(error.into()))?;
             Ok(CatalogMetadata::parse(text)?)
@@ -104,4 +113,24 @@ pub use reviews::{
     AddReviewReplyInput, ApproveReviewInput, CreateManualReviewInput, RejectReviewInput,
     ReviewAdministration, StorefrontReviews, SubmitReviewInput,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{ApplicationError, parse_metadata};
+    use serde_json::json;
+
+    #[test]
+    fn metadata_requires_an_object_root() {
+        assert!(matches!(
+            parse_metadata(Some(json!([]))),
+            Err(ApplicationError::Validation { .. })
+        ));
+        assert!(matches!(
+            parse_metadata(Some(json!(r#"{"key":"value"}"#))),
+            Err(ApplicationError::Validation { .. })
+        ));
+        assert!(parse_metadata(Some(json!({ "tags": ["featured"] }))).is_ok());
+        assert!(parse_metadata(None).unwrap().is_none());
+    }
+}
 pub use storefront::{StorefrontCatalog, StorefrontProductPage};

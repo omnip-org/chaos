@@ -70,8 +70,9 @@ pub struct ProductVariantParams {
     /// Exactly one value per declared product option, if any options are declared.
     #[serde(default)]
     pub selected_options: Vec<ProductSelectedOptionParams>,
-    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
-    /// tracking fields. Not shown to shoppers.
+    /// Optional JSON object (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Nested arrays and values are allowed, but the root must be an object.
+    /// Not shown to shoppers.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
 }
@@ -95,8 +96,9 @@ pub struct CreateProductParams {
     pub options: Vec<ProductOptionParams>,
     /// At least one variant is required to later activate the product.
     pub variants: Vec<ProductVariantParams>,
-    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
-    /// tracking fields. Not shown to shoppers.
+    /// Optional JSON object (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Nested arrays and values are allowed, but the root must be an object.
+    /// Not shown to shoppers.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -126,11 +128,12 @@ pub struct UpdateProductParams {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Arbitrary JSON (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
-    /// tracking fields. Not shown to shoppers. This replaces the product's entire
-    /// metadata, like every other field on this call; omit it (or pass null) to clear
-    /// existing metadata rather than to preserve it. Managed Product metadata media
-    /// references must be preserved exactly; use the Media tools to change them.
+    /// Optional JSON object (up to 32KB) for automation bookkeeping, e.g. an AI agent's own
+    /// tracking fields. Nested arrays and values are allowed, but the root must be an object.
+    /// Not shown to shoppers. This replaces the product's entire metadata, like every other
+    /// field on this call; omit it (or pass null) to clear existing metadata rather than to
+    /// preserve it. Managed Product metadata media references must be preserved exactly; use
+    /// the Media tools to change them.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -152,7 +155,8 @@ pub struct UpdateProductVariantParams {
     pub sku: Option<String>,
     #[serde(default = "default_true")]
     pub track_inventory: bool,
-    /// Arbitrary JSON (up to 32KB) for automation bookkeeping. Omitting this field clears
+    /// Optional JSON object (up to 32KB) for automation bookkeeping. Nested arrays and values
+    /// are allowed, but the root must be an object. Omitting this field or passing null clears
     /// existing metadata because the mutable canonical fields are replaced wholesale.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
@@ -248,7 +252,8 @@ impl ChaosMcp {
     #[tool(
         description = "Get full details for a single product in the selected Store, including \
                         options, variants, their selected option values, and \
-                        metadata (both product-level and per-variant). The product title and \
+                        metadata (both product-level and per-variant; each metadata value must be \
+                        a JSON object at the root, though nested arrays are allowed). The product title and \
                         description are canonical fields from commerce.products, and each \
                         variant title is the canonical field from commerce.product_variants. \
                         This tool returns the Store's English catalog fields."
@@ -324,7 +329,8 @@ impl ChaosMcp {
     #[tool(
         description = "Create a new draft product in the selected Store, with its \
                         options, variants, and optional metadata (product-level and \
-                        per-variant, arbitrary JSON up to 32KB, useful for automation \
+                        per-variant; each metadata value must be a JSON object at the root, \
+                        though nested arrays are allowed, up to 32KB, useful for automation \
                         bookkeeping). Product and variant titles are English catalog fields. The \
                         product starts as draft and is not visible anywhere until \
                         activate_product and publish_product are also called. Requires confirm: \
@@ -401,8 +407,9 @@ impl ChaosMcp {
         description = "Update a product's handle, title, description, and metadata in the \
                         selected Store. These are canonical product fields only: this does not \
                         update variant titles, option names or values. \
-                        Every field is replaced wholesale, including metadata (omit it to clear \
-                        existing metadata). Managed Product metadata media references must be \
+                        Metadata, when provided, must be a JSON object at the root; nested arrays \
+                        are allowed. Every field is replaced wholesale, including metadata (omit \
+                        it or pass null to clear existing metadata). Managed Product metadata media references must be \
                         preserved exactly; use the Media tools to change them. Requires confirm: true."
     )]
     async fn update_product(
@@ -450,9 +457,10 @@ impl ChaosMcp {
 
     #[tool(
         description = "Update one variant's canonical title, SKU, shipping flag, inventory \
-                        tracking flag, and metadata in the selected Store. This updates the \
+                        tracking flag, and metadata in the selected Store. Metadata, when provided, \
+                        must be a JSON object at the root; nested arrays are allowed. This updates the \
                         canonical catalog fields; it does not change selected option values. \
-                        Mutable fields are replaced wholesale, and omitting metadata clears it. \
+                        Mutable fields are replaced wholesale, and omitting metadata or passing null clears it. \
                         Requires confirm: true."
     )]
     async fn update_product_variant(

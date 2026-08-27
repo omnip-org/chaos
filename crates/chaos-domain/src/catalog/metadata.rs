@@ -1,9 +1,9 @@
 use crate::{DomainError, FieldViolation};
 
 /// Bounded, opaque merchandising content attached to a Product, ProductVariant, or
-/// Collection. The domain only enforces a byte bound: structural JSON validity is
-/// guaranteed by the API layer's typed deserialization before this type is ever
-/// constructed, and interpreting the shape is entirely a Storefront-client concern.
+/// Collection. The domain only enforces a byte bound; the application boundary
+/// validates the JSON object root before constructing this type, and interpreting
+/// the nested shape is entirely a Storefront-client concern.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogMetadata(String);
 
