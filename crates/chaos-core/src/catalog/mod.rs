@@ -113,6 +113,7 @@ pub use reviews::{
     AddReviewReplyInput, ApproveReviewInput, CreateManualReviewInput, RejectReviewInput,
     ReviewAdministration, StorefrontReviews, SubmitReviewInput,
 };
+pub use storefront::{StorefrontCatalog, StorefrontProductPage};
 
 #[cfg(test)]
 mod tests {
@@ -133,4 +134,3 @@ mod tests {
         assert!(parse_metadata(None).unwrap().is_none());
     }
 }
-pub use storefront::{StorefrontCatalog, StorefrontProductPage};
