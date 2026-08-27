@@ -197,12 +197,12 @@ CREATE TABLE commerce.product_media_assets (
     archived_at        TIMESTAMPTZ,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_media_assets_pkey PRIMARY KEY (store_id, product_id, media_asset_id),
-    CONSTRAINT product_media_assets_store_id_product_fkey FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_pkey                          PRIMARY KEY (store_id, product_id, media_asset_id),
+    CONSTRAINT product_media_assets_store_id_product_fkey         FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
     CONSTRAINT product_media_assets_store_id_product_variant_fkey FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants (store_id, product_id, id),
-    CONSTRAINT product_media_assets_store_id_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_media_assets_alt_text_check CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
-    CONSTRAINT product_media_assets_position_check CHECK (position BETWEEN 0 AND 99)
+    CONSTRAINT product_media_assets_store_id_media_asset_fkey     FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_alt_text_check                CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT product_media_assets_position_check                CHECK (position BETWEEN 0 AND 99)
 );
 
 CREATE TABLE commerce.product_meta_media_assets (
