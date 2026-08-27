@@ -10,8 +10,8 @@ object or its integrity metadata.
 
 1. Call `prepare_media_upload` with the Store, file name, MIME type, exact byte
    size, lowercase SHA-256 digest, and `confirm: true`.
-2. Read the short-lived upload request from
-   `_meta.com.omniporg.chaos/media-upload` in the tool result.
+2. Read the short-lived upload request from `structuredContent.upload` in the
+   tool result.
 3. The Host sends a `PUT` of the original file bytes to the returned URL and
    applies every returned header exactly as provided. The file must be the
    same file represented by the preparation metadata.
@@ -28,10 +28,9 @@ multiple targets; it is archived only after every active attachment is removed.
 `get_media_asset` returns the reusable asset state, while
 `archive_media_asset` handles an unreferenced asset.
 
-The upload metadata contains a short-lived bearer credential. Hosts must keep
-it out of logs, prompts, and user-visible text. The model-facing content only
-contains the pending asset and the next-step instruction; the Host is
-responsible for consuming the `_meta` value.
+The upload request contains a short-lived bearer credential and is intentionally
+included in the model-visible tool result so the current MCP Host can use it.
+Hosts should still avoid logging it and must upload before it expires.
 
 ## Product metadata images
 

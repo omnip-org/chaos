@@ -24,10 +24,10 @@ uploads the original bytes directly to object storage; and
 ready. `refresh_media_upload` reissues the PUT request while the asset is still
 pending. A ready asset is then attached through a typed Product, Review, or
 Product metadata tool. No MCP tool accepts inline Base64 media bytes.
-The upload request is carried in the Host metadata channel under
-`com.omniporg.chaos/media-upload`; the model-facing tool content contains only
-the pending asset and next-step information. Hosts must treat the metadata as a
-short-lived bearer credential and must not log or expose it.
+The upload request is returned in the structured model-facing tool result under
+`upload`, because the current MCP Host is controlled and needs to consume it
+directly. Hosts must treat it as a short-lived bearer credential and must not
+log it.
 
 ## Consequences
 

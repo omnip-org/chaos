@@ -14,7 +14,7 @@ use chaos_domain::catalog::{MediaAssetId, ProductId, ProductVariantId, ReviewId}
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
-    model::{CallToolResult, MetaObject},
+    model::CallToolResult,
     tool, tool_router,
 };
 use schemars::JsonSchema;
@@ -206,7 +206,7 @@ impl ChaosMcp {
         description = "Prepare a reusable direct Media upload in the selected Store. Provide \
                         only file metadata and the exact lowercase SHA-256 digest; do not send \
                         file bytes. Returns a pending media_asset_id and a short-lived presigned \
-                        PUT request for the MCP Host in _meta. After the Host uploads the bytes, \
+                        PUT request in the tool result for the MCP Host. After the Host uploads the bytes, \
                         call complete_media_upload, then attach the ready asset to a Product, \
                         Review, or Product metadata path. Requires confirm: true."
     )]
@@ -240,7 +240,7 @@ impl ChaosMcp {
             Ok(created) => Ok(prepared_media_result(
                 media_asset_json(created.asset),
                 created.upload,
-                "The MCP Host must PUT the original file bytes using the upload request in _meta, then call complete_media_upload. After completion, attach the ready asset to its business target.",
+                "The MCP Host must PUT the original file bytes using the upload request in the tool result, then call complete_media_upload. After completion, attach the ready asset to its business target.",
             )),
             Err(error) => Ok(tool_error(error)),
         }
@@ -249,7 +249,7 @@ impl ChaosMcp {
     #[tool(
         description = "Refresh the short-lived direct-upload request for a pending reusable Media \
                         Asset. The MCP Host must upload the exact bytes declared during preparation. \
-                        Requires confirm: true."
+                        The refreshed upload request is returned in the tool result. Requires confirm: true."
     )]
     async fn refresh_media_upload(
         &self,
@@ -281,7 +281,7 @@ impl ChaosMcp {
             Ok(upload) => Ok(refreshed_media_result(
                 media_asset_id,
                 upload,
-                "The MCP Host must PUT the original file bytes using the upload request in _meta, then call complete_media_upload.",
+                "The MCP Host must PUT the original file bytes using the upload request in the tool result, then call complete_media_upload.",
             )),
             Err(error) => Ok(tool_error(error)),
         }
@@ -841,9 +841,9 @@ fn prepared_media_result(
 ) -> CallToolResult {
     CallToolResult::structured(json!({
         "media_asset": media_asset,
+        "upload": upload_request_json(upload),
         "next_step": next_step,
     }))
-    .with_meta(Some(media_upload_meta(upload)))
 }
 
 fn refreshed_media_result(
@@ -854,18 +854,9 @@ fn refreshed_media_result(
     CallToolResult::structured(json!({
         "media_asset_id": media_asset_id.as_uuid(),
         "status": "pending_upload",
+        "upload": upload_request_json(upload),
         "next_step": next_step,
     }))
-    .with_meta(Some(media_upload_meta(upload)))
-}
-
-fn media_upload_meta(upload: MediaUploadRequest) -> MetaObject {
-    let mut meta = serde_json::Map::new();
-    meta.insert(
-        "com.omniporg.chaos/media-upload".into(),
-        upload_request_json(upload),
-    );
-    MetaObject(meta)
 }
 
 fn upload_request_json(upload: MediaUploadRequest) -> serde_json::Value {
@@ -916,7 +907,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_upload_request_is_host_metadata_not_model_content() {
+    fn direct_upload_request_is_model_visible_content() {
         let url = "https://uploads.example.test/media/asset";
         let result = refreshed_media_result(
             MediaAssetId::from_uuid(uuid::Uuid::nil()),
@@ -931,14 +922,15 @@ mod tests {
         let wire = serde_json::to_value(result).unwrap();
         let model_text = wire["content"][0]["text"].as_str().unwrap();
 
-        assert!(!model_text.contains(url));
+        assert!(model_text.contains(url));
         assert_eq!(
             wire["structuredContent"]["media_asset_id"],
             serde_json::json!(uuid::Uuid::nil())
         );
-        assert_eq!(wire["_meta"]["com.omniporg.chaos/media-upload"]["url"], url);
+        assert_eq!(wire["structuredContent"]["upload"]["url"], url);
+        assert!(wire.get("_meta").is_none());
         assert_eq!(
-            wire["_meta"]["com.omniporg.chaos/media-upload"]["headers"]["content-type"],
+            wire["structuredContent"]["upload"]["headers"]["content-type"],
             "image/webp"
         );
     }
