@@ -589,6 +589,14 @@ test("commerce resources record one event after the mutation succeeds", async ()
   assert.deepEqual(requests[1]?.body, { quantity: 2 });
   assert.equal(projections[0]?.event.event_id, prepared.event_id);
   assert.equal(projections[0]?.properties.product_id, "product-1");
+  assert.deepEqual(projections[0]?.properties.items, [
+    {
+      product_id: "product-1",
+      product_variant_id: "variant-1",
+      quantity: 2,
+      price_minor: 1_000,
+    },
+  ]);
 });
 
 test("commerce resources do not project a browser event when the mutation fails", async () => {
@@ -643,6 +651,8 @@ test("checkout records InitiateCheckout after the session is created", async () 
   };
   let requestBody: unknown;
   let projection: PreparedAnalyticsEvent | undefined;
+  let preparedProperties: Record<string, unknown> | undefined;
+  let sentProperties: Record<string, unknown> | undefined;
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -657,18 +667,42 @@ test("checkout records InitiateCheckout after the session is created", async () 
         properties?: Record<string, unknown>,
         eventId?: string,
       ) => PreparedAnalyticsEvent;
-      sendCommerceEvent: (event: PreparedAnalyticsEvent) => string | null;
+      sendCommerceEvent: (
+        event: PreparedAnalyticsEvent,
+        properties?: Record<string, unknown>,
+      ) => string | null;
     };
     request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
   };
   mutable.analytics = {
-    prepareCommerceEvent: () => prepared,
-    sendCommerceEvent: (event) => {
+    prepareCommerceEvent: (_eventName, properties = {}) => {
+      preparedProperties = properties;
+      return prepared;
+    },
+    sendCommerceEvent: (event, properties = {}) => {
       projection = event;
+      sentProperties = properties;
       return event.event_id;
     },
   };
-  mutable.request = async (_path, options = {}) => {
+  mutable.request = async (path, options = {}) => {
+    if (path === "/carts/cart-1") {
+      return {
+        data: {
+          id: "cart-1",
+          currency: "USD",
+          subtotal_amount_minor: 2_000,
+          lines: [
+            {
+              product_id: "product-1",
+              product_variant_id: "variant-1",
+              quantity: 2,
+              unit_price_amount_minor: 1_000,
+            },
+          ],
+        },
+      };
+    }
     requestBody = options.body;
     return { data: { order_id: "55555555-5555-4555-8555-555555555555" } };
   };
@@ -682,11 +716,28 @@ test("checkout records InitiateCheckout after the session is created", async () 
     prepared.event_id,
   );
 
+  assert.deepEqual(preparedProperties, {
+    cart_id: "cart-1",
+    value_minor: 2_000,
+    currency: "USD",
+    items: [
+      {
+        product_id: "product-1",
+        product_variant_id: "variant-1",
+        quantity: 2,
+        price_minor: 1_000,
+      },
+    ],
+  });
   assert.deepEqual(requestBody, {
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
   assert.equal(projection?.event_id, prepared.event_id);
+  assert.deepEqual(sentProperties, {
+    cart_id: "cart-1",
+    order_id: "55555555-5555-4555-8555-555555555555",
+  });
 });
 
 test("browser SDK observations record only after successful responses", async () => {
@@ -757,6 +808,7 @@ test("projects purchases only after a confirmed order is paid", async () => {
     currency: "USD",
     lines: [
       {
+        product_id: "product-1",
         product_variant_id: "variant-1",
         quantity: 1,
         unit_price_amount_minor: 1_000,
@@ -771,4 +823,17 @@ test("projects purchases only after a confirmed order is paid", async () => {
   order.payment_status = "paid";
   await client.orders.get("order-1");
   assert.equal(recorded.length, 1);
+  assert.deepEqual(recorded[0], {
+    orderId: "order-1",
+    valueMinor: 1_000,
+    currency: "USD",
+    items: [
+      {
+        productId: "product-1",
+        productVariantId: "variant-1",
+        quantity: 1,
+        priceMinor: 1_000,
+      },
+    ],
+  });
 });

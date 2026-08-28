@@ -353,8 +353,7 @@ fn meta_contents(
                 continue;
             };
             let Some(id) = item
-                .get("item_id")
-                .or_else(|| item.get("product_variant_id"))
+                .get("product_variant_id")
                 .or_else(|| item.get("product_id"))
                 .and_then(Value::as_str)
                 .filter(|id| !id.trim().is_empty())
@@ -544,7 +543,7 @@ mod tests {
         input.event_name = "search".into();
         input.properties = json!({
             "query": "shoes",
-            "items": [{"item_id": "variant-1", "quantity": 2, "price_minor": 650}],
+            "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 650}],
             "currency": "USD",
             "value_minor": 1_300,
             "_meta": {"source_url": "https://shop.example/search?q=shoes"}
@@ -633,7 +632,7 @@ mod tests {
             },
             "value_minor": 1_299,
             "currency": "USD",
-            "items": [{"item_id": "variant-1", "quantity": 2, "price_minor": 649}]
+            "items": [{"product_id": "product-1", "product_variant_id": "variant-1", "quantity": 2, "price_minor": 649}]
         });
         let payload = serde_json::to_value(MetaRequest {
             data: [MetaEvent {

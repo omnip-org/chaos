@@ -125,8 +125,8 @@ async fn load_order_analytics_items(
     store_id: Uuid,
     order_id: Uuid,
 ) -> Result<Vec<Value>, ApplicationError> {
-    let rows: Vec<(Uuid, i32, i64)> = sqlx::query_as(
-        "SELECT product_variant_id, quantity, unit_price_amount_minor
+    let rows: Vec<(Uuid, Uuid, i32, i64)> = sqlx::query_as(
+        "SELECT product_id, product_variant_id, quantity, unit_price_amount_minor
            FROM commerce.order_lines
           WHERE store_id = $1 AND order_id = $2
           ORDER BY position",
@@ -137,9 +137,10 @@ async fn load_order_analytics_items(
     .await
     .map_err(database_error)?;
     rows.into_iter()
-        .map(|(product_variant_id, quantity, price_minor)| {
+        .map(|(product_id, product_variant_id, quantity, price_minor)| {
             Ok(json!({
-                "item_id": product_variant_id,
+                "product_id": product_id,
+                "product_variant_id": product_variant_id,
                 "quantity": i64::from(quantity),
                 "price_minor": price_minor,
             }))

@@ -25,6 +25,9 @@ session when available (`session_id`), what (`event_name`), when
 `properties`. The browser cannot declare `shopper_id` or change the Store
 context. Normalized UTM values are stored in dedicated nullable columns;
 traffic history, product IDs, order IDs, and money remain dynamic properties.
+For commerce items, `product_id` and `product_variant_id` are canonical. The
+Meta adapter derives its content ID from `product_variant_id` when present,
+otherwise from `product_id`.
 
 Generic browser observations and client commerce events are appended by the
 Storefront analytics API. The public collection path rejects only `purchase`,

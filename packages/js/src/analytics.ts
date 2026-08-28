@@ -1,6 +1,7 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
 import type {
   AnalyticsCollectionResult,
+  AnalyticsPurchaseItem,
   BrowserAnalyticsEventName,
   ClientCommerceAnalyticsEventName,
   PreparedAnalyticsEvent,
@@ -358,7 +359,6 @@ export class ChaosStorefrontAnalytics {
       compact({
         product_id: productId,
         product_variant_id: productVariantId,
-        item_id: productVariantId ?? productId,
       }),
     );
   }
@@ -381,7 +381,7 @@ export class ChaosStorefrontAnalytics {
     orderId: string;
     valueMinor: number;
     currency: string;
-    items: Array<{ itemId: string; quantity: number; priceMinor: number }>;
+    items: AnalyticsPurchaseItem[];
   }): string | null {
     validateMoney(input.valueMinor, input.currency);
     const currency = input.currency.toUpperCase();
@@ -398,7 +398,8 @@ export class ChaosStorefrontAnalytics {
         value_minor: input.valueMinor,
         currency,
         items: input.items.map((item) => ({
-          item_id: item.itemId,
+          product_id: item.productId,
+          product_variant_id: item.productVariantId,
           quantity: item.quantity,
           price_minor: item.priceMinor,
         })),
@@ -987,7 +988,7 @@ function providerItems(items: unknown, currency: unknown): unknown {
   return items.map((item) => {
     const value = item as Record<string, unknown>;
     return compact({
-      id: value.item_id,
+      id: value.product_variant_id ?? value.product_id,
       quantity: value.quantity,
       item_price: providerValue(value.price_minor, currency),
     });
@@ -1012,7 +1013,7 @@ function ga4Items(items: unknown, currency: unknown): unknown {
   return items.map((item) => {
     const value = item as Record<string, unknown>;
     return compact({
-      item_id: value.item_id,
+      item_id: value.product_variant_id ?? value.product_id,
       quantity: value.quantity,
       price: providerValue(value.price_minor, currency),
     });
@@ -1026,7 +1027,10 @@ function commerceItemId(properties: Record<string, unknown>): unknown {
 function commerceItemIds(properties: Record<string, unknown>): string[] {
   if (Array.isArray(properties.items)) {
     const ids = properties.items
-      .map((item) => (item as Record<string, unknown>).item_id)
+      .map((item) => {
+        const value = item as Record<string, unknown>;
+        return value.product_variant_id ?? value.product_id;
+      })
       .filter(
         (itemId): itemId is string =>
           typeof itemId === "string" && itemId.length > 0,

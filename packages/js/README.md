@@ -80,7 +80,8 @@ chaos.analytics?.purchase({
   valueMinor: order.total_amount_minor,
   currency: order.currency,
   items: order.lines.map((line) => ({
-    itemId: line.product_variant_id,
+    productId: line.product_id,
+    productVariantId: line.product_variant_id,
     quantity: line.quantity,
     priceMinor: line.unit_price_amount_minor,
   })),
@@ -105,6 +106,10 @@ retry, and drain in bounded batches. View duration uses a monotonic clock and
 resumes correctly after browser back-forward cache restoration. Store-defined
 behaviors can be recorded with `chaos.analytics?.track("store_defined_event", {
 product_id: "..." })`.
+Commerce item properties use `product_id` and `product_variant_id`. Multi-item
+events repeat these fields inside each `items[]` entry; single-item events also
+expose the corresponding IDs at the top level. The Meta adapter uses the
+variant ID as the Meta content ID when present, otherwise the product ID.
 The browser prepares one commerce envelope containing the event ID, timestamp,
 session, traffic, UTM values, and Meta browser context (`fbc`/`fbp`) before the
 cart or checkout request. The business request does not contain an analytics

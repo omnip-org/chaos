@@ -236,7 +236,6 @@ function projectAddToCart(
     const properties: Record<string, unknown> = {
       cart_id: cart.id,
       product_variant_id: canonicalVariantId,
-      item_id: canonicalVariantId,
       quantity,
     };
     if (line) {
@@ -245,7 +244,8 @@ function projectAddToCart(
       properties.currency = cart.currency;
       properties.items = [
         {
-          item_id: canonicalVariantId,
+          product_id: line.product_id,
+          product_variant_id: canonicalVariantId,
           quantity,
           price_minor: line.unit_price_amount_minor,
         },

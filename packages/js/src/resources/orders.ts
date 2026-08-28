@@ -15,7 +15,8 @@ export class OrdersResource {
           valueMinor: response.data.total_amount_minor,
           currency: response.data.currency,
           items: response.data.lines.map((line) => ({
-            itemId: line.product_variant_id,
+            productId: line.product_id,
+            productVariantId: line.product_variant_id,
             quantity: line.quantity,
             priceMinor: line.unit_price_amount_minor,
           })),

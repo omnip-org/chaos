@@ -436,7 +436,14 @@ test("records commerce attribution through the common endpoint after success", a
     product_variant_id: "variant-1",
     value_minor: 1_000,
     currency: "USD",
-    items: [{ item_id: "variant-1", quantity: 1, price_minor: 1_000 }],
+    items: [
+      {
+        product_id: "product-1",
+        product_variant_id: "variant-1",
+        quantity: 1,
+        price_minor: 1_000,
+      },
+    ],
   });
   assert.equal(projected, event.event_id);
   const metaTrack = (
@@ -497,7 +504,14 @@ test("maps purchase items to Meta content fields", () => {
     orderId: "00000000-0000-4000-8000-000000000999",
     valueMinor: 1_299,
     currency: "usd",
-    items: [{ itemId: "variant-1", quantity: 2, priceMinor: 649 }],
+    items: [
+      {
+        productId: "product-1",
+        productVariantId: "variant-1",
+        quantity: 2,
+        priceMinor: 649,
+      },
+    ],
   });
   const purchase = (
     environment.window as unknown as { fbq: { queue: unknown[][] } }
@@ -521,7 +535,14 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
     orderId: "00000000-0000-4000-8000-000000000998",
     valueMinor: 1_299,
     currency: "mga",
-    items: [{ itemId: "variant-1", quantity: 1, priceMinor: 1_299 }],
+    items: [
+      {
+        productId: "product-1",
+        productVariantId: "variant-1",
+        quantity: 1,
+        priceMinor: 1_299,
+      },
+    ],
   });
   const purchase = (
     environment.window as unknown as { fbq: { queue: unknown[][] } }

@@ -394,6 +394,14 @@ export interface PreparedAnalyticsEvent {
   properties: Record<string, unknown>;
 }
 
+/** Canonical product identity required for a browser-projected Purchase item. */
+export interface AnalyticsPurchaseItem {
+  productId: UUID;
+  productVariantId: UUID;
+  quantity: number;
+  priceMinor: number;
+}
+
 export interface BrowserAnalyticsEvent {
   event_id: UUID;
   event_name: BrowserAnalyticsEventName;

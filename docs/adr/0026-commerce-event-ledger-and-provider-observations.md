@@ -30,7 +30,11 @@ an append-only, Store-scoped event ledger with this small common envelope:
 does not maintain an enum or event-specific constraints. A new Store-defined
 behavior name can be stored without a migration. Product, cart,
 Checkout, Order, Payment, traffic history, money, and provider-specific values
-belong in `properties`. The five normalized UTM columns are populated from
+belong in `properties`. Commerce item properties use `product_id` and
+`product_variant_id`. Single-item events expose the same IDs at the event top
+level, while multi-item events repeat them inside `items[]`. The Meta adapter
+uses the variant ID as the Meta content ID when present, otherwise the product
+ID. The five normalized UTM columns are populated from
 explicit top-level `utm_*` values when present, otherwise from the current
 browser session's `traffic.session` values; first-touch and last-non-direct
 history remains in `properties`.

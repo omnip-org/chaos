@@ -27,7 +27,8 @@ export class PaymentsResource {
           value_minor: cart.data.subtotal_amount_minor,
           currency: cart.data.currency,
           items: cart.data.lines.map((line) => ({
-            item_id: line.product_variant_id,
+            product_id: line.product_id,
+            product_variant_id: line.product_variant_id,
             quantity: line.quantity,
             price_minor: line.unit_price_amount_minor,
           })),
