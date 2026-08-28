@@ -25,7 +25,11 @@ npm install @omnip-org/chaos-js
 ## Usage
 
 ```ts
-import { createStorefrontClient } from "@omnip-org/chaos-js";
+import {
+  createStorefrontClient,
+  toPurchaseAnalyticsInput,
+} from "@omnip-org/chaos-js";
+import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
 
 const chaos = createStorefrontClient({
   publishableKey: "pk_...",
@@ -64,9 +68,9 @@ const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
 // cart snapshot. Cart mutations automatically move the request to a new key;
 // callers never need to construct or persist one.
 const action = session.client_action;
-// Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
-// Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
-// a Stripe-Account header or an account_reference field.
+// A storefront can use the SDK's provider adapter from the optional subpath:
+const mounted = await mountEmbeddedCheckout(action, document.querySelector("#checkout")!);
+// Direct Stripe accounts do not use a Stripe-Account header or account_reference.
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
 // browser SDK. Cart and checkout resources record their commerce events only
@@ -74,20 +78,46 @@ const action = session.client_action;
 // event IDs, attribution, and the /analytics/events transport. Purchase
 // remains a payment-confirmation event on the server; the SDK only projects
 // the confirmed order to browser providers.
-// After the server confirms payment, project Purchase with Order data:
-chaos.analytics?.purchase({
-  orderId: order.id,
-  valueMinor: order.total_amount_minor,
-  currency: order.currency,
-  items: order.lines.map((line) => ({
-    productId: line.product_id,
-    productVariantId: line.product_variant_id,
-    quantity: line.quantity,
-    priceMinor: line.unit_price_amount_minor,
-  })),
-});
+// After the server confirms payment, let the SDK build the canonical projection:
+const purchase = toPurchaseAnalyticsInput(order);
+if (purchase) chaos.analytics?.purchase(purchase);
 // The server remains the source of truth for the ledger Purchase event.
 ```
+
+For a storefront with a server-rendered framework, use the request-scoped
+server adapter and the browser bridge instead of duplicating API paths in page
+components:
+
+```ts
+import {
+  createServerStorefrontClient,
+  createStorefrontBrowserClient,
+  createProductReviewFromRequest,
+  addCartLineFromRequest,
+} from "@omnip-org/chaos-js";
+
+// Worker/SSR request — `cookies` is any jar with get(name) and set(name, value, options).
+const server = createServerStorefrontClient({
+  publishableKey: "pk_...",
+  baseUrl: "https://chaos.example/storefront/v1",
+  cookies,
+  request,
+});
+
+// Browser island — `baseUrl` points to the storefront's thin same-origin routes.
+const storefront = createStorefrontBrowserClient({ baseUrl: "/api", analytics: chaos.analytics });
+await storefront.cart.addLine(variantId, 1);
+await storefront.checkout.createEmbeddedCheckout(returnUrl);
+storefront.orders.recordPurchase(purchase);
+```
+
+The server helpers `addCartLineFromRequest()`, `updateCartLineFromRequest()`,
+`createEmbeddedCheckoutFromRequest()`, `getTrackedOrderFromRequest()`, and
+`createProductReviewFromRequest()` own request parsing, validation, session
+cookies, and the corresponding Chaos operation. Framework routes only adapt
+the response or redirect. Browser bridge methods own same-origin paths,
+credentials, response envelopes, typed errors, and successful cart/checkout
+analytics.
 
 Pass `analytics: false` to `createStorefrontClient` to skip constructing the
 collector entirely. Collection starts immediately when the analytics client is

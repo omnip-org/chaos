@@ -1,12 +1,17 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
+import { toPurchaseAnalyticsInput } from "./domain.js";
+import { toMajorUnits } from "./money.js";
 import type {
   AddToCartAnalyticsInput,
   AnalyticsCollectionResult,
-  AnalyticsPurchaseItem,
   BrowserAnalyticsEventName,
+  CartLineMutation,
   ClientCommerceAnalyticsEventName,
+  EmbeddedCheckoutCreation,
   InitiateCheckoutAnalyticsInput,
+  Order,
   PreparedAnalyticsEvent,
+  PurchaseAnalyticsInput,
 } from "./types.js";
 
 /**
@@ -263,6 +268,50 @@ export class ChaosStorefrontAnalytics {
     return eventId;
   }
 
+  /** Consumes SDK-owned server markers without exposing provider schemas to a storefront. */
+  consumeMarkers(root: ParentNode = this.documentRef): void {
+    const stripParams = new Set<string>();
+    root
+      .querySelectorAll<HTMLElement>("[data-chaos-analytics-event]")
+      .forEach((marker) => {
+        if (marker.dataset.chaosAnalyticsConsumed === "true") return;
+        marker.dataset.chaosAnalyticsConsumed = "true";
+
+        const eventName = marker.dataset.chaosAnalyticsEvent;
+        const rawProperties = marker.dataset.chaosAnalyticsProperties;
+        if (!eventName || !rawProperties) return;
+
+        let properties: unknown;
+        try {
+          properties = JSON.parse(rawProperties);
+        } catch {
+          return;
+        }
+        if (!isRecord(properties)) return;
+
+        try {
+          this.recordMarker(eventName, properties);
+        } catch {
+          // A malformed optional marker must never break the page.
+        }
+
+        for (const parameter of marker.dataset.chaosAnalyticsStripParams?.split(",") ?? []) {
+          if (parameter) stripParams.add(parameter);
+        }
+      });
+
+    if (stripParams.size === 0) return;
+    const url = new URL(this.windowRef.location.href);
+    let changed = false;
+    for (const parameter of stripParams) {
+      if (url.searchParams.has(parameter)) {
+        url.searchParams.delete(parameter);
+        changed = true;
+      }
+    }
+    if (changed) this.windowRef.history.replaceState(this.windowRef.history.state, "", url);
+  }
+
   /** Record any store-defined behavior using the common event envelope. */
   track(
     eventName: BrowserAnalyticsEventName,
@@ -342,6 +391,41 @@ export class ChaosStorefrontAnalytics {
         product_variant_id: item.productVariantId,
         quantity: item.quantity,
         price_minor: item.priceMinor,
+      })),
+    });
+  }
+
+  /** Records the increase produced by a successful shared cart mutation. */
+  recordCartMutation(input: CartLineMutation): string | null {
+    const quantity = input.new_quantity - input.previous_quantity;
+    if (input.removed || quantity < 1) return null;
+    const line = input.cart.lines.find(
+      (candidate) => candidate.product_variant_id === input.product_variant_id,
+    );
+    if (!line) return null;
+    return this.recordAddToCart({
+      cartId: input.cart.id,
+      productId: line.product_id,
+      productVariantId: line.product_variant_id,
+      quantity,
+      priceMinor: line.unit_price_amount_minor,
+      valueMinor: line.unit_price_amount_minor * quantity,
+      currency: input.cart.currency,
+    });
+  }
+
+  /** Records checkout initiation from the exact cart snapshot used by Chaos. */
+  recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
+    return this.recordInitiateCheckout({
+      cartId: input.cart.id,
+      orderId: input.checkout.order_id,
+      valueMinor: input.cart.subtotal_amount_minor,
+      currency: input.cart.currency,
+      items: input.cart.lines.map((line) => ({
+        productId: line.product_id,
+        productVariantId: line.product_variant_id,
+        quantity: line.quantity,
+        priceMinor: line.unit_price_amount_minor,
       })),
     });
   }
@@ -461,12 +545,7 @@ export class ChaosStorefrontAnalytics {
   }
 
   /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
-  purchase(input: {
-    orderId: string;
-    valueMinor: number;
-    currency: string;
-    items: AnalyticsPurchaseItem[];
-  }): string | null {
+  purchase(input: PurchaseAnalyticsInput): string | null {
     validateMoney(input.valueMinor, input.currency);
     const currency = input.currency.toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency))
@@ -489,6 +568,36 @@ export class ChaosStorefrontAnalytics {
         })),
       }),
     );
+  }
+
+  /** Projects a confirmed, paid order without making the caller rebuild event fields. */
+  recordConfirmedOrder(order: Pick<Order, "id" | "status" | "payment_status" | "currency" | "total_amount_minor" | "lines">): string | null {
+    const input = toPurchaseAnalyticsInput(order);
+    return input ? this.purchase(input) : null;
+  }
+
+  private recordMarker(
+    eventName: string,
+    properties: Record<string, unknown>,
+  ): void {
+    if (eventName === "view_content") {
+      const productId = properties.product_id;
+      if (typeof productId !== "string") return;
+      const productVariantId = properties.product_variant_id;
+      this.viewContent({
+        productId,
+        ...(typeof productVariantId === "string" ? { productVariantId } : {}),
+      });
+      return;
+    }
+    if (eventName === "search") {
+      const query = properties.query;
+      if (typeof query === "string" && query.trim()) {
+        this.search({ query: query.trim() });
+      }
+      return;
+    }
+    this.track(eventName, properties);
   }
 
   private projectProviderEventOnce(
@@ -1031,32 +1140,12 @@ function providerValue(
 ): number | undefined {
   if (typeof valueMinor !== "number" || typeof currency !== "string")
     return undefined;
-  const normalizedCurrency = currency.toUpperCase();
-  const zeroDecimal = new Set([
-    "BIF",
-    "CLP",
-    "DJF",
-    "GNF",
-    "JPY",
-    "KMF",
-    "KRW",
-    "MGA",
-    "PYG",
-    "RWF",
-    "UGX",
-    "VND",
-    "VUV",
-    "XAF",
-    "XOF",
-    "XPF",
-  ]);
-  const threeDecimal = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
-  const divisor = zeroDecimal.has(normalizedCurrency)
-    ? 1
-    : threeDecimal.has(normalizedCurrency)
-      ? 1_000
-      : 100;
-  return valueMinor / divisor;
+  if (!Number.isSafeInteger(valueMinor) || valueMinor < 0) return undefined;
+  try {
+    return toMajorUnits(valueMinor, currency);
+  } catch {
+    return undefined;
+  }
 }
 
 function validateMoney(valueMinor: number, currency: string): void {
@@ -1321,6 +1410,10 @@ function compact<T extends Record<string, unknown>>(
   return Object.fromEntries(
     Object.entries(value).filter(([, item]) => item !== undefined),
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function captureTrafficTouchpoint(

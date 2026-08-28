@@ -152,6 +152,15 @@ export interface Cart {
   updated_at: string;
 }
 
+/** Result returned by a storefront cart-line mutation bridge. */
+export interface CartLineMutation {
+  cart: Cart;
+  product_variant_id: UUID;
+  previous_quantity: number;
+  new_quantity: number;
+  removed: boolean;
+}
+
 export interface SetCartLineRequest {
   quantity: number;
 }
@@ -314,6 +323,12 @@ export interface EmbeddedCheckoutSession {
   client_action: PaymentClientAction;
 }
 
+/** Browser-facing result of creating a checkout from a cookie-backed cart. */
+export interface EmbeddedCheckoutCreation {
+  checkout: EmbeddedCheckoutSession;
+  cart: Cart;
+}
+
 export interface PaymentClientAction {
   /**
    * client_token is an Embedded Checkout Session client secret. Pass it to
@@ -323,6 +338,18 @@ export interface PaymentClientAction {
   public_key: string;
   client_token: string;
 }
+
+/** Minimal order state used while a payment webhook is settling. */
+export interface OrderStatus {
+  status: Order["status"];
+  payment_status: Order["payment_status"];
+}
+
+export type OrderConfirmationState =
+  | "pending"
+  | "confirmed"
+  | "failed"
+  | "cancelled";
 
 // Envelopes — every Store API response wraps its payload in { data } (and
 // { data, meta } for paginated collections).
@@ -402,6 +429,14 @@ export interface AnalyticsPurchaseItem {
   productVariantId: UUID;
   quantity: number;
   priceMinor: number;
+}
+
+/** Canonical browser projection of a confirmed, paid Order. */
+export interface PurchaseAnalyticsInput {
+  orderId: UUID;
+  valueMinor: number;
+  currency: CurrencyCode;
+  items: AnalyticsPurchaseItem[];
 }
 
 /** Canonical item shape shared by browser commerce events. */

@@ -1,6 +1,14 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import type { Collection, CursorPageParams, DataEnvelope, PageEnvelope, Product } from "../types.js";
 
+const COLLECTION_CACHE_TTL_MS = 60_000;
+const collectionCache = new Map<string, CollectionCacheEntry>();
+
+interface CollectionCacheEntry {
+  expiresAt: number;
+  promise: Promise<Collection[]>;
+}
+
 export interface ListProductsParams extends CursorPageParams {
   currency?: string;
   /** Store-isolated full-text search. */
@@ -40,6 +48,31 @@ export class CatalogResource {
 
   listCollections(params: ListCollectionsParams = {}): Promise<PageEnvelope<Collection>> {
     return this.client.request("/collections", { method: "GET", query: params });
+  }
+
+  /**
+   * Returns the first collection page through a short, client-scoped cache.
+   * The cache key includes both API origin and publishable key so a shared
+   * Worker isolate can never reuse one store's navigation data for another.
+   */
+  listCollectionsCached(
+    params: ListCollectionsParams = {},
+    ttlMs = COLLECTION_CACHE_TTL_MS,
+  ): Promise<Collection[]> {
+    if (!Number.isFinite(ttlMs) || ttlMs < 0) {
+      throw new RangeError("ttlMs must be a non-negative finite number");
+    }
+    const key = `${this.client.baseUrl}\0${this.client.publishableKey}\0${JSON.stringify(params)}`;
+    const now = Date.now();
+    const cached = collectionCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.promise;
+
+    const promise = this.listCollections(params).then((response) => response.data);
+    collectionCache.set(key, { expiresAt: now + ttlMs, promise });
+    void promise.catch(() => {
+      if (collectionCache.get(key)?.promise === promise) collectionCache.delete(key);
+    });
+    return promise;
   }
 
   getCollection(handle: string, params: Record<string, never> = {}): Promise<DataEnvelope<Collection>> {

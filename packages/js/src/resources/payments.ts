@@ -2,6 +2,7 @@ import type { ChaosStorefrontClient } from "../client.js";
 import type {
   DataEnvelope,
   EmbeddedCheckoutOptions,
+  EmbeddedCheckoutCreation,
   EmbeddedCheckoutSession,
 } from "../types.js";
 
@@ -19,23 +20,55 @@ export class PaymentsResource {
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     const cart = await this.client.cart.get(cartId);
+    return this.createEmbeddedCheckoutForCart(cart.data, options);
+  }
+
+  async createEmbeddedCheckoutWithCart(
+    cartId: string,
+    options: EmbeddedCheckoutOptions,
+  ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
+    const cart = await this.client.cart.get(cartId);
+    const checkout = await this.createEmbeddedCheckoutForCart(cart.data, options);
+    return {
+      data: {
+        checkout: checkout.data,
+        cart: cart.data,
+      },
+    };
+  }
+
+  private async createEmbeddedCheckoutForCart(
+    cart: {
+      id: string;
+      version: number;
+      subtotal_amount_minor: number;
+      currency: string;
+      lines: Array<{
+        product_id: string;
+        product_variant_id: string;
+        quantity: number;
+        unit_price_amount_minor: number;
+      }>;
+    },
+    options: EmbeddedCheckoutOptions,
+  ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     const body = toEmbeddedCheckoutRequest(options);
     const response = await this.client.request<
       DataEnvelope<EmbeddedCheckoutSession>
-    >(`/carts/${encodeURIComponent(cartId)}/checkout`, {
+    >(`/carts/${encodeURIComponent(cart.id)}/checkout`, {
       method: "POST",
       body,
       requiresShopperToken: true,
-      idempotencyKey: checkoutIdempotencyKey(cart.data, body),
+      idempotencyKey: checkoutIdempotencyKey(cart, body),
     });
 
     try {
       this.client.analytics?.recordInitiateCheckout({
-        cartId: cart.data.id,
+        cartId: cart.id,
         orderId: response.data.order_id,
-        valueMinor: cart.data.subtotal_amount_minor,
-        currency: cart.data.currency,
-        items: cart.data.lines.map((line) => ({
+        valueMinor: cart.subtotal_amount_minor,
+        currency: cart.currency,
+        items: cart.lines.map((line) => ({
           productId: line.product_id,
           productVariantId: line.product_variant_id,
           quantity: line.quantity,
