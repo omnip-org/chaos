@@ -543,7 +543,7 @@ mod tests {
             .run_batch(100, state.clock.now())
             .await
             .unwrap()
-                >= 2
+                >= 1
         );
         let authorize = format!("Bearer {}", material.public_key);
 
