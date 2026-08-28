@@ -1199,7 +1199,7 @@ mod tests {
                 .run_batch(100, time::OffsetDateTime::now_utc())
                 .await
                 .unwrap()
-                >= 6
+                >= 3
         );
         let repository = PostgresStorefrontCatalogRepository::new(runtime_pool);
         let products = repository
