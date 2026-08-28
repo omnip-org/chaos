@@ -35,6 +35,7 @@ pub struct AnalyticsEventRecord {
     pub id: Uuid,
     pub event_id: Uuid,
     pub event_name: String,
+    pub event_source: String,
     pub shopper_id: Uuid,
     pub session_id: Option<Uuid>,
     pub utm_source: Option<String>,
@@ -66,6 +67,7 @@ pub struct AnalyticsEventPage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AnalyticsEventQuery {
     pub before_id: Option<Uuid>,
+    pub before_received_at: Option<OffsetDateTime>,
     pub event_name: Option<String>,
     pub source: Option<String>,
     pub delivery_status: Option<String>,
@@ -118,6 +120,7 @@ pub struct AnalyticsDeliveryCommand {
     pub credential_secret_reference: String,
     pub configuration: Value,
     pub event_name: String,
+    pub event_source: String,
     pub occurred_at: OffsetDateTime,
     pub shopper_id: Uuid,
     pub properties: Value,

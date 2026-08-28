@@ -180,15 +180,15 @@ fn is_supported_meta_event(name: &str) -> bool {
 }
 
 fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
-    let source = command.properties.get("_source").and_then(Value::as_str);
+    let source = command.event_source.as_str();
     match command.event_name.as_str() {
         // Browser event and Pixel use the same queued UUID for these events.
-        "page_view" | "view_content" | "search" => source != Some("server"),
+        "page_view" | "view_content" | "search" => source != "server",
         // AddToCart and InitiateCheckout are collected by the browser SDK only
         // after the matching business request succeeds. Purchase remains a
         // server-confirmed payment event.
-        "add_to_cart" | "initiate_checkout" => source == Some("browser"),
-        "purchase" => source == Some("server"),
+        "add_to_cart" | "initiate_checkout" => source == "browser",
+        "purchase" => source == "server",
         _ => false,
     }
 }
@@ -498,6 +498,7 @@ mod tests {
             credential_secret_reference: "env://CHAOS_ANALYTICS_SECRET_TEST".into(),
             configuration: json!({}),
             event_name: "purchase".into(),
+            event_source: "server".into(),
             occurred_at: OffsetDateTime::UNIX_EPOCH,
             shopper_id: Uuid::now_v7(),
             properties: json!({"value_minor": value_minor, "currency": currency}),
@@ -592,7 +593,7 @@ mod tests {
     #[test]
     fn routes_meta_events_by_authoritative_source() {
         let mut browser = command(1_299, "USD");
-        browser.properties = json!({"_source": "browser"});
+        browser.event_source = "browser".into();
         for event_name in ["page_view", "view_content", "search"] {
             browser.event_name = event_name.into();
             assert!(is_meta_event(&browser), "browser {event_name}");
@@ -607,7 +608,7 @@ mod tests {
         }
 
         let mut server = browser;
-        server.properties = json!({"_source": "server"});
+        server.event_source = "server".into();
         server.event_name = "purchase".into();
         assert!(is_meta_event(&server), "server purchase");
         for event_name in ["add_to_cart", "initiate_checkout"] {

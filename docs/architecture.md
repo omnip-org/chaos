@@ -125,16 +125,20 @@ request deduplication is owned by the Order row in `commerce`, through its
 Cart and Order have separate responsibilities. The Checkout API transaction
 creates a pending Order and reserves tracked inventory while leaving the Cart
 active, then calls Stripe after the transaction commits and returns the
-Embedded Checkout client secret in the same request. Stripe owns the checkout
-UI, address, shipping, tax, and payment collection; Chaos stores the resulting
-provider snapshot on the Order after a verified webhook. A successful payment
-confirms the Order and completes the Cart; expiry or failure cancels the Order
-and releases the reservation. There is no local Checkout aggregate to expire
-or reconcile.
+Embedded Checkout client secret in the same request. The Cart row lock and a
+partial unique index allow only one pending checkout per Cart: a repeated
+request with the same idempotency key returns the existing pending Order,
+while another key receives a conflict. Stripe owns the checkout UI, address,
+shipping, tax, and payment collection; Chaos stores the resulting provider
+snapshot on the Order after a verified webhook. A successful payment confirms
+the Order and completes the Cart; expiry or failure cancels the Order and
+releases the reservation so the Cart can be retried. There is no local
+Checkout aggregate to expire or reconcile.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
-envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, time,
-nullable `session_id`, and normalized UTM columns; event-specific values such as
+envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, normalized
+`event_source`, time, nullable `session_id`, and normalized UTM columns;
+event-specific values such as
 product, cart, order, traffic, and money remain in bounded `properties` JSON.
 `event_name` is validated only as a lowercase snake-case identifier, not as a
 database enum, so new behaviors do not require a migration. Provider delivery

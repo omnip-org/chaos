@@ -38,6 +38,7 @@ CREATE TABLE integration.event_outbox (
     CONSTRAINT event_outbox_internal_event_type_fkey            FOREIGN KEY (internal_event_type) REFERENCES integration.event_routes (internal_event_type),
     CONSTRAINT event_outbox_aggregate_type_format_check         CHECK (aggregate_type ~ '^[a-z][a-z0-9_]*$'),
     CONSTRAINT event_outbox_payload_object_check                CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT event_outbox_payload_size_check                  CHECK (octet_length(payload::text) <= 32768),
     CONSTRAINT event_outbox_queue_name_format_check             CHECK (queue_name IS NULL OR queue_name ~ '^chaos_[a-z][a-z0-9_]*$'),
     CONSTRAINT event_outbox_dispatch_pair_check                 CHECK ((queue_name IS NULL) = (pgmq_message_id IS NULL)),
     CONSTRAINT event_outbox_completion_check                    CHECK (processed_at IS NULL OR failed_at IS NULL),
@@ -97,15 +98,35 @@ CREATE TABLE integration.provider_webhook_inbox (
     CONSTRAINT provider_webhook_inbox_provider_event_type_length_check  CHECK (length(trim(provider_event_type)) BETWEEN 1 AND 255),
     CONSTRAINT provider_webhook_inbox_normalized_event_type_check       CHECK (normalized_event_type IS NULL OR normalized_event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
     CONSTRAINT provider_webhook_inbox_payload_object_check              CHECK (jsonb_typeof(payload) = 'object'),
+    CONSTRAINT provider_webhook_inbox_payload_size_check                CHECK (octet_length(payload::text) <= 32768),
     CONSTRAINT provider_webhook_inbox_aggregate_shape_check             CHECK ((aggregate_type IS NULL AND aggregate_id IS NULL) OR (aggregate_type IS NOT NULL AND aggregate_type ~ '^[a-z][a-z0-9_]*$')),
     CONSTRAINT provider_webhook_inbox_status_timestamps_check           CHECK ((processing_status = 'pending' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'processed' AND processed_at IS NOT NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'unsupported' AND processed_at IS NULL AND unsupported_at IS NOT NULL AND failed_at IS NULL) OR (processing_status = 'failed' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NOT NULL)),
     CONSTRAINT provider_webhook_inbox_last_error_length_check           CHECK (last_error IS NULL OR length(last_error) <= 2000)
 );
 
 CREATE INDEX event_outbox_pending_idx ON integration.event_outbox (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
+CREATE INDEX event_outbox_store_idx ON integration.event_outbox (store_id, id);
+CREATE INDEX event_outbox_event_route_idx ON integration.event_outbox (internal_event_type, created_at, id);
+CREATE UNIQUE INDEX event_outbox_pending_search_product_key_idx
+    ON integration.event_outbox (store_id, aggregate_id, internal_event_type)
+    WHERE internal_event_type = 'search.product.changed'
+      AND processed_at IS NULL
+      AND failed_at IS NULL;
+CREATE INDEX event_outbox_terminal_retention_idx
+    ON integration.event_outbox ((COALESCE(processed_at, failed_at)), created_at, id)
+    WHERE processed_at IS NOT NULL OR failed_at IS NOT NULL;
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
 CREATE INDEX provider_webhook_inbox_claim_idx ON integration.provider_webhook_inbox (created_at, id) WHERE processing_status = 'pending';
 CREATE INDEX provider_webhook_inbox_order_idx ON integration.provider_webhook_inbox (store_id, aggregate_id, created_at DESC) WHERE aggregate_id IS NOT NULL;
+CREATE INDEX provider_webhook_inbox_provider_account_idx
+    ON integration.provider_webhook_inbox (store_id, provider_account_id, capability, provider, created_at, id);
+CREATE INDEX provider_webhook_inbox_terminal_retention_idx
+    ON integration.provider_webhook_inbox (
+        (COALESCE(processed_at, unsupported_at, failed_at)),
+        received_at,
+        id
+    )
+    WHERE processing_status <> 'pending';
 
 INSERT INTO integration.event_routes (internal_event_type, queue_name, description) VALUES ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document'), ('order.confirmed', 'chaos_email_commands', 'Sends the Order confirmation through the configured Email provider'), ('fulfillment.shipped', 'chaos_shipping_commands', 'Dispatches shipment state to the configured Shipping provider'), ('refund.create_requested', 'chaos_payment_commands', 'Creates an Order refund through the configured Payment provider');
 
@@ -143,6 +164,10 @@ BEGIN
         resolved_queue_name,
         jsonb_build_object('version', 1, 'event_id', NEW.id)
     ) AS message_id;
+
+    IF resolved_message_id IS NULL THEN
+        RAISE EXCEPTION 'event outbox queue did not return a message identifier';
+    END IF;
 
     UPDATE integration.event_outbox AS event
     SET queue_name = resolved_queue_name,
@@ -353,6 +378,10 @@ BEGIN
         )
     ) AS message_id;
 
+    IF resolved_message_id IS NULL THEN
+        RAISE EXCEPTION 'webhook queue did not return a message identifier';
+    END IF;
+
     UPDATE integration.provider_webhook_inbox AS event
     SET pgmq_message_id = resolved_message_id
     WHERE event.id = NEW.id;
@@ -511,7 +540,12 @@ BEGIN
         NEW.id,
         'search.product.changed',
         jsonb_build_object('product_id', NEW.id)
-    );
+    )
+    ON CONFLICT (store_id, aggregate_id, internal_event_type)
+    WHERE internal_event_type = 'search.product.changed'
+      AND processed_at IS NULL
+      AND failed_at IS NULL
+    DO NOTHING;
     RETURN NEW;
 END;
 $$;
@@ -549,7 +583,12 @@ BEGIN
             changed_product_id,
             'search.product.changed',
             jsonb_build_object('product_id', changed_product_id)
-        );
+        )
+        ON CONFLICT (store_id, aggregate_id, internal_event_type)
+        WHERE internal_event_type = 'search.product.changed'
+          AND processed_at IS NULL
+          AND failed_at IS NULL
+        DO NOTHING;
     END IF;
 
     IF TG_OP = 'DELETE' THEN
@@ -566,17 +605,30 @@ SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 DECLARE
-    product_id UUID;
     rebuilt    BIGINT := 0;
 BEGIN
     DELETE FROM commerce.product_documents WHERE store_id = requested_store_id;
 
-    FOR product_id IN
-        SELECT id FROM commerce.products WHERE store_id = requested_store_id
-    LOOP
-        PERFORM commerce.refresh_product_document(requested_store_id, product_id);
-        rebuilt := rebuilt + 1;
-    END LOOP;
+    INSERT INTO commerce.product_documents (store_id, product_id, document, indexed_at)
+    SELECT
+        product.store_id,
+        product.id,
+        to_tsvector('simple', concat_ws(
+            ' ',
+            product.handle::text,
+            product.title,
+            product.description,
+            string_agg(concat_ws(' ', variant.title, variant.sku::text), ' ')
+        )),
+        CURRENT_TIMESTAMP
+    FROM commerce.products AS product
+    LEFT JOIN commerce.product_variants AS variant
+        ON variant.store_id = product.store_id
+       AND variant.product_id = product.id
+    WHERE product.store_id = requested_store_id
+    GROUP BY product.store_id, product.id;
+
+    GET DIAGNOSTICS rebuilt = ROW_COUNT;
 
     RETURN rebuilt;
 END;
@@ -626,6 +678,53 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION integration.cleanup_terminal_rows (batch_size INTEGER)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    deleted_count INTEGER := 0;
+    affected_count INTEGER;
+BEGIN
+    IF batch_size IS NULL OR batch_size NOT BETWEEN 1 AND 10000 THEN
+        RAISE EXCEPTION 'batch_size must be between 1 and 10000'
+            USING ERRCODE = '22023';
+    END IF;
+
+    WITH candidates AS (
+        SELECT id
+        FROM integration.event_outbox
+        WHERE (processed_at IS NOT NULL OR failed_at IS NOT NULL)
+          AND COALESCE(processed_at, failed_at) < CURRENT_TIMESTAMP - INTERVAL '30 days'
+        ORDER BY COALESCE(processed_at, failed_at), created_at, id
+        LIMIT batch_size
+    )
+    DELETE FROM integration.event_outbox AS event
+    USING candidates
+    WHERE event.id = candidates.id;
+    GET DIAGNOSTICS affected_count = ROW_COUNT;
+    deleted_count := deleted_count + affected_count;
+
+    WITH candidates AS (
+        SELECT id
+        FROM integration.provider_webhook_inbox
+        WHERE processing_status <> 'pending'
+          AND COALESCE(processed_at, unsupported_at, failed_at) < CURRENT_TIMESTAMP - INTERVAL '30 days'
+        ORDER BY COALESCE(processed_at, unsupported_at, failed_at), received_at, id
+        LIMIT batch_size
+    )
+    DELETE FROM integration.provider_webhook_inbox AS event
+    USING candidates
+    WHERE event.id = candidates.id;
+    GET DIAGNOSTICS affected_count = ROW_COUNT;
+    deleted_count := deleted_count + affected_count;
+
+    RETURN deleted_count;
+END;
+$$;
+
 CREATE TRIGGER event_outbox_enqueue AFTER INSERT ON integration.event_outbox FOR EACH ROW EXECUTE FUNCTION integration.enqueue_event_outbox();
 CREATE TRIGGER provider_webhook_inbox_enqueue AFTER INSERT ON integration.provider_webhook_inbox FOR EACH ROW EXECUTE FUNCTION integration.enqueue_webhook_event();
 
@@ -656,6 +755,9 @@ REVOKE ALL ON FUNCTION integration.resolve_webhook_secret_reference (integration
 REVOKE ALL ON FUNCTION integration.enqueue_webhook_event () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.cleanup_terminal_rows (INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.capture_product_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.capture_variant_change () FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
@@ -665,7 +767,7 @@ GRANT EXECUTE ON FUNCTION integration.resolve_provider_account (integration.prov
 GRANT EXECUTE ON FUNCTION integration.resolve_webhook_secret_reference (integration.provider_capability, TEXT, UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
-GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products (UUID) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.cleanup_terminal_rows (INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA integration TO chaos_runtime;

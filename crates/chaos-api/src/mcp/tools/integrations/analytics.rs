@@ -8,6 +8,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::mcp::{
@@ -28,7 +29,7 @@ pub struct ConfigureMetaDestinationParams {
     pub credential_secret_reference: String,
     /// Optional Meta Test Events Code. When present, events are routed to Meta's test view.
     pub test_event_code: Option<String>,
-    /// Destination-level switch. Enabled destinations receive all subsequently scheduled behavior events.
+    /// Destination-level switch. Enabling is forward-only; retained historical events are not replayed automatically.
     pub enabled: bool,
     pub confirm: bool,
 }
@@ -39,11 +40,13 @@ pub struct ListAnalyticsEventsParams {
     pub store_id: String,
     /// Maximum number of events to return, from 1 to 100. Defaults to 20.
     pub limit: Option<u16>,
-    /// Storage row ID returned by a previous page. Only older events are returned.
+    /// Storage row ID returned by a previous page. Pass it with before_received_at.
     pub before_id: Option<String>,
+    /// Received timestamp returned by a previous page. Pass it with before_id for partition-aware pagination.
+    pub before_received_at: Option<String>,
     /// Optional event name filter, such as `page_view`, `purchase`, or a custom event name.
     pub event_name: Option<String>,
-    /// Optional source filter stored in `properties._source`.
+    /// Optional source filter stored in the normalized event_source column.
     pub source: Option<String>,
     /// Optional external provider delivery status filter.
     pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
@@ -99,7 +102,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and the delivery `enabled` switch for the selected Store. First call create_provider_secret with kind `analytics_credential` and pass its returned `enc://...` reference here; never pass the raw Meta access token. Owner role and confirmation are required."
+        description = "Configure the Meta Dataset destination, access-token secret reference, optional Test Events Code, and the forward-only delivery `enabled` switch for the selected Store. Enabling does not replay retained historical events. First call create_provider_secret with kind `analytics_credential` and pass its returned `enc://...` reference here; never pass the raw Meta access token. Owner role and confirmation are required."
     )]
     async fn configure_meta_destination(
         &self,
@@ -161,7 +164,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, properties._source, delivery status, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
+        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, normalized event source, delivery status, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
     )]
     async fn list_analytics_events(
         &self,
@@ -180,6 +183,21 @@ impl ChaosMcp {
             Ok(id) => id,
             Err(_) => return Ok(invalid("before_id", "must be a UUID")),
         };
+        let before_received_at = match params
+            .before_received_at
+            .as_deref()
+            .map(|value| OffsetDateTime::parse(value, &Rfc3339))
+            .transpose()
+        {
+            Ok(timestamp) => timestamp,
+            Err(_) => return Ok(invalid("before_received_at", "must be RFC3339")),
+        };
+        if before_id.is_some() != before_received_at.is_some() {
+            return Ok(invalid(
+                "before_id",
+                "before_id and before_received_at must be provided together",
+            ));
+        }
         let source = params.source;
         let delivery_status = params.delivery_status.map(|status| match status {
             AnalyticsDeliveryStatusParam::Pending => "pending".to_owned(),
@@ -212,6 +230,7 @@ impl ChaosMcp {
         let store_id = actor.store_id();
         let query = AnalyticsEventQuery {
             before_id,
+            before_received_at,
             event_name: params.event_name,
             source,
             delivery_status,
@@ -257,11 +276,18 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
         .last()
         .map(|event| event.id)
         .filter(|_| page.has_more);
+    let next_before_received_at = page
+        .events
+        .last()
+        .map(|event| event.received_at)
+        .filter(|_| page.has_more)
+        .map(format_timestamp);
     json!({
         "events": page.events.into_iter().map(|event| json!({
             "id": event.id,
             "event_id": event.event_id,
             "event_name": event.event_name,
+            "event_source": event.event_source,
             "shopper_id": event.shopper_id,
             "session_id": event.session_id,
             "utm_source": event.utm_source,
@@ -269,21 +295,26 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "utm_campaign": event.utm_campaign,
             "utm_term": event.utm_term,
             "utm_content": event.utm_content,
-            "occurred_at": event.occurred_at.to_string(),
-            "received_at": event.received_at.to_string(),
+            "occurred_at": format_timestamp(event.occurred_at),
+            "received_at": format_timestamp(event.received_at),
             "properties": event.properties,
             "deliveries": event.deliveries.into_iter().map(|delivery| json!({
                 "provider": delivery.provider,
                 "status": delivery.status,
-                "delivered_at": delivery.delivered_at.map(|value| value.to_string()),
+                "delivered_at": delivery.delivered_at.map(format_timestamp),
                 "provider_reference": delivery.provider_reference,
                 "last_error": delivery.last_error,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "has_more": page.has_more,
         "next_before_id": next_before_id,
+        "next_before_received_at": next_before_received_at,
         "limit": limit,
     })
+}
+
+fn format_timestamp(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_default()
 }
 
 fn invalid(field: &'static str, message: &'static str) -> CallToolResult {

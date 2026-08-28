@@ -20,6 +20,8 @@ use chaos_domain::{
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+type MetadataAttachmentRow = (String, Uuid, String, Option<String>);
+
 #[derive(Clone)]
 pub struct PostgresStorefrontCatalogRepository {
     pool: PgPool,
@@ -346,6 +348,379 @@ impl PostgresStorefrontCatalogRepository {
             })
             .collect())
     }
+
+    async fn variants_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_ids: &[Uuid],
+        currency: Option<CurrencyCode>,
+    ) -> Result<HashMap<Uuid, Vec<StorefrontCatalogVariant>>, ApplicationError> {
+        if product_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                String,
+                Option<String>,
+                bool,
+                i64,
+                i64,
+                String,
+                Option<serde_json::Value>,
+            ),
+        >(
+            "WITH selected_price_list AS ( \
+                 SELECT price_list.id, price_list.currency::text \
+                 FROM commerce.price_lists AS price_list \
+                 INNER JOIN commerce.stores AS store \
+                   ON store.id = price_list.store_id \
+                 INNER JOIN commerce.store_sales_channels AS channel \
+                   ON channel.store_id = store.id \
+                  AND channel.id = $2 \
+                 WHERE price_list.store_id = $1 \
+                   AND price_list.status = 'active' \
+                   AND store.status = 'active' \
+                   AND channel.status = 'active' \
+                   AND price_list.currency = COALESCE($4::char(3), store.currency) \
+                   AND (price_list.starts_at IS NULL OR price_list.starts_at <= CURRENT_TIMESTAMP) \
+                   AND (price_list.ends_at IS NULL OR price_list.ends_at > CURRENT_TIMESTAMP) \
+                 ORDER BY price_list.starts_at DESC NULLS LAST, price_list.id ASC \
+                 LIMIT 1 \
+             ) \
+            SELECT variant.product_id, variant.id, variant.title, variant.sku::text, \
+                    variant.track_inventory, \
+                    variant.on_hand_quantity - variant.reserved_quantity, \
+                    price.amount_minor, selected.currency, variant.meta \
+             FROM commerce.product_variants AS variant \
+             INNER JOIN selected_price_list AS selected ON true \
+             INNER JOIN commerce.prices AS price \
+               ON price.store_id = variant.store_id \
+              AND price.price_list_id = selected.id \
+              AND price.product_variant_id = variant.id \
+             WHERE variant.store_id = $1 \
+               AND variant.product_id = ANY($3::uuid[]) \
+               AND variant.status = 'active' \
+             ORDER BY variant.product_id ASC, variant.id ASC",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(product_ids)
+        .bind(currency.map(|value| value.as_str().to_owned()))
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+
+        let mut selections =
+            variant_selected_options_for_products(transaction, actor, product_ids).await?;
+        let mut variants_by_product: HashMap<Uuid, Vec<StorefrontCatalogVariant>> = HashMap::new();
+        for (
+            product_id,
+            id,
+            title,
+            sku,
+            track_inventory,
+            available_quantity,
+            amount_minor,
+            currency,
+            metadata,
+        ) in rows
+        {
+            let selected_options = selections.remove(&(product_id, id)).unwrap_or_default();
+            let variant = StorefrontCatalogVariant {
+                id: ProductVariantId::from_uuid(id),
+                title,
+                sku,
+                track_inventory,
+                available_quantity,
+                amount_minor,
+                currency: CurrencyCode::parse(&currency).map_err(|_| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an invalid currency"
+                    ))
+                })?,
+                selected_options,
+                metadata,
+            };
+            variants_by_product
+                .entry(product_id)
+                .or_default()
+                .push(variant);
+        }
+        Ok(variants_by_product)
+    }
+
+    async fn options_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<StorefrontProductOption>>, ApplicationError> {
+        if product_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let option_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
+            "SELECT product_id, id, name::text, position \
+             FROM commerce.product_options \
+             WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+             ORDER BY product_id, position ASC",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let value_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, i16)>(
+            "SELECT product_id, id, option_id, value::text, position \
+             FROM commerce.product_option_values \
+             WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+             ORDER BY product_id, option_id ASC, position ASC",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+
+        let mut options_by_product: HashMap<Uuid, Vec<StorefrontProductOption>> = HashMap::new();
+        let mut option_indexes: HashMap<(Uuid, Uuid), usize> = HashMap::new();
+        for (product_id, id, name, position) in option_rows {
+            let options = options_by_product.entry(product_id).or_default();
+            let index = options.len();
+            options.push(StorefrontProductOption {
+                id: ProductOptionId::from_uuid(id),
+                name,
+                position: u16::try_from(position).map_err(|_| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains a negative Catalog position"
+                    ))
+                })?,
+                values: Vec::new(),
+            });
+            option_indexes.insert((product_id, id), index);
+        }
+        for (product_id, id, option_id, value, position) in value_rows {
+            let index = option_indexes
+                .get(&(product_id, option_id))
+                .copied()
+                .ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an option value with no parent option"
+                    ))
+                })?;
+            options_by_product
+                .get_mut(&product_id)
+                .and_then(|options| options.get_mut(index))
+                .ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an option value with no parent option"
+                    ))
+                })?
+                .values
+                .push(StorefrontProductOptionValue {
+                    id: ProductOptionValueId::from_uuid(id),
+                    value,
+                    position: u16::try_from(position).map_err(|_| {
+                        ApplicationError::Unexpected(anyhow::anyhow!(
+                            "database contains a negative Catalog position"
+                        ))
+                    })?,
+                });
+        }
+        Ok(options_by_product)
+    }
+
+    async fn media_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<StorefrontMediaAsset>>, ApplicationError> {
+        if product_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                Option<Uuid>,
+                String,
+                String,
+                String,
+                i16,
+                String,
+            ),
+        >(
+            "SELECT link.product_id, media.id, link.product_variant_id, media.media_type, \
+                    media.media_kind::text, link.alt_text, link.position, media.public_url \
+             FROM commerce.product_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
+               AND link.archived_at IS NULL AND media.status = 'ready' \
+             ORDER BY link.product_id, link.position, media.id",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let mut media_by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
+        for (product_id, id, product_variant_id, media_type, kind, alt_text, position, url) in rows
+        {
+            let kind = match kind.as_str() {
+                "image" => MediaKind::Image,
+                "video" => MediaKind::Video,
+                _ => {
+                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                        "database contains an invalid Media kind"
+                    )));
+                }
+            };
+            media_by_product
+                .entry(product_id)
+                .or_default()
+                .push(StorefrontMediaAsset {
+                    id: MediaAssetId::from_uuid(id),
+                    product_variant_id: product_variant_id.map(ProductVariantId::from_uuid),
+                    media_type,
+                    kind,
+                    alt_text,
+                    position: u16::try_from(position).map_err(|_| {
+                        ApplicationError::Unexpected(anyhow::anyhow!(
+                            "database contains an invalid Media position"
+                        ))
+                    })?,
+                    url,
+                });
+        }
+        Ok(media_by_product)
+    }
+
+    async fn collections_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        product_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<StorefrontProductCollection>>, ApplicationError> {
+        if product_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
+            "SELECT member.product_id, collection.id, collection.handle::text, collection.title \
+             FROM commerce.collection_products AS member \
+             INNER JOIN commerce.collections AS collection \
+               ON collection.store_id = member.store_id \
+              AND collection.id = member.collection_id \
+             INNER JOIN commerce.collection_publications AS publication \
+               ON publication.store_id = collection.store_id \
+              AND publication.collection_id = collection.id \
+              AND publication.sales_channel_id = $2 \
+             WHERE member.store_id = $1 \
+               AND member.product_id = ANY($3::uuid[]) \
+               AND collection.status = 'active' \
+             ORDER BY member.product_id, collection.handle ASC",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(actor.sales_channel_id.map(|id| id.as_uuid()))
+        .bind(product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let mut collections_by_product: HashMap<Uuid, Vec<StorefrontProductCollection>> =
+            HashMap::new();
+        for (product_id, id, handle, title) in rows {
+            collections_by_product.entry(product_id).or_default().push(
+                StorefrontProductCollection {
+                    id: CollectionId::from_uuid(id),
+                    handle,
+                    title,
+                },
+            );
+        }
+        Ok(collections_by_product)
+    }
+
+    async fn metadata_for_products(
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: &MachineActor,
+        products: &[(Uuid, Option<serde_json::Value>)],
+    ) -> Result<HashMap<Uuid, Option<serde_json::Value>>, ApplicationError> {
+        if products.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let product_ids: Vec<Uuid> = products.iter().map(|(id, _)| *id).collect();
+        let rows = sqlx::query_as::<_, (Uuid, String, Uuid, String, Option<String>)>(
+            "SELECT link.product_id, link.meta_path, media.id, media.media_type, media.public_url \
+             FROM commerce.product_meta_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
+               AND link.archived_at IS NULL AND media.status = 'ready' \
+             ORDER BY link.product_id, link.meta_path, media.id",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(&product_ids)
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let mut metadata_by_product: HashMap<Uuid, Option<serde_json::Value>> = products
+            .iter()
+            .map(|(id, metadata)| (*id, metadata.clone()))
+            .collect();
+        let mut attachments_by_product: HashMap<Uuid, Vec<MetadataAttachmentRow>> = HashMap::new();
+        for (product_id, meta_path, asset_id, media_type, public_url) in rows {
+            attachments_by_product
+                .entry(product_id)
+                .or_default()
+                .push((meta_path, asset_id, media_type, public_url));
+        }
+        for (product_id, attachments) in attachments_by_product {
+            let metadata = metadata_by_product
+                .get_mut(&product_id)
+                .ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!("missing Product metadata row"))
+                })?
+                .take()
+                .ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "Product metadata Media attachment has no Product metadata object"
+                    ))
+                })?;
+            let mut metadata = metadata;
+            for (meta_path, asset_id, media_type, public_url) in attachments {
+                let public_url = public_url.ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "ready Product metadata Media attachment has no public URL"
+                    ))
+                })?;
+                let node = metadata.pointer_mut(&meta_path).ok_or_else(|| {
+                    ApplicationError::Unexpected(anyhow::anyhow!(
+                        "Product metadata Media attachment points to a missing metadata path"
+                    ))
+                })?;
+                let expected_asset_id = asset_id.to_string();
+                let Some(node) = node.as_object_mut() else {
+                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                        "Product metadata Media attachment does not point to an object"
+                    )));
+                };
+                if node
+                    .get("media_asset_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(expected_asset_id.as_str())
+                {
+                    return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                        "Product metadata Media attachment does not match its metadata reference"
+                    )));
+                }
+                node.insert("media_type".into(), serde_json::Value::String(media_type));
+                node.insert("url".into(), serde_json::Value::String(public_url));
+            }
+            metadata_by_product.insert(product_id, Some(metadata));
+        }
+        Ok(metadata_by_product)
+    }
 }
 
 #[async_trait]
@@ -367,7 +742,25 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 _,
                 (Uuid, String, String, String, Option<serde_json::Value>),
             >(
-                "SELECT product.id, product.handle::text, product.title, product.description, \
+                "WITH selected_collection AS ( \
+                     SELECT collection.id \
+                     FROM commerce.collections AS collection \
+                     INNER JOIN commerce.collection_publications AS publication \
+                       ON publication.store_id = collection.store_id \
+                      AND publication.collection_id = collection.id \
+                      AND publication.sales_channel_id = $2 \
+                     WHERE collection.store_id = $1 \
+                       AND collection.handle = $5 \
+                       AND collection.status = 'active' \
+                     LIMIT 1 \
+                 ), collection_members AS ( \
+                     SELECT member.product_id, member.position \
+                     FROM commerce.collection_products AS member \
+                     INNER JOIN selected_collection AS selected \
+                       ON selected.id = member.collection_id \
+                     WHERE member.store_id = $1 \
+                 ) \
+                SELECT product.id, product.handle::text, product.title, product.description, \
                         product.meta \
                  FROM commerce.products AS product \
                  INNER JOIN commerce.stores AS store \
@@ -379,56 +772,23 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                    ON publication.store_id = product.store_id \
                   AND publication.product_id = product.id \
                   AND publication.sales_channel_id = channel.id \
-                 INNER JOIN commerce.product_documents AS search_document \
+                 LEFT JOIN commerce.product_documents AS search_document \
                    ON search_document.store_id = product.store_id \
                   AND search_document.product_id = product.id \
+                 LEFT JOIN collection_members AS member \
+                   ON member.product_id = product.id \
                  WHERE product.store_id = $1 \
                    AND store.status = 'active' \
                    AND channel.status = 'active' \
                    AND product.status = 'active' \
                    AND ($4::text IS NULL OR search_document.document @@ websearch_to_tsquery('simple', $4)) \
-                   AND ($5::text IS NULL OR EXISTS ( \
-                       SELECT 1 FROM commerce.collections AS collection \
-                       INNER JOIN commerce.collection_products AS member \
-                         ON member.store_id = collection.store_id \
-                        AND member.collection_id = collection.id \
-                        AND member.product_id = product.id \
-                       INNER JOIN commerce.collection_publications AS collection_publication \
-                         ON collection_publication.store_id = collection.store_id \
-                        AND collection_publication.collection_id = collection.id \
-                        AND collection_publication.sales_channel_id = channel.id \
-                       WHERE collection.store_id = product.store_id \
-                         AND collection.status = 'active' AND collection.handle = $5)) \
-                   AND ( \
-                       $3::uuid IS NULL \
-                       OR ($5::text IS NULL AND product.id > $3) \
-                       OR ($5::text IS NOT NULL AND ( \
-                           SELECT member.position \
-                           FROM commerce.collections AS collection \
-                           INNER JOIN commerce.collection_products AS member \
-                             ON member.store_id = collection.store_id \
-                            AND member.collection_id = collection.id \
-                           WHERE collection.store_id = product.store_id \
-                             AND collection.handle = $5 AND member.product_id = product.id \
-                       ) > ( \
-                           SELECT anchor.position \
-                           FROM commerce.collections AS collection \
-                           INNER JOIN commerce.collection_products AS anchor \
-                             ON anchor.store_id = collection.store_id \
-                            AND anchor.collection_id = collection.id \
-                           WHERE collection.store_id = product.store_id \
-                             AND collection.handle = $5 AND anchor.product_id = $3 \
-                       )) \
-                   ) \
-                 ORDER BY CASE WHEN $5::text IS NOT NULL THEN ( \
-                     SELECT member.position \
-                     FROM commerce.collections AS collection \
-                     INNER JOIN commerce.collection_products AS member \
-                       ON member.store_id = collection.store_id \
-                      AND member.collection_id = collection.id \
-                     WHERE collection.store_id = product.store_id \
-                       AND collection.handle = $5 AND member.product_id = product.id \
-                 ) END ASC, product.id ASC \
+                   AND ($5::text IS NULL OR member.product_id IS NOT NULL) \
+                   AND ($5::text IS NULL OR $3::uuid IS NULL OR member.position > ( \
+                       SELECT anchor.position FROM collection_members AS anchor WHERE anchor.product_id = $3 \
+                   )) \
+                   AND (($5::text IS NULL AND ($3::uuid IS NULL OR product.id > $3)) OR $5::text IS NOT NULL) \
+                 ORDER BY CASE WHEN $5::text IS NOT NULL THEN member.position END ASC NULLS LAST, \
+                          CASE WHEN $5::text IS NULL THEN product.id END ASC \
                  LIMIT 100",
             )
             .bind(actor.store_id.as_uuid())
@@ -443,15 +803,49 @@ impl StorefrontCatalogRepository for PostgresStorefrontCatalogRepository {
                 break;
             }
             let rows_len = rows.len();
+            let product_ids: Vec<Uuid> = rows.iter().map(|row| row.0).collect();
+            let mut variants_by_product =
+                Self::variants_for_products(&mut transaction, actor, &product_ids, currency)
+                    .await?;
+            let display_product_ids: Vec<Uuid> = product_ids
+                .iter()
+                .copied()
+                .filter(|product_id| {
+                    variants_by_product
+                        .get(product_id)
+                        .is_some_and(|variants| !variants.is_empty())
+                })
+                .collect();
+            let mut options_by_product =
+                Self::options_for_products(&mut transaction, actor, &display_product_ids).await?;
+            let mut media_by_product =
+                Self::media_for_products(&mut transaction, actor, &display_product_ids).await?;
+            let mut collections_by_product =
+                Self::collections_for_products(&mut transaction, actor, &display_product_ids)
+                    .await?;
+            let metadata_inputs: Vec<(Uuid, Option<serde_json::Value>)> = rows
+                .iter()
+                .filter(|row| display_product_ids.contains(&row.0))
+                .map(|row| (row.0, row.4.clone()))
+                .collect();
+            let mut metadata_by_product =
+                Self::metadata_for_products(&mut transaction, actor, &metadata_inputs).await?;
             for (id, handle, title, description, metadata) in rows {
                 let id = ProductId::from_uuid(id);
                 scan_after = Some(id);
-                let variants = Self::variants(&mut transaction, actor, id, currency).await?;
-                if !variants.is_empty() {
-                    let options = Self::options(&mut transaction, actor, id).await?;
-                    let media = Self::media(&mut transaction, actor, id).await?;
-                    let collections = Self::collections(&mut transaction, actor, id).await?;
-                    let metadata = Self::metadata(&mut transaction, actor, id, metadata).await?;
+                if let Some(variants) = variants_by_product.remove(&id.as_uuid()) {
+                    if variants.is_empty() {
+                        continue;
+                    }
+                    let options = options_by_product.remove(&id.as_uuid()).unwrap_or_default();
+                    let media = media_by_product.remove(&id.as_uuid()).unwrap_or_default();
+                    let collections = collections_by_product
+                        .remove(&id.as_uuid())
+                        .unwrap_or_default();
+                    let metadata = metadata_by_product
+                        .remove(&id.as_uuid())
+                        .flatten()
+                        .or(metadata);
                     products.push(StorefrontCatalogProduct {
                         id,
                         handle,
@@ -561,6 +955,43 @@ async fn variant_selected_options(
     for (variant_id, option_id, option_value_id) in rows {
         by_variant
             .entry(variant_id)
+            .or_default()
+            .push(StorefrontSelectedOption {
+                option_id: ProductOptionId::from_uuid(option_id),
+                option_value_id: ProductOptionValueId::from_uuid(option_value_id),
+            });
+    }
+    Ok(by_variant)
+}
+
+async fn variant_selected_options_for_products(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor: &MachineActor,
+    product_ids: &[Uuid],
+) -> Result<HashMap<(Uuid, Uuid), Vec<StorefrontSelectedOption>>, ApplicationError> {
+    if product_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT selection.product_id, selection.variant_id, selection.option_id, selection.option_value_id \
+         FROM commerce.variant_selected_options AS selection \
+         INNER JOIN commerce.product_options AS option \
+           ON option.store_id = selection.store_id \
+          AND option.product_id = selection.product_id \
+          AND option.id = selection.option_id \
+         WHERE selection.store_id = $1 \
+           AND selection.product_id = ANY($2::uuid[]) \
+         ORDER BY selection.product_id ASC, selection.variant_id ASC, option.position ASC",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(product_ids)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let mut by_variant: HashMap<(Uuid, Uuid), Vec<StorefrontSelectedOption>> = HashMap::new();
+    for (product_id, variant_id, option_id, option_value_id) in rows {
+        by_variant
+            .entry((product_id, variant_id))
             .or_default()
             .push(StorefrontSelectedOption {
                 option_id: ProductOptionId::from_uuid(option_id),

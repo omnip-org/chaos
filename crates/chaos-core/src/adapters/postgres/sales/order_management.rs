@@ -56,7 +56,7 @@ impl PostgresOrderManagementRepository {
             "SELECT o.id FROM commerce.orders o \
              WHERE o.store_id = $1 \
                AND ($2::uuid IS NULL OR o.id < $2) \
-               AND ($3::text IS NULL OR o.status::text = $3) \
+               AND ($3::text IS NULL OR o.status = $3::commerce.order_status) \
                AND ($4::text IS NULL OR o.contact_email = lower($4)) \
                AND ($5::text IS NULL OR o.order_number = upper($5)) \
              ORDER BY o.id DESC LIMIT $6",
@@ -72,10 +72,13 @@ impl PostgresOrderManagementRepository {
         .map_err(database_error)?;
         let has_more = ids.len() > usize::from(limit);
         let mut items = Vec::with_capacity(ids.len().min(usize::from(limit)));
-        for id in ids.into_iter().take(usize::from(limit)) {
+        let page_ids: Vec<Uuid> = ids.into_iter().take(usize::from(limit)).collect();
+        let mut details =
+            super::order_detail::load_many(&mut transaction, store_id, None, &page_ids).await?;
+        for id in page_ids {
             items.push(
-                super::order_detail::load(&mut transaction, store_id, None, OrderId::from_uuid(id))
-                    .await?
+                details
+                    .remove(&id)
                     .ok_or_else(|| order_not_found(OrderId::from_uuid(id)))?,
             );
         }

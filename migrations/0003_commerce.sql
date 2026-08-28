@@ -102,6 +102,7 @@ CREATE INDEX shoppers_store_seen_idx ON commerce.shoppers (store_id, last_seen_a
 CREATE INDEX store_memberships_user_idx ON commerce.store_memberships (user_id, store_id);
 CREATE INDEX store_sales_channels_store_status_idx ON commerce.store_sales_channels (store_id, status);
 CREATE INDEX store_publishable_keys_store_created_idx ON commerce.store_publishable_keys (store_id, created_at DESC, id DESC);
+CREATE INDEX store_publishable_keys_sales_channel_idx ON commerce.store_publishable_keys (store_id, sales_channel_id, id) WHERE sales_channel_id IS NOT NULL;
 CREATE INDEX store_shipping_countries_enabled_idx ON commerce.store_shipping_countries (store_id) WHERE enabled;
 CREATE UNIQUE INDEX store_sales_channels_one_default_per_store_idx ON commerce.store_sales_channels (store_id) WHERE is_default;
 

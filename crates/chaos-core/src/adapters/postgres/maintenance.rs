@@ -40,6 +40,14 @@ impl PostgresMaintenance {
                 .await
                 .map_err(database_error)?;
         deleted += usize::try_from(tracking_deleted).unwrap_or_default();
+
+        let integration_deleted: i32 =
+            sqlx::query_scalar("SELECT integration.cleanup_terminal_rows($1)")
+                .bind(CLEANUP_BATCH_SIZE)
+                .fetch_one(&self.runtime_pool)
+                .await
+                .map_err(database_error)?;
+        deleted += usize::try_from(integration_deleted).unwrap_or_default();
         Ok(deleted)
     }
 }

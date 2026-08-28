@@ -189,6 +189,12 @@ impl AnalyticsAdministration {
         query: AnalyticsEventQuery,
         limit: u16,
     ) -> Result<AnalyticsEventPage, ApplicationError> {
+        if query.before_id.is_some() != query.before_received_at.is_some() {
+            return Err(validation(
+                "before_id",
+                "before_id and before_received_at must be provided together",
+            ));
+        }
         self.events.list_events(actor, store_id, query, limit).await
     }
 }

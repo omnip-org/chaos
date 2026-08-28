@@ -31,7 +31,7 @@ The authoritative delivery row remains in the `integration` schema: outbound
 events use `integration.event_outbox`, while every verified provider webhook
 uses `integration.provider_webhook_inbox`. Commerce tables remain the source of truth
 for order/payment/fulfillment state transitions. Each integration row keeps the
-business payload, stable event or delivery identifier, processing outcome, and bounded error. A `BEFORE
+business payload, stable event or delivery identifier, processing outcome, and bounded error. An `AFTER
 INSERT` trigger sends a versioned message containing only that row identifier
 and stores the returned PGMQ message ID. Claim routines join the message back
 to the authoritative row. Finish routines update the row and delete the
@@ -80,8 +80,9 @@ invariant.
   require their own migration review.
 - Completed PGMQ envelopes are deleted instead of archived because the
   authoritative integration row already retains the audit evidence. Terminal
-  failures remain visible there as dead letters without growing duplicate PGMQ
-  archive tables.
+  failures remain visible there for the bounded integration retention window;
+  the maintenance Worker removes terminal rows older than thirty days without
+  growing duplicate PGMQ archive tables.
 
 This ADR supersedes the custom event-queue lease mechanics described in ADRs
 0002, 0007, 0014, 0025, and 0026. Their deployment and domain decisions remain

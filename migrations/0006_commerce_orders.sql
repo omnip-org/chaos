@@ -212,14 +212,25 @@ CREATE TABLE commerce.fulfillments (
 );
 
 CREATE INDEX carts_channel_updated_idx ON commerce.carts (store_id, sales_channel_id, status, updated_at DESC, id DESC);
+CREATE INDEX carts_store_shopper_idx ON commerce.carts (store_id, shopper_id, id);
+CREATE INDEX carts_store_price_list_idx ON commerce.carts (store_id, price_list_id, id);
 CREATE INDEX cart_lines_variant_lookup_idx ON commerce.cart_lines (store_id, product_variant_id, cart_id);
+CREATE INDEX cart_lines_product_variant_fk_idx ON commerce.cart_lines (store_id, product_id, product_variant_id, cart_id);
 CREATE INDEX orders_channel_created_idx ON commerce.orders (store_id, sales_channel_id, created_at DESC, id DESC);
+CREATE INDEX orders_store_status_id_idx ON commerce.orders (store_id, status, id DESC);
+CREATE INDEX orders_store_contact_email_id_idx ON commerce.orders (store_id, contact_email, id DESC) WHERE contact_email IS NOT NULL;
+CREATE INDEX orders_store_cart_idx ON commerce.orders (store_id, cart_id);
+CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
+CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
+CREATE UNIQUE INDEX orders_one_pending_per_cart_idx ON commerce.orders (store_id, cart_id) WHERE status = 'pending';
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE UNIQUE INDEX orders_shipping_provider_reference_key ON commerce.orders (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.refunds (store_id, order_id, created_at DESC);
+CREATE INDEX refunds_payment_provider_account_idx ON commerce.refunds (store_id, payment_provider_account_id, order_id);
 CREATE UNIQUE INDEX refunds_payment_provider_reference_key ON commerce.refunds (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE INDEX fulfillments_order_created_idx ON commerce.fulfillments (store_id, order_id, created_at DESC);
+CREATE INDEX fulfillments_shipping_provider_account_idx ON commerce.fulfillments (store_id, shipping_provider_account_id, order_id);
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
 CREATE INDEX orders_shipping_provider_account_idx ON commerce.orders (store_id, shipping_provider_account_id) WHERE shipping_provider_account_id IS NOT NULL;
 

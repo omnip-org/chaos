@@ -53,6 +53,7 @@ type AnalyticsEventRow = (
     Uuid,
     Uuid,
     String,
+    String,
     Uuid,
     Option<Uuid>,
     Option<String>,
@@ -108,12 +109,14 @@ async fn context(
 
 /// Append one behavior event. Commerce repositories use the same primitive so
 /// server-side events are written in the business transaction that produced
-/// them; analytics no longer needs a second outbox-to-ledger conversion.
+/// them; delivery rows are scheduled asynchronously so provider queues cannot
+/// roll back event collection or a commerce transaction.
 pub(crate) struct AnalyticsEventToAppend {
     pub(crate) store_id: Uuid,
     pub(crate) shopper_id: Uuid,
     pub(crate) event_id: Uuid,
     pub(crate) event_name: String,
+    pub(crate) event_source: &'static str,
     pub(crate) properties: Value,
     pub(crate) occurred_at: OffsetDateTime,
     pub(crate) received_at: OffsetDateTime,
@@ -162,35 +165,31 @@ pub(crate) async fn append_event(
             }
         }
     }
-    sqlx::query(
-        "SELECT pg_advisory_xact_lock(\
-            hashtextextended($1::text || ':' || $2::text || ':' || $3::text, 0)\
-        )",
+    let analytics_event_id = Uuid::now_v7();
+    let inserted_key: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO integration.analytics_event_keys
+            (store_id,event_name,event_id,event_received_at,analytics_event_id)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (store_id,event_name,event_id) DO NOTHING
+         RETURNING analytics_event_id",
     )
     .bind(event.store_id)
     .bind(&event.event_name)
     .bind(event.event_id)
-    .execute(&mut **tx)
+    .bind(event.received_at)
+    .bind(analytics_event_id)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(db)?;
-    let duplicate: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM integration.analytics_events \
-         WHERE store_id = $1 AND event_name = $2 AND event_id = $3)",
-    )
-    .bind(event.store_id)
-    .bind(&event.event_name)
-    .bind(event.event_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(db)?;
-    if duplicate {
+    if inserted_key.is_none() {
         return Ok(false);
     }
     sqlx::query(
         "INSERT INTO integration.analytics_events
-            (id,event_id,store_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,properties,occurred_at,received_at)
-         VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+            (id,event_id,store_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,event_source,properties,occurred_at,received_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
     )
+    .bind(analytics_event_id)
     .bind(event.event_id)
     .bind(event.store_id)
     .bind(event.shopper_id)
@@ -201,12 +200,14 @@ pub(crate) async fn append_event(
     .bind(utm_term)
     .bind(utm_content)
     .bind(event.event_name)
+    .bind(event.event_source)
     .bind(properties)
     .bind(event.occurred_at)
     .bind(event.received_at)
     .execute(&mut **tx)
     .await
     .map_err(db)?;
+
     Ok(true)
 }
 
@@ -315,7 +316,8 @@ pub(crate) async fn load_checkout_attribution(
             FROM integration.analytics_events
           WHERE store_id = $1
             AND event_name = 'initiate_checkout'
-            AND properties->>'_source' = 'browser'
+            AND event_source = 'browser'
+            AND properties ? 'order_id'
             AND properties->>'order_id' = $2
           ORDER BY occurred_at DESC, received_at DESC, id DESC
           LIMIT 1",
@@ -498,6 +500,7 @@ impl PostgresAnalyticsEventStore {
                     shopper_id,
                     event_id: event.event_id,
                     event_name: event.event_name.clone(),
+                    event_source: "browser",
                     properties,
                     occurred_at: event.occurred_at,
                     received_at,
@@ -522,46 +525,58 @@ impl PostgresAnalyticsEventStore {
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
         let query_limit = i32::from(limit) + 1;
         let rows: Vec<AnalyticsEventRow> = sqlx::query_as(
-            "SELECT e.id,e.event_id,e.event_name,e.shopper_id,e.session_id,
+            "SELECT e.id,e.event_id,e.event_name,e.event_source,e.shopper_id,e.session_id,
                     e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
                     e.occurred_at,e.received_at,e.properties,
-                    COALESCE(jsonb_agg(jsonb_build_object(
-                        'provider', c.provider,
-                        'status', d.delivery_status::text,
-                        'delivered_at', d.delivered_at,
-                        'provider_reference', d.provider_reference,
-                        'last_error', d.last_error
-                    ) ORDER BY c.provider) FILTER (WHERE d.id IS NOT NULL), '[]'::jsonb)
+                    COALESCE(delivery_snapshot.deliveries, '[]'::jsonb)
              FROM integration.analytics_events e
-             LEFT JOIN integration.analytics_deliveries d
-               ON d.store_id=e.store_id AND d.analytics_event_id=e.id
-             LEFT JOIN integration.analytics_destinations c
-               ON c.store_id=d.store_id AND c.id=d.destination_id
+             LEFT JOIN LATERAL (
+                 SELECT jsonb_agg(jsonb_build_object(
+                            'provider', destination.provider,
+                            'status', delivery.delivery_status::text,
+                            'delivered_at', delivery.delivered_at,
+                            'provider_reference', delivery.provider_reference,
+                            'last_error', delivery.last_error
+                        ) ORDER BY destination.provider) AS deliveries
+                 FROM integration.analytics_deliveries AS delivery
+                 INNER JOIN integration.analytics_destinations AS destination
+                    ON destination.store_id = delivery.store_id
+                   AND destination.id = delivery.destination_id
+                 WHERE delivery.store_id = e.store_id
+                   AND delivery.analytics_event_received_at = e.received_at
+                   AND delivery.analytics_event_id = e.id
+             ) AS delivery_snapshot ON true
              WHERE e.store_id=$1
-               AND ($3::uuid IS NULL OR e.id < $3)
-               AND ($4::text IS NULL OR e.event_name=$4)
-               AND ($5::text IS NULL OR e.properties->>'_source'=$5)
-               AND ($6::text IS NULL OR EXISTS (
+               AND (
+                   ($3::timestamptz IS NULL AND $4::uuid IS NULL)
+                   OR (
+                       $3::timestamptz IS NOT NULL
+                       AND $4::uuid IS NOT NULL
+                       AND (e.received_at, e.id) < ($3, $4)
+                   )
+               )
+               AND ($5::text IS NULL OR e.event_name=$5)
+               AND ($6::text IS NULL OR e.event_source=$6)
+               AND ($7::text IS NULL OR EXISTS (
                    SELECT 1 FROM integration.analytics_deliveries filter_delivery
                     WHERE filter_delivery.store_id=e.store_id
+                      AND filter_delivery.analytics_event_received_at=e.received_at
                       AND filter_delivery.analytics_event_id=e.id
-                      AND filter_delivery.delivery_status::text=$6
+                      AND filter_delivery.delivery_status=$7::integration.delivery_status
                ))
-               AND ($7::uuid IS NULL OR e.shopper_id=$7)
-               AND ($8::uuid IS NULL OR e.session_id=$8)
-               AND ($9::text IS NULL OR e.utm_source=$9)
-               AND ($10::text IS NULL OR e.utm_medium=$10)
-               AND ($11::text IS NULL OR e.utm_campaign=$11)
-               AND ($12::text IS NULL OR e.utm_term=$12)
-               AND ($13::text IS NULL OR e.utm_content=$13)
-             GROUP BY e.id,e.event_id,e.event_name,e.shopper_id,e.session_id,
-                      e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
-                      e.occurred_at,e.received_at,e.properties
-             ORDER BY e.id DESC
+               AND ($8::uuid IS NULL OR e.shopper_id=$8)
+               AND ($9::uuid IS NULL OR e.session_id=$9)
+               AND ($10::text IS NULL OR e.utm_source=$10)
+               AND ($11::text IS NULL OR e.utm_medium=$11)
+               AND ($12::text IS NULL OR e.utm_campaign=$12)
+               AND ($13::text IS NULL OR e.utm_term=$13)
+               AND ($14::text IS NULL OR e.utm_content=$14)
+             ORDER BY e.received_at DESC, e.id DESC
              LIMIT $2",
         )
         .bind(store.as_uuid())
         .bind(query_limit)
+        .bind(query.before_received_at)
         .bind(query.before_id)
         .bind(query.event_name)
         .bind(query.source)
@@ -587,6 +602,7 @@ impl PostgresAnalyticsEventStore {
                     id,
                     event_id,
                     event_name,
+                    event_source,
                     shopper_id,
                     session_id,
                     utm_source,
@@ -617,6 +633,7 @@ impl PostgresAnalyticsEventStore {
                         id,
                         event_id,
                         event_name,
+                        event_source,
                         shopper_id,
                         session_id,
                         utm_source,
@@ -776,14 +793,16 @@ impl PostgresAnalyticsDeliveryStore {
     ) -> Result<AnalyticsDeliveryCommand, ApplicationError> {
         let mut tx = self.pool.begin().await.map_err(db)?;
         context(&mut tx, job.store_id.as_uuid(), None).await?;
-        let row: (Uuid, String, String, String, Value, String, OffsetDateTime, Uuid, Value) =
+        let row: (Uuid, String, String, String, Value, String, String, OffsetDateTime, Uuid, Value) =
             sqlx::query_as(
                 "SELECT e.event_id,destination.provider,destination.external_account_reference,
                         destination.credential_secret_reference,destination.configuration,
-                        e.event_name,e.occurred_at,e.shopper_id,e.properties
+                        e.event_name,e.event_source,e.occurred_at,e.shopper_id,e.properties
                    FROM integration.analytics_deliveries delivery
                    JOIN integration.analytics_events e
-                     ON e.store_id=delivery.store_id AND e.id=delivery.analytics_event_id
+                     ON e.store_id=delivery.store_id
+                    AND e.received_at=delivery.analytics_event_received_at
+                    AND e.id=delivery.analytics_event_id
                    JOIN integration.analytics_destinations destination
                      ON destination.store_id=delivery.store_id AND destination.id=delivery.destination_id
                   WHERE delivery.store_id=$1 AND delivery.id=$2
@@ -794,7 +813,7 @@ impl PostgresAnalyticsDeliveryStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-        let properties = row.8;
+        let properties = row.9;
         tx.commit().await.map_err(db)?;
         Ok(AnalyticsDeliveryCommand {
             delivery_id: job.id,
@@ -804,8 +823,9 @@ impl PostgresAnalyticsDeliveryStore {
             credential_secret_reference: row.3,
             configuration: row.4,
             event_name: row.5,
-            occurred_at: row.6,
-            shopper_id: row.7,
+            event_source: row.6,
+            occurred_at: row.7,
+            shopper_id: row.8,
             properties,
         })
     }

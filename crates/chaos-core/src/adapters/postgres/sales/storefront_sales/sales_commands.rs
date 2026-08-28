@@ -189,11 +189,80 @@ impl PostgresStorefrontSalesRepository {
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+        let header = lock_cart(&mut transaction, actor, cart_id).await?;
         if header.0 != channel_id.as_uuid() {
             return Err(cart_not_found(cart_id));
         }
+        let cart_was_active = header.3 == "active";
         let currency = parse_currency(&header.2)?;
+
+        let existing_pending = sqlx::query_as::<
+            _,
+            (Uuid, Uuid, String, i64, String, Option<String>, Option<Vec<u8>>),
+        >(
+            "SELECT order_row.id, order_row.idempotency_key, order_row.currency::text, \
+                    order_row.subtotal_amount_minor, account.provider::text, \
+                    order_row.contact_email::text AS contact_email, \
+                    order_row.checkout_request_fingerprint \
+             FROM commerce.orders AS order_row \
+             INNER JOIN integration.provider_accounts AS account \
+               ON account.id = order_row.payment_provider_account_id \
+              AND account.store_id = order_row.store_id \
+              AND account.capability = 'payment' \
+             WHERE order_row.store_id = $1 AND order_row.cart_id = $2 \
+               AND order_row.status = 'pending' \
+             LIMIT 1",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if let Some((
+            existing_id,
+            existing_key,
+            existing_currency,
+            existing_subtotal,
+            provider,
+            existing_email,
+            fingerprint,
+        )) = existing_pending
+        {
+            if existing_key != request.idempotency_key {
+                return Err(cart_checkout_in_progress());
+            }
+            let persisted_cart = load_persisted_cart(
+                &mut transaction,
+                actor,
+                cart_id,
+                channel_id,
+                PriceListId::from_uuid(header.1),
+                currency,
+                CartStatus::parse(&header.3).ok_or_else(corrupt_sales_state)?,
+            )
+            .await?;
+            let persisted_request_fingerprint =
+                checkout_request_fingerprint(actor, cart_id, email, &request, &persisted_cart);
+            let fingerprint_mismatch = existing_email.as_deref() != email
+                || fingerprint
+                .as_deref()
+                .is_some_and(|stored| stored != persisted_request_fingerprint.as_slice());
+            if provider != request.payment_provider.as_str() || fingerprint_mismatch {
+                return Err(idempotency_key_reused());
+            }
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(StripeCheckoutDraft {
+                order_id: OrderId::from_uuid(existing_id),
+                currency: parse_currency(&existing_currency)?,
+                subtotal_amount_minor: existing_subtotal,
+                expires_at: request.expires_at,
+            });
+        }
+
+        if !cart_was_active {
+            return Err(cart_not_active());
+        }
+
         require_price_list_active(
             &mut transaction,
             actor,
@@ -238,6 +307,7 @@ impl PostgresStorefrontSalesRepository {
         let subtotal = cart.total()?.amount_minor();
         let request_fingerprint =
             checkout_request_fingerprint(actor, cart_id, email, &request, &cart);
+
         let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
             "SELECT id FROM integration.provider_accounts \
@@ -283,8 +353,12 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?;
         let Some(_) = inserted_order_id else {
-            let existing = sqlx::query_as::<_, (Uuid, String, i64, String, Option<Vec<u8>>)>(
-                "SELECT order_row.id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text, \
+            let existing = sqlx::query_as::<
+                _,
+                (Uuid, Uuid, String, i64, String, Option<String>, Option<Vec<u8>>),
+            >(
+                "SELECT order_row.id, order_row.cart_id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text, \
+                        order_row.contact_email::text AS contact_email, \
                         order_row.checkout_request_fingerprint \
                  FROM commerce.orders AS order_row \
                  INNER JOIN integration.provider_accounts AS account \
@@ -302,21 +376,23 @@ impl PostgresStorefrontSalesRepository {
             .await
             .map_err(database_error)?;
             // Orders created before the fingerprint column was introduced
-            // cannot be reconstructed reliably from their historical cart;
-            // preserve their provider-only idempotency behavior. Every new
-            // order carries the stronger request fingerprint.
-            let fingerprint_mismatch = existing
-                .4
-                .as_deref()
-                .is_some_and(|fingerprint| fingerprint != request_fingerprint.as_slice());
-            if existing.3 != request.payment_provider.as_str() || fingerprint_mismatch {
+            // cannot be reconstructed reliably from their historical Cart;
+            // retain the stored Cart, contact, and Provider guards. Every new
+            // Order carries the stronger request fingerprint.
+            let fingerprint_mismatch = existing.1 != cart_id.as_uuid()
+                || existing.5.as_deref() != email
+                || existing
+                    .6
+                    .as_deref()
+                    .is_some_and(|fingerprint| fingerprint != request_fingerprint.as_slice());
+            if existing.4 != request.payment_provider.as_str() || fingerprint_mismatch {
                 return Err(idempotency_key_reused());
             }
             transaction.commit().await.map_err(database_error)?;
             return Ok(StripeCheckoutDraft {
                 order_id: OrderId::from_uuid(existing.0),
-                currency: parse_currency(&existing.1)?,
-                subtotal_amount_minor: existing.2,
+                currency: parse_currency(&existing.2)?,
+                subtotal_amount_minor: existing.3,
                 expires_at: request.expires_at,
             });
         };

@@ -21,6 +21,7 @@ impl PostgresStripeRepository {
         if detail.status != PaymentAttemptStatus::Pending {
             return Err(payment_order_not_pending());
         }
+        transaction.commit().await.map_err(database_error)?;
         Ok(detail)
     }
 

@@ -430,6 +430,7 @@ async fn apply_payment_event(
                 shopper_id,
                 event_id: order_id.as_uuid(),
                 event_name: "purchase".into(),
+                event_source: "server",
                 properties,
                 occurred_at,
                 received_at: now,

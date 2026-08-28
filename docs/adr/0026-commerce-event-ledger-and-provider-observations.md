@@ -23,6 +23,7 @@ an append-only, Store-scoped event ledger with this small common envelope:
   `utm_content` attribution values;
 - stable `event_id`;
 - `event_name`;
+- normalized `event_source` (`browser` or `server`);
 - `occurred_at`, `received_at`, and `created_at`;
 - bounded object `properties` JSON.
 
@@ -76,9 +77,10 @@ other stored behavior names as filtered deliveries. It derives optional URL
 and money values from `properties` instead of requiring fixed ledger columns.
 
 The ledger remains partitioned daily by `received_at` using `pg_partman`.
-`pg_cron` maintains future partitions; retention is manual. No analytics
-policy table, consent snapshot, erasure workflow, metric snapshot, session
-aggregate, attribution job, or automatic deletion exists in this model.
+`pg_cron` maintains future partitions; Analytics event retention is manual. No
+analytics policy table, consent snapshot, erasure workflow, metric snapshot,
+session aggregate, attribution job, or automatic Analytics event deletion
+exists in this model.
 
 The SDK always uses the common envelope, sends the session UUID for the API to
 normalize into the `session_id` column, stores traffic context in `properties`

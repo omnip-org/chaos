@@ -100,7 +100,8 @@ impl PostgresStorefrontSalesRepository {
         sqlx::query(
             "UPDATE commerce.shoppers \
              SET last_seen_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2",
+             WHERE store_id = $1 AND id = $2 \
+               AND last_seen_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'",
         )
         .bind(shopper.machine.store_id.as_uuid())
         .bind(shopper.shopper_id.as_uuid())
@@ -182,6 +183,13 @@ fn idempotency_key_reused() -> ApplicationError {
     ApplicationError::Conflict {
         code: "idempotency_key_reused",
         message: "the idempotency key was already used with different checkout parameters",
+    }
+}
+
+fn cart_checkout_in_progress() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "cart_checkout_in_progress",
+        message: "the Cart already has a pending checkout",
     }
 }
 

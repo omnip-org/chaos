@@ -21,9 +21,9 @@ FROM partman.check_default();
 ```
 
 When old data must be removed, use a maintenance window and choose an
-explicit interval. Provider delivery task rows must be deleted before the event
-partitions so the deliberately decoupled delivery state does not retain
-orphaned rows:
+explicit interval. Provider delivery task rows and event identity rows must be
+deleted before the event partitions so the deliberately decoupled delivery
+state does not retain orphaned rows:
 
 ```sql
 BEGIN;
@@ -33,7 +33,15 @@ LOCK TABLE integration.analytics_events IN ACCESS EXCLUSIVE MODE;
 DELETE FROM integration.analytics_deliveries AS delivery
 USING integration.analytics_events AS event
 WHERE delivery.store_id = event.store_id
+  AND delivery.analytics_event_received_at = event.received_at
   AND delivery.analytics_event_id = event.id
+  AND event.received_at < TIMESTAMPTZ '2026-01-01 00:00:00+00';
+
+DELETE FROM integration.analytics_event_keys AS event_key
+USING integration.analytics_events AS event
+WHERE event_key.store_id = event.store_id
+  AND event_key.event_received_at = event.received_at
+  AND event_key.analytics_event_id = event.id
   AND event.received_at < TIMESTAMPTZ '2026-01-01 00:00:00+00';
 
 -- The same cutoff is expressed as a retention interval for pg_partman.

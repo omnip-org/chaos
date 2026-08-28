@@ -8,7 +8,7 @@ PostgreSQL schemas represent data ownership, not individual users, Stores, Rust 
 
 Do not create a schema merely because a Rust module exists. A new schema requires a distinct data owner, security boundary, or operational lifecycle. `commerce` contains Store-owned catalog, inventory, sales, payment state, fulfillment state, and rebuildable Storefront read models. `integration` contains external Provider account configuration, capability/provider identity, the webhook inbox, outbox/event routing, and analytical processing state.
 
-Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context behavior is coordinated by application use cases and durable events, not database triggers.
+Application SQL always schema-qualifies objects. Cross-schema foreign keys are allowed only for stable ownership references. Cross-context business behavior is coordinated by application use cases and durable events. Database triggers are limited to atomic integration capture and queue-enqueue mechanics; they must not implement business workflows.
 
 Durable integration work uses PGMQ for message visibility and retry attempts. An
 authoritative integration row stores the bounded business payload and outcome;
@@ -19,9 +19,10 @@ tables. Scheduled scans derived from current business state are not queues and
 may use short, recoverable row leases.
 
 The Worker runs bounded retention for expired OAuth requests, codes, bearer
-tokens, refresh tokens, and Order tracking capabilities. Pending media uploads
-are not deleted by database maintenance because their corresponding object-store
-object must be removed through the storage provider first.
+tokens, refresh tokens, Order tracking capabilities, and terminal integration
+outbox/webhook rows. Pending media uploads are not deleted by database
+maintenance because their corresponding object-store object must be removed
+through the storage provider first.
 
 ## Names and identifiers
 

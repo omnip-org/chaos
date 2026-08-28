@@ -349,20 +349,29 @@ CREATE TABLE commerce.prices (
 CREATE INDEX products_store_status_created_idx ON commerce.products (store_id, status, created_at DESC, id DESC);
 CREATE UNIQUE INDEX product_variants_store_sku_key ON commerce.product_variants (store_id, sku) WHERE sku IS NOT NULL;
 CREATE INDEX product_variants_product_status_idx ON commerce.product_variants (store_id, product_id, status);
+CREATE INDEX variant_selected_options_product_idx ON commerce.variant_selected_options (store_id, product_id, variant_id, option_id);
+CREATE INDEX variant_selected_options_option_value_idx ON commerce.variant_selected_options (store_id, product_id, option_id, option_value_id, variant_id);
 CREATE INDEX product_publications_channel_product_idx ON commerce.product_publications (store_id, sales_channel_id, product_id);
 CREATE INDEX collections_store_status_created_idx ON commerce.collections (store_id, status, created_at DESC, id DESC);
 CREATE INDEX collection_products_product_idx ON commerce.collection_products (store_id, product_id, collection_id);
+CREATE INDEX collection_products_collection_position_idx ON commerce.collection_products (store_id, collection_id, position, product_id);
 CREATE INDEX collection_publications_channel_collection_idx ON commerce.collection_publications (store_id, sales_channel_id, collection_id);
 CREATE INDEX media_assets_store_status_idx ON commerce.media_assets (store_id, status, created_at, id);
 CREATE UNIQUE INDEX product_media_assets_position_active_idx ON commerce.product_media_assets (store_id, product_id, position) WHERE archived_at IS NULL;
 CREATE INDEX product_media_assets_product_idx ON commerce.product_media_assets (store_id, product_id, position, media_asset_id);
+CREATE INDEX product_media_assets_variant_idx ON commerce.product_media_assets (store_id, product_id, product_variant_id) WHERE product_variant_id IS NOT NULL;
+CREATE INDEX product_media_assets_media_asset_idx ON commerce.product_media_assets (store_id, media_asset_id, product_id);
 CREATE UNIQUE INDEX product_meta_media_assets_path_active_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path) WHERE archived_at IS NULL;
 CREATE INDEX product_meta_media_assets_product_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path, media_asset_id);
+CREATE INDEX product_meta_media_assets_media_asset_idx ON commerce.product_meta_media_assets (store_id, media_asset_id, product_id);
 CREATE INDEX reviews_product_status_idx ON commerce.reviews (store_id, product_id, status, created_at, id);
+CREATE INDEX reviews_store_status_id_idx ON commerce.reviews (store_id, status, id DESC);
+CREATE INDEX reviews_created_by_user_idx ON commerce.reviews (created_by_user_id, id) WHERE created_by_user_id IS NOT NULL;
 CREATE INDEX reviews_parent_product_idx ON commerce.reviews (store_id, product_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
 CREATE INDEX reviews_parent_idx ON commerce.reviews (store_id, parent_review_id) WHERE parent_review_id IS NOT NULL;
 CREATE UNIQUE INDEX review_media_assets_position_active_idx ON commerce.review_media_assets (store_id, review_id, position) WHERE archived_at IS NULL;
 CREATE INDEX review_media_assets_review_idx ON commerce.review_media_assets (store_id, review_id, position, media_asset_id);
+CREATE INDEX review_media_assets_media_asset_idx ON commerce.review_media_assets (store_id, media_asset_id, review_id);
 CREATE INDEX product_documents_search_idx ON commerce.product_documents USING GIN (document);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
 CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
@@ -508,6 +517,7 @@ CREATE POLICY store_isolation ON commerce.prices
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
 REVOKE ALL ON FUNCTION commerce.check_price_list_currency () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.refresh_product_document (UUID, UUID) FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.products,
@@ -533,5 +543,4 @@ REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.product_m
                 commerce.product_meta_media_assets,
                 commerce.reviews, commerce.review_media_assets FROM chaos_runtime;
 
-GRANT EXECUTE ON FUNCTION commerce.rebuild_store_products (UUID) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

@@ -59,11 +59,11 @@ async fn email_worker_loop(
     while lifecycle.is_accepting_traffic() {
         let now = clock.now();
         let mut processed = 0;
-        match workers.run_outbox_batch(now, 25).await {
+        match workers.run_outbox_batch(now, 10).await {
             Ok(count) => processed += count,
             Err(error) => tracing::warn!(%worker_id, %error, "email outbox batch failed"),
         }
-        match workers.run_webhook_batch(now, 25).await {
+        match workers.run_webhook_batch(now, 10).await {
             Ok(count) => processed += count,
             Err(error) => tracing::warn!(%worker_id, %error, "email webhook batch failed"),
         }
@@ -79,7 +79,7 @@ async fn shipping_worker_loop(
     let worker_id = Uuid::now_v7();
     let mut backoff = PollBackoff::new();
     while lifecycle.is_accepting_traffic() {
-        let processed = match workers.run_outbox_batch(clock.now(), 25).await {
+        let processed = match workers.run_outbox_batch(clock.now(), 10).await {
             Ok(count) => count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "shipping outbox batch failed");
@@ -194,10 +194,10 @@ async fn maintenance_worker_loop(
         if tokio::time::Instant::now() >= next_cleanup {
             match maintenance.cleanup_expired().await {
                 Ok(deleted) if deleted > 0 => {
-                    tracing::info!(deleted, "expired security records cleaned up")
+                    tracing::info!(deleted, "expired and terminal records cleaned up")
                 }
                 Ok(_) => {}
-                Err(error) => tracing::warn!(%error, "expired security record cleanup failed"),
+                Err(error) => tracing::warn!(%error, "expired and terminal record cleanup failed"),
             }
             next_cleanup = tokio::time::Instant::now() + CLEANUP_INTERVAL;
         }
@@ -221,7 +221,7 @@ async fn payment_worker_loop(
                 tracing::warn!(%worker_id, %error, "payment outbox batch failed");
             }
         }
-        match workers.run_webhook_batch(now, 50).await {
+        match workers.run_webhook_batch(now, 10).await {
             Ok(count) => processed += count,
             Err(error) => {
                 tracing::warn!(%worker_id, %error, "payment webhook batch failed");

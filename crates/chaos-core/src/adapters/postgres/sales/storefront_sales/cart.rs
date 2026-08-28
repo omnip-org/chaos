@@ -126,6 +126,18 @@ async fn lock_active_cart(
     actor: &MachineActor,
     cart_id: CartId,
 ) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
+    let row = lock_cart(transaction, actor, cart_id).await?;
+    if row.3 != "active" {
+        return Err(cart_not_active());
+    }
+    Ok(row)
+}
+
+async fn lock_cart(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+) -> Result<(Uuid, Uuid, String, String, i64), ApplicationError> {
     let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64)>(
         "SELECT cart.sales_channel_id, cart.price_list_id, price_list.currency::text, \
                 cart.status::text, cart.version \
@@ -142,10 +154,7 @@ async fn lock_active_cart(
     .await
     .map_err(database_error)?
     .ok_or_else(|| cart_not_found(cart_id))?;
-    if row.3 != "active" {
-        return Err(cart_not_active());
-    }
-    Ok((row.0, row.1, row.2, row.3, row.4))
+    Ok(row)
 }
 
 async fn load_cart(
@@ -287,6 +296,44 @@ async fn load_cart_line_rows(
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)
+}
+
+async fn load_persisted_cart(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    cart_id: CartId,
+    sales_channel_id: SalesChannelId,
+    price_list_id: PriceListId,
+    currency: CurrencyCode,
+    status: CartStatus,
+) -> Result<Cart, ApplicationError> {
+    let rows = load_cart_line_rows(transaction, actor, cart_id).await?;
+    let lines = rows
+        .into_iter()
+        .map(|row| {
+            CartLine::new(
+                ProductId::from_uuid(row.0),
+                ProductVariantId::from_uuid(row.1),
+                row.2,
+                row.3,
+                row.4,
+                row.5,
+                u32::try_from(row.6).map_err(unexpected_conversion)?,
+                Money::new(row.7, currency),
+            )
+            .map_err(ApplicationError::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Cart::rehydrate(
+        cart_id,
+        actor.store_id,
+        sales_channel_id,
+        price_list_id,
+        currency,
+        status,
+        lines,
+    )
+    .map_err(ApplicationError::from)
 }
 
 fn cart_line_item(

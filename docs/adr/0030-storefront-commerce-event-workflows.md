@@ -20,10 +20,10 @@ Meta CAPI or another destination
 ```
 
 The ledger envelope is intentionally small: who (`shopper_id`), which browser
-session when available (`session_id`), what (`event_name`), when
-(`occurred_at`), a stable retry key (`event_id`), and event-specific
-`properties`. The browser cannot declare `shopper_id` or change the Store
-context. Normalized UTM values are stored in dedicated nullable columns;
+session when available (`session_id`), the normalized source (`event_source`),
+what (`event_name`), when (`occurred_at`), a stable retry key (`event_id`), and
+event-specific `properties`. The browser cannot declare `shopper_id` or change
+the Store context. Normalized UTM values are stored in dedicated nullable columns;
 traffic history, product IDs, order IDs, and money remain dynamic properties.
 For commerce items, `product_id` and `product_variant_id` are canonical. The
 Meta adapter derives its content ID from `product_variant_id` when present,
@@ -49,6 +49,12 @@ into another ledger.
 `AnalyticsDeliveryWorker` is responsible only for scheduling, claiming,
 retrying, and finishing external destination deliveries. Unknown event names
 remain valid stored behavior and are handled by each provider adapter.
+
+Destination enablement is forward-only. Creating or re-enabling a destination
+records an activation watermark (including a UUIDv7 boundary when no event is
+currently available), so retained events from before activation or during a
+disabled interval are not replayed automatically. Any historical backfill must
+be an explicit, bounded, and auditable operation.
 
 The MCP surface exposes destination configuration and event querying. Event
 queries return the dynamic properties because this is an internal behavior
