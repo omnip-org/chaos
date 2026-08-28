@@ -123,17 +123,17 @@ request deduplication is owned by the Order row in `commerce`, through its
 `idempotency_key` and database unique constraint.
 
 Cart and Order have separate responsibilities. The Checkout API transaction
-creates a pending Order and reserves tracked inventory while leaving the Cart
-active, then calls Stripe after the transaction commits and returns the
-Embedded Checkout client secret in the same request. The Cart row lock and a
-partial unique index allow only one pending checkout per Cart: a repeated
-request with the same idempotency key returns the existing pending Order,
-while another key receives a conflict. Stripe owns the checkout UI, address,
-shipping, tax, and payment collection; Chaos stores the resulting provider
-snapshot on the Order after a verified webhook. A successful payment confirms
-the Order and completes the Cart; expiry or failure cancels the Order and
-releases the reservation so the Cart can be retried. There is no local
-Checkout aggregate to expire or reconcile.
+creates a pending Order snapshot and reserves tracked inventory while leaving
+the Cart active, then calls Stripe after the transaction commits and returns
+the Embedded Checkout client secret in the same request. The Cart row lock and
+the Order idempotency constraint deduplicate retries of the same request;
+another checkout request may snapshot a later version of the still-active Cart
+after the shopper edits it. Stripe owns the checkout UI, address, shipping,
+tax, and payment collection; Chaos stores the resulting provider snapshot on
+the Order after a verified webhook. A successful payment confirms the Order
+and completes the Cart; expiry or failure cancels the Order and releases the
+reservation so the Cart can be retried. There is no local Checkout aggregate to
+expire or reconcile.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
 envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, normalized

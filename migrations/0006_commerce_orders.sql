@@ -223,7 +223,6 @@ CREATE INDEX orders_store_cart_idx ON commerce.orders (store_id, cart_id);
 CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
 CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
-CREATE UNIQUE INDEX orders_one_pending_per_cart_idx ON commerce.orders (store_id, cart_id) WHERE status = 'pending';
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE UNIQUE INDEX orders_shipping_provider_reference_key ON commerce.orders (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.refunds (store_id, order_id, created_at DESC);

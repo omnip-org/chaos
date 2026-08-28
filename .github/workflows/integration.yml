@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@main
 
+      # This is the integration gate for schema and query changes: build the
+      # production-like PostgreSQL image, apply every migration, then run the
+      # workspace tests that require the migrated database and Redis.
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@master
 

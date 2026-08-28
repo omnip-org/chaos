@@ -186,13 +186,6 @@ fn idempotency_key_reused() -> ApplicationError {
     }
 }
 
-fn cart_checkout_in_progress() -> ApplicationError {
-    ApplicationError::Conflict {
-        code: "cart_checkout_in_progress",
-        message: "the Cart already has a pending checkout",
-    }
-}
-
 fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);

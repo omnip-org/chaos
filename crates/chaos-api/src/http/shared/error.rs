@@ -162,6 +162,11 @@ impl IntoResponse for ApiError {
                     vec![],
                 ),
                 ApplicationError::Conflict { code, message } => {
+                    tracing::warn!(
+                        error_code = %code,
+                        error_message = %message,
+                        "request rejected due to an application conflict"
+                    );
                     (StatusCode::CONFLICT, code.into(), message.into(), vec![])
                 }
                 ApplicationError::RateLimited { .. } => (

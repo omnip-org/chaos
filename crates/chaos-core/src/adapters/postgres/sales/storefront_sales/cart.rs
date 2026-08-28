@@ -298,44 +298,6 @@ async fn load_cart_line_rows(
     .map_err(database_error)
 }
 
-async fn load_persisted_cart(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    cart_id: CartId,
-    sales_channel_id: SalesChannelId,
-    price_list_id: PriceListId,
-    currency: CurrencyCode,
-    status: CartStatus,
-) -> Result<Cart, ApplicationError> {
-    let rows = load_cart_line_rows(transaction, actor, cart_id).await?;
-    let lines = rows
-        .into_iter()
-        .map(|row| {
-            CartLine::new(
-                ProductId::from_uuid(row.0),
-                ProductVariantId::from_uuid(row.1),
-                row.2,
-                row.3,
-                row.4,
-                row.5,
-                u32::try_from(row.6).map_err(unexpected_conversion)?,
-                Money::new(row.7, currency),
-            )
-            .map_err(ApplicationError::from)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Cart::rehydrate(
-        cart_id,
-        actor.store_id,
-        sales_channel_id,
-        price_list_id,
-        currency,
-        status,
-        lines,
-    )
-    .map_err(ApplicationError::from)
-}
-
 fn cart_line_item(
     row: CartLineRow,
     currency: CurrencyCode,
