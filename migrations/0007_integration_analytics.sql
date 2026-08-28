@@ -131,13 +131,13 @@ CREATE FUNCTION integration.configure_analytics_destination (
     p_now                            TIMESTAMPTZ
 )
 RETURNS TABLE (
-    destination_id                        UUID,
-    destination_provider                  TEXT,
+    destination_id                         UUID,
+    destination_provider                   TEXT,
     destination_external_account_reference TEXT,
-    destination_configuration             JSONB,
-    destination_enabled                   BOOLEAN,
-    destination_created_at                TIMESTAMPTZ,
-    destination_updated_at                TIMESTAMPTZ
+    destination_configuration              JSONB,
+    destination_enabled                    BOOLEAN,
+    destination_created_at                 TIMESTAMPTZ,
+    destination_updated_at                 TIMESTAMPTZ
 )
 LANGUAGE plpgsql
 SECURITY DEFINER

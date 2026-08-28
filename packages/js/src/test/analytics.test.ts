@@ -466,6 +466,56 @@ test("records commerce attribution through the common endpoint after success", a
   );
 });
 
+test("high-level commerce methods own canonical event properties", async () => {
+  const environment = harness([], {
+    providers: { metaPixel: { pixelId: "12345" } },
+  });
+
+  const eventId = environment.analytics.recordAddToCart({
+    cartId: "00000000-0000-4000-8000-000000000001",
+    productId: "00000000-0000-4000-8000-000000000002",
+    productVariantId: "00000000-0000-4000-8000-000000000003",
+    quantity: 2,
+    priceMinor: 649,
+    valueMinor: 1_298,
+    currency: "usd",
+  });
+  await environment.analytics.flush();
+
+  const event = JSON.parse(environment.requests[0]!.options.body).events[0];
+  assert.equal(event.event_id, eventId);
+  assert.equal(event.event_name, "add_to_cart");
+  assert.equal(
+    event.properties.cart_id,
+    "00000000-0000-4000-8000-000000000001",
+  );
+  assert.equal(
+    event.properties.product_id,
+    "00000000-0000-4000-8000-000000000002",
+  );
+  assert.equal(
+    event.properties.product_variant_id,
+    "00000000-0000-4000-8000-000000000003",
+  );
+  assert.equal(event.properties.quantity, 2);
+  assert.equal(event.properties.value_minor, 1_298);
+  assert.equal(event.properties.currency, "USD");
+  assert.deepEqual(event.properties.items, [
+    {
+      product_id: "00000000-0000-4000-8000-000000000002",
+      product_variant_id: "00000000-0000-4000-8000-000000000003",
+      quantity: 2,
+      price_minor: 649,
+    },
+  ]);
+  assert.equal(typeof event.properties._meta, "object");
+  assert.equal(typeof event.properties.session_id, "string");
+  const metaTrack = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.find((call) => call[0] === "track" && call[1] === "AddToCart");
+  assert.deepEqual(metaTrack?.[3], { eventID: eventId });
+});
+
 test("maps browser Meta standard event payloads", () => {
   const environment = harness([], {
     providers: { metaPixel: { pixelId: "12345" } },

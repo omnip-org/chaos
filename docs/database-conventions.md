@@ -82,8 +82,7 @@ Migration files use zero-padded sequence numbers and concise English names. Befo
 The bootstrap uses `0001_platform.sql`, `0002_identity.sql`,
 `0003_commerce.sql`, `0004_integration.sql`,
 `0005_commerce_products.sql`, `0006_commerce_orders.sql`, and
-`0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql` and
-`0009_checkout_cart_mutability.sql`.
+`0007_integration_analytics.sql`, followed by `0008_identity_oauth.sql`.
 Catalog media attachments and manual-review provenance are part of
 `0005_commerce_products.sql`. Release-hardening constraints, capability checks,
 and cleanup routines are defined in the migration that creates each dependent

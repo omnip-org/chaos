@@ -1,9 +1,11 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
 import type {
+  AddToCartAnalyticsInput,
   AnalyticsCollectionResult,
   AnalyticsPurchaseItem,
   BrowserAnalyticsEventName,
   ClientCommerceAnalyticsEventName,
+  InitiateCheckoutAnalyticsInput,
   PreparedAnalyticsEvent,
 } from "./types.js";
 
@@ -278,11 +280,78 @@ export class ChaosStorefrontAnalytics {
     });
   }
 
+  /** Records a successful cart addition through the common event boundary. */
+  recordAddToCart(input: AddToCartAnalyticsInput): string | null {
+    validateMoney(input.valueMinor, input.currency);
+    if (!isUuid(input.productId))
+      throw new TypeError("productId must be a valid UUID");
+    if (!isUuid(input.productVariantId))
+      throw new TypeError("productVariantId must be a valid UUID");
+    if (!Number.isSafeInteger(input.quantity) || input.quantity < 1)
+      throw new RangeError("quantity must be a positive safe integer");
+    if (!Number.isSafeInteger(input.priceMinor) || input.priceMinor < 0)
+      throw new RangeError("priceMinor must be a non-negative safe integer");
+    if (input.cartId !== undefined && !isUuid(input.cartId))
+      throw new TypeError("cartId must be a valid UUID");
+
+    return this.recordCommerceEvent("add_to_cart", {
+      ...(input.cartId ? { cart_id: input.cartId } : {}),
+      product_id: input.productId,
+      product_variant_id: input.productVariantId,
+      quantity: input.quantity,
+      value_minor: input.valueMinor,
+      currency: input.currency.toUpperCase(),
+      items: [
+        {
+          product_id: input.productId,
+          product_variant_id: input.productVariantId,
+          quantity: input.quantity,
+          price_minor: input.priceMinor,
+        },
+      ],
+    });
+  }
+
+  /** Records a successful embedded checkout creation. */
+  recordInitiateCheckout(input: InitiateCheckoutAnalyticsInput): string | null {
+    validateMoney(input.valueMinor, input.currency);
+    if (!isUuid(input.cartId))
+      throw new TypeError("cartId must be a valid UUID");
+    if (!isUuid(input.orderId))
+      throw new TypeError("orderId must be a valid UUID");
+    if (!Array.isArray(input.items) || input.items.length === 0)
+      throw new TypeError("items must contain at least one checkout item");
+    for (const item of input.items) {
+      if (!isUuid(item.productId))
+        throw new TypeError("productId must be a valid UUID");
+      if (!isUuid(item.productVariantId))
+        throw new TypeError("productVariantId must be a valid UUID");
+      if (!Number.isSafeInteger(item.quantity) || item.quantity < 1)
+        throw new RangeError("quantity must be a positive safe integer");
+      if (!Number.isSafeInteger(item.priceMinor) || item.priceMinor < 0)
+        throw new RangeError("priceMinor must be a non-negative safe integer");
+    }
+
+    return this.recordCommerceEvent("initiate_checkout", {
+      cart_id: input.cartId,
+      order_id: input.orderId,
+      value_minor: input.valueMinor,
+      currency: input.currency.toUpperCase(),
+      items: input.items.map((item) => ({
+        product_id: item.productId,
+        product_variant_id: item.productVariantId,
+        quantity: item.quantity,
+        price_minor: item.priceMinor,
+      })),
+    });
+  }
+
   /**
-   * Creates the one commerce envelope shared by the browser provider and the
-   * common analytics endpoint. It does not enqueue or project the event, so
-   * callers can prepare before a request and only record it after the request
+   * Creates the internal commerce envelope shared by browser providers and the
+   * common analytics endpoint. It does not enqueue or project the event; the
+   * public high-level methods call it only after the commerce operation
    * succeeds.
+   * @internal Used only by the SDK's high-level commerce methods.
    */
   prepareCommerceEvent(
     eventName: ClientCommerceAnalyticsEventName,
@@ -311,6 +380,7 @@ export class ChaosStorefrontAnalytics {
    * context is always retained; the optional properties are values returned or
    * derived from that successful operation. Browser providers receive the same
    * event ID immediately while the first-party event is queued for delivery.
+   * @internal Used only by the SDK's high-level commerce methods.
    */
   sendCommerceEvent(
     event: PreparedAnalyticsEvent,
@@ -345,6 +415,20 @@ export class ChaosStorefrontAnalytics {
     this.persistQueue();
     void this.flush().catch(() => {});
     return eventId;
+  }
+
+  private recordCommerceEvent(
+    eventName: ClientCommerceAnalyticsEventName,
+    properties: Record<string, unknown>,
+  ): string | null {
+    try {
+      const event = this.prepareCommerceEvent(eventName, properties);
+      return this.sendCommerceEvent(event);
+    } catch {
+      // Analytics is optional and must never turn a successful commerce
+      // operation into a failed UI action.
+      return null;
+    }
   }
 
   viewContent({

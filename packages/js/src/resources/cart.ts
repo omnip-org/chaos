@@ -4,7 +4,6 @@ import type {
   Cart,
   CreateCartRequest,
   DataEnvelope,
-  PreparedAnalyticsEvent,
   SetCartLineRequest,
 } from "../types.js";
 
@@ -100,27 +99,15 @@ export class CartResource {
         current?.data.lines.find(
           (line) => line.product_variant_id === productVariantId,
         )?.quantity ?? 0;
-      const event =
-        body.quantity > existingQuantity
-          ? prepareAddToCartEvent(
-              this.client,
-              productVariantId,
-              body.quantity - existingQuantity,
-            )
-          : undefined;
       const response = await this.setLineRequest(
         cartId,
         productVariantId,
         body,
         expectedVersion ?? current!.data.version,
       );
-      if (
-        event?.event_name === "add_to_cart" &&
-        body.quantity > existingQuantity
-      ) {
+      if (body.quantity > existingQuantity) {
         projectAddToCart(
           this.client,
-          event,
           response.data,
           productVariantId,
           body.quantity - existingQuantity,
@@ -144,11 +131,6 @@ export class CartResource {
       const existing = current.data.lines.find(
         (line) => line.product_variant_id === productVariantId,
       );
-      const event = prepareAddToCartEvent(
-        this.client,
-        productVariantId,
-        quantity,
-      );
       const response = await this.setLineRequest(
         cartId,
         productVariantId,
@@ -157,12 +139,9 @@ export class CartResource {
         },
         current.data.version,
       );
-      // The business request stays analytics-agnostic. Browser clients record
-      // the prepared event through /analytics/events only after success.
-      if (event?.event_name === "add_to_cart" && this.client.analytics) {
+      if (this.client.analytics) {
         projectAddToCart(
           this.client,
-          event,
           response.data,
           productVariantId,
           quantity,
@@ -223,7 +202,6 @@ export class CartResource {
 
 function projectAddToCart(
   client: ChaosStorefrontClient,
-  event: PreparedAnalyticsEvent,
   cart: Cart,
   productVariantId: string,
   quantity: number,
@@ -232,47 +210,18 @@ function projectAddToCart(
     const line = cart.lines.find(
       (candidate) => candidate.product_variant_id === productVariantId,
     );
-    const canonicalVariantId = line?.product_variant_id ?? productVariantId;
-    const properties: Record<string, unknown> = {
-      cart_id: cart.id,
-      product_variant_id: canonicalVariantId,
+    if (!line) return;
+    client.analytics?.recordAddToCart({
+      cartId: cart.id,
+      productId: line.product_id,
+      productVariantId: line.product_variant_id,
       quantity,
-    };
-    if (line) {
-      properties.product_id = line.product_id;
-      properties.value_minor = line.unit_price_amount_minor * quantity;
-      properties.currency = cart.currency;
-      properties.items = [
-        {
-          product_id: line.product_id,
-          product_variant_id: canonicalVariantId,
-          quantity,
-          price_minor: line.unit_price_amount_minor,
-        },
-      ];
-    }
-    client.analytics?.sendCommerceEvent(event, properties);
-  } catch {
-    // Analytics recording and provider projection are best-effort after the
-    // successful cart mutation; the SDK persists failed delivery for retry.
-  }
-}
-
-function prepareAddToCartEvent(
-  client: ChaosStorefrontClient,
-  productVariantId: string,
-  quantity: number,
-): PreparedAnalyticsEvent | undefined {
-  if (typeof client.analytics?.prepareCommerceEvent !== "function") {
-    return undefined;
-  }
-  try {
-    return client.analytics.prepareCommerceEvent("add_to_cart", {
-      product_variant_id: productVariantId,
-      quantity,
+      priceMinor: line.unit_price_amount_minor,
+      valueMinor: line.unit_price_amount_minor * quantity,
+      currency: cart.currency,
     });
   } catch {
-    // Analytics preparation must not turn a valid cart mutation into a failure.
-    return undefined;
+    // Analytics recording and provider projection are best-effort after the
+    // successful cart mutation.
   }
 }

@@ -104,20 +104,20 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
     CONSTRAINT orders_store_id_sales_channel_fkey       FOREIGN KEY (store_id, sales_channel_id) REFERENCES commerce.store_sales_channels (store_id, id),
     CONSTRAINT orders_store_id_price_list_currency_fkey FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
-    CONSTRAINT orders_store_id_payment_provider_account_fkey FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT orders_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT orders_currency_format_check             CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT orders_idempotency_key_not_nil_check     CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CONSTRAINT orders_currency_format_check              CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT orders_idempotency_key_not_nil_check      CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT orders_checkout_request_fingerprint_check CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
-    CONSTRAINT orders_order_number_check                CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
-    CONSTRAINT orders_amounts_check                     CHECK (subtotal_amount_minor >= 0 AND discount_amount_minor >= 0 AND tax_amount_minor >= 0 AND shipping_amount_minor >= 0 AND total_amount_minor >= 0 AND refunded_amount_minor >= 0 AND refunded_amount_minor <= total_amount_minor),
-    CONSTRAINT orders_contact_email_length_check        CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
-    CONSTRAINT orders_contact_phone_format_check        CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
-    CONSTRAINT orders_billing_country_code_check        CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_shipping_country_code_check       CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
-    CONSTRAINT orders_payment_provider_reference_check  CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT orders_shipping_provider_reference_check CHECK (shipping_provider_reference_id IS NULL OR (shipping_provider_account_id IS NOT NULL AND length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255)),
-    CONSTRAINT orders_payment_failure_code_check        CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000)
+    CONSTRAINT orders_order_number_check                 CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
+    CONSTRAINT orders_amounts_check                      CHECK (subtotal_amount_minor >= 0 AND discount_amount_minor >= 0 AND tax_amount_minor >= 0 AND shipping_amount_minor >= 0 AND total_amount_minor >= 0 AND refunded_amount_minor >= 0 AND refunded_amount_minor <= total_amount_minor),
+    CONSTRAINT orders_contact_email_length_check         CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
+    CONSTRAINT orders_contact_phone_format_check         CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
+    CONSTRAINT orders_billing_country_code_check         CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT orders_shipping_country_code_check        CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
+    CONSTRAINT orders_payment_provider_reference_check   CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT orders_shipping_provider_reference_check  CHECK (shipping_provider_reference_id IS NULL OR (shipping_provider_account_id IS NOT NULL AND length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255)),
+    CONSTRAINT orders_payment_failure_code_check         CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000)
 );
 
 CREATE TABLE commerce.order_tracking_tokens (

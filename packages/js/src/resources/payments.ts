@@ -1,84 +1,96 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import type {
-  CreateEmbeddedCheckoutRequest,
   DataEnvelope,
+  EmbeddedCheckoutOptions,
   EmbeddedCheckoutSession,
-  PreparedAnalyticsEvent,
 } from "../types.js";
+
+interface EmbeddedCheckoutRequest {
+  email?: string;
+  payment_provider: "stripe";
+  return_url: string;
+}
 
 export class PaymentsResource {
   constructor(private readonly client: ChaosStorefrontClient) {}
 
   async createEmbeddedCheckout(
     cartId: string,
-    body: CreateEmbeddedCheckoutRequest,
-    idempotencyKey?: string,
+    options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
-    const resolvedIdempotencyKey = idempotencyKey ?? this.client.randomUUID();
-    let event: PreparedAnalyticsEvent | undefined;
-    if (
-      typeof this.client.analytics?.prepareCommerceEvent === "function"
-    ) {
-      let properties: Record<string, unknown> = { cart_id: cartId };
-      try {
-        const cart = await this.client.cart.get(cartId);
-        properties = {
-          cart_id: cart.data.id,
-          value_minor: cart.data.subtotal_amount_minor,
-          currency: cart.data.currency,
-          items: cart.data.lines.map((line) => ({
-            product_id: line.product_id,
-            product_variant_id: line.product_variant_id,
-            quantity: line.quantity,
-            price_minor: line.unit_price_amount_minor,
-          })),
-        };
-      } catch {
-        // The checkout response remains the authority if this optional read
-        // is unavailable; the event still carries attribution.
-      }
-      try {
-        event = this.client.analytics.prepareCommerceEvent(
-          "initiate_checkout",
-          properties,
-          isUuid(resolvedIdempotencyKey) ? resolvedIdempotencyKey : undefined,
-        );
-      } catch {
-        // Analytics preparation must not prevent a valid checkout request.
-        event = undefined;
-      }
-    }
-    return this.client
-      .request<DataEnvelope<EmbeddedCheckoutSession>>(
-        `/carts/${encodeURIComponent(cartId)}/checkout`,
-        {
-          method: "POST",
-          body,
-          requiresShopperToken: true,
-          idempotencyKey: resolvedIdempotencyKey,
-        },
-      )
-      .then((response) => {
-        if (
-          event?.event_name === "initiate_checkout" &&
-          this.client.analytics
-        ) {
-          try {
-            this.client.analytics.sendCommerceEvent(event, {
-              cart_id: cartId,
-              order_id: response.data.order_id,
-            });
-          } catch {
-            // The checkout session already exists; provider projection is best-effort.
-          }
-        }
-        return response;
+    const cart = await this.client.cart.get(cartId);
+    const body = toEmbeddedCheckoutRequest(options);
+    const response = await this.client.request<
+      DataEnvelope<EmbeddedCheckoutSession>
+    >(`/carts/${encodeURIComponent(cartId)}/checkout`, {
+      method: "POST",
+      body,
+      requiresShopperToken: true,
+      idempotencyKey: checkoutIdempotencyKey(cart.data, body),
+    });
+
+    try {
+      this.client.analytics?.recordInitiateCheckout({
+        cartId: cart.data.id,
+        orderId: response.data.order_id,
+        valueMinor: cart.data.subtotal_amount_minor,
+        currency: cart.data.currency,
+        items: cart.data.lines.map((line) => ({
+          productId: line.product_id,
+          productVariantId: line.product_variant_id,
+          quantity: line.quantity,
+          priceMinor: line.unit_price_amount_minor,
+        })),
       });
+    } catch {
+      // The checkout session already exists; analytics is best-effort.
+    }
+    return response;
   }
 }
 
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value,
+function toEmbeddedCheckoutRequest(
+  options: EmbeddedCheckoutOptions,
+): EmbeddedCheckoutRequest {
+  const body: EmbeddedCheckoutRequest = {
+    payment_provider: "stripe",
+    return_url: options.returnUrl,
+  };
+  if (options.email) body.email = options.email;
+  return body;
+}
+
+function checkoutIdempotencyKey(
+  cart: { id: string; version: number },
+  request: EmbeddedCheckoutRequest,
+): string {
+  // A cart version is the server's immutable checkout snapshot boundary. The
+  // same key is therefore safe for a lost-response retry, while any cart
+  // mutation (or meaningful checkout option change) receives a new key.
+  return stableUuid(
+    JSON.stringify(["embedded-checkout", cart.id, cart.version, request]),
   );
+}
+
+function stableUuid(input: string): string {
+  const hashes = [
+    2_166_136_261, 2_246_822_519, 3_266_489_909, 3_432_918_353,
+  ].map((seed) => {
+    let hash = seed >>> 0;
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619);
+      hash ^= hash >>> 13;
+    }
+    return hash >>> 0;
+  });
+  const bytes = new Uint8Array(16);
+  const view = new DataView(bytes.buffer);
+  hashes.forEach((hash, index) => view.setUint32(index * 4, hash));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
+    .slice(6, 8)
+    .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
 }

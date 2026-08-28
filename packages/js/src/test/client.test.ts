@@ -3,7 +3,6 @@ import test from "node:test";
 
 import { createStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
-import type { PreparedAnalyticsEvent } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -156,6 +155,52 @@ test("explicit shopper sessions update the client token", async () => {
   await client.shopperSession.create();
 
   assert.equal(client.getShopperToken(), "manual-token");
+});
+
+test("collectAnalytics owns the analytics request and recovers a stale identity", async () => {
+  const requests: Array<{
+    url: string;
+    token: string | undefined;
+    body: unknown;
+  }> = [];
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      const token =
+        new Headers(init.headers).get("x-chaos-shopper-token") ?? undefined;
+      const body =
+        typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      requests.push({ url, token, body });
+      if (url.endsWith("/analytics/events") && token === "stale-token") {
+        return jsonResponse(401, { error: { code: "unauthorized" } });
+      }
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "fresh-token" } });
+      }
+      return jsonResponse(200, {
+        data: { received: 1, stored: 1, duplicates: 0 },
+      });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("stale-token");
+
+  const payload = { events: [] };
+  const result = await client.collectAnalytics(payload);
+
+  assert.deepEqual(result, { data: { received: 1, stored: 1, duplicates: 0 } });
+  assert.deepEqual(
+    requests.map((request) => [
+      request.url.endsWith("/analytics/events"),
+      request.token,
+    ]),
+    [
+      [true, "stale-token"],
+      [false, undefined],
+      [true, "fresh-token"],
+    ],
+  );
+  assert.deepEqual(requests[2]?.body, payload);
 });
 
 test("refreshes a stale shopper token once and retries the request", async () => {
@@ -395,7 +440,7 @@ test("catalog.listProducts forwards query parameters", async () => {
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
 });
 
-test("payments create an embedded Checkout session in one request", async () => {
+test("payments create an embedded Checkout session with SDK-owned request details", async () => {
   const requests: Array<{
     url: string;
     method: string;
@@ -418,6 +463,17 @@ test("payments create an embedded Checkout session in one request", async () => 
       if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            version: 4,
+            currency: "USD",
+            subtotal_amount_minor: 2_000,
+            lines: [],
+          },
+        });
+      }
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
@@ -436,25 +492,20 @@ test("payments create an embedded Checkout session in one request", async () => 
     }) as unknown as typeof fetch,
   });
 
-  const session = await client.payments.createEmbeddedCheckout(
-    "cart-1",
-    {
-      email: "shopper@example.com",
-      payment_provider: "stripe",
-      return_url: "https://shop.example.com/checkout/success",
-    },
-    "order-idempotency-1",
-  );
+  const session = await client.payments.createEmbeddedCheckout("cart-1", {
+    email: "shopper@example.com",
+    returnUrl: "https://shop.example.com/checkout/success",
+  });
 
   assert.equal(
-    requests[1]?.headers.get("x-chaos-shopper-token"),
+    requests[2]?.headers.get("x-chaos-shopper-token"),
     "shopper-token",
   );
-  assert.equal(
-    requests[1]?.headers.get("idempotency-key"),
-    "order-idempotency-1",
+  assert.match(
+    requests[2]?.headers.get("idempotency-key") ?? "",
+    /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
-  assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
+  assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
     email: "shopper@example.com",
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
@@ -482,6 +533,17 @@ test("payments create an embedded Checkout session without an email", async () =
       if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            version: 4,
+            currency: "USD",
+            subtotal_amount_minor: 2_000,
+            lines: [],
+          },
+        });
+      }
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
@@ -500,33 +562,67 @@ test("payments create an embedded Checkout session without an email", async () =
     }) as unknown as typeof fetch,
   });
 
-  await client.payments.createEmbeddedCheckout(
-    "cart-1",
-    {
-      payment_provider: "stripe",
-      return_url: "https://shop.example.com/checkout/success",
-    },
-    "order-idempotency-1",
-  );
+  await client.payments.createEmbeddedCheckout("cart-1", {
+    returnUrl: "https://shop.example.com/checkout/success",
+  });
 
-  assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
+  assert.deepEqual(JSON.parse(requests[2]?.body ?? "{}"), {
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
 });
 
+test("checkout idempotency follows the cart snapshot instead of the cart id", async () => {
+  let cartVersion = 4;
+  const idempotencyKeys: string[] = [];
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            version: cartVersion,
+            currency: "USD",
+            subtotal_amount_minor: 2_000,
+            lines: [],
+          },
+        });
+      }
+      idempotencyKeys.push(
+        new Headers(init.headers).get("idempotency-key") ?? "",
+      );
+      return jsonResponse(201, {
+        data: {
+          order_id: "55555555-5555-4555-8555-555555555555",
+          client_action: {
+            type: "mount_embedded_checkout",
+            public_key: "pk_test_stripe",
+            client_token: "cs_test_secret",
+          },
+        },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const options = { returnUrl: "https://shop.example.com/checkout/success" };
+  await client.payments.createEmbeddedCheckout("cart-1", options);
+  await client.payments.createEmbeddedCheckout("cart-1", options);
+  cartVersion = 5;
+  await client.payments.createEmbeddedCheckout("cart-1", options);
+
+  assert.equal(idempotencyKeys.length, 3);
+  assert.equal(idempotencyKeys[0], idempotencyKeys[1]);
+  assert.notEqual(idempotencyKeys[1], idempotencyKeys[2]);
+});
+
 test("commerce resources record one event after the mutation succeeds", async () => {
-  const prepared: PreparedAnalyticsEvent = {
-    event_id: "11111111-1111-4111-8111-111111111111",
-    event_name: "add_to_cart",
-    occurred_at: "2026-08-16T00:00:00.000Z",
-    properties: { session_id: "22222222-2222-4222-8222-222222222222" },
-  };
   const requests: Array<{ path: string; body: unknown }> = [];
-  const projections: Array<{
-    event: PreparedAnalyticsEvent;
-    properties: Record<string, unknown>;
-  }> = [];
+  let projection: unknown;
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -536,23 +632,14 @@ test("commerce resources record one event after the mutation succeeds", async ()
   });
   const mutable = client as unknown as {
     analytics: {
-      prepareCommerceEvent: (
-        eventName: string,
-        properties?: Record<string, unknown>,
-        eventId?: string,
-      ) => PreparedAnalyticsEvent;
-      sendCommerceEvent: (
-        event: PreparedAnalyticsEvent,
-        properties?: Record<string, unknown>,
-      ) => string | null;
+      recordAddToCart: (input: unknown) => string | null;
     };
     request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
   };
   mutable.analytics = {
-    prepareCommerceEvent: () => prepared,
-    sendCommerceEvent: (event, properties = {}) => {
-      projections.push({ event, properties });
-      return event.event_id;
+    recordAddToCart: (input) => {
+      projection = input;
+      return null;
     },
   };
   mutable.request = async (path, options = {}) => {
@@ -587,25 +674,18 @@ test("commerce resources record one event after the mutation succeeds", async ()
   await client.cart.addLine("cart-1", "variant-1", 2);
 
   assert.deepEqual(requests[1]?.body, { quantity: 2 });
-  assert.equal(projections[0]?.event.event_id, prepared.event_id);
-  assert.equal(projections[0]?.properties.product_id, "product-1");
-  assert.deepEqual(projections[0]?.properties.items, [
-    {
-      product_id: "product-1",
-      product_variant_id: "variant-1",
-      quantity: 2,
-      price_minor: 1_000,
-    },
-  ]);
+  assert.deepEqual(projection, {
+    cartId: "cart-1",
+    productId: "product-1",
+    productVariantId: "variant-1",
+    quantity: 2,
+    priceMinor: 1_000,
+    valueMinor: 2_000,
+    currency: "USD",
+  });
 });
 
 test("commerce resources do not project a browser event when the mutation fails", async () => {
-  const prepared: PreparedAnalyticsEvent = {
-    event_id: "66666666-6666-4666-8666-666666666666",
-    event_name: "add_to_cart",
-    occurred_at: "2026-08-16T00:00:00.000Z",
-    properties: {},
-  };
   let projections = 0;
   const client = createStorefrontClient({
     publishableKey: "public_test",
@@ -616,16 +696,14 @@ test("commerce resources do not project a browser event when the mutation fails"
   });
   const mutable = client as unknown as {
     analytics: {
-      prepareCommerceEvent: () => PreparedAnalyticsEvent;
-      sendCommerceEvent: () => string | null;
+      recordAddToCart: () => string | null;
     };
     request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
   };
   mutable.analytics = {
-    prepareCommerceEvent: () => prepared,
-    sendCommerceEvent: () => {
+    recordAddToCart: () => {
       projections += 1;
-      return prepared.event_id;
+      return null;
     },
   };
   mutable.request = async (path) => {
@@ -643,16 +721,8 @@ test("commerce resources do not project a browser event when the mutation fails"
 });
 
 test("checkout records InitiateCheckout after the session is created", async () => {
-  const prepared: PreparedAnalyticsEvent = {
-    event_id: "33333333-3333-4333-8333-333333333333",
-    event_name: "initiate_checkout",
-    occurred_at: "2026-08-16T00:00:00.000Z",
-    properties: { session_id: "44444444-4444-4444-8444-444444444444" },
-  };
   let requestBody: unknown;
-  let projection: PreparedAnalyticsEvent | undefined;
-  let preparedProperties: Record<string, unknown> | undefined;
-  let sentProperties: Record<string, unknown> | undefined;
+  let projection: unknown;
   const client = createStorefrontClient({
     publishableKey: "public_test",
     storage: null,
@@ -662,27 +732,14 @@ test("checkout records InitiateCheckout after the session is created", async () 
   });
   const mutable = client as unknown as {
     analytics: {
-      prepareCommerceEvent: (
-        eventName: string,
-        properties?: Record<string, unknown>,
-        eventId?: string,
-      ) => PreparedAnalyticsEvent;
-      sendCommerceEvent: (
-        event: PreparedAnalyticsEvent,
-        properties?: Record<string, unknown>,
-      ) => string | null;
+      recordInitiateCheckout: (input: unknown) => string | null;
     };
     request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
   };
   mutable.analytics = {
-    prepareCommerceEvent: (_eventName, properties = {}) => {
-      preparedProperties = properties;
-      return prepared;
-    },
-    sendCommerceEvent: (event, properties = {}) => {
-      projection = event;
-      sentProperties = properties;
-      return event.event_id;
+    recordInitiateCheckout: (input) => {
+      projection = input;
+      return null;
     },
   };
   mutable.request = async (path, options = {}) => {
@@ -690,6 +747,7 @@ test("checkout records InitiateCheckout after the session is created", async () 
       return {
         data: {
           id: "cart-1",
+          version: 4,
           currency: "USD",
           subtotal_amount_minor: 2_000,
           lines: [
@@ -707,36 +765,27 @@ test("checkout records InitiateCheckout after the session is created", async () 
     return { data: { order_id: "55555555-5555-4555-8555-555555555555" } };
   };
 
-  await client.payments.createEmbeddedCheckout(
-    "cart-1",
-    {
-      payment_provider: "stripe",
-      return_url: "https://shop.example.com/checkout/success",
-    },
-    prepared.event_id,
-  );
-
-  assert.deepEqual(preparedProperties, {
-    cart_id: "cart-1",
-    value_minor: 2_000,
-    currency: "USD",
-    items: [
-      {
-        product_id: "product-1",
-        product_variant_id: "variant-1",
-        quantity: 2,
-        price_minor: 1_000,
-      },
-    ],
+  await client.payments.createEmbeddedCheckout("cart-1", {
+    returnUrl: "https://shop.example.com/checkout/success",
   });
+
   assert.deepEqual(requestBody, {
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
-  assert.equal(projection?.event_id, prepared.event_id);
-  assert.deepEqual(sentProperties, {
-    cart_id: "cart-1",
-    order_id: "55555555-5555-4555-8555-555555555555",
+  assert.deepEqual(projection, {
+    cartId: "cart-1",
+    orderId: "55555555-5555-4555-8555-555555555555",
+    valueMinor: 2_000,
+    currency: "USD",
+    items: [
+      {
+        productId: "product-1",
+        productVariantId: "variant-1",
+        quantity: 2,
+        priceMinor: 1_000,
+      },
+    ],
   });
 });
 

@@ -1,4 +1,7 @@
-import { ChaosStorefrontAnalytics, type AnalyticsOptions } from "./analytics.js";
+import {
+  ChaosStorefrontAnalytics,
+  type AnalyticsOptions,
+} from "./analytics.js";
 import { ChaosApiError, throwForResponse } from "./errors.js";
 import { CartResource } from "./resources/cart.js";
 import { CatalogResource } from "./resources/catalog.js";
@@ -6,7 +9,12 @@ import { OrdersResource } from "./resources/orders.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { ReviewsResource } from "./resources/reviews.js";
 import { ShopperSessionResource } from "./resources/shopper-session.js";
-import type { ShopperSession } from "./types.js";
+import type {
+  AnalyticsCollectionRequest,
+  AnalyticsCollectionResult,
+  DataEnvelope,
+  ShopperSession,
+} from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
 
@@ -35,9 +43,15 @@ export interface ClientOptions {
    * publishableKey/fetch/randomUUID (inherited from this client). Pass
    * `analytics: false` to skip constructing it entirely.
    */
-  analytics?: Omit<AnalyticsOptions, "publishableKey" | "fetch" | "randomUUID" | "getShopperToken"> | false;
+  analytics?:
+    | Omit<
+        AnalyticsOptions,
+        "publishableKey" | "fetch" | "randomUUID" | "getShopperToken"
+      >
+    | false;
 }
 
+/** @internal */
 export interface RequestOptions<Query extends object = Record<string, never>> {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Query;
@@ -56,7 +70,10 @@ export class ChaosStorefrontClient {
   readonly publishableKey: string;
   readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  private readonly storage: Pick<
+    Storage,
+    "getItem" | "setItem" | "removeItem"
+  > | null;
   private readonly shopperTokenStorageKey: string;
   private readonly autoAcquireShopperToken: boolean;
   private readonly retryInvalidShopperToken: boolean;
@@ -79,19 +96,32 @@ export class ChaosStorefrontClient {
     this.publishableKey = options.publishableKey;
     this.baseUrl = (options.baseUrl ?? "/storefront/v1").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
-    this.storage = options.storage !== undefined ? options.storage : (globalThis.localStorage ?? null);
-    this.shopperTokenStorageKey = scopedShopperTokenKey(this.baseUrl, this.publishableKey);
+    this.storage =
+      options.storage !== undefined
+        ? options.storage
+        : (globalThis.localStorage ?? null);
+    this.shopperTokenStorageKey = scopedShopperTokenKey(
+      this.baseUrl,
+      this.publishableKey,
+    );
     this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
     this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
-    this.randomUUID = options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+    this.randomUUID =
+      options.randomUUID ??
+      globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     if (!this.fetchImpl) {
-      throw new TypeError("fetch is required (pass options.fetch in environments without a global fetch)");
+      throw new TypeError(
+        "fetch is required (pass options.fetch in environments without a global fetch)",
+      );
     }
     if (!this.randomUUID) {
-      throw new TypeError("randomUUID is required (pass options.randomUUID in environments without globalThis.crypto)");
+      throw new TypeError(
+        "randomUUID is required (pass options.randomUUID in environments without globalThis.crypto)",
+      );
     }
     try {
-      this.shopperTokenCache = this.storage?.getItem(this.shopperTokenStorageKey) ?? null;
+      this.shopperTokenCache =
+        this.storage?.getItem(this.shopperTokenStorageKey) ?? null;
     } catch {
       this.shopperTokenCache = null;
     }
@@ -102,13 +132,15 @@ export class ChaosStorefrontClient {
     this.orders = new OrdersResource(this);
     this.payments = new PaymentsResource(this);
     this.reviews = new ReviewsResource(this);
-    const analyticsOptions = options.analytics === false ? undefined : options.analytics;
+    const analyticsOptions =
+      options.analytics === false ? undefined : options.analytics;
     const analyticsDocument = analyticsOptions?.document ?? globalThis.document;
     if (options.analytics !== false && analyticsDocument) {
       this.analytics = new ChaosStorefrontAnalytics({
         ...analyticsOptions,
         document: analyticsDocument,
-        endpoint: analyticsOptions?.endpoint ?? `${this.baseUrl}/analytics/events`,
+        endpoint:
+          analyticsOptions?.endpoint ?? `${this.baseUrl}/analytics/events`,
         publishableKey: this.publishableKey,
         fetch: this.fetchImpl,
         randomUUID: this.randomUUID,
@@ -161,19 +193,72 @@ export class ChaosStorefrontClient {
   }
 
   private async createShopperSession(): Promise<string> {
-    const envelope = await this.request<{ data: ShopperSession }>("/shopper/sessions", { method: "POST" });
+    const envelope = await this.request<{ data: ShopperSession }>(
+      "/shopper/sessions",
+      { method: "POST" },
+    );
     this.setShopperToken(envelope.data.shopper_token);
     return envelope.data.shopper_token;
   }
 
+  /** @internal */
   async request<T, Query extends object = Record<string, never>>(
     path: string,
     options: RequestOptions<Query> = {},
   ): Promise<T> {
-    return this.requestWithShopperTokenRetry(path, options, this.retryInvalidShopperToken);
+    return this.requestWithShopperTokenRetry(
+      path,
+      options,
+      this.retryInvalidShopperToken,
+    );
   }
 
-  private async requestWithShopperTokenRetry<T, Query extends object = Record<string, never>>(
+  /**
+   * Sends a browser analytics batch through the authenticated Storefront API.
+   * Analytics is allowed to recover a stale anonymous shopper identity because
+   * event collection is append-only and does not own cart or order state.
+   */
+  async collectAnalytics(
+    payload: AnalyticsCollectionRequest,
+  ): Promise<DataEnvelope<AnalyticsCollectionResult>> {
+    if (!payload || !Array.isArray(payload.events)) {
+      throw new TypeError("analytics payload must contain an events array");
+    }
+    if (!this.getShopperToken()) await this.acquireShopperToken();
+
+    try {
+      return await this.request<DataEnvelope<AnalyticsCollectionResult>>(
+        "/analytics/events",
+        {
+          method: "POST",
+          body: payload,
+          requiresShopperToken: true,
+        },
+      );
+    } catch (error) {
+      if (
+        !(error instanceof ChaosApiError) ||
+        (error.status !== 401 && error.status !== 403)
+      ) {
+        throw error;
+      }
+      this.setShopperToken(null);
+      await this.acquireShopperToken();
+      return this.request<DataEnvelope<AnalyticsCollectionResult>>(
+        "/analytics/events",
+        {
+          method: "POST",
+          body: payload,
+          requiresShopperToken: true,
+        },
+      );
+    }
+  }
+
+  private async requestWithShopperTokenRetry<
+    T,
+    Query extends object = Record<string, never>,
+  >(
     path: string,
     options: RequestOptions<Query>,
     retryShopperToken: boolean,
@@ -219,7 +304,10 @@ export class ChaosStorefrontClient {
     if (!response.ok) {
       await throwForResponse(response);
     }
-    if (response.status === 204 || response.headers.get("content-length") === "0") {
+    if (
+      response.status === 204 ||
+      response.headers.get("content-length") === "0"
+    ) {
       return undefined as T;
     }
     return (await response.json()) as T;
@@ -235,7 +323,10 @@ export class ChaosStorefrontClient {
     const queryString = search.toString();
 
     if (isAbsolute || origin) {
-      const url = new URL(`${this.baseUrl}${path}`, isAbsolute ? undefined : origin);
+      const url = new URL(
+        `${this.baseUrl}${path}`,
+        isAbsolute ? undefined : origin,
+      );
       url.search = queryString;
       return url.toString();
     }
@@ -243,15 +334,22 @@ export class ChaosStorefrontClient {
     // No absolute baseUrl and no global `location` (e.g. Node/SSR without an
     // explicit origin): fall back to a path-only URL string, which fetch
     // implementations resolve against their own base.
-    return queryString ? `${this.baseUrl}${path}?${queryString}` : `${this.baseUrl}${path}`;
+    return queryString
+      ? `${this.baseUrl}${path}?${queryString}`
+      : `${this.baseUrl}${path}`;
   }
 }
 
-export function createStorefrontClient(options: ClientOptions): ChaosStorefrontClient {
+export function createStorefrontClient(
+  options: ClientOptions,
+): ChaosStorefrontClient {
   return new ChaosStorefrontClient(options);
 }
 
-function scopedShopperTokenKey(baseUrl: string, publishableKey: string): string {
+function scopedShopperTokenKey(
+  baseUrl: string,
+  publishableKey: string,
+): string {
   let hash = 2_166_136_261;
   const input = `${baseUrl}\0${publishableKey}`;
   for (let index = 0; index < input.length; index += 1) {

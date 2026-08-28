@@ -58,22 +58,22 @@ const { data: activeCart } = await chaos.cart.getOrCreate(cart.id);
 // The return URL must be HTTPS outside local loopback development.
 const { data: session } = await chaos.payments.createEmbeddedCheckout(cart.id, {
   email: "shopper@example.com",
-  payment_provider: "stripe",
-  return_url: "https://shop.example.com/checkout/success",
+  returnUrl: "https://shop.example.com/checkout/success",
 });
-// The optional third argument is the UUID Idempotency-Key. Reuse the same key
-// when retrying after a timeout so the server cannot create a duplicate Order.
+// The SDK derives and sends a stable internal idempotency key from the current
+// cart snapshot. Cart mutations automatically move the request to a new key;
+// callers never need to construct or persist one.
 const action = session.client_action;
 // Pass action.client_token to Stripe's EmbeddedCheckoutProvider and initialize
 // Stripe with loadStripe(action.public_key). Direct Stripe accounts do not use
 // a Stripe-Account header or an account_reference field.
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
-// browser SDK. Cart and checkout resources prepare attribution before their
-// business request and, only after success, send the commerce event through
-// the common /analytics/events endpoint. The SDK projects the same event ID to
-// browser providers. Purchase remains a payment-confirmation event on the
-// server; the SDK only projects the confirmed order to browser providers.
+// browser SDK. Cart and checkout resources record their commerce events only
+// after the matching operation succeeds. The SDK owns canonical event fields,
+// event IDs, attribution, and the /analytics/events transport. Purchase
+// remains a payment-confirmation event on the server; the SDK only projects
+// the confirmed order to browser providers.
 // After the server confirms payment, project Purchase with Order data:
 chaos.analytics?.purchase({
   orderId: order.id,
@@ -110,14 +110,13 @@ Commerce item properties use `product_id` and `product_variant_id`. Multi-item
 events repeat these fields inside each `items[]` entry; single-item events also
 expose the corresponding IDs at the top level. The Meta adapter uses the
 variant ID as the Meta content ID when present, otherwise the product ID.
-The browser prepares one commerce envelope containing the event ID, timestamp,
-session, traffic, UTM values, and Meta browser context (`fbc`/`fbp`) before the
-cart or checkout request. The business request does not contain an analytics
-field. After success, the SDK merges canonical values from the response and
-sends the envelope through `/analytics/events`; the endpoint records it in the
-same ledger used by all browser observations. The SDK projects the same event
-ID to browser providers only after success, and persists the first-party event
-for retry, so Meta can deduplicate the Pixel and CAPI copies.
+The SDK creates one commerce envelope containing the event ID, timestamp,
+session, traffic, UTM values, and Meta browser context (`fbc`/`fbp`) after the
+cart or checkout request succeeds. The business request does not contain an
+analytics field. The SDK sends the envelope through `/analytics/events`; the
+endpoint records it in the same ledger used by all browser observations. The
+SDK projects the event ID to browser providers after success and persists the
+first-party event for retry, so Meta can deduplicate the Pixel and CAPI copies.
 The API normalizes the session UUID into the analytics event's nullable
 `session_id` column and the UTM values into nullable `utm_*` columns. Use the
 shopper ID and order/cart IDs as the durable association keys. First-touch and
@@ -163,7 +162,9 @@ tracking token in the URL fragment. The page reads the fragment locally and
 submits it in the request body; the token is never placed in a query string:
 
 ```ts
-const trackingToken = new URLSearchParams(window.location.hash.slice(1)).get("token");
+const trackingToken = new URLSearchParams(window.location.hash.slice(1)).get(
+  "token",
+);
 if (!trackingToken) throw new Error("missing order tracking token");
 const tracked = await chaos.orders.getTrackedOrder(trackingToken);
 console.log(tracked.order_number, tracked.shipping_status);

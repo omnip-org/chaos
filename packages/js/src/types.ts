@@ -293,17 +293,20 @@ export interface TrackedOrder {
   updated_at: string;
 }
 
-export interface CreateEmbeddedCheckoutRequest {
+/**
+ * Storefront-facing options for an embedded checkout. The SDK maps these
+ * values to the provider-specific API request and owns the request's
+ * idempotency boundary.
+ */
+export interface EmbeddedCheckoutOptions {
   /**
    * Optional: omit to let Stripe Embedded Checkout collect the shopper's
    * email directly. Pass it only if the storefront already has a verified
    * value to prefill.
    */
   email?: string;
-  /** Supported payment provider selected for this checkout. */
-  payment_provider: "stripe";
   /** Stripe appends the order ID to this URL before redirecting the shopper. */
-  return_url: string;
+  returnUrl: string;
 }
 
 export interface EmbeddedCheckoutSession {
@@ -379,13 +382,12 @@ export type BrowserAnalyticsEventName =
   | (string & {});
 
 export type ClientCommerceAnalyticsEventName =
-  | "add_to_cart"
-  | "initiate_checkout";
+  "add_to_cart" | "initiate_checkout";
 
 /**
- * A commerce event prepared before a business request and queued through the
- * common analytics endpoint only after that request succeeds. The event ID and
- * attribution remain stable while the SDK adds canonical response values.
+ * Internal commerce envelope used after a business request succeeds. The
+ * event ID and attribution are created and finalized inside the SDK.
+ * @internal
  */
 export interface PreparedAnalyticsEvent {
   event_id: UUID;
@@ -402,11 +404,37 @@ export interface AnalyticsPurchaseItem {
   priceMinor: number;
 }
 
+/** Canonical item shape shared by browser commerce events. */
+export type AnalyticsCommerceItem = AnalyticsPurchaseItem;
+
+export interface AddToCartAnalyticsInput {
+  cartId?: UUID;
+  productId: UUID;
+  productVariantId: UUID;
+  quantity: number;
+  priceMinor: number;
+  valueMinor: number;
+  currency: CurrencyCode;
+}
+
+export interface InitiateCheckoutAnalyticsInput {
+  cartId: UUID;
+  orderId: UUID;
+  valueMinor: number;
+  currency: CurrencyCode;
+  items: AnalyticsCommerceItem[];
+}
+
 export interface BrowserAnalyticsEvent {
   event_id: UUID;
   event_name: BrowserAnalyticsEventName;
   occurred_at: string;
   properties: Record<string, unknown>;
+}
+
+/** Payload accepted by the first-party analytics collection endpoint. */
+export interface AnalyticsCollectionRequest {
+  events: BrowserAnalyticsEvent[];
 }
 
 export interface AnalyticsCollectionResult {
