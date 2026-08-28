@@ -304,6 +304,8 @@ test("keeps history observation active when one of multiple analytics clients st
     getShopperToken: () => "shopper-token",
     document: first.document as unknown as Document,
     window: first.window as unknown as Window & typeof globalThis,
+    now: () => 0,
+    monotonicNow: () => 0,
     randomUUID: () => "00000000-0000-4000-8000-000000000099",
     setInterval: (() => 1) as unknown as typeof setInterval,
     clearInterval: (() => {}) as unknown as typeof clearInterval,
