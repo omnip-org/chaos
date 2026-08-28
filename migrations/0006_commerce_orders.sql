@@ -174,14 +174,14 @@ CREATE TABLE commerce.refunds (
     created_at                    TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                    TIMESTAMPTZ            NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT refunds_store_id_id_key                  UNIQUE (store_id, id),
-    CONSTRAINT refunds_store_id_order_currency_fkey     FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders (store_id, id, currency),
+    CONSTRAINT refunds_store_id_id_key                        UNIQUE (store_id, id),
+    CONSTRAINT refunds_store_id_order_currency_fkey           FOREIGN KEY (store_id, order_id, currency) REFERENCES commerce.orders (store_id, id, currency),
     CONSTRAINT refunds_store_id_payment_provider_account_fkey FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT refunds_amount_positive_check            CHECK (amount_minor > 0),
-    CONSTRAINT refunds_currency_format_check            CHECK (currency ~ '^[A-Z]{3}$'),
-    CONSTRAINT refunds_payment_provider_reference_check CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT refunds_failure_code_check               CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
-    CONSTRAINT refunds_failure_code_shape_check         CHECK (status = 'failed' OR failure_code IS NULL)
+    CONSTRAINT refunds_amount_positive_check                  CHECK (amount_minor > 0),
+    CONSTRAINT refunds_currency_format_check                  CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT refunds_payment_provider_reference_check       CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
+    CONSTRAINT refunds_failure_code_check                     CHECK (failure_code IS NULL OR length(trim(failure_code)) BETWEEN 1 AND 2000),
+    CONSTRAINT refunds_failure_code_shape_check               CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
 CREATE TABLE commerce.fulfillments (
@@ -198,12 +198,12 @@ CREATE TABLE commerce.fulfillments (
     created_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at                   TIMESTAMPTZ                 NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT fulfillments_store_id_id_key                    UNIQUE (store_id, id),
-    CONSTRAINT fulfillments_store_id_order_fkey                FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
+    CONSTRAINT fulfillments_store_id_id_key                         UNIQUE (store_id, id),
+    CONSTRAINT fulfillments_store_id_order_fkey                     FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
     CONSTRAINT fulfillments_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT fulfillments_tracking_number_check              CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
-    CONSTRAINT fulfillments_tracking_url_check                 CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
-    CONSTRAINT fulfillments_shape_check                        CHECK (
+    CONSTRAINT fulfillments_tracking_number_check                   CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
+    CONSTRAINT fulfillments_tracking_url_check                      CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
+    CONSTRAINT fulfillments_shape_check                             CHECK (
         (status = 'awaiting_pickup' AND shipped_at IS NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'shipped' AND shipped_at IS NOT NULL AND delivered_at IS NULL AND cancelled_at IS NULL) OR
         (status = 'delivered' AND shipped_at IS NOT NULL AND delivered_at IS NOT NULL AND cancelled_at IS NULL) OR
@@ -426,10 +426,7 @@ GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos
 GRANT EXECUTE ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;

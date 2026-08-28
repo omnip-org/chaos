@@ -23,7 +23,7 @@ CREATE TABLE integration.analytics_events (
     CONSTRAINT analytics_events_received_id_pkey               PRIMARY KEY (received_at, id),
     CONSTRAINT analytics_events_store_received_event_key       UNIQUE (store_id, received_at, event_id),
     CONSTRAINT analytics_events_store_received_id_key          UNIQUE (store_id, received_at, id),
-    CONSTRAINT analytics_events_event_id_check                  CHECK (event_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CONSTRAINT analytics_events_event_id_check                 CHECK (event_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT analytics_events_event_name_check               CHECK (event_name ~ '^[a-z][a-z0-9_]{0,63}$'),
     CONSTRAINT analytics_events_event_source_check             CHECK (event_source IN ('browser', 'server')),
     CONSTRAINT analytics_events_properties_check               CHECK (jsonb_typeof(properties) = 'object' AND octet_length(properties::text) <= 32768),
@@ -53,81 +53,72 @@ CREATE INDEX analytics_events_utm_content_idx ON integration.analytics_events (s
 CREATE INDEX analytics_events_checkout_order_idx ON integration.analytics_events (store_id, (properties->>'order_id'), occurred_at DESC, received_at DESC, id DESC) WHERE event_name = 'initiate_checkout' AND event_source = 'browser' AND properties ? 'order_id';
 
 CREATE TABLE integration.analytics_event_keys (
-    store_id                    UUID        NOT NULL,
-    event_name                  TEXT       NOT NULL,
-    event_id                    UUID       NOT NULL,
-    event_received_at           TIMESTAMPTZ NOT NULL,
-    analytics_event_id          UUID       NOT NULL,
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    store_id                    UUID          NOT NULL,
+    event_name                  TEXT          NOT NULL,
+    event_id                    UUID          NOT NULL,
+    event_received_at           TIMESTAMPTZ   NOT NULL,
+    analytics_event_id          UUID          NOT NULL,
+    created_at                  TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT analytics_event_keys_pkey                         PRIMARY KEY (store_id, event_name, event_id),
-    CONSTRAINT analytics_event_keys_event_id_check                CHECK (event_id <> '00000000-0000-0000-0000-000000000000'::uuid),
-    CONSTRAINT analytics_event_keys_event_name_check              CHECK (event_name ~ '^[a-z][a-z0-9_]{0,63}$'),
-    CONSTRAINT analytics_event_keys_store_id_fkey                 FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT analytics_event_keys_event_fkey                    FOREIGN KEY (store_id, event_received_at, analytics_event_id)
-        REFERENCES integration.analytics_events (store_id, received_at, id)
-        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+    CONSTRAINT analytics_event_keys_pkey              PRIMARY KEY (store_id, event_name, event_id),
+    CONSTRAINT analytics_event_keys_event_id_check    CHECK (event_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CONSTRAINT analytics_event_keys_event_name_check  CHECK (event_name ~ '^[a-z][a-z0-9_]{0,63}$'),
+    CONSTRAINT analytics_event_keys_store_id_fkey     FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT analytics_event_keys_event_fkey        FOREIGN KEY (store_id, event_received_at, analytics_event_id) REFERENCES integration.analytics_events (store_id, received_at, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE INDEX analytics_event_keys_event_idx
-    ON integration.analytics_event_keys (store_id, event_received_at, analytics_event_id);
+CREATE INDEX analytics_event_keys_event_idx ON integration.analytics_event_keys (store_id, event_received_at, analytics_event_id);
 
 CREATE TABLE integration.analytics_destinations (
-    id                          UUID        NOT NULL PRIMARY KEY,
-    store_id                    UUID        NOT NULL,
-    provider                    TEXT        NOT NULL,
-    external_account_reference  TEXT        NOT NULL,
-    credential_secret_reference TEXT        NOT NULL,
-    configuration               JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    enabled                     BOOLEAN     NOT NULL,
-    created_by                  UUID        NOT NULL,
-    created_at                  TIMESTAMPTZ NOT NULL,
-    updated_at                  TIMESTAMPTZ NOT NULL,
-    -- At activation this is a synthetic UUIDv7 boundary; afterwards it is the
-    -- last event watermark consumed by the scheduler.
-    schedule_cursor_received_at TIMESTAMPTZ NOT NULL,
-    schedule_cursor_event_id    UUID        NOT NULL,
+    id                          UUID            NOT NULL PRIMARY KEY,
+    store_id                    UUID            NOT NULL,
+    provider                    TEXT            NOT NULL,
+    external_account_reference  TEXT            NOT NULL,
+    credential_secret_reference TEXT            NOT NULL,
+    configuration               JSONB           NOT NULL DEFAULT '{}'::jsonb,
+    enabled                     BOOLEAN         NOT NULL,
+    created_by                  UUID            NOT NULL,
+    created_at                  TIMESTAMPTZ     NOT NULL,
+    updated_at                  TIMESTAMPTZ     NOT NULL,
+    schedule_cursor_received_at TIMESTAMPTZ     NOT NULL,
+    schedule_cursor_event_id    UUID            NOT NULL,
 
-    CONSTRAINT analytics_destinations_store_id_id_key                UNIQUE (store_id, id),
-    CONSTRAINT analytics_destinations_store_id_provider_key          UNIQUE (store_id, provider),
-    CONSTRAINT analytics_destinations_store_id_fkey                  FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT analytics_destinations_provider_check                 CHECK (provider ~ '^[a-z][a-z0-9_]{1,31}$'),
-    CONSTRAINT analytics_destinations_account_check                  CHECK (octet_length(external_account_reference) BETWEEN 1 AND 255),
-    CONSTRAINT analytics_destinations_secret_check                   CHECK (credential_secret_reference ~ '^(enc://[A-Za-z0-9_-]+|env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96})$' AND octet_length(credential_secret_reference) <= 518),
-    CONSTRAINT analytics_destinations_configuration_check            CHECK (jsonb_typeof(configuration) = 'object' AND octet_length(configuration::text) <= 16384)
+    CONSTRAINT analytics_destinations_store_id_id_key        UNIQUE (store_id, id),
+    CONSTRAINT analytics_destinations_store_id_provider_key  UNIQUE (store_id, provider),
+    CONSTRAINT analytics_destinations_store_id_fkey          FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT analytics_destinations_provider_check         CHECK (provider ~ '^[a-z][a-z0-9_]{1,31}$'),
+    CONSTRAINT analytics_destinations_account_check          CHECK (octet_length(external_account_reference) BETWEEN 1 AND 255),
+    CONSTRAINT analytics_destinations_secret_check           CHECK (credential_secret_reference ~ '^(enc://[A-Za-z0-9_-]+|env://CHAOS_ANALYTICS_SECRET_[A-Z0-9_]{1,96})$' AND octet_length(credential_secret_reference) <= 518),
+    CONSTRAINT analytics_destinations_configuration_check    CHECK (jsonb_typeof(configuration) = 'object' AND octet_length(configuration::text) <= 16384)
 );
 
 CREATE TABLE integration.analytics_deliveries (
-    id                 UUID                        NOT NULL PRIMARY KEY,
-    store_id           UUID                        NOT NULL,
-    destination_id     UUID                        NOT NULL,
-    analytics_event_received_at TIMESTAMPTZ         NOT NULL,
-    analytics_event_id UUID                        NOT NULL,
-    delivery_status    integration.delivery_status NOT NULL DEFAULT 'pending',
-    pgmq_message_id    BIGINT                      UNIQUE,
-    delivered_at       TIMESTAMPTZ,
-    provider_reference TEXT,
-    last_error         TEXT,
-    created_at         TIMESTAMPTZ                 NOT NULL,
-    updated_at         TIMESTAMPTZ                 NOT NULL,
+    id                          UUID                          NOT NULL PRIMARY KEY,
+    store_id                    UUID                          NOT NULL,
+    destination_id              UUID                          NOT NULL,
+    analytics_event_received_at TIMESTAMPTZ                   NOT NULL,
+    analytics_event_id          UUID                          NOT NULL,
+    delivery_status             integration.delivery_status   NOT NULL DEFAULT 'pending',
+    pgmq_message_id             BIGINT                        UNIQUE,
+    delivered_at                TIMESTAMPTZ,
+    provider_reference          TEXT,
+    last_error                  TEXT,
+    created_at                  TIMESTAMPTZ                   NOT NULL,
+    updated_at                  TIMESTAMPTZ                   NOT NULL,
 
     CONSTRAINT analytics_deliveries_store_id_id_key                   UNIQUE (store_id, id),
     CONSTRAINT analytics_deliveries_store_id_destination_event_key    UNIQUE (store_id, destination_id, analytics_event_received_at, analytics_event_id),
     CONSTRAINT analytics_deliveries_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
     CONSTRAINT analytics_deliveries_store_id_destination_fkey         FOREIGN KEY (store_id, destination_id) REFERENCES integration.analytics_destinations (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT analytics_deliveries_store_event_fkey                   FOREIGN KEY (store_id, analytics_event_received_at, analytics_event_id)
-        REFERENCES integration.analytics_events (store_id, received_at, id) ON DELETE CASCADE,
+    CONSTRAINT analytics_deliveries_store_event_fkey                  FOREIGN KEY (store_id, analytics_event_received_at, analytics_event_id) REFERENCES integration.analytics_events (store_id, received_at, id) ON DELETE CASCADE,
     CONSTRAINT analytics_deliveries_completion_check                  CHECK ((delivery_status = 'processed' AND delivered_at IS NOT NULL) OR (delivery_status <> 'processed' AND delivered_at IS NULL)),
     CONSTRAINT analytics_deliveries_reference_check                   CHECK (provider_reference IS NULL OR octet_length(provider_reference) <= 512),
     CONSTRAINT analytics_deliveries_error_check                       CHECK (last_error IS NULL OR octet_length(last_error) <= 2048)
 );
 
 CREATE INDEX analytics_deliveries_claim_idx ON integration.analytics_deliveries (created_at, id) WHERE delivery_status = 'pending';
-CREATE INDEX analytics_deliveries_event_idx
-    ON integration.analytics_deliveries (store_id, analytics_event_received_at, analytics_event_id, destination_id, delivery_status);
-CREATE INDEX analytics_destinations_schedule_idx
-    ON integration.analytics_destinations (store_id, id)
-    WHERE enabled;
+CREATE INDEX analytics_deliveries_event_idx ON integration.analytics_deliveries (store_id, analytics_event_received_at, analytics_event_id, destination_id, delivery_status);
+CREATE INDEX analytics_destinations_schedule_idx ON integration.analytics_destinations (store_id, id) WHERE enabled;
 
 CREATE FUNCTION integration.configure_analytics_destination (
     p_store_id                       UUID,
@@ -168,10 +159,6 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
-    -- Destination activation is forward-only. Capture the current event
-    -- watermark so configuring or re-enabling a destination does not replay
-    -- retained history. An explicit backfill operation can opt into replay
-    -- later with its own rate limit and audit trail.
     RETURN QUERY
     INSERT INTO integration.analytics_destinations (
         id,
