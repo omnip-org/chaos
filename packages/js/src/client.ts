@@ -17,12 +17,16 @@ import type {
 } from "./types.js";
 
 const SHOPPER_TOKEN_STORAGE_PREFIX = "chaos.storefront.shopper_token";
+const CLOUDFLARE_CLIENT_IP_HEADER = "CF-Connecting-IP";
+const MAX_CLIENT_IP_LENGTH = 128;
 
 export interface ClientOptions {
   publishableKey: string;
   /** Storefront API origin + prefix, e.g. "https://shop.example.com/storefront/v1". Defaults to same-origin "/storefront/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
+  /** Incoming request used to enrich server-side analytics with the edge-observed client IP. */
+  request?: Pick<Request, "headers">;
   /** Where the shopper token is persisted between requests. Defaults to window.localStorage when available. */
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
   randomUUID?: () => string;
@@ -77,6 +81,9 @@ export class ChaosStorefrontClient {
   private readonly shopperTokenStorageKey: string;
   private readonly autoAcquireShopperToken: boolean;
   private readonly retryInvalidShopperToken: boolean;
+  private readonly analyticsRequest:
+    | Pick<Request, "headers">
+    | undefined;
   readonly randomUUID: () => string;
   private shopperTokenCache: string | null = null;
   private pendingShopperSession: Promise<string> | null = null;
@@ -106,6 +113,7 @@ export class ChaosStorefrontClient {
     );
     this.autoAcquireShopperToken = options.autoAcquireShopperToken ?? true;
     this.retryInvalidShopperToken = options.retryInvalidShopperToken ?? false;
+    this.analyticsRequest = options.request;
     this.randomUUID =
       options.randomUUID ??
       globalThis.crypto?.randomUUID.bind(globalThis.crypto);
@@ -214,9 +222,11 @@ export class ChaosStorefrontClient {
   }
 
   /**
-   * Sends a browser analytics batch through the authenticated Storefront API.
+   * Sends an analytics batch through the authenticated Storefront API.
    * Analytics is allowed to recover a stale anonymous shopper identity because
    * event collection is append-only and does not own cart or order state.
+   * A request-scoped server client also carries the edge-observed client IP in
+   * the event metadata before forwarding the batch.
    */
   async collectAnalytics(
     payload: AnalyticsCollectionRequest,
@@ -224,6 +234,10 @@ export class ChaosStorefrontClient {
     if (!payload || !Array.isArray(payload.events)) {
       throw new TypeError("analytics payload must contain an events array");
     }
+    const analyticsPayload = withEdgeClientIp(
+      payload,
+      this.analyticsRequest,
+    );
     if (!this.getShopperToken()) await this.acquireShopperToken();
 
     try {
@@ -231,7 +245,7 @@ export class ChaosStorefrontClient {
         "/analytics/events",
         {
           method: "POST",
-          body: payload,
+          body: analyticsPayload,
           requiresShopperToken: true,
         },
       );
@@ -248,7 +262,7 @@ export class ChaosStorefrontClient {
         "/analytics/events",
         {
           method: "POST",
-          body: payload,
+          body: analyticsPayload,
           requiresShopperToken: true,
         },
       );
@@ -357,4 +371,36 @@ function scopedShopperTokenKey(
     hash = Math.imul(hash, 16_777_619);
   }
   return `${SHOPPER_TOKEN_STORAGE_PREFIX}.${(hash >>> 0).toString(36)}`;
+}
+
+function withEdgeClientIp(
+  payload: AnalyticsCollectionRequest,
+  request: Pick<Request, "headers"> | undefined,
+): AnalyticsCollectionRequest {
+  const clientIpAddress = request?.headers
+    .get(CLOUDFLARE_CLIENT_IP_HEADER)
+    ?.trim();
+  if (!clientIpAddress || clientIpAddress.length > MAX_CLIENT_IP_LENGTH) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    events: payload.events.map((event) => ({
+      ...event,
+      properties: {
+        ...event.properties,
+        _meta: {
+          ...(isRecord(event.properties._meta)
+            ? event.properties._meta
+            : {}),
+          client_ip_address: clientIpAddress,
+        },
+      },
+    })),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -135,12 +135,17 @@ same event ID used by CAPI.
 A confirmed Purchase uses the Order ID in both paths and is projected only once
 per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration
 and store-defined behavior events remain first-party ledger facts
-and are not sent to Meta. The collector records the page URL without its
+and are not sent to Meta. PageView remains in the first-party ledger and may
+be sent by the browser Pixel, but the server-side Meta CAPI adapter filters it
+for now. The collector records the page URL without its
 fragment, plus browser matching context (`fbc`, `fbp`, and user-agent),
 alongside the event; when a
 `fbclid` is present, the SDK also keeps the generated `_fbc` as a bounded
-first-party cookie. The API adds request cookies and proxy-provided client IP
-when available. GA4 automatic
+first-party cookie. The API may use matching request cookies as a fallback for
+missing `fbc`/`fbp` values. For a server-side analytics bridge, pass its
+inbound request as `request` when creating the client; the SDK copies the
+edge-observed client IP into each analytics event and the API preserves the
+event's client IP and user-agent metadata. GA4 automatic
 PageView collection is disabled; Chaos maps semantic events to GA4 ecommerce
 names.
 

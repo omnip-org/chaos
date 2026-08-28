@@ -53,11 +53,10 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
         command: &AnalyticsDeliveryCommand,
     ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError> {
         // Keep the first-party ledger broader than Meta's optimization events.
-        // Engagement duration and other internal behavior events are useful
-        // in the first-party ledger, but they are not Meta
-        // conversion events. Returning a successful filtered receipt makes
-        // the delivery durable without retrying an intentionally excluded
-        // event.
+        // Page views, engagement duration, and other internal behavior events
+        // are useful in the first-party ledger, but are not sent through Meta
+        // CAPI for now. Returning a successful filtered receipt makes the
+        // delivery durable without retrying an intentionally excluded event.
         if !is_meta_event(command) {
             return Ok(AnalyticsDeliveryReceipt {
                 provider_reference: Some("filtered".into()),
@@ -175,15 +174,18 @@ struct MetaResponse {
 fn is_supported_meta_event(name: &str) -> bool {
     matches!(
         name,
-        "page_view" | "view_content" | "search" | "add_to_cart" | "initiate_checkout" | "purchase"
+        "view_content" | "search" | "add_to_cart" | "initiate_checkout" | "purchase"
     )
 }
 
 fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
     let source = command.event_source.as_str();
     match command.event_name.as_str() {
+        // PageView remains a first-party/browser observation and is not sent
+        // through the server-side Meta CAPI projection for now.
+        "page_view" => false,
         // Browser event and Pixel use the same queued UUID for these events.
-        "page_view" | "view_content" | "search" => source != "server",
+        "view_content" | "search" => source != "server",
         // AddToCart and InitiateCheckout are collected by the browser SDK only
         // after the matching business request succeeds. Purchase remains a
         // server-confirmed payment event.
@@ -195,7 +197,6 @@ fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
 
 fn meta_event_name(name: &str) -> &str {
     match name {
-        "page_view" => "PageView",
         "view_content" => "ViewContent",
         "search" => "Search",
         "add_to_cart" => "AddToCart",
@@ -585,7 +586,7 @@ mod tests {
     #[test]
     fn only_standard_conversion_events_are_sent_to_meta() {
         assert!(is_supported_meta_event("purchase"));
-        assert!(is_supported_meta_event("page_view"));
+        assert!(!is_supported_meta_event("page_view"));
         assert!(!is_supported_meta_event("view_duration"));
         assert!(!is_supported_meta_event("store_defined_event"));
     }
@@ -594,10 +595,12 @@ mod tests {
     fn routes_meta_events_by_authoritative_source() {
         let mut browser = command(1_299, "USD");
         browser.event_source = "browser".into();
-        for event_name in ["page_view", "view_content", "search"] {
+        for event_name in ["view_content", "search"] {
             browser.event_name = event_name.into();
             assert!(is_meta_event(&browser), "browser {event_name}");
         }
+        browser.event_name = "page_view".into();
+        assert!(!is_meta_event(&browser), "browser page_view");
         for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
             browser.event_name = event_name.into();
             assert_eq!(

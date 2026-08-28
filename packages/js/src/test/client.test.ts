@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import type { AnalyticsCollectionRequest } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -201,6 +202,62 @@ test("collectAnalytics owns the analytics request and recovers a stale identity"
     ],
   );
   assert.deepEqual(requests[2]?.body, payload);
+});
+
+test("attaches the edge client IP without mutating event metadata", async () => {
+  let capturedBody: unknown;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    request: new Request("https://shop.example.com/api/analytics/events", {
+      headers: {
+        "CF-Connecting-IP": "2001:db8::8",
+        "User-Agent": "Worker/1.0",
+      },
+    }),
+    fetch: (async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      return jsonResponse(200, {
+        data: { received: 1, stored: 1, duplicates: 0 },
+      });
+    }) as unknown as typeof fetch,
+  });
+  client.setShopperToken("shopper-token");
+
+  const payload: AnalyticsCollectionRequest = {
+    events: [
+      {
+        event_id: "event-1",
+        event_name: "add_to_cart",
+        occurred_at: "2026-08-28T00:00:00Z",
+        properties: {
+          _meta: {
+            client_ip_address: "198.51.100.9",
+            client_user_agent: "Browser/1.0",
+            source_url: "https://shop.example.com/products",
+          },
+        },
+      },
+    ],
+  };
+
+  await client.collectAnalytics(payload);
+
+  const capturedEvent = (
+    capturedBody as {
+      events: Array<{ properties: Record<string, unknown> }>;
+    }
+  ).events[0]!;
+  const capturedMeta = capturedEvent.properties._meta as Record<string, unknown>;
+  assert.equal(capturedMeta.client_ip_address, "2001:db8::8");
+  assert.equal(capturedMeta.client_user_agent, "Browser/1.0");
+  assert.equal(capturedMeta.source_url, "https://shop.example.com/products");
+
+  const originalMeta = payload.events[0]!.properties._meta as Record<
+    string,
+    unknown
+  >;
+  assert.equal(originalMeta.client_ip_address, "198.51.100.9");
 });
 
 test("refreshes a stale shopper token once and retries the request", async () => {

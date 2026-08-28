@@ -24,14 +24,17 @@ CREATE TABLE commerce.stores (
 );
 
 CREATE TABLE commerce.shoppers (
-    id           UUID         NOT NULL PRIMARY KEY,
-    store_id     UUID         NOT NULL,
-    last_seen_at TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id           UUID          NOT NULL PRIMARY KEY,
+    store_id     UUID          NOT NULL,
+    meta         JSONB,
+    last_seen_at TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT shoppers_store_id_id_key    UNIQUE (store_id, id),
-    CONSTRAINT shoppers_store_id_fkey      FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE
+    CONSTRAINT shoppers_store_id_id_key       UNIQUE (store_id, id),
+    CONSTRAINT shoppers_store_id_fkey         FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT shoppers_meta_size_check       CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
+    CONSTRAINT shoppers_meta_is_object_check  CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
 );
 
 CREATE TABLE commerce.store_memberships (

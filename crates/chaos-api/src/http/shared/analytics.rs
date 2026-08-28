@@ -1,9 +1,4 @@
-use std::net::IpAddr;
-
-use axum::http::{
-    HeaderMap,
-    header::{COOKIE, USER_AGENT},
-};
+use axum::http::{HeaderMap, header::COOKIE};
 use chaos_core::contracts::AnalyticsEventInput;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -47,9 +42,12 @@ impl AnalyticsEventBody {
     }
 }
 
-/// Network values are attached at the request boundary. Event-captured fbc/fbp
-/// win because a queued event can be delivered after the browser has landed on
-/// another campaign; cookies only fill missing values.
+/// Event-captured attribution metadata stays authoritative. Cookies only fill
+/// missing browser matching IDs because a queued event can be delivered after
+/// the browser has landed on another campaign. Network headers from a
+/// forwarding request are deliberately not copied into the event: a
+/// server-side storefront SDK attaches the original edge context before the
+/// request reaches Chaos.
 pub(crate) fn request_meta(headers: &HeaderMap) -> Map<String, Value> {
     let mut meta = Map::new();
     if let Some(value) = cookie(headers, "_fbc").filter(|value| valid_meta_browser_id(value)) {
@@ -57,16 +55,6 @@ pub(crate) fn request_meta(headers: &HeaderMap) -> Map<String, Value> {
     }
     if let Some(value) = cookie(headers, "_fbp").filter(|value| valid_meta_browser_id(value)) {
         meta.insert("fbp".into(), Value::String(value));
-    }
-    if let Some(value) = headers
-        .get(USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.trim().is_empty() && value.len() <= 512)
-    {
-        meta.insert("client_user_agent".into(), Value::String(value.to_owned()));
-    }
-    if let Some(value) = client_ip(headers) {
-        meta.insert("client_ip_address".into(), Value::String(value));
     }
     meta
 }
@@ -135,15 +123,6 @@ fn valid_meta_browser_id(value: &str) -> bool {
         && timestamp.bytes().all(|byte| byte.is_ascii_digit())
         && !suffix.is_empty()
         && !suffix.chars().any(char::is_whitespace)
-}
-
-fn client_ip(headers: &HeaderMap) -> Option<String> {
-    ["x-forwarded-for", "x-real-ip"]
-        .into_iter()
-        .filter_map(|name| headers.get(name).and_then(|value| value.to_str().ok()))
-        .flat_map(|value| value.split(','))
-        .find_map(|value| value.trim().parse::<IpAddr>().ok())
-        .map(|value| value.to_string())
 }
 
 fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {

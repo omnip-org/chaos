@@ -72,9 +72,11 @@ analytics_events -> analytics_deliveries -> provider adapter
 `analytics_destinations` contains provider configuration and enabled state.
 `analytics_deliveries` contains retry status and provider references. A
 destination failure never prevents event storage or a commerce transaction.
-The Meta adapter projects only the supported standard event subset and marks
-other stored behavior names as filtered deliveries. It derives optional URL
-and money values from `properties` instead of requiring fixed ledger columns.
+The Meta adapter projects only the supported event subset and marks other
+stored behavior names as filtered deliveries. `page_view` remains in the
+first-party ledger but is intentionally filtered from the server-side Meta
+CAPI projection for now. The adapter derives optional URL and money values
+from `properties` instead of requiring fixed ledger columns.
 
 The ledger remains partitioned daily by `received_at` using `pg_partman`.
 `pg_cron` maintains future partitions; Analytics event retention is manual. No
@@ -87,6 +89,15 @@ normalize into the `session_id` column, stores traffic context in `properties`
 for attribution history, queues bounded batches, and retries with stable event
 IDs. It also exposes `track(eventName, properties)` for Store-defined behavior
 names.
+
+Server-side storefront bridges pass their inbound request context to the SDK's
+request-scoped client. The SDK copies the edge-observed client IP into each
+analytics event before forwarding it to Chaos, while the browser SDK remains
+the source of the client user-agent and other browser metadata. The analytics
+API preserves event-provided IP and user-agent values and only uses request
+cookies as a fallback for missing `fbc` and `fbp`; it does not derive network
+metadata from the forwarding request's IP or user-agent headers.
+
 Browser provider scripts are optional projections and do not determine whether
 an event is accepted by the Chaos ledger.
 

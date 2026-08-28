@@ -76,7 +76,7 @@ mod tests {
     };
 
     #[test]
-    fn request_context_reads_matching_cookies_user_agent_and_forwarded_ip() {
+    fn request_context_reads_matching_cookies_and_ignores_network_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
@@ -92,8 +92,8 @@ mod tests {
         let meta = request_meta(&headers);
         assert_eq!(meta["fbp"], "fb.1.1234567890123.browser");
         assert_eq!(meta["fbc"], "fb.1.1234567890123.click");
-        assert_eq!(meta["client_user_agent"], "ChaosBrowser/1.0");
-        assert_eq!(meta["client_ip_address"], "203.0.113.8");
+        assert!(meta.get("client_user_agent").is_none());
+        assert!(meta.get("client_ip_address").is_none());
     }
 
     #[test]
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn request_context_preserves_event_matching_and_overrides_network_context() {
+    fn request_context_preserves_event_metadata_and_overlays_only_cookies() {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
@@ -130,8 +130,8 @@ mod tests {
         let merged = merge_request_meta(properties, &request_meta(&headers));
         assert_eq!(merged["_meta"]["fbp"], "fb.1.1234567890123.event");
         assert_eq!(merged["_meta"]["fbc"], "fb.1.1234567890123.event-click");
-        assert_eq!(merged["_meta"]["client_user_agent"], "ChaosBrowser/2.0");
-        assert_eq!(merged["_meta"]["client_ip_address"], "203.0.113.10");
+        assert_eq!(merged["_meta"]["client_user_agent"], "EventBrowser/1.0");
+        assert_eq!(merged["_meta"]["client_ip_address"], "203.0.113.9");
         assert_eq!(
             merged["_meta"]["source_url"],
             "https://shop.example/products"
