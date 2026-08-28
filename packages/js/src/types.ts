@@ -371,9 +371,7 @@ export type BrowserAnalyticsEventName =
   | "view_duration"
   | "add_to_cart"
   | "initiate_checkout"
-  | "add_payment_info"
   | "purchase"
-  | "refund"
   | (string & {});
 
 export interface BrowserAnalyticsEvent {

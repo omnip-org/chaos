@@ -257,7 +257,7 @@ mod tests {
             validate_event(
                 &AnalyticsEventInput {
                     event_id: Uuid::now_v7(),
-                    event_name: "wishlist_added".into(),
+                    event_name: "store_defined_event".into(),
                     occurred_at: now,
                     properties: json!({"product_id": Uuid::now_v7()}),
                 },

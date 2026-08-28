@@ -41,7 +41,7 @@ pub struct ListAnalyticsEventsParams {
     pub limit: Option<u16>,
     /// Storage row ID returned by a previous page. Only older events are returned.
     pub before_id: Option<String>,
-    /// Optional event name filter, such as `page_view`, `purchase`, or `refund`.
+    /// Optional event name filter, such as `page_view`, `purchase`, or a custom event name.
     pub event_name: Option<String>,
     /// Optional source filter stored in `properties._source`.
     pub source: Option<String>,
@@ -49,6 +49,18 @@ pub struct ListAnalyticsEventsParams {
     pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
     /// Optional signed shopper identifier for tracing one consumer journey.
     pub shopper_id: Option<String>,
+    /// Optional browser session identifier for tracing one visit across events.
+    pub session_id: Option<String>,
+    /// Optional UTM source filter, matched against the normalized analytics column.
+    pub utm_source: Option<String>,
+    /// Optional UTM medium filter, matched against the normalized analytics column.
+    pub utm_medium: Option<String>,
+    /// Optional UTM campaign filter, matched against the normalized analytics column.
+    pub utm_campaign: Option<String>,
+    /// Optional UTM term filter, matched against the normalized analytics column.
+    pub utm_term: Option<String>,
+    /// Optional UTM content filter, matched against the normalized analytics column.
+    pub utm_content: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -149,7 +161,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, properties._source, delivery status, and shopper_id. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
+        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, properties._source, delivery status, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
     )]
     async fn list_analytics_events(
         &self,
@@ -183,6 +195,20 @@ impl ChaosMcp {
             Ok(id) => id,
             Err(_) => return Ok(invalid("shopper_id", "must be a UUID")),
         };
+        let session_id = match params
+            .session_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+        {
+            Ok(id) => id,
+            Err(_) => return Ok(invalid("session_id", "must be a UUID")),
+        };
+        let utm_source = text_filter(params.utm_source);
+        let utm_medium = text_filter(params.utm_medium);
+        let utm_campaign = text_filter(params.utm_campaign);
+        let utm_term = text_filter(params.utm_term);
+        let utm_content = text_filter(params.utm_content);
         let store_id = actor.store_id();
         let query = AnalyticsEventQuery {
             before_id,
@@ -190,6 +216,12 @@ impl ChaosMcp {
             source,
             delivery_status,
             shopper_id,
+            session_id,
+            utm_source,
+            utm_medium,
+            utm_campaign,
+            utm_term,
+            utm_content,
         };
         match self
             .state
@@ -231,6 +263,12 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "event_id": event.event_id,
             "event_name": event.event_name,
             "shopper_id": event.shopper_id,
+            "session_id": event.session_id,
+            "utm_source": event.utm_source,
+            "utm_medium": event.utm_medium,
+            "utm_campaign": event.utm_campaign,
+            "utm_term": event.utm_term,
+            "utm_content": event.utm_content,
             "occurred_at": event.occurred_at.to_string(),
             "received_at": event.received_at.to_string(),
             "properties": event.properties,
@@ -252,6 +290,12 @@ fn invalid(field: &'static str, message: &'static str) -> CallToolResult {
     CallToolResult::structured_error(json!({
         "code": "invalid_params", "message": format!("{field} {message}"),
     }))
+}
+
+fn text_filter(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn is_analytics_secret_reference(value: &str) -> bool {

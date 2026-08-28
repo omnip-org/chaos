@@ -18,22 +18,28 @@ an append-only, Store-scoped event ledger with this small common envelope:
 
 - `store_id`;
 - `shopper_id`;
+- optional `session_id` (the browser session UUID);
+- optional `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, and
+  `utm_content` attribution values;
 - stable `event_id`;
 - `event_name`;
 - `occurred_at`, `received_at`, and `created_at`;
 - bounded object `properties` JSON.
 
 `event_name` is plain text with a lowercase snake-case format. The database
-does not maintain an enum or event-specific constraints. A new behavior such
-as `wishlist_added` can be stored without a migration. Product, cart,
-Checkout, Order, Payment, session, traffic, money, and provider-specific
-values belong in `properties`.
+does not maintain an enum or event-specific constraints. A new Store-defined
+behavior name can be stored without a migration. Product, cart,
+Checkout, Order, Payment, traffic history, money, and provider-specific values
+belong in `properties`. The five normalized UTM columns are populated from
+explicit top-level `utm_*` values when present, otherwise from the current
+browser session's `traffic.session` values; first-touch and last-non-direct
+history remains in `properties`.
 
 The signed Storefront Shopper token supplies `shopper_id`; the browser cannot
 choose another shopper. Browser and server events use the same table and the
 same stable event ID deduplication rule. Browser events are accepted directly
 by the API. Commerce workflows append authoritative `add_to_cart`,
-`initiate_checkout`, `add_payment_info`, `purchase`, and `refund` events in the
+`initiate_checkout`, and `purchase` events in the
 same transaction as their business state change. Analytics does not consume
 the generic business `event_outbox`.
 
@@ -46,18 +52,20 @@ analytics_events -> analytics_deliveries -> provider adapter
 `analytics_destinations` contains provider configuration and enabled state.
 `analytics_deliveries` contains retry status and provider references. A
 destination failure never prevents event storage or a commerce transaction.
-The Meta adapter maps known names to Meta standard events and passes unknown
-names as custom events. It derives optional URL and money values from
-`properties` instead of requiring fixed ledger columns.
+The Meta adapter projects only the supported standard event subset and marks
+other stored behavior names as filtered deliveries. It derives optional URL
+and money values from `properties` instead of requiring fixed ledger columns.
 
 The ledger remains partitioned daily by `received_at` using `pg_partman`.
 `pg_cron` maintains future partitions; retention is manual. No analytics
 policy table, consent snapshot, erasure workflow, metric snapshot, session
 aggregate, attribution job, or automatic deletion exists in this model.
 
-The SDK always uses the common envelope, stores session and traffic context in
-`properties`, queues bounded batches, and retries with stable event IDs. It
-also exposes `track(eventName, properties)` for Store-defined behavior names.
+The SDK always uses the common envelope, sends the session UUID for the API to
+normalize into the `session_id` column, stores traffic context in `properties`
+for attribution history, queues bounded batches, and retries with stable event
+IDs. It also exposes `track(eventName, properties)` for Store-defined behavior
+names.
 Browser provider scripts are optional projections and do not determine whether
 an event is accepted by the Chaos ledger.
 

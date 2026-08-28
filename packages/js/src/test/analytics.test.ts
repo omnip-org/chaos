@@ -114,7 +114,7 @@ function harness(
 
 test("starts collection and records valid custom behavior names", async () => {
   const environment = harness([{ ok: true, status: 200 }], { autoStart: true });
-  const eventId = environment.analytics.track("wishlist_added", { product_id: "product-1" });
+  const eventId = environment.analytics.track("store_defined_event", { product_id: "product-1" });
   await environment.analytics.flush();
   const events = environment.requests.flatMap((request) => JSON.parse(request.options.body).events);
   assert.equal(events[0].event_name, "page_view");
@@ -152,7 +152,7 @@ test("stores traffic context inside dynamic properties", async () => {
 
 test("stores the page URL without its fragment and Meta browser matching context", async () => {
   const environment = harness([{ ok: true, status: 200 }], {
-    cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.123.cookie-click",
+    cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.1234567890123.cookie-click",
     href: "https://shop.example/products?variant=1#token=secret-capability",
     search: "?variant=1",
     userAgent: "ChaosBrowser/2.0",
@@ -161,12 +161,12 @@ test("stores the page URL without its fragment and Meta browser matching context
   await environment.analytics.flush();
   const event = JSON.parse(environment.requests[0]!.options.body).events[0];
   assert.equal(event.properties._meta.source_url, "https://shop.example/products?variant=1");
-  assert.equal(event.properties._meta.fbc, "fb.1.123.cookie-click");
+  assert.equal(event.properties._meta.fbc, "fb.1.1234567890123.cookie-click");
   assert.equal(event.properties._meta.fbp, "fb.1.123.browser");
   assert.equal(event.properties._meta.client_user_agent, "ChaosBrowser/2.0");
 });
 
-test("prefers a current fbclid over a stale _fbc cookie and writes seconds", async () => {
+test("prefers a current fbclid over a stale _fbc cookie and writes milliseconds", async () => {
   const environment = harness([{ ok: true, status: 200 }], {
     cookie: "_fbc=fb.1.1.old-click",
     search: "?fbclid=current-click",
@@ -174,7 +174,7 @@ test("prefers a current fbclid over a stale _fbc cookie and writes seconds", asy
   environment.analytics.pageView();
   await environment.analytics.flush();
   const event = JSON.parse(environment.requests[0]!.options.body).events[0];
-  const expectedFbc = `fb.1.${Math.floor(Date.parse("2026-08-16T00:00:00Z") / 1_000)}.current-click`;
+  const expectedFbc = `fb.1.${Date.parse("2026-08-16T00:00:00Z")}.current-click`;
   assert.equal(event.properties._meta.fbc, expectedFbc);
   assert.match(environment.document.cookie, new RegExp(`_fbc=${encodeURIComponent(expectedFbc)}`));
 });
@@ -224,14 +224,14 @@ test("sends generic events to GA4 once and leaves server conversions to the serv
   const environment = harness([], {
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
-  environment.analytics.track("wishlist_added", { product_id: "product-1" });
+  environment.analytics.track("store_defined_event", { product_id: "product-1" });
   environment.analytics.track("purchase", { order_id: "order-1" });
 
   const events = (environment.window as unknown as { dataLayer: unknown[][] }).dataLayer.filter(
     (call) => call[0] === "event",
   );
   assert.equal(events.length, 1);
-  assert.equal(events[0]?.[1], "wishlist_added");
+  assert.equal(events[0]?.[1], "store_defined_event");
 });
 
 test("keeps history observation active when one of multiple analytics clients stops", async () => {
@@ -311,16 +311,14 @@ test("keeps one stable provider event identity", () => {
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
 });
 
-test("does not send duration, refund, or arbitrary events to Meta Pixel", () => {
+test("does not send duration or arbitrary events to Meta Pixel", () => {
   const environment = harness([], {
     providers: { metaPixel: { pixelId: "12345" } },
   });
   environment.analytics.track("view_duration", { active_milliseconds: 1_000 });
-  environment.analytics.track("refund", { value_minor: 100, currency: "USD" });
   environment.analytics.track("add_to_cart", { product_id: "product-1" });
   environment.analytics.track("initiate_checkout", { order_id: "order-1" });
-  environment.analytics.track("add_payment_info", { order_id: "order-1" });
-  environment.analytics.track("wishlist_added", { product_id: "product-1" });
+  environment.analytics.track("store_defined_event", { product_id: "product-1" });
   const trackCalls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
     (call) => call[0] === "track",
   );

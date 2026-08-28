@@ -53,8 +53,8 @@ impl AnalyticsEventDestination for MetaConversionsDestination {
         command: &AnalyticsDeliveryCommand,
     ) -> Result<AnalyticsDeliveryReceipt, AnalyticsDeliveryError> {
         // Keep the first-party ledger broader than Meta's optimization events.
-        // Engagement duration, refund state, and the provisional payment
-        // session marker are useful internally, but they are not Meta
+        // Engagement duration and other internal behavior events are useful
+        // in the first-party ledger, but they are not Meta
         // conversion events. Returning a successful filtered receipt makes
         // the delivery durable without retrying an intentionally excluded
         // event.
@@ -186,9 +186,7 @@ fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
         "page_view" | "view_content" | "search" => source != Some("server"),
         // These are authoritative commerce events. The browser only projects
         // Purchase directly with the Order ID; it does not enqueue a second
-        // browser conversion for these names. AddPaymentInfo is intentionally
-        // absent: Checkout Session creation is not payment-information
-        // submission, so the internal marker is filtered from Meta.
+        // browser conversion for these names.
         "add_to_cart" | "initiate_checkout" | "purchase" => source == Some("server"),
         _ => false,
     }
@@ -222,8 +220,12 @@ fn meta_user_data(command: &AnalyticsDeliveryCommand) -> MetaUserData {
             .map(str::to_owned)
             .into_iter()
             .collect(),
-        fbc: context_value(properties, "fbc").map(str::to_owned),
-        fbp: context_value(properties, "fbp").map(str::to_owned),
+        fbc: context_value(properties, "fbc")
+            .filter(|value| valid_meta_browser_id(value))
+            .map(str::to_owned),
+        fbp: context_value(properties, "fbp")
+            .filter(|value| valid_meta_browser_id(value))
+            .map(str::to_owned),
         client_ip_address: context_value(properties, "client_ip_address").map(str::to_owned),
         client_user_agent: context_value(properties, "client_user_agent").map(str::to_owned),
     }
@@ -242,6 +244,11 @@ fn custom_data(command: &AnalyticsDeliveryCommand) -> Value {
         "_meta",
         "session_id",
         "traffic",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
         "source_url",
         "path",
         "title",
@@ -437,6 +444,22 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn valid_meta_browser_id(value: &str) -> bool {
+    let mut parts = value.splitn(4, '.');
+    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    prefix == "fb"
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && timestamp.len() == 13
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        && !suffix.is_empty()
+        && !suffix.chars().any(char::is_whitespace)
+}
+
 fn invalid_command() -> AnalyticsDeliveryError {
     AnalyticsDeliveryError {
         retryable: false,
@@ -500,12 +523,14 @@ mod tests {
             "_source":"browser",
             "session_id":"session-1",
             "traffic":{"session":{"fbclid":"private"}},
+            "utm_source":"newsletter",
             "path":"/"
         });
         let data = custom_data(&input);
         assert!(data.get("_source").is_none());
         assert!(data.get("session_id").is_none());
         assert!(data.get("traffic").is_none());
+        assert!(data.get("utm_source").is_none());
         assert!(data.get("path").is_none());
     }
 
@@ -533,13 +558,32 @@ mod tests {
     }
 
     #[test]
+    fn maps_view_content_variant_to_meta_content_fields() {
+        let mut input = command(1_299, "USD");
+        input.event_name = "view_content".into();
+        input.properties = json!({
+            "product_id": "product-1",
+            "product_variant_id": "variant-1",
+        });
+
+        let data = custom_data(&input);
+
+        assert_eq!(data["content_ids"], json!(["variant-1"]));
+        assert_eq!(data["content_type"], json!("product"));
+        assert_eq!(
+            data["contents"],
+            json!([{ "id": "variant-1", "quantity": 1 }])
+        );
+        assert!(data.get("product_id").is_none());
+        assert!(data.get("product_variant_id").is_none());
+    }
+
+    #[test]
     fn only_standard_conversion_events_are_sent_to_meta() {
         assert!(is_supported_meta_event("purchase"));
         assert!(is_supported_meta_event("page_view"));
-        assert!(!is_supported_meta_event("add_payment_info"));
         assert!(!is_supported_meta_event("view_duration"));
-        assert!(!is_supported_meta_event("refund"));
-        assert!(!is_supported_meta_event("wishlist_added"));
+        assert!(!is_supported_meta_event("store_defined_event"));
     }
 
     #[test]
@@ -550,12 +594,7 @@ mod tests {
             browser.event_name = event_name.into();
             assert!(is_meta_event(&browser), "browser {event_name}");
         }
-        for event_name in [
-            "add_to_cart",
-            "initiate_checkout",
-            "purchase",
-            "add_payment_info",
-        ] {
+        for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
             browser.event_name = event_name.into();
             assert!(!is_meta_event(&browser), "browser {event_name}");
         }
@@ -566,7 +605,7 @@ mod tests {
             server.event_name = event_name.into();
             assert!(is_meta_event(&server), "server {event_name}");
         }
-        for event_name in ["page_view", "view_content", "search", "add_payment_info"] {
+        for event_name in ["page_view", "view_content", "search"] {
             server.event_name = event_name.into();
             assert!(!is_meta_event(&server), "server {event_name}");
         }
@@ -579,8 +618,8 @@ mod tests {
             "_source": "server",
             "_meta": {
                 "source_url": "https://shop.example/checkout",
-                "fbc": "fb.1.123.click",
-                "fbp": "fb.1.123.browser"
+                "fbc": "fb.1.1234567890123.click",
+                "fbp": "fb.1.1234567890123.browser"
             },
             "value_minor": 1_299,
             "currency": "USD",
@@ -613,11 +652,11 @@ mod tests {
         );
         assert_eq!(
             payload["data"][0]["user_data"]["fbc"],
-            json!("fb.1.123.click")
+            json!("fb.1.1234567890123.click")
         );
         assert_eq!(
             payload["data"][0]["user_data"]["fbp"],
-            json!("fb.1.123.browser")
+            json!("fb.1.1234567890123.browser")
         );
         assert_eq!(payload["data"][0]["custom_data"]["value"], json!(12.99));
         assert_eq!(payload["data"][0]["custom_data"]["currency"], json!("USD"));
@@ -645,8 +684,8 @@ mod tests {
             "_meta": {
                 "em": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "ph": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "fbc": "fb.1.123.click",
-                "fbp": "fb.1.123.browser",
+                "fbc": "fb.1.1234567890123.click",
+                "fbp": "fb.1.1234567890123.browser",
                 "client_ip_address": "203.0.113.10",
                 "client_user_agent": "test-agent"
             }
@@ -654,9 +693,25 @@ mod tests {
         let user_data = meta_user_data(&input);
         assert_eq!(user_data.em.len(), 1);
         assert_eq!(user_data.ph.len(), 1);
-        assert_eq!(user_data.fbc.as_deref(), Some("fb.1.123.click"));
-        assert_eq!(user_data.fbp.as_deref(), Some("fb.1.123.browser"));
+        assert_eq!(user_data.fbc.as_deref(), Some("fb.1.1234567890123.click"));
+        assert_eq!(user_data.fbp.as_deref(), Some("fb.1.1234567890123.browser"));
         assert_eq!(user_data.client_ip_address.as_deref(), Some("203.0.113.10"));
         assert_eq!(user_data.client_user_agent.as_deref(), Some("test-agent"));
+    }
+
+    #[test]
+    fn does_not_forward_invalid_browser_matching_ids() {
+        let mut input = command(1_299, "USD");
+        input.properties = json!({
+            "_meta": {
+                "fbc": "fb.1.123.click",
+                "fbp": "fb.1.123.browser"
+            }
+        });
+
+        let user_data = meta_user_data(&input);
+
+        assert!(user_data.fbc.is_none());
+        assert!(user_data.fbp.is_none());
     }
 }

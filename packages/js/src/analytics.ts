@@ -14,12 +14,11 @@ const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
 const MAX_PROPERTIES_BYTES = 32_768;
 const MAX_GA4_EVENT_NAME_BYTES = 40;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
+const MAX_UTM_VALUE_LENGTH = 2_048;
 const SERVER_AUTHORITATIVE_EVENT_NAMES = new Set([
   "add_to_cart",
   "initiate_checkout",
-  "add_payment_info",
   "purchase",
-  "refund",
 ]);
 
 export interface PageViewInput {
@@ -160,7 +159,7 @@ export class ChaosStorefrontAnalytics {
     this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
     this.lastNonDirectStorageKey = `chaos.analytics.${storageNamespace}.traffic.last_non_direct.v1`;
     this.sessionTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.session.v1`;
-    this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v1`;
+    this.metaFbcStorageKey = `chaos.analytics.${storageNamespace}.meta.fbc.v2`;
     this.providerEventStoragePrefix = `chaos.analytics.${storageNamespace}.provider_event.v1.`;
     this.sessionId = this.randomUUID();
     this.enableCollectionStorage();
@@ -506,7 +505,8 @@ export class ChaosStorefrontAnalytics {
     // precedence over a previous _fbc cookie; without a current click, the
     // persisted cookie remains valid across sessions.
     const fbclid = this.traffic?.session.fbclid;
-    const cookieFbc = readCookie(this.documentRef, "_fbc");
+    const rawCookieFbc = readCookie(this.documentRef, "_fbc");
+    const cookieFbc = validFbc(rawCookieFbc) ? rawCookieFbc : undefined;
     const fbc = fbclid ? this.resolveFbc(fbclid) : cookieFbc;
     const boundedFbc = boundedText(fbc, 512);
     if (boundedFbc && boundedFbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", boundedFbc);
@@ -519,18 +519,19 @@ export class ChaosStorefrontAnalytics {
   }
 
   private resolveFbc(fbclid: string | undefined): string | undefined {
-    if (!fbclid) return undefined;
+    if (!fbclid || /\s/.test(fbclid)) return undefined;
     const stored = readStoredJson(this.sessionStorageRef, this.metaFbcStorageKey);
     if (
       stored &&
       typeof stored === "object" &&
       !Array.isArray(stored) &&
       (stored as Record<string, unknown>).fbclid === fbclid &&
-      typeof (stored as Record<string, unknown>).fbc === "string"
+      typeof (stored as Record<string, unknown>).fbc === "string" &&
+      validFbc((stored as Record<string, string>).fbc)
     ) {
       return (stored as Record<string, string>).fbc;
     }
-    const fbc = `fb.1.${Math.floor(this.now() / 1_000)}.${fbclid}`;
+    const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
     writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, { fbclid, fbc });
     return fbc;
   }
@@ -947,12 +948,12 @@ function captureTrafficTouchpoint(
 ): TrafficTouchpoint {
   const parameters = new URLSearchParams(search ?? "");
   return compact({
-    source: boundedText(parameters.get("utm_source") ?? undefined, 100),
-    medium: boundedText(parameters.get("utm_medium") ?? undefined, 100),
-    campaign: boundedText(parameters.get("utm_campaign") ?? undefined, 200),
-    campaign_id: boundedText(parameters.get("utm_id") ?? undefined, 200),
-    term: boundedText(parameters.get("utm_term") ?? undefined, 200),
-    content: boundedText(parameters.get("utm_content") ?? undefined, 200),
+    source: boundedText(parameters.get("utm_source") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    medium: boundedText(parameters.get("utm_medium") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    campaign: boundedText(parameters.get("utm_campaign") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    campaign_id: boundedText(parameters.get("utm_id") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    term: boundedText(parameters.get("utm_term") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    content: boundedText(parameters.get("utm_content") ?? undefined, MAX_UTM_VALUE_LENGTH),
     referrer_domain: referrerHost(referrer),
     fbclid: boundedText(parameters.get("fbclid") ?? undefined, 512),
     gclid: boundedText(parameters.get("gclid") ?? undefined, 512),
@@ -968,12 +969,12 @@ function readTrafficTouchpoint(storage: Storage | undefined, key: string): Traff
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const candidate = value as Record<string, unknown>;
   const result = compact({
-    source: storedText(candidate.source, 100),
-    medium: storedText(candidate.medium, 100),
-    campaign: storedText(candidate.campaign, 200),
-    campaign_id: storedText(candidate.campaign_id, 200),
-    term: storedText(candidate.term, 200),
-    content: storedText(candidate.content, 200),
+    source: storedText(candidate.source, MAX_UTM_VALUE_LENGTH),
+    medium: storedText(candidate.medium, MAX_UTM_VALUE_LENGTH),
+    campaign: storedText(candidate.campaign, MAX_UTM_VALUE_LENGTH),
+    campaign_id: storedText(candidate.campaign_id, MAX_UTM_VALUE_LENGTH),
+    term: storedText(candidate.term, MAX_UTM_VALUE_LENGTH),
+    content: storedText(candidate.content, MAX_UTM_VALUE_LENGTH),
     referrer_domain: storedText(candidate.referrer_domain, 253),
     fbclid: storedText(candidate.fbclid, 512),
     gclid: storedText(candidate.gclid, 512),
@@ -1023,6 +1024,12 @@ function validateEventName(eventName: string): void {
 
 function isValidEventName(value: unknown): value is string {
   return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value);
+}
+
+function validFbc(value: string | undefined): value is string {
+  if (!value) return false;
+  const match = /^fb\.\d+\.(\d{13})\.[^\s]+$/.exec(value);
+  return match !== null && Number.isSafeInteger(Number(match[1]));
 }
 
 function validateEventProperties(properties: Record<string, unknown>): void {

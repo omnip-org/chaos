@@ -6,6 +6,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+const MAX_UTM_VALUE_BYTES: usize = 2_048;
+
 pub struct PostgresAnalyticsEventStore {
     pool: PgPool,
 }
@@ -51,6 +53,12 @@ type AnalyticsEventRow = (
     Uuid,
     String,
     Uuid,
+    Option<Uuid>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
     OffsetDateTime,
     OffsetDateTime,
     Value,
@@ -113,6 +121,44 @@ pub(crate) async fn append_event(
         &mut properties,
     )
     .await?;
+    let session_id = properties
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let direct_utm_source = normalized_utm_value(properties.get("utm_source"));
+    let direct_utm_medium = normalized_utm_value(properties.get("utm_medium"));
+    let direct_utm_campaign = normalized_utm_value(properties.get("utm_campaign"));
+    let direct_utm_term = normalized_utm_value(properties.get("utm_term"));
+    let direct_utm_content = normalized_utm_value(properties.get("utm_content"));
+    let utm_source = direct_utm_source
+        .clone()
+        .or_else(|| traffic_utm_value(&properties, "source"));
+    let utm_medium = direct_utm_medium
+        .clone()
+        .or_else(|| traffic_utm_value(&properties, "medium"));
+    let utm_campaign = direct_utm_campaign
+        .clone()
+        .or_else(|| traffic_utm_value(&properties, "campaign"));
+    let utm_term = direct_utm_term
+        .clone()
+        .or_else(|| traffic_utm_value(&properties, "term"));
+    let utm_content = direct_utm_content
+        .clone()
+        .or_else(|| traffic_utm_value(&properties, "content"));
+    if let Some(object) = properties.as_object_mut() {
+        object.remove("session_id");
+        for (key, value) in [
+            ("utm_source", &direct_utm_source),
+            ("utm_medium", &direct_utm_medium),
+            ("utm_campaign", &direct_utm_campaign),
+            ("utm_term", &direct_utm_term),
+            ("utm_content", &direct_utm_content),
+        ] {
+            if value.is_some() {
+                object.remove(key);
+            }
+        }
+    }
     sqlx::query(
         "SELECT pg_advisory_xact_lock(\
             hashtextextended($1::text || ':' || $2::text || ':' || $3::text, 0)\
@@ -139,12 +185,18 @@ pub(crate) async fn append_event(
     }
     sqlx::query(
         "INSERT INTO integration.analytics_events
-            (id,event_id,store_id,shopper_id,event_name,properties,occurred_at,received_at)
-         VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7)",
+            (id,event_id,store_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,properties,occurred_at,received_at)
+         VALUES (uuidv7(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
     )
     .bind(event.event_id)
     .bind(event.store_id)
     .bind(event.shopper_id)
+    .bind(session_id)
+    .bind(utm_source)
+    .bind(utm_medium)
+    .bind(utm_campaign)
+    .bind(utm_term)
+    .bind(utm_content)
     .bind(event.event_name)
     .bind(properties)
     .bind(event.occurred_at)
@@ -184,10 +236,14 @@ async fn enrich_server_meta(
         .and_then(|value| Uuid::parse_str(value).ok());
     let explicit_meta = object.get("_meta").and_then(Value::as_object).cloned();
     let has_explicit_traffic = object.contains_key("traffic");
-    let has_explicit_session_id = object.contains_key("session_id");
+    let has_explicit_session_id = object
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .is_some();
 
-    let browser_context: Option<(Option<Value>, Option<Value>, Option<String>)> = sqlx::query_as(
-        "SELECT properties->'_meta', properties->'traffic', properties->>'session_id'
+    let browser_context: Option<(Option<Value>, Option<Value>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT properties->'_meta', properties->'traffic', session_id
            FROM integration.analytics_events
           WHERE store_id = $1 AND shopper_id = $2
             AND properties->>'_source' = 'browser'
@@ -281,7 +337,7 @@ async fn enrich_server_meta(
             object.insert("traffic".into(), Value::Object(traffic));
         }
         if !has_explicit_session_id && let Some(session_id) = browser_session_id {
-            object.insert("session_id".into(), Value::String(session_id));
+            object.insert("session_id".into(), Value::String(session_id.to_string()));
         }
     }
     Ok(())
@@ -302,6 +358,26 @@ fn sha256_hex(value: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn normalized_utm_value(value: Option<&Value>) -> Option<String> {
+    let value = value?.as_str()?.trim();
+    if value.is_empty() || value.len() > MAX_UTM_VALUE_BYTES || value.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn traffic_utm_value(properties: &Value, key: &str) -> Option<String> {
+    normalized_utm_value(
+        properties
+            .get("traffic")
+            .and_then(Value::as_object)
+            .and_then(|traffic| traffic.get("session"))
+            .and_then(Value::as_object)
+            .and_then(|session| session.get(key)),
+    )
 }
 
 impl PostgresAnalyticsEventStore {
@@ -367,7 +443,9 @@ impl PostgresAnalyticsEventStore {
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
         let query_limit = i32::from(limit) + 1;
         let rows: Vec<AnalyticsEventRow> = sqlx::query_as(
-            "SELECT e.id,e.event_id,e.event_name,e.shopper_id,e.occurred_at,e.received_at,e.properties,
+            "SELECT e.id,e.event_id,e.event_name,e.shopper_id,e.session_id,
+                    e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
+                    e.occurred_at,e.received_at,e.properties,
                     COALESCE(jsonb_agg(jsonb_build_object(
                         'provider', c.provider,
                         'status', d.delivery_status::text,
@@ -391,7 +469,15 @@ impl PostgresAnalyticsEventStore {
                       AND filter_delivery.delivery_status::text=$6
                ))
                AND ($7::uuid IS NULL OR e.shopper_id=$7)
-             GROUP BY e.id,e.event_id,e.event_name,e.shopper_id,e.occurred_at,e.received_at,e.properties
+               AND ($8::uuid IS NULL OR e.session_id=$8)
+               AND ($9::text IS NULL OR e.utm_source=$9)
+               AND ($10::text IS NULL OR e.utm_medium=$10)
+               AND ($11::text IS NULL OR e.utm_campaign=$11)
+               AND ($12::text IS NULL OR e.utm_term=$12)
+               AND ($13::text IS NULL OR e.utm_content=$13)
+             GROUP BY e.id,e.event_id,e.event_name,e.shopper_id,e.session_id,
+                      e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
+                      e.occurred_at,e.received_at,e.properties
              ORDER BY e.id DESC
              LIMIT $2",
         )
@@ -402,6 +488,12 @@ impl PostgresAnalyticsEventStore {
         .bind(query.source)
         .bind(query.delivery_status)
         .bind(query.shopper_id)
+        .bind(query.session_id)
+        .bind(query.utm_source)
+        .bind(query.utm_medium)
+        .bind(query.utm_campaign)
+        .bind(query.utm_term)
+        .bind(query.utm_content)
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
@@ -417,6 +509,12 @@ impl PostgresAnalyticsEventStore {
                     event_id,
                     event_name,
                     shopper_id,
+                    session_id,
+                    utm_source,
+                    utm_medium,
+                    utm_campaign,
+                    utm_term,
+                    utm_content,
                     occurred_at,
                     received_at,
                     properties,
@@ -441,6 +539,12 @@ impl PostgresAnalyticsEventStore {
                         event_id,
                         event_name,
                         shopper_id,
+                        session_id,
+                        utm_source,
+                        utm_medium,
+                        utm_campaign,
+                        utm_term,
+                        utm_content,
                         occurred_at,
                         received_at,
                         properties,
@@ -679,7 +783,8 @@ fn db(error: sqlx::Error) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_optional_rfc3339;
+    use super::{normalized_utm_value, parse_optional_rfc3339, traffic_utm_value};
+    use serde_json::json;
 
     #[test]
     fn parses_json_delivery_timestamps() {
@@ -693,5 +798,31 @@ mod tests {
             parse_optional_rfc3339(None).expect("null should parse"),
             None
         );
+    }
+
+    #[test]
+    fn accepts_flexible_utm_values_without_assigning_semantics() {
+        let value = json!({"utm_source": "  partner/A  "});
+        assert_eq!(
+            normalized_utm_value(value.get("utm_source")),
+            Some("partner/A".into())
+        );
+    }
+
+    #[test]
+    fn reads_session_utm_values_from_traffic_history() {
+        let value = json!({
+            "traffic": {
+                "session": {
+                    "source": "newsletter",
+                    "medium": "email"
+                }
+            }
+        });
+        assert_eq!(
+            traffic_utm_value(&value, "source"),
+            Some("newsletter".into())
+        );
+        assert_eq!(traffic_utm_value(&value, "medium"), Some("email".into()));
     }
 }

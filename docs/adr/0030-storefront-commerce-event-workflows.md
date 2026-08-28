@@ -19,14 +19,15 @@ optional analytics_deliveries
 Meta CAPI or another destination
 ```
 
-The ledger envelope is intentionally small: who (`shopper_id`), what
-(`event_name`), when (`occurred_at`), a stable retry key (`event_id`), and
-event-specific `properties`. The browser cannot declare `shopper_id` or
-change the Store context. Session IDs, traffic, product IDs, order IDs, and
-money remain dynamic properties rather than fixed columns.
+The ledger envelope is intentionally small: who (`shopper_id`), which browser
+session when available (`session_id`), what (`event_name`), when
+(`occurred_at`), a stable retry key (`event_id`), and event-specific
+`properties`. The browser cannot declare `shopper_id` or change the Store
+context. Normalized UTM values are stored in dedicated nullable columns;
+traffic history, product IDs, order IDs, and money remain dynamic properties.
 
 Browser events are appended by the Storefront analytics API. Cart, Checkout,
-payment, purchase, and refund events are appended directly by the repository
+payment, and purchase events are appended directly by the repository
 transaction that changes the corresponding commerce state. The generic
 `integration.event_outbox` is reserved for asynchronous business workflows;
 analytics does not add a second ingestion worker or translate outbox events

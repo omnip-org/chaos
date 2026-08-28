@@ -31,7 +31,7 @@ const chaos = createStorefrontClient({
   publishableKey: "pk_...",
   analytics: {
     providers: {
-      // Must match the Store's Meta CAPI Dataset ID.
+      // Browser Meta Pixel ID; the CAPI Dataset ID is configured server-side.
       metaPixel: { pixelId: "1234567890" },
       ga4: { measurementId: "G-EXAMPLE123" },
     },
@@ -70,11 +70,8 @@ const action = session.client_action;
 
 // PageView, ViewContent, Search, and active ViewDuration are recorded by the
 // browser SDK. AddToCart, InitiateCheckout, Purchase, and Refund are recorded
-// by authoritative server workflows. The client does not synthesize
-// AddPaymentInfo: the current Stripe Embedded Checkout integration has no
-// reliable payment-information submission signal, so the internal provisional
-// marker is intentionally filtered from Meta. After the server confirms
-// payment, project Purchase with Order data:
+// by authoritative server workflows. After the server confirms payment,
+// project Purchase with Order data:
 chaos.analytics?.purchase({
   orderId: order.id,
   valueMinor: order.total_amount_minor,
@@ -103,16 +100,18 @@ It keeps first-touch, browser-session, and last-non-direct source facts.
 Unsent events survive reloads in session storage, retain stable IDs during
 retry, and drain in bounded batches. View duration uses a monotonic clock and
 resumes correctly after browser back-forward cache restoration. Store-defined
-behaviors can be recorded with `chaos.analytics?.track("wishlist_added", {
+behaviors can be recorded with `chaos.analytics?.track("store_defined_event", {
 product_id: "..." })`.
 Server-side conversion events inherit the latest browser attribution and session
-context for the same shopper when it is already collected; use the shopper ID
-and order/cart IDs as the durable association keys. UTM fields remain first-party
-analytics data and are not forwarded as Meta custom parameters.
-The server owns `add_to_cart`, `initiate_checkout`, `add_payment_info`, and
-`purchase` ledger conversions; do not duplicate those names through generic
-`track()`. `add_payment_info` is currently an internal-only provisional
-marker and is not sent to Meta. The SDK keeps generic server-authoritative
+context for the same shopper when it is already collected; the API normalizes the
+session UUID into the analytics event's nullable `session_id` column and the
+current session UTM values into nullable `utm_*` columns. Use the shopper ID
+and order/cart IDs as the durable association keys. First-touch and
+last-non-direct traffic history remains in `properties`; UTM values are not
+forwarded as Meta custom parameters.
+The server owns `add_to_cart`, `initiate_checkout`, and `purchase`
+ledger conversions; do not duplicate those names through generic `track()`.
+The SDK keeps generic server-authoritative
 names out of browser providers; the Meta CAPI adapter routes only the
 authoritative Meta conversion subset from server-origin events.
 
@@ -120,8 +119,8 @@ Provider scripts are optional and load immediately when configured. For Meta
 events that are projected to both browser Pixel and CAPI, Pixel receives the
 same event ID used by CAPI.
 A confirmed Purchase uses the Order ID in both paths and is projected only once
-per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration,
-refund state, and store-defined behavior events remain first-party ledger facts
+per browser, allowing Meta to deduplicate Pixel and CAPI copies. View duration
+and store-defined behavior events remain first-party ledger facts
 and are not sent to Meta. The collector records the page URL without its
 fragment, plus browser matching context (`fbc`, `fbp`, and user-agent),
 alongside the event; when a

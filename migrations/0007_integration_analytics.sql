@@ -3,15 +3,21 @@ CREATE TYPE integration.delivery_status AS ENUM ('pending', 'processed', 'dead_l
 SELECT pgmq.create('chaos_analytics_deliveries');
 
 CREATE TABLE integration.analytics_events (
-    id          UUID         NOT NULL,
-    event_id    UUID         NOT NULL,
-    store_id    UUID         NOT NULL,
-    shopper_id  UUID         NOT NULL,
-    event_name  TEXT         NOT NULL,
-    properties  JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at TIMESTAMPTZ  NOT NULL,
-    received_at TIMESTAMPTZ  NOT NULL,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id             UUID           NOT NULL,
+    event_id       UUID           NOT NULL,
+    store_id       UUID           NOT NULL,
+    shopper_id     UUID           NOT NULL,
+    session_id     UUID,
+    utm_source     TEXT,
+    utm_medium     TEXT,
+    utm_campaign   TEXT,
+    utm_term       TEXT,
+    utm_content    TEXT,
+    event_name     TEXT           NOT NULL,
+    properties     JSONB          NOT NULL DEFAULT '{}'::jsonb,
+    occurred_at    TIMESTAMPTZ    NOT NULL,
+    received_at    TIMESTAMPTZ    NOT NULL,
+    created_at     TIMESTAMPTZ    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT analytics_events_received_id_pkey               PRIMARY KEY (received_at, id),
     CONSTRAINT analytics_events_store_received_event_key       UNIQUE (store_id, received_at, event_id),
@@ -34,6 +40,12 @@ CREATE INDEX analytics_events_shopper_path_idx ON integration.analytics_events (
 CREATE INDEX analytics_events_name_time_idx ON integration.analytics_events (store_id, event_name, occurred_at DESC, id DESC);
 CREATE INDEX analytics_events_event_key_idx ON integration.analytics_events (store_id, event_id);
 CREATE INDEX analytics_events_store_id_idx ON integration.analytics_events (store_id, id DESC);
+CREATE INDEX analytics_events_session_idx ON integration.analytics_events (store_id, session_id, occurred_at DESC, id DESC) WHERE session_id IS NOT NULL;
+CREATE INDEX analytics_events_utm_source_idx ON integration.analytics_events (store_id, utm_source, occurred_at DESC, id DESC) WHERE utm_source IS NOT NULL;
+CREATE INDEX analytics_events_utm_medium_idx ON integration.analytics_events (store_id, utm_medium, occurred_at DESC, id DESC) WHERE utm_medium IS NOT NULL;
+CREATE INDEX analytics_events_utm_campaign_idx ON integration.analytics_events (store_id, utm_campaign, occurred_at DESC, id DESC) WHERE utm_campaign IS NOT NULL;
+CREATE INDEX analytics_events_utm_term_idx ON integration.analytics_events (store_id, utm_term, occurred_at DESC, id DESC) WHERE utm_term IS NOT NULL;
+CREATE INDEX analytics_events_utm_content_idx ON integration.analytics_events (store_id, utm_content, occurred_at DESC, id DESC) WHERE utm_content IS NOT NULL;
 
 CREATE TABLE integration.analytics_destinations (
     id                          UUID        NOT NULL PRIMARY KEY,

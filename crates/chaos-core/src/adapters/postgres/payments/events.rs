@@ -989,33 +989,6 @@ async fn apply_refund_event(
         }
         recompute_order_refund_summary(transaction, store_id, OrderId::from_uuid(order_id), now)
             .await?;
-        let shopper_id: Uuid = sqlx::query_scalar(
-            "SELECT shopper_id FROM commerce.orders WHERE store_id = $1 AND id = $2",
-        )
-        .bind(store_id.as_uuid())
-        .bind(order_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        append_event(
-            transaction,
-            AnalyticsEventToAppend {
-                store_id: store_id.as_uuid(),
-                shopper_id,
-                event_id: refund_row_id,
-                event_name: "refund".into(),
-                properties: json!({
-                    "_source": "server",
-                    "refund_id": refund_row_id,
-                    "order_id": order_id,
-                    "value_minor": amount,
-                    "currency": order_currency,
-                }),
-                occurred_at: provider_event_time(provider_payload, now),
-                received_at: now,
-            },
-        )
-        .await?;
     } else if target_status == "pending" {
         sqlx::query(
             "UPDATE commerce.refunds SET status = 'pending', \

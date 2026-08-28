@@ -195,17 +195,19 @@ impl PostgresStripeRepository {
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(OrderId::from_uuid)
                 .ok_or_else(corrupt_webhook_payload)?;
-            Some(apply_payment_event(
-                &mut transaction,
-                StoreId::from_uuid(job.store_id),
-                order_id,
-                provider_account_id,
-                normalized_event_type,
-                failure_code,
-                &job.payload,
-                now,
+            Some(
+                apply_payment_event(
+                    &mut transaction,
+                    StoreId::from_uuid(job.store_id),
+                    order_id,
+                    provider_account_id,
+                    normalized_event_type,
+                    failure_code,
+                    &job.payload,
+                    now,
+                )
+                .await?,
             )
-            .await?)
         } else if normalized_event_type == "refund.reconcile" {
             let payment_intent = job
                 .payload
@@ -234,18 +236,20 @@ impl PostgresStripeRepository {
                 .and_then(Value::as_str)
                 .and_then(|value| Uuid::parse_str(value).ok())
                 .map(RefundId::from_uuid);
-            Some(apply_refund_event(
-                &mut transaction,
-                StoreId::from_uuid(job.store_id),
-                refund_id,
-                provider_account_id,
-                normalized_event_type,
-                stripe_object_id,
-                failure_code,
-                &job.payload,
-                now,
+            Some(
+                apply_refund_event(
+                    &mut transaction,
+                    StoreId::from_uuid(job.store_id),
+                    refund_id,
+                    provider_account_id,
+                    normalized_event_type,
+                    stripe_object_id,
+                    failure_code,
+                    &job.payload,
+                    now,
+                )
+                .await?,
             )
-            .await?)
         } else {
             return Err(corrupt_webhook_payload());
         };
@@ -508,59 +512,14 @@ impl PostgresStripeRepository {
             .internal_event_type
             .as_deref()
             .ok_or_else(invalid_outbox_payload)?;
+        if internal_event_type == "payment.checkout_session" {
+            // Creating a Checkout Session is not a payment-information
+            // submission. The payment webhook owns the eventual Purchase
+            // event, so there is no analytics write at this stage.
+            return Ok(());
+        }
         let mut transaction = self.begin_context(None, job.store_id).await?;
-        let rows = if internal_event_type == "payment.checkout_session" {
-            // The Checkout Session id itself is not persisted — only the
-            // PaymentIntent id (set later, once Stripe reports it via
-            // webhook) is kept for refunds/lookups — so this call only
-            // needs to confirm the Order still exists to create against.
-            // total_amount_minor is not yet known at this point (it is a
-            // Stripe-reported fact filled in only once the session settles).
-            // This legacy internal marker is recorded with the same subtotal
-            // reference as the checkout command, but is not sent to Meta:
-            // creating a Checkout Session is not payment-information
-            // submission.
-            let order = sqlx::query_as::<_, (Uuid, i64, String)>(
-                "SELECT shopper_id, subtotal_amount_minor, currency::text \
-                 FROM commerce.orders \
-                 WHERE store_id = $1 AND id = $2",
-            )
-            .bind(job.store_id)
-            .bind(aggregate_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-            let Some((shopper_id, amount_minor, currency)) = order else {
-                return Err(stripe_object_mismatch());
-            };
-            let items = load_order_analytics_items(&mut transaction, job.store_id, aggregate_id).await?;
-            let num_items: i64 = items
-                .iter()
-                .filter_map(|item| item.get("quantity").and_then(Value::as_i64))
-                .sum();
-            append_event(
-                &mut transaction,
-                AnalyticsEventToAppend {
-                    store_id: job.store_id,
-                    shopper_id,
-                    event_id: aggregate_id,
-                    event_name: "add_payment_info".into(),
-                    properties: json!({
-                        "_source": "server",
-                        "order_id": aggregate_id,
-                        "value_minor": amount_minor,
-                        "currency": currency,
-                        "provider": job.provider.as_deref().unwrap_or("stripe"),
-                        "num_items": num_items,
-                        "items": items,
-                    }),
-                    occurred_at: now,
-                    received_at: now,
-                },
-            )
-            .await?;
-            1
-        } else if internal_event_type == "refund.create_requested" {
+        let rows = if internal_event_type == "refund.create_requested" {
             sqlx::query(
                 "UPDATE commerce.refunds \
                  SET payment_provider_reference_id = COALESCE(payment_provider_reference_id, $3), \
@@ -585,7 +544,6 @@ impl PostgresStripeRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(())
     }
-
 }
 
 fn direct_checkout_job(

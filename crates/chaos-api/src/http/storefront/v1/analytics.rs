@@ -93,10 +93,10 @@ async fn collect_events(
 /// values are always replaced with the values from the request.
 fn request_meta(headers: &HeaderMap) -> Map<String, Value> {
     let mut meta = Map::new();
-    if let Some(value) = cookie(headers, "_fbc") {
+    if let Some(value) = cookie(headers, "_fbc").filter(|value| valid_meta_browser_id(value)) {
         meta.insert("fbc".into(), Value::String(value));
     }
-    if let Some(value) = cookie(headers, "_fbp") {
+    if let Some(value) = cookie(headers, "_fbp").filter(|value| valid_meta_browser_id(value)) {
         meta.insert("fbp".into(), Value::String(value));
     }
     if let Some(value) = headers
@@ -156,6 +156,22 @@ fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
         .filter(|value| value.len() <= 512)
 }
 
+fn valid_meta_browser_id(value: &str) -> bool {
+    let mut parts = value.splitn(4, '.');
+    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    prefix == "fb"
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && timestamp.len() == 13
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        && !suffix.is_empty()
+        && !suffix.chars().any(char::is_whitespace)
+}
+
 fn client_ip(headers: &HeaderMap) -> Option<String> {
     ["x-forwarded-for", "x-real-ip"]
         .into_iter()
@@ -193,7 +209,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
-            HeaderValue::from_static("_fbp=fb.1.browser; _fbc=fb.1.click"),
+            HeaderValue::from_static(
+                "_fbp=fb.1.1234567890123.browser; _fbc=fb.1.1234567890123.click",
+            ),
         );
         headers.insert(USER_AGENT, HeaderValue::from_static("ChaosBrowser/1.0"));
         headers.insert(
@@ -201,10 +219,20 @@ mod tests {
             HeaderValue::from_static("203.0.113.8, 10.0.0.2"),
         );
         let meta = request_meta(&headers);
-        assert_eq!(meta["fbp"], "fb.1.browser");
-        assert_eq!(meta["fbc"], "fb.1.click");
+        assert_eq!(meta["fbp"], "fb.1.1234567890123.browser");
+        assert_eq!(meta["fbc"], "fb.1.1234567890123.click");
         assert_eq!(meta["client_user_agent"], "ChaosBrowser/1.0");
         assert_eq!(meta["client_ip_address"], "203.0.113.8");
+    }
+
+    #[test]
+    fn request_context_ignores_invalid_browser_matching_cookies() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, HeaderValue::from_static("_fbc=fb.1.123.click"));
+
+        let meta = request_meta(&headers);
+
+        assert!(meta.get("fbc").is_none());
     }
 
     #[test]
@@ -212,23 +240,25 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
-            HeaderValue::from_static("_fbp=fb.1.current; _fbc=fb.1.current-click"),
+            HeaderValue::from_static(
+                "_fbp=fb.1.1234567890123.current; _fbc=fb.1.1234567890123.current-click",
+            ),
         );
         headers.insert(USER_AGENT, HeaderValue::from_static("ChaosBrowser/2.0"));
         headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.10"));
         let properties = serde_json::json!({
             "path": "/products",
             "_meta": {
-                "fbp": "fb.1.event",
-                "fbc": "fb.1.event-click",
+                "fbp": "fb.1.1234567890123.event",
+                "fbc": "fb.1.1234567890123.event-click",
                 "client_user_agent": "EventBrowser/1.0",
                 "client_ip_address": "203.0.113.9",
                 "source_url": "https://shop.example/products"
             }
         });
         let merged = merge_request_meta(properties, &request_meta(&headers));
-        assert_eq!(merged["_meta"]["fbp"], "fb.1.event");
-        assert_eq!(merged["_meta"]["fbc"], "fb.1.event-click");
+        assert_eq!(merged["_meta"]["fbp"], "fb.1.1234567890123.event");
+        assert_eq!(merged["_meta"]["fbc"], "fb.1.1234567890123.event-click");
         assert_eq!(merged["_meta"]["client_user_agent"], "ChaosBrowser/2.0");
         assert_eq!(merged["_meta"]["client_ip_address"], "203.0.113.10");
         assert_eq!(
