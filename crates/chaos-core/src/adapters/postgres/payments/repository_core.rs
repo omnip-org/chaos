@@ -32,7 +32,10 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::adapters::postgres::{
-    analytics::{AnalyticsEventToAppend, append_event},
+    analytics::{
+        AnalyticsEventToAppend, append_event, load_checkout_attribution, merge_attribution,
+        merge_order_identity,
+    },
     sales::{consume_order_inventory, release_order_inventory},
 };
 

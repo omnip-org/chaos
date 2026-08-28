@@ -133,12 +133,13 @@ and releases the reservation. There is no local Checkout aggregate to expire
 or reconcile.
 
 Analytics uses one append-only, Store-scoped behavior event ledger. The common
-envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, and time;
-event-specific values such as product, cart, order, session, traffic, and money
-are stored in bounded `properties` JSON. `event_name` is validated only as a
-lowercase snake-case identifier, not as a database enum, so new behaviors do
-not require a migration. Provider delivery is an optional retryable projection
-of stored events through destination and delivery records. See ADR 0026.
+envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, time,
+nullable `session_id`, and normalized UTM columns; event-specific values such as
+product, cart, order, traffic, and money remain in bounded `properties` JSON.
+`event_name` is validated only as a lowercase snake-case identifier, not as a
+database enum, so new behaviors do not require a migration. Provider delivery
+is an optional retryable projection of stored events through destination and
+delivery records. See ADR 0026.
 
 The `integration` schema owns `provider_accounts`, `provider_webhook_inbox`,
 event routes, and event outbox routing. `provider_accounts` uses one row shape for

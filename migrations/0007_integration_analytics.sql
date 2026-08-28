@@ -46,6 +46,7 @@ CREATE INDEX analytics_events_utm_medium_idx ON integration.analytics_events (st
 CREATE INDEX analytics_events_utm_campaign_idx ON integration.analytics_events (store_id, utm_campaign, occurred_at DESC, id DESC) WHERE utm_campaign IS NOT NULL;
 CREATE INDEX analytics_events_utm_term_idx ON integration.analytics_events (store_id, utm_term, occurred_at DESC, id DESC) WHERE utm_term IS NOT NULL;
 CREATE INDEX analytics_events_utm_content_idx ON integration.analytics_events (store_id, utm_content, occurred_at DESC, id DESC) WHERE utm_content IS NOT NULL;
+CREATE INDEX analytics_events_checkout_order_idx ON integration.analytics_events (store_id, (properties->>'order_id'), occurred_at DESC, id DESC) WHERE event_name = 'initiate_checkout' AND properties->>'_source' = 'browser' AND properties ? 'order_id';
 
 CREATE TABLE integration.analytics_destinations (
     id                          UUID        NOT NULL PRIMARY KEY,

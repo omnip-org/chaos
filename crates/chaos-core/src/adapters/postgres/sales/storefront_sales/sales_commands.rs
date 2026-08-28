@@ -104,16 +104,6 @@ impl PostgresStorefrontSalesRepository {
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
         let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
         ensure_cart_version(header.4, expected_version)?;
-        let previous_quantity: Option<i32> = sqlx::query_scalar(
-            "SELECT quantity FROM commerce.cart_lines \
-             WHERE store_id = $1 AND cart_id = $2 AND product_variant_id = $3",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(cart_id.as_uuid())
-        .bind(product_variant_id.as_uuid())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?;
         let currency = parse_currency(&header.2)?;
         let row = resolve_variant(
             &mut transaction,
@@ -151,43 +141,6 @@ impl PostgresStorefrontSalesRepository {
         )?;
         insert_or_replace_line(&mut transaction, actor, cart_id, &line).await?;
         bump_cart(&mut transaction, actor, cart_id).await?;
-        let previous_quantity = previous_quantity
-            .and_then(|value| u32::try_from(value).ok())
-            .unwrap_or_default();
-        if quantity > previous_quantity {
-            let now = OffsetDateTime::now_utc();
-            let added_quantity = quantity - previous_quantity;
-            let value_minor = row.5.checked_mul(i64::from(added_quantity)).ok_or_else(|| {
-                ApplicationError::Unexpected(anyhow::anyhow!(
-                    "add_to_cart analytics value overflow"
-                ))
-            })?;
-            append_event(
-                &mut transaction,
-                AnalyticsEventToAppend {
-                    store_id: actor.store_id.as_uuid(),
-                    shopper_id: shopper.shopper_id.as_uuid(),
-                    event_id: Uuid::now_v7(),
-                    event_name: "add_to_cart".into(),
-                    properties: json!({
-                        "_source": "server",
-                        "cart_id": cart_id.as_uuid(),
-                        "product_variant_id": product_variant_id.as_uuid(),
-                        "quantity": added_quantity,
-                        "value_minor": value_minor,
-                        "currency": currency.as_str(),
-                        "items": [{
-                            "item_id": product_variant_id.as_uuid(),
-                            "quantity": added_quantity,
-                            "price_minor": row.5,
-                        }],
-                    }),
-                    occurred_at: now,
-                    received_at: now,
-                },
-            )
-            .await?;
-        }
         let detail = load_cart(&mut transaction, actor, cart_id)
             .await?
             .ok_or_else(|| cart_not_found(cart_id))?;
@@ -370,48 +323,6 @@ impl PostgresStorefrontSalesRepository {
         let order_id = requested_order_id;
         reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
-        let items = cart
-            .lines()
-            .iter()
-            .map(|line| {
-                json!({
-                    "item_id": line.product_variant_id().as_uuid(),
-                    "quantity": line.quantity(),
-                    "price_minor": line.unit_price().amount_minor(),
-                })
-            })
-            .collect::<Vec<_>>();
-        let num_items: u32 = cart
-            .lines()
-            .iter()
-            .map(CartLine::quantity)
-            .sum();
-        // Stripe calculates tax, promotions, shipping, and the final total
-        // inside Checkout. InitiateCheckout therefore reports the immutable
-        // item subtotal known when the provisional Order is created; Purchase
-        // reports the final provider-reconciled total later.
-        append_event(
-            &mut transaction,
-            AnalyticsEventToAppend {
-                store_id: actor.store_id.as_uuid(),
-                shopper_id: shopper.shopper_id.as_uuid(),
-                event_id: order_id.as_uuid(),
-                event_name: "initiate_checkout".into(),
-                properties: json!({
-                    "_source": "server",
-                    "cart_id": cart_id.as_uuid(),
-                    "order_id": order_id.as_uuid(),
-                    "payment_ui": "stripe_embedded_checkout",
-                    "value_minor": subtotal,
-                    "currency": currency.as_str(),
-                    "num_items": num_items,
-                    "items": items,
-                }),
-                occurred_at: request.now,
-                received_at: request.now,
-            },
-        )
-        .await?;
         let draft = StripeCheckoutDraft {
             order_id,
             currency,

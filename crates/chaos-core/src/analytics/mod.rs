@@ -114,6 +114,12 @@ fn validate_event(
             "must be 1-64 lowercase snake_case bytes",
         ));
     }
+    if event.event_name == "purchase" {
+        return Err(validation(
+            "events.event_name",
+            "must be recorded by payment confirmation, not generic browser analytics",
+        ));
+    }
     if !event.properties.is_object() {
         return Err(validation("events.properties", "must be a JSON object"));
     }
@@ -282,5 +288,42 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_client_purchase_from_browser_collection() {
+        let now = OffsetDateTime::now_utc();
+        assert!(
+            validate_event(
+                &AnalyticsEventInput {
+                    event_id: Uuid::now_v7(),
+                    event_name: "purchase".into(),
+                    occurred_at: now,
+                    properties: json!({}),
+                },
+                now,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_client_commerce_events_after_their_operations() {
+        let now = OffsetDateTime::now_utc();
+        for event_name in ["add_to_cart", "initiate_checkout"] {
+            assert!(
+                validate_event(
+                    &AnalyticsEventInput {
+                        event_id: Uuid::now_v7(),
+                        event_name: event_name.into(),
+                        occurred_at: now,
+                        properties: json!({}),
+                    },
+                    now,
+                )
+                .is_ok(),
+                "{event_name} is collected after a successful commerce operation"
+            );
+        }
     }
 }

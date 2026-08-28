@@ -6,6 +6,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+const MAX_META_BROWSER_ID_BYTES: usize = 2_048;
 const MAX_UTM_VALUE_BYTES: usize = 2_048;
 
 pub struct PostgresAnalyticsEventStore {
@@ -76,6 +77,16 @@ type AnalyticsDestinationRow = (
     OffsetDateTime,
 );
 
+type CheckoutAttributionRow = (
+    Value,
+    Option<Uuid>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 async fn context(
     tx: &mut Transaction<'_, Postgres>,
     store: Uuid,
@@ -113,14 +124,6 @@ pub(crate) async fn append_event(
     event: AnalyticsEventToAppend,
 ) -> Result<bool, ApplicationError> {
     let mut properties = event.properties;
-    enrich_server_meta(
-        tx,
-        event.store_id,
-        event.shopper_id,
-        event.occurred_at,
-        &mut properties,
-    )
-    .await?;
     let session_id = properties
         .get("session_id")
         .and_then(Value::as_str)
@@ -207,113 +210,18 @@ pub(crate) async fn append_event(
     Ok(true)
 }
 
-/// Attach the best known browser attribution and order identity context to
-/// server events without adding a second analytics table or exposing raw
-/// contact data. A server conversion commonly happens after the browser event
-/// was flushed, so the latest browser context gives the first-party ledger and
-/// CAPI the same traffic/session and fbc/fbp, URL, IP and UA that the Pixel
-/// saw. Order contact fields are normalized and hashed here.
-async fn enrich_server_meta(
-    tx: &mut Transaction<'_, Postgres>,
-    store_id: Uuid,
-    shopper_id: Uuid,
-    occurred_at: OffsetDateTime,
-    properties: &mut Value,
-) -> Result<(), ApplicationError> {
+/// Keep only the attribution context that is safe and useful to carry from the
+/// exact browser checkout event into a server-authoritative Purchase. In
+/// particular, this never queries another browser event: the event associated
+/// with the Order is the sole source of fbc/fbp, session, traffic, URL, UA, and
+/// IP.
+pub(crate) fn attribution_from_properties(properties: &Value) -> Value {
     let Some(object) = properties.as_object() else {
-        return Ok(());
+        return Value::Object(Map::new());
     };
-    if object.get("_source").and_then(Value::as_str) != Some("server") {
-        return Ok(());
-    }
-    let order_id = object
-        .get("order_id")
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok());
-    let cart_id = object
-        .get("cart_id")
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok());
-    let explicit_meta = object.get("_meta").and_then(Value::as_object).cloned();
-    let has_explicit_traffic = object.contains_key("traffic");
-    let has_explicit_session_id = object
-        .get("session_id")
-        .and_then(Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .is_some();
-
-    let browser_context: Option<(Option<Value>, Option<Value>, Option<Uuid>)> = sqlx::query_as(
-        "SELECT properties->'_meta', properties->'traffic', session_id
-           FROM integration.analytics_events
-          WHERE store_id = $1 AND shopper_id = $2
-            AND properties->>'_source' = 'browser'
-            AND occurred_at <= $3
-          ORDER BY occurred_at DESC, received_at DESC, id DESC
-          LIMIT 1",
-    )
-    .bind(store_id)
-    .bind(shopper_id)
-    .bind(occurred_at)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db)?;
-
-    let order_context: Option<(Option<String>, Option<String>, String)> =
-        if let Some(order_id) = order_id {
-            sqlx::query_as(
-                "SELECT order_row.contact_email::text, order_row.contact_phone,
-                        channel.storefront_origin
-                   FROM commerce.orders AS order_row
-                   JOIN commerce.store_sales_channels AS channel
-                     ON channel.store_id = order_row.store_id
-                    AND channel.id = order_row.sales_channel_id
-                  WHERE order_row.store_id = $1 AND order_row.id = $2",
-            )
-            .bind(store_id)
-            .bind(order_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?
-        } else {
-            None
-        };
-    let cart_origin: Option<String> = if order_context.is_none() {
-        if let Some(cart_id) = cart_id {
-            sqlx::query_scalar(
-                "SELECT channel.storefront_origin
-                       FROM commerce.carts AS cart
-                       JOIN commerce.store_sales_channels AS channel
-                         ON channel.store_id = cart.store_id
-                        AND channel.id = cart.sales_channel_id
-                      WHERE cart.store_id = $1 AND cart.id = $2",
-            )
-            .bind(store_id)
-            .bind(cart_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db)?
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let mut meta = Map::new();
-    if let Some((email, phone, origin)) = order_context {
-        meta.insert("source_url".into(), Value::String(origin));
-        if let Some(email) = email.and_then(|value| normalized_email_hash(&value)) {
-            meta.insert("em".into(), Value::String(email));
-        }
-        if let Some(phone) = phone.and_then(|value| normalized_phone_hash(&value)) {
-            meta.insert("ph".into(), Value::String(phone));
-        }
-    } else if let Some(origin) = cart_origin {
-        meta.insert("source_url".into(), Value::String(origin));
-    }
-    let (browser_meta, browser_traffic, browser_session_id) =
-        browser_context.unwrap_or((None, None, None));
-    if let Some(Value::Object(browser_meta)) = browser_meta {
+    let mut snapshot = Map::new();
+    if let Some(Value::Object(meta)) = object.get("_meta") {
+        let mut selected = Map::new();
         for key in [
             "source_url",
             "fbc",
@@ -321,26 +229,197 @@ async fn enrich_server_meta(
             "client_ip_address",
             "client_user_agent",
         ] {
-            if let Some(value) = browser_meta.get(key) {
-                meta.insert(key.into(), value.clone());
+            if let Some(value) = meta
+                .get(key)
+                .filter(|value| attribution_value_is_safe(key, value))
+            {
+                selected.insert(key.into(), value.clone());
+            }
+        }
+        if !selected.is_empty() {
+            snapshot.insert("_meta".into(), Value::Object(selected));
+        }
+    }
+    for key in [
+        "session_id",
+        "traffic",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+    ] {
+        if let Some(value) = object
+            .get(key)
+            .filter(|value| attribution_value_is_safe(key, value))
+        {
+            snapshot.insert(key.into(), value.clone());
+        }
+    }
+    let result = Value::Object(snapshot);
+    if serde_json::to_vec(&result)
+        .map(|value| value.len() <= 32_768)
+        .unwrap_or(false)
+    {
+        result
+    } else {
+        Value::Object(Map::new())
+    }
+}
+
+/// Merge an event's captured attribution into a server-authoritative event.
+/// Existing server values win, so request-derived network context and order
+/// identity cannot be overwritten by a browser payload.
+pub(crate) fn merge_attribution(properties: &mut Value, attribution: &Value) {
+    let (Some(target), Some(source)) = (properties.as_object_mut(), attribution.as_object()) else {
+        return;
+    };
+    if let Some(Value::Object(source_meta)) = source.get("_meta") {
+        let target_meta = target
+            .entry("_meta")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(target_meta) = target_meta.as_object_mut() {
+            for (key, value) in source_meta {
+                target_meta
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
     }
-    if let Some(explicit_meta) = explicit_meta {
-        meta.extend(explicit_meta);
+    for key in [
+        "session_id",
+        "traffic",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+    ] {
+        if let Some(value) = source.get(key) {
+            target.entry(key).or_insert_with(|| value.clone());
+        }
     }
-    if let Some(object) = properties.as_object_mut() {
-        if !meta.is_empty() {
-            object.insert("_meta".into(), Value::Object(meta));
-        }
-        if !has_explicit_traffic && let Some(Value::Object(traffic)) = browser_traffic {
-            object.insert("traffic".into(), Value::Object(traffic));
-        }
-        if !has_explicit_session_id && let Some(session_id) = browser_session_id {
+}
+
+/// Load attribution from the exact browser-side InitiateCheckout event that
+/// the SDK records after an Order is created. A later payment webhook can
+/// correlate by order_id without using the latest browser event or adding
+/// attribution columns to commerce.orders.
+pub(crate) async fn load_checkout_attribution(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: Uuid,
+    order_id: Uuid,
+) -> Result<Value, ApplicationError> {
+    let row: Option<CheckoutAttributionRow> = sqlx::query_as(
+        "SELECT properties,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content
+            FROM integration.analytics_events
+          WHERE store_id = $1
+            AND event_name = 'initiate_checkout'
+            AND properties->>'_source' = 'browser'
+            AND properties->>'order_id' = $2
+          ORDER BY occurred_at DESC, received_at DESC, id DESC
+          LIMIT 1",
+    )
+    .bind(store_id)
+    .bind(order_id.to_string())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db)?;
+    let Some((properties, session_id, utm_source, utm_medium, utm_campaign, utm_term, utm_content)) =
+        row
+    else {
+        return Ok(Value::Object(Map::new()));
+    };
+    let mut attribution = attribution_from_properties(&properties);
+    if let Some(object) = attribution.as_object_mut() {
+        if let Some(session_id) = session_id {
             object.insert("session_id".into(), Value::String(session_id.to_string()));
         }
+        for (key, value) in [
+            ("utm_source", utm_source),
+            ("utm_medium", utm_medium),
+            ("utm_campaign", utm_campaign),
+            ("utm_term", utm_term),
+            ("utm_content", utm_content),
+        ] {
+            if let Some(value) = value {
+                object.insert(key.into(), Value::String(value));
+            }
+        }
     }
-    Ok(())
+    Ok(attribution)
+}
+
+/// Add server-owned order contact identity and the canonical storefront origin
+/// without coupling conversion delivery to an arbitrary browser ledger row.
+pub(crate) fn merge_order_identity(
+    properties: &mut Value,
+    email: Option<&str>,
+    phone: Option<&str>,
+    origin: Option<&str>,
+) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    let meta = object
+        .entry("_meta")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(meta) = meta.as_object_mut() else {
+        return;
+    };
+    if let Some(origin) = origin.filter(|value| !value.trim().is_empty()) {
+        meta.entry("source_url")
+            .or_insert_with(|| Value::String(origin.to_owned()));
+    }
+    if let Some(email) = email.and_then(normalized_email_hash) {
+        meta.insert("em".into(), Value::String(email));
+    }
+    if let Some(phone) = phone.and_then(normalized_phone_hash) {
+        meta.insert("ph".into(), Value::String(phone));
+    }
+}
+
+fn attribution_value_is_safe(key: &str, value: &Value) -> bool {
+    match key {
+        "fbc" | "fbp" => value.as_str().is_some_and(valid_meta_browser_id),
+        "session_id" => value
+            .as_str()
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .is_some(),
+        "utm_source" | "utm_medium" | "utm_campaign" | "utm_term" | "utm_content" => {
+            normalized_utm_value(Some(value)).is_some()
+        }
+        "source_url" => value
+            .as_str()
+            .is_some_and(|value| value.len() <= 2_048 && !value.chars().any(char::is_control)),
+        "client_ip_address" => value
+            .as_str()
+            .is_some_and(|value| value.parse::<std::net::IpAddr>().is_ok()),
+        "client_user_agent" => value.as_str().is_some_and(|value| {
+            !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+        }),
+        "traffic" => value.is_object(),
+        _ => false,
+    }
+}
+
+fn valid_meta_browser_id(value: &str) -> bool {
+    if value.len() > MAX_META_BROWSER_ID_BYTES {
+        return false;
+    }
+    let mut parts = value.splitn(4, '.');
+    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    prefix == "fb"
+        && !version.is_empty()
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && timestamp.len() == 13
+        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        && !suffix.is_empty()
+        && !suffix.chars().any(char::is_whitespace)
 }
 
 fn normalized_email_hash(value: &str) -> Option<String> {
@@ -715,18 +794,7 @@ impl PostgresAnalyticsDeliveryStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-        let mut properties = row.8;
-        // A browser batch may arrive after the server event transaction. Give
-        // the delivery path one more opportunity to associate attribution
-        // before CAPI is called, without mutating the immutable event ledger.
-        enrich_server_meta(
-            &mut tx,
-            job.store_id.as_uuid(),
-            row.7,
-            row.6,
-            &mut properties,
-        )
-        .await?;
+        let properties = row.8;
         tx.commit().await.map_err(db)?;
         Ok(AnalyticsDeliveryCommand {
             delivery_id: job.id,
@@ -783,7 +851,10 @@ fn db(error: sqlx::Error) -> ApplicationError {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_utm_value, parse_optional_rfc3339, traffic_utm_value};
+    use super::{
+        attribution_from_properties, merge_attribution, normalized_utm_value,
+        parse_optional_rfc3339, traffic_utm_value,
+    };
     use serde_json::json;
 
     #[test]
@@ -824,5 +895,67 @@ mod tests {
             Some("newsletter".into())
         );
         assert_eq!(traffic_utm_value(&value, "medium"), Some("email".into()));
+    }
+
+    #[test]
+    fn extracts_only_event_attribution_for_later_server_conversions() {
+        let session_id = "11111111-1111-4111-8111-111111111111";
+        let properties = json!({
+            "_meta": {
+                "source_url": "https://shop.example/products",
+                "fbc": "fb.1.1234567890123.click",
+                "fbp": "fb.1.1234567890123.browser",
+                "client_ip_address": "203.0.113.8",
+                "client_user_agent": "ChaosBrowser/1.0",
+                "em": "raw-email-must-not-be-copied"
+            },
+            "session_id": session_id,
+            "traffic": {"session": {"source": "newsletter"}},
+            "utm_source": "newsletter",
+            "utm_medium": "email",
+            "em": "raw-email-must-not-be-copied",
+            "product_id": "product-is-not-attribution"
+        });
+
+        let snapshot = attribution_from_properties(&properties);
+
+        assert_eq!(snapshot["_meta"]["fbc"], "fb.1.1234567890123.click");
+        assert_eq!(snapshot["_meta"]["fbp"], "fb.1.1234567890123.browser");
+        assert_eq!(snapshot["session_id"], session_id);
+        assert_eq!(snapshot["utm_source"], "newsletter");
+        assert!(snapshot["_meta"].get("em").is_none());
+        assert!(snapshot.get("em").is_none());
+        assert!(snapshot.get("product_id").is_none());
+    }
+
+    #[test]
+    fn merges_captured_attribution_without_replacing_server_values() {
+        let mut properties = json!({
+            "_meta": {
+                "source_url": "https://canonical.example/checkout"
+            },
+            "session_id": "22222222-2222-4222-8222-222222222222"
+        });
+        let attribution = json!({
+            "_meta": {
+                "source_url": "https://browser.example/product",
+                "fbc": "fb.1.1234567890123.click"
+            },
+            "session_id": "33333333-3333-4333-8333-333333333333",
+            "utm_campaign": "summer"
+        });
+
+        merge_attribution(&mut properties, &attribution);
+
+        assert_eq!(
+            properties["_meta"]["source_url"],
+            "https://canonical.example/checkout"
+        );
+        assert_eq!(properties["_meta"]["fbc"], "fb.1.1234567890123.click");
+        assert_eq!(
+            properties["session_id"],
+            "22222222-2222-4222-8222-222222222222"
+        );
+        assert_eq!(properties["utm_campaign"], "summer");
     }
 }

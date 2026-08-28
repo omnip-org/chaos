@@ -30,7 +30,9 @@ class MemoryStorage {
 }
 
 function harness(
-  responses: Array<{ ok: boolean; status: number; body?: unknown }> = [{ ok: true, status: 200 }],
+  responses: Array<{ ok: boolean; status: number; body?: unknown }> = [
+    { ok: true, status: 200 },
+  ],
   options: {
     autoStart?: boolean;
     localStorage?: MemoryStorage;
@@ -50,7 +52,10 @@ function harness(
   let elapsed = 0;
   let sequence = 0;
   let focused = true;
-  const requests: Array<{ url: string; options: { body: string; headers?: Record<string, string> } }> = [];
+  const requests: Array<{
+    url: string;
+    options: { body: string; headers?: Record<string, string> };
+  }> = [];
   const scripts: Array<{ id: string; src: string; async: boolean }> = [];
   const document = Object.assign(new FakeTarget(), {
     cookie: options.cookie ?? "",
@@ -67,14 +72,25 @@ function harness(
     hasFocus: () => focused,
     getElementById: (id: string) => scripts.find((script) => script.id === id),
     createElement: () => ({ id: "", src: "", async: false }),
-    head: { appendChild: (script: { id: string; src: string; async: boolean }) => scripts.push(script) },
+    head: {
+      appendChild: (script: { id: string; src: string; async: boolean }) =>
+        scripts.push(script),
+    },
   });
   const window = Object.assign(new FakeTarget(), {
     localStorage: options.localStorage ?? new MemoryStorage(),
     sessionStorage: options.sessionStorage ?? new MemoryStorage(),
     history: {
-      pushState: (_data: unknown, _unused: string, _url?: string | URL | null) => {},
-      replaceState: (_data: unknown, _unused: string, _url?: string | URL | null) => {},
+      pushState: (
+        _data: unknown,
+        _unused: string,
+        _url?: string | URL | null,
+      ) => {},
+      replaceState: (
+        _data: unknown,
+        _unused: string,
+        _url?: string | URL | null,
+      ) => {},
     },
     navigator: { userAgent: options.userAgent ?? "ChaosTest/1.0" },
   });
@@ -85,15 +101,22 @@ function harness(
     window: window as unknown as Window & typeof globalThis,
     now: () => time,
     monotonicNow: () => elapsed,
-    randomUUID: () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
+    randomUUID: () =>
+      `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`,
     setInterval: (() => 1) as unknown as typeof setInterval,
     clearInterval: (() => {}) as unknown as typeof clearInterval,
     autoStart: options.autoStart ?? false,
     ...(options.providers ? { providers: options.providers } : {}),
-    fetch: (async (url: string, request: { body: string; headers?: Record<string, string> }) => {
+    fetch: (async (
+      url: string,
+      request: { body: string; headers?: Record<string, string> },
+    ) => {
       requests.push({ url, options: request });
       const response = responses.shift() ?? { ok: true, status: 200 };
-      return { ...response, json: async () => response.body ?? { data: {} } } as Response;
+      return {
+        ...response,
+        json: async () => response.body ?? { data: {} },
+      } as Response;
     }) as unknown as typeof fetch,
   });
   return {
@@ -114,9 +137,13 @@ function harness(
 
 test("starts collection and records valid custom behavior names", async () => {
   const environment = harness([{ ok: true, status: 200 }], { autoStart: true });
-  const eventId = environment.analytics.track("store_defined_event", { product_id: "product-1" });
+  const eventId = environment.analytics.track("store_defined_event", {
+    product_id: "product-1",
+  });
   await environment.analytics.flush();
-  const events = environment.requests.flatMap((request) => JSON.parse(request.options.body).events);
+  const events = environment.requests.flatMap(
+    (request) => JSON.parse(request.options.body).events,
+  );
   assert.equal(events[0].event_name, "page_view");
   assert.equal(events[1].event_id, eventId);
   assert.equal(events[1].properties.product_id, "product-1");
@@ -130,7 +157,9 @@ test("retries a generic event with the same event ID", async () => {
     { ok: false, status: 503 },
     { ok: true, status: 200 },
   ]);
-  const eventId = environment.analytics.track("coupon_applied", { code: "WELCOME" });
+  const eventId = environment.analytics.track("coupon_applied", {
+    code: "WELCOME",
+  });
   await assert.rejects(environment.analytics.flush(), /HTTP 503/);
   await environment.analytics.flush();
   const first = JSON.parse(environment.requests[0]!.options.body).events[0];
@@ -152,7 +181,8 @@ test("stores traffic context inside dynamic properties", async () => {
 
 test("stores the page URL without its fragment and Meta browser matching context", async () => {
   const environment = harness([{ ok: true, status: 200 }], {
-    cookie: "_fbp=fb.1.123.browser; _fbc=fb.1.1234567890123.cookie-click",
+    cookie:
+      "_fbp=fb.1.1234567890123.browser; _fbc=fb.1.1234567890123.cookie-click",
     href: "https://shop.example/products?variant=1#token=secret-capability",
     search: "?variant=1",
     userAgent: "ChaosBrowser/2.0",
@@ -160,9 +190,12 @@ test("stores the page URL without its fragment and Meta browser matching context
   environment.analytics.pageView();
   await environment.analytics.flush();
   const event = JSON.parse(environment.requests[0]!.options.body).events[0];
-  assert.equal(event.properties._meta.source_url, "https://shop.example/products?variant=1");
+  assert.equal(
+    event.properties._meta.source_url,
+    "https://shop.example/products?variant=1",
+  );
   assert.equal(event.properties._meta.fbc, "fb.1.1234567890123.cookie-click");
-  assert.equal(event.properties._meta.fbp, "fb.1.123.browser");
+  assert.equal(event.properties._meta.fbp, "fb.1.1234567890123.browser");
   assert.equal(event.properties._meta.client_user_agent, "ChaosBrowser/2.0");
 });
 
@@ -176,7 +209,22 @@ test("prefers a current fbclid over a stale _fbc cookie and writes milliseconds"
   const event = JSON.parse(environment.requests[0]!.options.body).events[0];
   const expectedFbc = `fb.1.${Date.parse("2026-08-16T00:00:00Z")}.current-click`;
   assert.equal(event.properties._meta.fbc, expectedFbc);
-  assert.match(environment.document.cookie, new RegExp(`_fbc=${encodeURIComponent(expectedFbc)}`));
+  assert.match(
+    environment.document.cookie,
+    new RegExp(`_fbc=${encodeURIComponent(expectedFbc)}`),
+  );
+});
+
+test("retains a long Meta click identifier within the attribution bound", () => {
+  const fbclid = "x".repeat(2_000);
+  const environment = harness([], { search: `?fbclid=${fbclid}` });
+  const event = environment.analytics.prepareCommerceEvent("add_to_cart");
+  const meta = event.properties._meta as Record<string, unknown>;
+
+  assert.equal(
+    meta.fbc,
+    `fb.1.${Date.parse("2026-08-16T00:00:00Z")}.${fbclid}`,
+  );
 });
 
 test("does not lose valid events when a server rejects one event in a batch", async () => {
@@ -184,17 +232,22 @@ test("does not lose valid events when a server rejects one event in a batch", as
     {
       ok: false,
       status: 422,
-      body: { error: { code: "validation_failed", message: "invalid event name" } },
+      body: {
+        error: { code: "validation_failed", message: "invalid event name" },
+      },
     },
     { ok: true, status: 200 },
     {
       ok: false,
       status: 422,
-      body: { error: { code: "validation_failed", message: "invalid event name" } },
+      body: {
+        error: { code: "validation_failed", message: "invalid event name" },
+      },
     },
   ]);
   const validEventId = environment.analytics.pageView();
-  const queue = (environment.analytics as unknown as { queue: unknown[] }).queue;
+  const queue = (environment.analytics as unknown as { queue: unknown[] })
+    .queue;
   queue.push({
     event_id: "00000000-0000-4000-8000-000000000998",
     event_name: "Invalid-Name",
@@ -206,10 +259,15 @@ test("does not lose valid events when a server rejects one event in a batch", as
 
   assert.equal(environment.requests.length, 3);
   assert.deepEqual(
-    JSON.parse(environment.requests[1]!.options.body).events.map((event: { event_id: string }) => event.event_id),
+    JSON.parse(environment.requests[1]!.options.body).events.map(
+      (event: { event_id: string }) => event.event_id,
+    ),
     [validEventId],
   );
-  assert.equal(environment.analytics.track("valid_custom_event"), "00000000-0000-4000-8000-000000000004");
+  assert.equal(
+    environment.analytics.track("valid_custom_event"),
+    "00000000-0000-4000-8000-000000000004",
+  );
 });
 
 test("rejects event names that the Storefront API cannot store", () => {
@@ -220,16 +278,21 @@ test("rejects event names that the Storefront API cannot store", () => {
   );
 });
 
-test("sends generic events to GA4 once and leaves server conversions to the server", () => {
+test("sends generic events to GA4 once and requires the commerce envelope", () => {
   const environment = harness([], {
     providers: { ga4: { measurementId: "G-TEST1234" } },
   });
-  environment.analytics.track("store_defined_event", { product_id: "product-1" });
-  environment.analytics.track("purchase", { order_id: "order-1" });
-
-  const events = (environment.window as unknown as { dataLayer: unknown[][] }).dataLayer.filter(
-    (call) => call[0] === "event",
+  environment.analytics.track("store_defined_event", {
+    product_id: "product-1",
+  });
+  assert.throws(
+    () => environment.analytics.track("purchase", { order_id: "order-1" }),
+    /after the commerce operation succeeds/,
   );
+
+  const events = (
+    environment.window as unknown as { dataLayer: unknown[][] }
+  ).dataLayer.filter((call) => call[0] === "event");
   assert.equal(events.length, 1);
   assert.equal(events[0]?.[1], "store_defined_event");
 });
@@ -291,23 +354,32 @@ test("splits active engagement into bounded behavior events", async () => {
   await environment.analytics.flush();
   const events = JSON.parse(environment.requests[0]!.options.body).events;
   assert.deepEqual(
-    events.filter((event: { event_name: string }) => event.event_name === "view_duration")
-      .map((event: { properties: { active_milliseconds: number } }) => event.properties.active_milliseconds),
+    events
+      .filter(
+        (event: { event_name: string }) => event.event_name === "view_duration",
+      )
+      .map(
+        (event: { properties: { active_milliseconds: number } }) =>
+          event.properties.active_milliseconds,
+      ),
     [60_000, 60_000, 5_000],
   );
 });
 
 test("keeps one stable provider event identity", () => {
   const environment = harness([], {
-    providers: { metaPixel: { pixelId: "12345" }, ga4: { measurementId: "G-TEST1234" } },
+    providers: {
+      metaPixel: { pixelId: "12345" },
+      ga4: { measurementId: "G-TEST1234" },
+    },
   });
   const eventId = environment.analytics.viewContent({
     productId: "00000000-0000-4000-8000-000000000200",
     productVariantId: "00000000-0000-4000-8000-000000000100",
   });
-  const metaTrack = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
-    (call) => call[0] === "track" && call[1] === "ViewContent",
-  );
+  const metaTrack = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.find((call) => call[0] === "track" && call[1] === "ViewContent");
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
 });
 
@@ -316,27 +388,95 @@ test("does not send duration or arbitrary events to Meta Pixel", () => {
     providers: { metaPixel: { pixelId: "12345" } },
   });
   environment.analytics.track("view_duration", { active_milliseconds: 1_000 });
-  environment.analytics.track("add_to_cart", { product_id: "product-1" });
-  environment.analytics.track("initiate_checkout", { order_id: "order-1" });
-  environment.analytics.track("store_defined_event", { product_id: "product-1" });
-  const trackCalls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.filter(
-    (call) => call[0] === "track",
+  assert.throws(
+    () =>
+      environment.analytics.track("add_to_cart", { product_id: "product-1" }),
+    /after the commerce operation succeeds/,
   );
+  assert.throws(
+    () =>
+      environment.analytics.track("initiate_checkout", { order_id: "order-1" }),
+    /after the commerce operation succeeds/,
+  );
+  environment.analytics.track("store_defined_event", {
+    product_id: "product-1",
+  });
+  const trackCalls = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.filter((call) => call[0] === "track");
   assert.equal(trackCalls.length, 0);
+});
+
+test("records commerce attribution through the common endpoint after success", async () => {
+  const environment = harness([], {
+    cookie: "_fbp=fb.1.1234567890123.browser; _fbc=fb.1.1234567890123.click",
+    search: "",
+    providers: {
+      metaPixel: { pixelId: "12345" },
+      ga4: { measurementId: "G-TEST1234" },
+    },
+  });
+  const event = environment.analytics.prepareCommerceEvent("add_to_cart", {
+    product_id: "product-1",
+    product_variant_id: "variant-1",
+    quantity: 1,
+  });
+
+  assert.equal(
+    (environment.analytics as unknown as { queue: unknown[] }).queue.length,
+    0,
+  );
+  const meta = event.properties._meta as Record<string, unknown>;
+  assert.equal(meta.fbc, "fb.1.1234567890123.click");
+  assert.equal(meta.fbp, "fb.1.1234567890123.browser");
+  assert.equal(typeof event.properties.session_id, "string");
+
+  const projected = environment.analytics.sendCommerceEvent(event, {
+    product_id: "product-1",
+    product_variant_id: "variant-1",
+    value_minor: 1_000,
+    currency: "USD",
+    items: [{ item_id: "variant-1", quantity: 1, price_minor: 1_000 }],
+  });
+  assert.equal(projected, event.event_id);
+  const metaTrack = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.find((call) => call[0] === "track" && call[1] === "AddToCart");
+  assert.deepEqual(metaTrack?.[3], { eventID: event.event_id });
+  await environment.analytics.flush();
+  const recorded = environment.requests.flatMap(
+    (request) => JSON.parse(request.options.body).events,
+  );
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].event_id, event.event_id);
+  assert.equal(recorded[0].event_name, "add_to_cart");
+  assert.equal(recorded[0].properties._meta.fbc, meta.fbc);
+  assert.equal(recorded[0].properties._meta.fbp, meta.fbp);
+  assert.equal(recorded[0].properties.value_minor, 1_000);
+  assert.equal(
+    (environment.analytics as unknown as { queue: unknown[] }).queue.length,
+    0,
+  );
 });
 
 test("maps browser Meta standard event payloads", () => {
   const environment = harness([], {
     providers: { metaPixel: { pixelId: "12345" } },
   });
-  const pageViewId = environment.analytics.pageView({ path: "/products", title: "Shoes" });
+  const pageViewId = environment.analytics.pageView({
+    path: "/products",
+    title: "Shoes",
+  });
   const viewContentId = environment.analytics.viewContent({
     productId: "product-1",
     productVariantId: "variant-1",
   });
   const searchId = environment.analytics.search({ query: "shoes" });
-  const calls = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue;
-  const findCall = (name: string) => calls.find((call) => call[0] === "track" && call[1] === name);
+  const calls = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue;
+  const findCall = (name: string) =>
+    calls.find((call) => call[0] === "track" && call[1] === name);
 
   assert.deepEqual(findCall("PageView")?.[2], { page_path: "/products" });
   assert.deepEqual(findCall("ViewContent")?.[2], {
@@ -359,9 +499,9 @@ test("maps purchase items to Meta content fields", () => {
     currency: "usd",
     items: [{ itemId: "variant-1", quantity: 2, priceMinor: 649 }],
   });
-  const purchase = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
-    (call) => call[0] === "track" && call[1] === "Purchase",
-  );
+  const purchase = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.find((call) => call[0] === "track" && call[1] === "Purchase");
   assert.equal(eventId, "00000000-0000-4000-8000-000000000999");
   assert.deepEqual(purchase?.[2], {
     content_ids: ["variant-1"],
@@ -383,9 +523,9 @@ test("uses the zero-decimal MGA currency scale in browser Meta payloads", () => 
     currency: "mga",
     items: [{ itemId: "variant-1", quantity: 1, priceMinor: 1_299 }],
   });
-  const purchase = (environment.window as unknown as { fbq: { queue: unknown[][] } }).fbq.queue.find(
-    (call) => call[0] === "track" && call[1] === "Purchase",
-  );
+  const purchase = (
+    environment.window as unknown as { fbq: { queue: unknown[][] } }
+  ).fbq.queue.find((call) => call[0] === "track" && call[1] === "Purchase");
   assert.deepEqual(purchase?.[2], {
     content_ids: ["variant-1"],
     content_type: "product",

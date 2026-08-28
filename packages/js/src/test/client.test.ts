@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createStorefrontClient } from "../client.js";
 import { ChaosApiError } from "../errors.js";
+import type { PreparedAnalyticsEvent } from "../types.js";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -32,7 +33,8 @@ test("does not construct browser analytics during SSR", () => {
     baseUrl: "https://shop.example.com/storefront/v1",
     storage: null,
     randomUUID: () => "random-id",
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
 
   assert.equal(client.analytics, undefined);
@@ -40,7 +42,10 @@ test("does not construct browser analytics during SSR", () => {
 
 test("defers shopper session creation until a browser request needs it", async () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { value: {}, configurable: true });
+  Object.defineProperty(globalThis, "document", {
+    value: {},
+    configurable: true,
+  });
   const requests: string[] = [];
   try {
     const client = createStorefrontClient({
@@ -49,7 +54,9 @@ test("defers shopper session creation until a browser request needs it", async (
       analytics: false,
       fetch: (async (url: string) => {
         requests.push(url);
-        return jsonResponse(201, { data: { shopper_token: "browser-shopper-token" } });
+        return jsonResponse(201, {
+          data: { shopper_token: "browser-shopper-token" },
+        });
       }) as unknown as typeof fetch,
     });
 
@@ -83,7 +90,9 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
       });
       requests.push({ url: String(url), headers });
       if (String(url).endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token-abc" } });
+        return jsonResponse(201, {
+          data: { shopper_token: "shopper-token-abc" },
+        });
       }
       return jsonResponse(201, { data: { id: "cart-1", lines: [] } });
     }) as unknown as typeof fetch,
@@ -94,8 +103,14 @@ test("acquires a shopper session on the first shopper-scoped request and reuses 
 
   assert.equal(requests.length, 3);
   assert.match(requests[0]!.url, /\/shopper\/sessions$/);
-  assert.equal(requests[1]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
-  assert.equal(requests[2]!.headers["x-chaos-shopper-token"], "shopper-token-abc");
+  assert.equal(
+    requests[1]!.headers["x-chaos-shopper-token"],
+    "shopper-token-abc",
+  );
+  assert.equal(
+    requests[2]!.headers["x-chaos-shopper-token"],
+    "shopper-token-abc",
+  );
   assert.equal(client.getShopperToken(), "shopper-token-abc");
 });
 
@@ -105,7 +120,8 @@ test("reuses a shopper token persisted from a previous session", async () => {
     publishableKey: "public_test",
     storage,
     analytics: false,
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
   firstClient.setShopperToken("existing-token");
   const requests: string[] = [];
@@ -131,7 +147,10 @@ test("explicit shopper sessions update the client token", async () => {
     publishableKey: "public_test",
     storage,
     analytics: false,
-    fetch: (async () => jsonResponse(201, { data: { shopper_token: "manual-token" } })) as unknown as typeof fetch,
+    fetch: (async () =>
+      jsonResponse(201, {
+        data: { shopper_token: "manual-token" },
+      })) as unknown as typeof fetch,
   });
 
   await client.shopperSession.create();
@@ -149,9 +168,13 @@ test("refreshes a stale shopper token once and retries the request", async () =>
     retryInvalidShopperToken: true,
     fetch: (async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers);
-      requests.push({ url, token: headers.get("x-chaos-shopper-token") ?? undefined });
+      requests.push({
+        url,
+        token: headers.get("x-chaos-shopper-token") ?? undefined,
+      });
       if (url.endsWith("/carts/cart-1")) {
-        if (requests.at(-1)?.token === "stale-token") return jsonResponse(401, { error: { code: "unauthorized" } });
+        if (requests.at(-1)?.token === "stale-token")
+          return jsonResponse(401, { error: { code: "unauthorized" } });
         return jsonResponse(200, { data: { id: "cart-1", lines: [] } });
       }
       return jsonResponse(201, { data: { shopper_token: "fresh-token" } });
@@ -205,7 +228,9 @@ test("can require an explicitly seeded shopper token", async () => {
   });
 
   await assert.rejects(client.cart.get("cart-1"), (error: unknown) => {
-    return error instanceof ChaosApiError && error.code === "shopper_token_required";
+    return (
+      error instanceof ChaosApiError && error.code === "shopper_token_required"
+    );
   });
 
   assert.equal(requestCount, 0);
@@ -222,9 +247,13 @@ test("creates a fresh cart when the stored cart has completed checkout", async (
       const token = new Headers(init.headers).get("x-chaos-shopper-token");
       requests.push({ url, token });
       if (url.endsWith("/carts/completed-cart")) {
-        return jsonResponse(200, { data: { id: "completed-cart", status: "completed", lines: [] } });
+        return jsonResponse(200, {
+          data: { id: "completed-cart", status: "completed", lines: [] },
+        });
       }
-      return jsonResponse(201, { data: { id: "fresh-cart", status: "active", lines: [] } });
+      return jsonResponse(201, {
+        data: { id: "fresh-cart", status: "active", lines: [] },
+      });
     }) as unknown as typeof fetch,
   });
   client.setShopperToken("stable-shopper-token");
@@ -235,7 +264,10 @@ test("creates a fresh cart when the stored cart has completed checkout", async (
   assert.deepEqual(
     requests.map((request) => [request.url, request.token]),
     [
-      ["https://shop.example.com/storefront/v1/carts/completed-cart", "stable-shopper-token"],
+      [
+        "https://shop.example.com/storefront/v1/carts/completed-cart",
+        "stable-shopper-token",
+      ],
       ["https://shop.example.com/storefront/v1/carts", "stable-shopper-token"],
     ],
   );
@@ -324,16 +356,15 @@ test("maps non-2xx responses to a typed ChaosApiError with server details", asyn
       })) as unknown as typeof fetch,
   });
 
-  await assert.rejects(
-    client.catalog.listProducts(),
-    (error: unknown) => {
-      if (!(error instanceof ChaosApiError)) return false;
-      assert.equal(error.status, 422);
-      assert.equal(error.code, "validation_failed");
-      assert.deepEqual(error.details, [{ field: "quantity", reason: "must be >= 1" }]);
-      return true;
-    },
-  );
+  await assert.rejects(client.catalog.listProducts(), (error: unknown) => {
+    if (!(error instanceof ChaosApiError)) return false;
+    assert.equal(error.status, 422);
+    assert.equal(error.code, "validation_failed");
+    assert.deepEqual(error.details, [
+      { field: "quantity", reason: "must be >= 1" },
+    ]);
+    return true;
+  });
 });
 
 test("catalog.listProducts forwards query parameters", async () => {
@@ -345,11 +376,18 @@ test("catalog.listProducts forwards query parameters", async () => {
     analytics: false,
     fetch: (async (url: string) => {
       captured.url = new URL(String(url));
-      return jsonResponse(200, { data: [], meta: { page: { has_more: false } } });
+      return jsonResponse(200, {
+        data: [],
+        meta: { page: { has_more: false } },
+      });
     }) as unknown as typeof fetch,
   });
 
-  await client.catalog.listProducts({ q: "shoes", limit: 10, collection: "sale" });
+  await client.catalog.listProducts({
+    q: "shoes",
+    limit: 10,
+    collection: "sale",
+  });
 
   assert.equal(captured.url?.pathname, "/storefront/v1/products");
   assert.equal(captured.url?.searchParams.get("q"), "shoes");
@@ -358,7 +396,12 @@ test("catalog.listProducts forwards query parameters", async () => {
 });
 
 test("payments create an embedded Checkout session in one request", async () => {
-  const requests: Array<{ url: string; method: string; headers: Headers; body: string | undefined }> = [];
+  const requests: Array<{
+    url: string;
+    method: string;
+    headers: Headers;
+    body: string | undefined;
+  }> = [];
   let sequence = 0;
   const client = createStorefrontClient({
     publishableKey: "public_test",
@@ -387,18 +430,30 @@ test("payments create an embedded Checkout session in one request", async () => 
           },
         });
       }
-      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+      return jsonResponse(404, {
+        error: { code: "not_found", message: "not found" },
+      });
     }) as unknown as typeof fetch,
   });
 
-  const session = await client.payments.createEmbeddedCheckout("cart-1", {
-    email: "shopper@example.com",
-    payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
-  }, "order-idempotency-1");
+  const session = await client.payments.createEmbeddedCheckout(
+    "cart-1",
+    {
+      email: "shopper@example.com",
+      payment_provider: "stripe",
+      return_url: "https://shop.example.com/checkout/success",
+    },
+    "order-idempotency-1",
+  );
 
-  assert.equal(requests[1]?.headers.get("x-chaos-shopper-token"), "shopper-token");
-  assert.equal(requests[1]?.headers.get("idempotency-key"), "order-idempotency-1");
+  assert.equal(
+    requests[1]?.headers.get("x-chaos-shopper-token"),
+    "shopper-token",
+  );
+  assert.equal(
+    requests[1]?.headers.get("idempotency-key"),
+    "order-idempotency-1",
+  );
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
     email: "shopper@example.com",
     payment_provider: "stripe",
@@ -420,7 +475,10 @@ test("payments create an embedded Checkout session without an email", async () =
     analytics: false,
     randomUUID: () => `id-${++sequence}`,
     fetch: (async (url: string, init: RequestInit) => {
-      requests.push({ url, body: typeof init.body === "string" ? init.body : undefined });
+      requests.push({
+        url,
+        body: typeof init.body === "string" ? init.body : undefined,
+      });
       if (url.endsWith("/shopper/sessions")) {
         return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
       }
@@ -436,19 +494,199 @@ test("payments create an embedded Checkout session without an email", async () =
           },
         });
       }
-      return jsonResponse(404, { error: { code: "not_found", message: "not found" } });
+      return jsonResponse(404, {
+        error: { code: "not_found", message: "not found" },
+      });
     }) as unknown as typeof fetch,
   });
 
-  await client.payments.createEmbeddedCheckout("cart-1", {
-    payment_provider: "stripe",
-    return_url: "https://shop.example.com/checkout/success",
-  }, "order-idempotency-1");
+  await client.payments.createEmbeddedCheckout(
+    "cart-1",
+    {
+      payment_provider: "stripe",
+      return_url: "https://shop.example.com/checkout/success",
+    },
+    "order-idempotency-1",
+  );
 
   assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), {
     payment_provider: "stripe",
     return_url: "https://shop.example.com/checkout/success",
   });
+});
+
+test("commerce resources record one event after the mutation succeeds", async () => {
+  const prepared: PreparedAnalyticsEvent = {
+    event_id: "11111111-1111-4111-8111-111111111111",
+    event_name: "add_to_cart",
+    occurred_at: "2026-08-16T00:00:00.000Z",
+    properties: { session_id: "22222222-2222-4222-8222-222222222222" },
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  const projections: Array<{
+    event: PreparedAnalyticsEvent;
+    properties: Record<string, unknown>;
+  }> = [];
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  const mutable = client as unknown as {
+    analytics: {
+      prepareCommerceEvent: (
+        eventName: string,
+        properties?: Record<string, unknown>,
+        eventId?: string,
+      ) => PreparedAnalyticsEvent;
+      sendCommerceEvent: (
+        event: PreparedAnalyticsEvent,
+        properties?: Record<string, unknown>,
+      ) => string | null;
+    };
+    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
+  };
+  mutable.analytics = {
+    prepareCommerceEvent: () => prepared,
+    sendCommerceEvent: (event, properties = {}) => {
+      projections.push({ event, properties });
+      return event.event_id;
+    },
+  };
+  mutable.request = async (path, options = {}) => {
+    requests.push({ path, body: options.body });
+    if (path === "/carts/cart-1") {
+      return {
+        data: {
+          id: "cart-1",
+          version: 4,
+          currency: "USD",
+          lines: [],
+        },
+      };
+    }
+    return {
+      data: {
+        id: "cart-1",
+        version: 5,
+        currency: "USD",
+        lines: [
+          {
+            product_id: "product-1",
+            product_variant_id: "variant-1",
+            quantity: 2,
+            unit_price_amount_minor: 1_000,
+          },
+        ],
+      },
+    };
+  };
+
+  await client.cart.addLine("cart-1", "variant-1", 2);
+
+  assert.deepEqual(requests[1]?.body, { quantity: 2 });
+  assert.equal(projections[0]?.event.event_id, prepared.event_id);
+  assert.equal(projections[0]?.properties.product_id, "product-1");
+});
+
+test("commerce resources do not project a browser event when the mutation fails", async () => {
+  const prepared: PreparedAnalyticsEvent = {
+    event_id: "66666666-6666-4666-8666-666666666666",
+    event_name: "add_to_cart",
+    occurred_at: "2026-08-16T00:00:00.000Z",
+    properties: {},
+  };
+  let projections = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  const mutable = client as unknown as {
+    analytics: {
+      prepareCommerceEvent: () => PreparedAnalyticsEvent;
+      sendCommerceEvent: () => string | null;
+    };
+    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
+  };
+  mutable.analytics = {
+    prepareCommerceEvent: () => prepared,
+    sendCommerceEvent: () => {
+      projections += 1;
+      return prepared.event_id;
+    },
+  };
+  mutable.request = async (path) => {
+    if (path === "/carts/cart-1") {
+      return { data: { id: "cart-1", version: 1, currency: "USD", lines: [] } };
+    }
+    throw new Error("mutation failed");
+  };
+
+  await assert.rejects(
+    client.cart.addLine("cart-1", "variant-1", 1),
+    /mutation failed/,
+  );
+  assert.equal(projections, 0);
+});
+
+test("checkout records InitiateCheckout after the session is created", async () => {
+  const prepared: PreparedAnalyticsEvent = {
+    event_id: "33333333-3333-4333-8333-333333333333",
+    event_name: "initiate_checkout",
+    occurred_at: "2026-08-16T00:00:00.000Z",
+    properties: { session_id: "44444444-4444-4444-8444-444444444444" },
+  };
+  let requestBody: unknown;
+  let projection: PreparedAnalyticsEvent | undefined;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+  });
+  const mutable = client as unknown as {
+    analytics: {
+      prepareCommerceEvent: (
+        eventName: string,
+        properties?: Record<string, unknown>,
+        eventId?: string,
+      ) => PreparedAnalyticsEvent;
+      sendCommerceEvent: (event: PreparedAnalyticsEvent) => string | null;
+    };
+    request: (path: string, options?: { body?: unknown }) => Promise<unknown>;
+  };
+  mutable.analytics = {
+    prepareCommerceEvent: () => prepared,
+    sendCommerceEvent: (event) => {
+      projection = event;
+      return event.event_id;
+    },
+  };
+  mutable.request = async (_path, options = {}) => {
+    requestBody = options.body;
+    return { data: { order_id: "55555555-5555-4555-8555-555555555555" } };
+  };
+
+  await client.payments.createEmbeddedCheckout(
+    "cart-1",
+    {
+      payment_provider: "stripe",
+      return_url: "https://shop.example.com/checkout/success",
+    },
+    prepared.event_id,
+  );
+
+  assert.deepEqual(requestBody, {
+    payment_provider: "stripe",
+    return_url: "https://shop.example.com/checkout/success",
+  });
+  assert.equal(projection?.event_id, prepared.event_id);
 });
 
 test("browser SDK observations record only after successful responses", async () => {
@@ -458,7 +696,8 @@ test("browser SDK observations record only after successful responses", async ()
     storage: new MemoryStorage(),
     analytics: false,
     randomUUID: () => "random-id",
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
   // Replace transport and analytics at the resource boundary to test orchestration only.
   const mutable = client as unknown as {
@@ -470,10 +709,19 @@ test("browser SDK observations record only after successful responses", async ()
     viewContent: (input) => recorded.push(["view_content", input]),
   };
   mutable.request = async (path) => {
-    if (path === "/products") return { data: [{ id: "product-1" }], meta: { page: { has_more: false } } };
+    if (path === "/products")
+      return {
+        data: [{ id: "product-1" }],
+        meta: { page: { has_more: false } },
+      };
     if (path.startsWith("/products/")) return { data: { id: "product-1" } };
     if (path === "/carts/cart-1") return { data: { id: "cart-1", lines: [] } };
-    return { data: { id: "cart-1", lines: [{ product_variant_id: "variant-1", quantity: 2 }] } };
+    return {
+      data: {
+        id: "cart-1",
+        lines: [{ product_variant_id: "variant-1", quantity: 2 }],
+      },
+    };
   };
 
   await client.catalog.listProducts({ q: "shoes" });
@@ -492,7 +740,8 @@ test("projects purchases only after a confirmed order is paid", async () => {
     storage: null,
     analytics: false,
     randomUUID: () => "random-id",
-    fetch: (async () => jsonResponse(200, { data: {} })) as unknown as typeof fetch,
+    fetch: (async () =>
+      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
   });
   const recorded: unknown[] = [];
   const mutable = client as unknown as {
@@ -506,7 +755,13 @@ test("projects purchases only after a confirmed order is paid", async () => {
     payment_status: "pending",
     total_amount_minor: 1_000,
     currency: "USD",
-    lines: [{ product_variant_id: "variant-1", quantity: 1, unit_price_amount_minor: 1_000 }],
+    lines: [
+      {
+        product_variant_id: "variant-1",
+        quantity: 1,
+        unit_price_amount_minor: 1_000,
+      },
+    ],
   };
   mutable.request = async () => ({ data: order });
 

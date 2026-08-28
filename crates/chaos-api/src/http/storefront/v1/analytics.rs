@@ -1,24 +1,11 @@
-use std::net::IpAddr;
-
-use axum::{
-    Router,
-    extract::State,
-    http::{
-        HeaderMap,
-        header::{COOKIE, USER_AGENT},
-    },
-    routing::post,
-};
+use axum::{Router, extract::State, http::HeaderMap, routing::post};
 use chaos_core::{
     ApplicationError,
     analytics::{BrowserEventCollectionResult, CollectBrowserEventsInput},
-    contracts::AnalyticsEventInput,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use uuid::Uuid;
+use serde::Serialize;
 
-use crate::http::shared::response::parse_api_time;
+use crate::http::shared::analytics::{AnalyticsEventBody, merge_request_meta, request_meta};
 use crate::http::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState};
 
 #[rustfmt::skip]
@@ -26,19 +13,10 @@ pub(crate) fn routes() -> Router<ApiState> {
     Router::new().route("/analytics/events", post(collect_events))
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CollectEventsBody {
     events: Vec<AnalyticsEventBody>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AnalyticsEventBody {
-    event_id: Uuid,
-    event_name: String,
-    occurred_at: String,
-    properties: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -59,14 +37,9 @@ async fn collect_events(
         .events
         .into_iter()
         .map(|event| {
-            Ok::<_, ApiError>(AnalyticsEventInput {
-                event_id: event.event_id,
-                event_name: event.event_name,
-                occurred_at: parse_api_time(&event.occurred_at).map_err(|_| {
-                    invalid_value("events.occurred_at", "must be an RFC 3339 timestamp")
-                })?,
-                properties: merge_request_meta(event.properties, &request_meta),
-            })
+            let mut input = event.into_input("events.occurred_at")?;
+            input.properties = merge_request_meta(input.properties, &request_meta);
+            Ok::<_, ApiError>(input)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let result = state
@@ -86,101 +59,6 @@ async fn collect_events(
     Ok(ApiResponse::ok(collection_result_data(result)))
 }
 
-/// Browser-controlled event properties are useful for the ledger, but the
-/// request is the trusted place to enrich network context. Matching cookies
-/// belong to the event's capture time, so an event-provided fbc/fbp wins when
-/// present; request cookies only fill a missing value. Network-derived UA/IP
-/// values are always replaced with the values from the request.
-fn request_meta(headers: &HeaderMap) -> Map<String, Value> {
-    let mut meta = Map::new();
-    if let Some(value) = cookie(headers, "_fbc").filter(|value| valid_meta_browser_id(value)) {
-        meta.insert("fbc".into(), Value::String(value));
-    }
-    if let Some(value) = cookie(headers, "_fbp").filter(|value| valid_meta_browser_id(value)) {
-        meta.insert("fbp".into(), Value::String(value));
-    }
-    if let Some(value) = headers
-        .get(USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.trim().is_empty() && value.len() <= 512)
-    {
-        meta.insert("client_user_agent".into(), Value::String(value.to_owned()));
-    }
-    if let Some(value) = client_ip(headers) {
-        meta.insert("client_ip_address".into(), Value::String(value));
-    }
-    meta
-}
-
-fn merge_request_meta(mut properties: Value, request_meta: &Map<String, Value>) -> Value {
-    if request_meta.is_empty() {
-        return properties;
-    }
-    let Some(object) = properties.as_object_mut() else {
-        return properties;
-    };
-    let mut meta = object
-        .remove("_meta")
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
-    for (key, value) in request_meta {
-        match key.as_str() {
-            // A queued event can be flushed after the browser has received a
-            // different campaign click. Preserve the matching context that
-            // was captured with this event and use the request cookie only as
-            // a fallback.
-            "fbc" | "fbp" => {
-                meta.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-            // These values describe the request that delivered the event and
-            // should not be trusted from a browser-controlled JSON body.
-            _ => {
-                meta.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    object.insert("_meta".into(), Value::Object(meta));
-    properties
-}
-
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|header| {
-            header.split(';').find_map(|part| {
-                let (key, value) = part.trim().split_once('=')?;
-                (key == name && !value.trim().is_empty()).then(|| value.trim().to_owned())
-            })
-        })
-        .filter(|value| value.len() <= 512)
-}
-
-fn valid_meta_browser_id(value: &str) -> bool {
-    let mut parts = value.splitn(4, '.');
-    let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    prefix == "fb"
-        && !version.is_empty()
-        && version.bytes().all(|byte| byte.is_ascii_digit())
-        && timestamp.len() == 13
-        && timestamp.bytes().all(|byte| byte.is_ascii_digit())
-        && !suffix.is_empty()
-        && !suffix.chars().any(char::is_whitespace)
-}
-
-fn client_ip(headers: &HeaderMap) -> Option<String> {
-    ["x-forwarded-for", "x-real-ip"]
-        .into_iter()
-        .filter_map(|name| headers.get(name).and_then(|value| value.to_str().ok()))
-        .flat_map(|value| value.split(','))
-        .find_map(|value| value.trim().parse::<IpAddr>().ok())
-        .map(|value| value.to_string())
-}
-
 fn collection_result_data(result: BrowserEventCollectionResult) -> CollectionResultData {
     CollectionResultData {
         received: result.received,
@@ -189,20 +67,13 @@ fn collection_result_data(result: BrowserEventCollectionResult) -> CollectionRes
     }
 }
 
-fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
-    ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field,
-            reason: reason.into(),
-        }],
-    }
-    .into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
+    use axum::http::{
+        HeaderValue,
+        header::{COOKIE, USER_AGENT},
+    };
 
     #[test]
     fn request_context_reads_matching_cookies_user_agent_and_forwarded_ip() {
@@ -265,5 +136,27 @@ mod tests {
             merged["_meta"]["source_url"],
             "https://shop.example/products"
         );
+    }
+
+    #[test]
+    fn request_context_fills_invalid_event_matching_ids_from_cookies() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_static(
+                "_fbp=fb.1.1234567890123.cookie; _fbc=fb.1.1234567890123.cookie-click",
+            ),
+        );
+        let properties = serde_json::json!({
+            "_meta": {
+                "fbp": "fb.1.123.invalid",
+                "fbc": "fb.1.123.invalid-click"
+            }
+        });
+
+        let merged = merge_request_meta(properties, &request_meta(&headers));
+
+        assert_eq!(merged["_meta"]["fbp"], "fb.1.1234567890123.cookie");
+        assert_eq!(merged["_meta"]["fbc"], "fb.1.1234567890123.cookie-click");
     }
 }

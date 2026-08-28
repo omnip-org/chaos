@@ -26,9 +26,19 @@ session when available (`session_id`), what (`event_name`), when
 context. Normalized UTM values are stored in dedicated nullable columns;
 traffic history, product IDs, order IDs, and money remain dynamic properties.
 
-Browser events are appended by the Storefront analytics API. Cart, Checkout,
-payment, and purchase events are appended directly by the repository
-transaction that changes the corresponding commerce state. The generic
+Generic browser observations and client commerce events are appended by the
+Storefront analytics API. The public collection path rejects only `purchase`,
+which remains payment-confirmation-owned. Before a cart or checkout mutation,
+the browser SDK prepares one commerce envelope containing the event ID and
+attribution, but sends the business request without an analytics field. After
+the mutation or checkout session succeeds, the SDK sends the envelope to the
+same `/analytics/events` endpoint, adds canonical response values, and projects
+the same event ID to browser providers. Meta Pixel and the ledger-backed CAPI
+delivery can therefore deduplicate. Cart and Checkout repositories do not
+write analytics rows. The browser-side checkout event stores the captured
+attribution and its canonical `order_id`; the later payment webhook looks up
+that exact event instead of querying the latest browser event. No attribution
+field is added to the Order. The generic
 `integration.event_outbox` is reserved for asynchronous business workflows;
 analytics does not add a second ingestion worker or translate outbox events
 into another ledger.

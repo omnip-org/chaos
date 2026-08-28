@@ -384,7 +384,45 @@ async fn apply_payment_event(
             order_id.as_uuid(),
         )
         .await?;
+        let checkout_attribution = load_checkout_attribution(
+            transaction,
+            store_id.as_uuid(),
+            order_id.as_uuid(),
+        )
+        .await?;
+        let (contact_email, contact_phone, storefront_origin): (
+            Option<String>,
+            Option<String>,
+            String,
+        ) = sqlx::query_as(
+            "SELECT order_row.contact_email::text, order_row.contact_phone, \
+                    channel.storefront_origin \
+             FROM commerce.orders AS order_row \
+             JOIN commerce.store_sales_channels AS channel \
+               ON channel.store_id = order_row.store_id \
+              AND channel.id = order_row.sales_channel_id \
+             WHERE order_row.store_id = $1 AND order_row.id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
         let occurred_at = provider_event_time(provider_payload, now);
+        let mut properties = json!({
+            "_source": "server",
+            "order_id": order_id.as_uuid(),
+            "value_minor": event_amount,
+            "currency": currency,
+            "items": items,
+        });
+        merge_attribution(&mut properties, &checkout_attribution);
+        merge_order_identity(
+            &mut properties,
+            contact_email.as_deref(),
+            contact_phone.as_deref(),
+            Some(&storefront_origin),
+        );
         append_event(
             transaction,
             AnalyticsEventToAppend {
@@ -392,13 +430,7 @@ async fn apply_payment_event(
                 shopper_id,
                 event_id: order_id.as_uuid(),
                 event_name: "purchase".into(),
-                properties: json!({
-                    "_source": "server",
-                    "order_id": order_id.as_uuid(),
-                    "value_minor": event_amount,
-                    "currency": currency,
-                    "items": items,
-                }),
+                properties,
                 occurred_at,
                 received_at: now,
             },

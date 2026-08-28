@@ -184,10 +184,11 @@ fn is_meta_event(command: &AnalyticsDeliveryCommand) -> bool {
     match command.event_name.as_str() {
         // Browser event and Pixel use the same queued UUID for these events.
         "page_view" | "view_content" | "search" => source != Some("server"),
-        // These are authoritative commerce events. The browser only projects
-        // Purchase directly with the Order ID; it does not enqueue a second
-        // browser conversion for these names.
-        "add_to_cart" | "initiate_checkout" | "purchase" => source == Some("server"),
+        // AddToCart and InitiateCheckout are collected by the browser SDK only
+        // after the matching business request succeeds. Purchase remains a
+        // server-confirmed payment event.
+        "add_to_cart" | "initiate_checkout" => source == Some("browser"),
+        "purchase" => source == Some("server"),
         _ => false,
     }
 }
@@ -445,6 +446,9 @@ fn is_sha256(value: &str) -> bool {
 }
 
 fn valid_meta_browser_id(value: &str) -> bool {
+    if value.len() > 2_048 {
+        return false;
+    }
     let mut parts = value.splitn(4, '.');
     let (Some(prefix), Some(version), Some(timestamp), Some(suffix)) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -596,14 +600,20 @@ mod tests {
         }
         for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
             browser.event_name = event_name.into();
-            assert!(!is_meta_event(&browser), "browser {event_name}");
+            assert_eq!(
+                is_meta_event(&browser),
+                event_name != "purchase",
+                "browser {event_name}"
+            );
         }
 
         let mut server = browser;
         server.properties = json!({"_source": "server"});
-        for event_name in ["add_to_cart", "initiate_checkout", "purchase"] {
+        server.event_name = "purchase".into();
+        assert!(is_meta_event(&server), "server purchase");
+        for event_name in ["add_to_cart", "initiate_checkout"] {
             server.event_name = event_name.into();
-            assert!(is_meta_event(&server), "server {event_name}");
+            assert!(!is_meta_event(&server), "server {event_name}");
         }
         for event_name in ["page_view", "view_content", "search"] {
             server.event_name = event_name.into();

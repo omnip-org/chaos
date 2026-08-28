@@ -240,8 +240,10 @@ export interface Order {
   price_list_id: UUID;
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
-  payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
-  shipping_status: "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  payment_status:
+    "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+  shipping_status:
+    "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   payment_provider?: "stripe";
   payment_provider_reference_id?: string;
   shipping_provider?: "manual";
@@ -273,8 +275,10 @@ export interface TrackedOrder {
   order_number: string;
   currency: CurrencyCode;
   status: "pending" | "confirmed" | "cancelled";
-  payment_status: "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
-  shipping_status: "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
+  payment_status:
+    "pending" | "paid" | "failed" | "partially_refunded" | "refunded";
+  shipping_status:
+    "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
   shipping_locality?: string;
   shipping_country_code?: string;
   subtotal_amount_minor: number;
@@ -373,6 +377,22 @@ export type BrowserAnalyticsEventName =
   | "initiate_checkout"
   | "purchase"
   | (string & {});
+
+export type ClientCommerceAnalyticsEventName =
+  | "add_to_cart"
+  | "initiate_checkout";
+
+/**
+ * A commerce event prepared before a business request and queued through the
+ * common analytics endpoint only after that request succeeds. The event ID and
+ * attribution remain stable while the SDK adds canonical response values.
+ */
+export interface PreparedAnalyticsEvent {
+  event_id: UUID;
+  event_name: ClientCommerceAnalyticsEventName;
+  occurred_at: string;
+  properties: Record<string, unknown>;
+}
 
 export interface BrowserAnalyticsEvent {
   event_id: UUID;

@@ -23,15 +23,10 @@ use chaos_domain::{
 };
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::adapters::postgres::{
-    analytics::{AnalyticsEventToAppend, append_event},
-};
 
 const ORDER_NUMBER_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

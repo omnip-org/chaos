@@ -37,11 +37,26 @@ history remains in `properties`.
 
 The signed Storefront Shopper token supplies `shopper_id`; the browser cannot
 choose another shopper. Browser and server events use the same table and the
-same stable event ID deduplication rule. Browser events are accepted directly
-by the API. Commerce workflows append authoritative `add_to_cart`,
-`initiate_checkout`, and `purchase` events in the
-same transaction as their business state change. Analytics does not consume
-the generic business `event_outbox`.
+same stable event ID deduplication rule. Generic browser observations and
+client commerce events are accepted through the same public analytics API. For
+a commerce action, the SDK prepares one envelope with the event ID and
+attribution before calling the cart or checkout API, while the business
+request remains analytics-agnostic. Only after a successful response does the
+SDK merge canonical response values, enqueue the event through
+`/analytics/events`, and project the same event ID to browser providers. A
+failed business operation produces no client commerce event; the SDK persists
+and retries a successfully queued event independently of provider delivery.
+Analytics does not consume the generic business `event_outbox`.
+
+The browser-side `initiate_checkout` event stores the captured attribution in
+`integration.analytics_events` together with the canonical `order_id` property.
+When a payment webhook appends `purchase`, it looks up that exact checkout
+event by Store, event name, and order ID, rather than querying the shopper's
+latest browser event. This keeps `fbc`, `fbp`, session, traffic, UTM, URL, and
+network context tied to the checkout that produced the Order without adding
+attribution fields to `commerce.orders`. `purchase` is never accepted from the
+generic browser collection path; payment confirmation remains its only ledger
+source.
 
 External delivery is a separate projection:
 

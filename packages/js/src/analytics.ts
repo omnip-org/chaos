@@ -1,5 +1,10 @@
 import { ChaosApiError, throwForResponse } from "./errors.js";
-import type { AnalyticsCollectionResult, BrowserAnalyticsEventName } from "./types.js";
+import type {
+  AnalyticsCollectionResult,
+  BrowserAnalyticsEventName,
+  ClientCommerceAnalyticsEventName,
+  PreparedAnalyticsEvent,
+} from "./types.js";
 
 /**
  * First-party behavior collection. Events use one stable envelope and keep
@@ -13,12 +18,17 @@ const MAX_ENGAGEMENT_INTERVAL_MS = 60_000;
 const MAX_QUEUE_AGE_MS = 23 * 60 * 60 * 1_000;
 const MAX_PROPERTIES_BYTES = 32_768;
 const MAX_GA4_EVENT_NAME_BYTES = 40;
+const MAX_META_BROWSER_ID_LENGTH = 2_048;
 const META_FBC_MAX_AGE_SECONDS = 90 * 24 * 60 * 60;
 const MAX_UTM_VALUE_LENGTH = 2_048;
-const SERVER_AUTHORITATIVE_EVENT_NAMES = new Set([
+const COMMERCE_EVENT_NAMES = new Set([
   "add_to_cart",
   "initiate_checkout",
   "purchase",
+]);
+const CLIENT_COMMERCE_EVENT_NAMES = new Set([
+  "add_to_cart",
+  "initiate_checkout",
 ]);
 
 export interface PageViewInput {
@@ -129,20 +139,33 @@ export class ChaosStorefrontAnalytics {
     this.getShopperToken = options.getShopperToken;
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.documentRef = options.document ?? globalThis.document;
-    this.windowRef = options.window ?? (globalThis as unknown as Window & typeof globalThis);
+    this.windowRef =
+      options.window ?? (globalThis as unknown as Window & typeof globalThis);
     this.storage = options.storage ?? this.windowRef?.localStorage;
-    this.sessionStorageRef = options.sessionStorage ?? this.windowRef?.sessionStorage;
-    this.randomUUID = options.randomUUID ?? globalThis.crypto?.randomUUID.bind(globalThis.crypto);
+    this.sessionStorageRef =
+      options.sessionStorage ?? this.windowRef?.sessionStorage;
+    this.randomUUID =
+      options.randomUUID ??
+      globalThis.crypto?.randomUUID.bind(globalThis.crypto);
     this.now = options.now ?? Date.now;
     this.monotonicNow =
-      options.monotonicNow ?? globalThis.performance?.now.bind(globalThis.performance) ?? this.now;
+      options.monotonicNow ??
+      globalThis.performance?.now.bind(globalThis.performance) ??
+      this.now;
     const setIntervalImpl = options.setInterval ?? globalThis.setInterval;
     const clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
     this.setIntervalImpl = setIntervalImpl.bind(globalThis);
     this.clearIntervalImpl = clearIntervalImpl.bind(globalThis);
     this.flushIntervalMs = options.flushIntervalMs ?? 15_000;
-    if (!this.fetchImpl || !this.randomUUID || !this.documentRef || !this.windowRef) {
-      throw new TypeError("fetch, randomUUID, document, and window are required");
+    if (
+      !this.fetchImpl ||
+      !this.randomUUID ||
+      !this.documentRef ||
+      !this.windowRef
+    ) {
+      throw new TypeError(
+        "fetch, randomUUID, document, and window are required",
+      );
     }
     if (this.flushIntervalMs < 1_000 || this.flushIntervalMs > 60_000) {
       throw new RangeError("flushIntervalMs must be between 1000 and 60000");
@@ -153,7 +176,10 @@ export class ChaosStorefrontAnalytics {
       options.providers,
     );
 
-    const storageNamespace = analyticsStorageNamespace(this.endpoint, this.publishableKey);
+    const storageNamespace = analyticsStorageNamespace(
+      this.endpoint,
+      this.publishableKey,
+    );
     this.queueStorageKey = `chaos.analytics.${storageNamespace}.queue.v2`;
     this.sessionStorageKey = `chaos.analytics.${storageNamespace}.session_id`;
     this.firstTouchStorageKey = `chaos.analytics.${storageNamespace}.traffic.first.v1`;
@@ -172,7 +198,10 @@ export class ChaosStorefrontAnalytics {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.documentRef.addEventListener("visibilitychange", this.onActivityChange);
+    this.documentRef.addEventListener(
+      "visibilitychange",
+      this.onActivityChange,
+    );
     this.windowRef.addEventListener("focus", this.onActivityChange);
     this.windowRef.addEventListener("blur", this.onActivityChange);
     this.windowRef.addEventListener("pagehide", this.onPageHide);
@@ -190,7 +219,10 @@ export class ChaosStorefrontAnalytics {
     if (this.running) {
       this.snapshotActiveTime();
       this.running = false;
-      this.documentRef.removeEventListener("visibilitychange", this.onActivityChange);
+      this.documentRef.removeEventListener(
+        "visibilitychange",
+        this.onActivityChange,
+      );
       this.windowRef.removeEventListener("focus", this.onActivityChange);
       this.windowRef.removeEventListener("blur", this.onActivityChange);
       this.windowRef.removeEventListener("pagehide", this.onPageHide);
@@ -211,7 +243,8 @@ export class ChaosStorefrontAnalytics {
     this.flushViewDuration();
     const resolvedPath = path ?? this.documentRef.location?.pathname ?? "/";
     const resolvedTitle = title ?? nonEmpty(this.documentRef.title);
-    const resolvedReferrer = referrerDomain ?? referrerHost(this.documentRef.referrer);
+    const resolvedReferrer =
+      referrerDomain ?? referrerHost(this.documentRef.referrer);
     const eventId = this.enqueue(
       "page_view",
       compact({
@@ -222,28 +255,125 @@ export class ChaosStorefrontAnalytics {
     );
     this.accumulatedActiveMs = 0;
     this.currentPageViewEventId = eventId;
-    this.activeStartedAt = this.isActive() && eventId ? this.monotonicNow() : null;
+    this.activeStartedAt =
+      this.isActive() && eventId ? this.monotonicNow() : null;
     return eventId;
   }
 
   /** Record any store-defined behavior using the common event envelope. */
-  track(eventName: BrowserAnalyticsEventName, properties: Record<string, unknown> = {}): string | null {
+  track(
+    eventName: BrowserAnalyticsEventName,
+    properties: Record<string, unknown> = {},
+  ): string | null {
     validateEventName(eventName);
+    if (isCommerceEvent(eventName)) {
+      throw new TypeError(
+        `${eventName} must be sent through the analytics SDK after the commerce operation succeeds`,
+      );
+    }
     return this.enqueue(eventName, properties, {
       sendToMeta: isBrowserMetaEvent(eventName),
-      sendToGa4: !SERVER_AUTHORITATIVE_EVENT_NAMES.has(eventName),
+      sendToGa4: !COMMERCE_EVENT_NAMES.has(eventName),
     });
   }
 
-  viewContent({ productId, productVariantId }: { productId: string; productVariantId?: string }): string | null {
+  /**
+   * Creates the one commerce envelope shared by the browser provider and the
+   * common analytics endpoint. It does not enqueue or project the event, so
+   * callers can prepare before a request and only record it after the request
+   * succeeds.
+   */
+  prepareCommerceEvent(
+    eventName: ClientCommerceAnalyticsEventName,
+    properties: Record<string, unknown> = {},
+    eventId?: string,
+  ): PreparedAnalyticsEvent {
+    validateEventName(eventName);
+    const resolvedEventId = eventId ?? this.randomUUID();
+    if (!isUuid(resolvedEventId)) {
+      throw new TypeError("commerce event_id must be a valid UUID");
+    }
+    const canonicalEventId = resolvedEventId.toLowerCase();
+    const event: PreparedAnalyticsEvent = {
+      event_id: canonicalEventId,
+      event_name: eventName,
+      occurred_at: new Date(this.now()).toISOString(),
+      properties: this.contextualProperties(properties),
+    };
+    validateEventProperties(event.properties);
+    return event;
+  }
+
+  /**
+   * Records a prepared commerce event through the common analytics endpoint
+   * after the matching business operation succeeds. The prepared attribution
+   * context is always retained; the optional properties are values returned or
+   * derived from that successful operation. Browser providers receive the same
+   * event ID immediately while the first-party event is queued for delivery.
+   */
+  sendCommerceEvent(
+    event: PreparedAnalyticsEvent,
+    properties: Record<string, unknown> = {},
+  ): string | null {
+    if (!isClientCommerceEvent(event.event_name)) {
+      throw new TypeError(
+        "sendCommerceEvent only accepts client commerce events",
+      );
+    }
+    if (!isUuid(event.event_id)) {
+      throw new TypeError("commerce event_id must be a valid UUID");
+    }
+    const contextual = event.properties;
+    const merged = compact({
+      ...contextual,
+      ...properties,
+      _meta: contextual._meta,
+      session_id: contextual.session_id,
+      traffic: contextual.traffic,
+    });
+    validateEventProperties(merged);
+    const eventId = event.event_id.toLowerCase();
+    this.queue.push({
+      event_id: eventId,
+      event_name: event.event_name,
+      occurred_at: event.occurred_at,
+      properties: merged,
+    });
+    this.projectProviderEventOnce(event.event_name, eventId, merged);
+    this.trimQueue();
+    this.persistQueue();
+    void this.flush().catch(() => {});
+    return eventId;
+  }
+
+  viewContent({
+    productId,
+    productVariantId,
+  }: {
+    productId: string;
+    productVariantId?: string;
+  }): string | null {
     return this.enqueue(
       "view_content",
-      compact({ product_id: productId, product_variant_id: productVariantId }),
+      compact({
+        product_id: productId,
+        product_variant_id: productVariantId,
+        item_id: productVariantId ?? productId,
+      }),
     );
   }
 
-  search({ query, resultCount }: { query: string; resultCount?: number }): string | null {
-    return this.enqueue("search", compact({ query, result_count: resultCount }));
+  search({
+    query,
+    resultCount,
+  }: {
+    query: string;
+    resultCount?: number;
+  }): string | null {
+    return this.enqueue(
+      "search",
+      compact({ query, result_count: resultCount }),
+    );
   }
 
   /** Projects a server-confirmed Purchase to browser providers exactly once per Order. */
@@ -255,17 +385,25 @@ export class ChaosStorefrontAnalytics {
   }): string | null {
     validateMoney(input.valueMinor, input.currency);
     const currency = input.currency.toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency)) throw new TypeError("currency must be an ISO 4217 code");
-    return this.projectProviderEventOnce("purchase", input.orderId, {
-      order_id: input.orderId,
-      value_minor: input.valueMinor,
-      currency,
-      items: input.items.map((item) => ({
-        item_id: item.itemId,
-        quantity: item.quantity,
-        price_minor: item.priceMinor,
-      })),
-    });
+    if (!/^[A-Z]{3}$/.test(currency))
+      throw new TypeError("currency must be an ISO 4217 code");
+    if (!isUuid(input.orderId))
+      throw new TypeError("orderId must be a valid UUID");
+    const orderId = input.orderId.toLowerCase();
+    return this.projectProviderEventOnce(
+      "purchase",
+      orderId,
+      this.contextualProperties({
+        order_id: orderId,
+        value_minor: input.valueMinor,
+        currency,
+        items: input.items.map((item) => ({
+          item_id: item.itemId,
+          quantity: item.quantity,
+          price_minor: item.priceMinor,
+        })),
+      }),
+    );
   }
 
   private projectProviderEventOnce(
@@ -293,7 +431,10 @@ export class ChaosStorefrontAnalytics {
     }
     let emitted = 0;
     while (this.accumulatedActiveMs >= 1) {
-      const activeMilliseconds = Math.min(Math.floor(this.accumulatedActiveMs), MAX_ENGAGEMENT_INTERVAL_MS);
+      const activeMilliseconds = Math.min(
+        Math.floor(this.accumulatedActiveMs),
+        MAX_ENGAGEMENT_INTERVAL_MS,
+      );
       this.enqueue(
         "view_duration",
         {
@@ -308,7 +449,9 @@ export class ChaosStorefrontAnalytics {
     return emitted;
   }
 
-  flush(options: { keepalive?: boolean } = {}): Promise<AnalyticsCollectionResult | null> {
+  flush(
+    options: { keepalive?: boolean } = {},
+  ): Promise<AnalyticsCollectionResult | null> {
     if (this.inFlight) return this.inFlight;
     this.pruneExpiredQueue();
     if (this.queue.length === 0) return Promise.resolve(null);
@@ -318,11 +461,16 @@ export class ChaosStorefrontAnalytics {
     return this.inFlight;
   }
 
-  private async drainQueue(keepalive: boolean): Promise<AnalyticsCollectionResult | null> {
+  private async drainQueue(
+    keepalive: boolean,
+  ): Promise<AnalyticsCollectionResult | null> {
     let result: AnalyticsCollectionResult | null = null;
     while (this.queue.length > 0) {
       const batch = this.queue.splice(0, MAX_BATCH_SIZE);
-      result = mergeCollectionResults(result, await this.sendBatch(batch, keepalive));
+      result = mergeCollectionResults(
+        result,
+        await this.sendBatch(batch, keepalive),
+      );
     }
     return result;
   }
@@ -346,7 +494,9 @@ export class ChaosStorefrontAnalytics {
         await throwForResponse(response);
       }
       this.persistQueue();
-      const envelope = (await response.json()) as { data: AnalyticsCollectionResult };
+      const envelope = (await response.json()) as {
+        data: AnalyticsCollectionResult;
+      };
       return envelope.data;
     } catch (error) {
       if (isSplittableClientError(error) && batch.length > 1) {
@@ -380,19 +530,16 @@ export class ChaosStorefrontAnalytics {
       event_id: eventId,
       event_name: eventName,
       occurred_at: new Date(this.now()).toISOString(),
-      properties: compact({
-        ...properties,
-        _meta: this.metaContext(),
-        session_id: this.sessionId,
-        ...(this.traffic ? { traffic: this.traffic } : {}),
-      }),
+      properties: this.contextualProperties(properties),
     };
     validateEventProperties(event.properties);
     this.queue.push(event);
     try {
       const providerOptions: { meta?: boolean; ga4?: boolean } = {};
-      if (options.sendToMeta !== undefined) providerOptions.meta = options.sendToMeta;
-      if (options.sendToGa4 !== undefined) providerOptions.ga4 = options.sendToGa4;
+      if (options.sendToMeta !== undefined)
+        providerOptions.meta = options.sendToMeta;
+      if (options.sendToGa4 !== undefined)
+        providerOptions.ga4 = options.sendToGa4;
       this.providers.track(eventName, eventId, properties, {
         ...providerOptions,
       });
@@ -406,6 +553,17 @@ export class ChaosStorefrontAnalytics {
       void this.flush().catch(() => {});
     }
     return eventId;
+  }
+
+  private contextualProperties(
+    properties: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return compact({
+      ...properties,
+      _meta: this.metaContext(),
+      session_id: this.sessionId,
+      ...(this.traffic ? { traffic: this.traffic } : {}),
+    });
   }
 
   private trimQueue(): void {
@@ -442,7 +600,10 @@ export class ChaosStorefrontAnalytics {
 
   private restoreQueue(): void {
     if (this.queue.length > 0) return;
-    const restored = readStoredJson(this.sessionStorageRef, this.queueStorageKey);
+    const restored = readStoredJson(
+      this.sessionStorageRef,
+      this.queueStorageKey,
+    );
     if (Array.isArray(restored)) {
       this.queue = restored.filter(validQueuedEvent).slice(-MAX_QUEUE_SIZE);
       this.pruneExpiredQueue();
@@ -451,7 +612,9 @@ export class ChaosStorefrontAnalytics {
 
   private pruneExpiredQueue(): void {
     const oldestAccepted = this.now() - MAX_QUEUE_AGE_MS;
-    this.queue = this.queue.filter((event) => Date.parse(event.occurred_at) >= oldestAccepted);
+    this.queue = this.queue.filter(
+      (event) => Date.parse(event.occurred_at) >= oldestAccepted,
+    );
     this.persistQueue();
   }
 
@@ -460,20 +623,38 @@ export class ChaosStorefrontAnalytics {
       this.documentRef.location?.search,
       this.documentRef.referrer,
     );
-    const storedSession = readTrafficTouchpoint(this.sessionStorageRef, this.sessionTouchStorageKey);
+    const storedSession = readTrafficTouchpoint(
+      this.sessionStorageRef,
+      this.sessionTouchStorageKey,
+    );
     const session = storedSession
-      ? compact({
+      ? (compact({
           ...storedSession,
           fbclid: captured.fbclid,
           gclid: captured.gclid,
-        }) as TrafficTouchpoint
+        }) as TrafficTouchpoint)
       : captured;
-    writeStoredJson(this.sessionStorageRef, this.sessionTouchStorageKey, session);
-    const first = readTrafficTouchpoint(this.storage, this.firstTouchStorageKey) ?? session;
+    writeStoredJson(
+      this.sessionStorageRef,
+      this.sessionTouchStorageKey,
+      session,
+    );
+    const first =
+      readTrafficTouchpoint(this.storage, this.firstTouchStorageKey) ?? session;
     writeStoredJson(this.storage, this.firstTouchStorageKey, first);
-    const existingLast = readTrafficTouchpoint(this.storage, this.lastNonDirectStorageKey);
-    const lastNonDirect = isNonDirectTouchpoint(session) ? session : existingLast;
-    if (lastNonDirect) writeStoredJson(this.storage, this.lastNonDirectStorageKey, lastNonDirect);
+    const existingLast = readTrafficTouchpoint(
+      this.storage,
+      this.lastNonDirectStorageKey,
+    );
+    const lastNonDirect = isNonDirectTouchpoint(session)
+      ? session
+      : existingLast;
+    if (lastNonDirect)
+      writeStoredJson(
+        this.storage,
+        this.lastNonDirectStorageKey,
+        lastNonDirect,
+      );
     this.traffic = {
       first,
       session,
@@ -495,7 +676,10 @@ export class ChaosStorefrontAnalytics {
   }
 
   private isActive(): boolean {
-    return this.documentRef.visibilityState === "visible" && this.documentRef.hasFocus();
+    return (
+      this.documentRef.visibilityState === "visible" &&
+      this.documentRef.hasFocus()
+    );
   }
 
   private metaContext(): Record<string, unknown> {
@@ -508,19 +692,24 @@ export class ChaosStorefrontAnalytics {
     const rawCookieFbc = readCookie(this.documentRef, "_fbc");
     const cookieFbc = validFbc(rawCookieFbc) ? rawCookieFbc : undefined;
     const fbc = fbclid ? this.resolveFbc(fbclid) : cookieFbc;
-    const boundedFbc = boundedText(fbc, 512);
-    if (boundedFbc && boundedFbc !== cookieFbc) writeCookie(this.documentRef, "_fbc", boundedFbc);
+    const boundedFbc = boundedText(fbc, MAX_META_BROWSER_ID_LENGTH);
+    if (boundedFbc && boundedFbc !== cookieFbc)
+      writeCookie(this.documentRef, "_fbc", boundedFbc);
+    const rawFbp = readCookie(this.documentRef, "_fbp");
     return compact({
       source_url: currentSourceUrl(this.documentRef, this.windowRef),
       fbc: boundedFbc,
-      fbp: boundedText(readCookie(this.documentRef, "_fbp"), 512),
+      fbp: validFbc(rawFbp) ? rawFbp : undefined,
       client_user_agent: boundedText(this.windowRef.navigator?.userAgent, 512),
     });
   }
 
   private resolveFbc(fbclid: string | undefined): string | undefined {
     if (!fbclid || /\s/.test(fbclid)) return undefined;
-    const stored = readStoredJson(this.sessionStorageRef, this.metaFbcStorageKey);
+    const stored = readStoredJson(
+      this.sessionStorageRef,
+      this.metaFbcStorageKey,
+    );
     if (
       stored &&
       typeof stored === "object" &&
@@ -532,10 +721,13 @@ export class ChaosStorefrontAnalytics {
       return (stored as Record<string, string>).fbc;
     }
     const fbc = `fb.1.${Math.floor(this.now())}.${fbclid}`;
-    writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, { fbclid, fbc });
+    if (!validFbc(fbc)) return undefined;
+    writeStoredJson(this.sessionStorageRef, this.metaFbcStorageKey, {
+      fbclid,
+      fbc,
+    });
     return fbc;
   }
-
 }
 
 type ProviderOptions = AnalyticsOptions["providers"];
@@ -560,7 +752,11 @@ class BrowserProviderAdapters {
   private metaStarted = false;
   private ga4Started = false;
 
-  constructor(windowRef: Window & typeof globalThis, documentRef: Document, options: ProviderOptions) {
+  constructor(
+    windowRef: Window & typeof globalThis,
+    documentRef: Document,
+    options: ProviderOptions,
+  ) {
     this.windowRef = windowRef as ProviderWindow;
     this.documentRef = documentRef;
     this.options = options;
@@ -577,7 +773,9 @@ class BrowserProviderAdapters {
   ): void {
     if ((options.meta ?? true) && this.metaStarted && isMetaEvent(eventName)) {
       const mapped = metaEvent(eventName, properties);
-      this.windowRef.fbq?.("track", mapped.name, mapped.parameters, { eventID: eventId });
+      this.windowRef.fbq?.("track", mapped.name, mapped.parameters, {
+        eventID: eventId,
+      });
     }
     if ((options.ga4 ?? true) && this.ga4Started) {
       const mapped = ga4Event(eventName, eventId, properties);
@@ -600,7 +798,11 @@ class BrowserProviderAdapters {
       fbq.version = "2.0";
       this.windowRef.fbq = fbq;
       this.windowRef._fbq = fbq;
-      loadProviderScript(this.documentRef, "chaos-meta-pixel", "https://connect.facebook.net/en_US/fbevents.js");
+      loadProviderScript(
+        this.documentRef,
+        "chaos-meta-pixel",
+        "https://connect.facebook.net/en_US/fbevents.js",
+      );
     }
     this.windowRef.fbq("init", this.options.metaPixel.pixelId);
   }
@@ -609,9 +811,12 @@ class BrowserProviderAdapters {
     if (this.ga4Started || !this.options?.ga4) return;
     this.ga4Started = true;
     this.windowRef.dataLayer ??= [];
-    this.windowRef.gtag ??= (...args: unknown[]) => this.windowRef.dataLayer?.push(args);
+    this.windowRef.gtag ??= (...args: unknown[]) =>
+      this.windowRef.dataLayer?.push(args);
     this.windowRef.gtag("js", new Date());
-    this.windowRef.gtag("config", this.options.ga4.measurementId, { send_page_view: false });
+    this.windowRef.gtag("config", this.options.ga4.measurementId, {
+      send_page_view: false,
+    });
     loadProviderScript(
       this.documentRef,
       "chaos-google-tag",
@@ -625,12 +830,23 @@ function validateProviderOptions(options: ProviderOptions): void {
     throw new TypeError("providers.metaPixel.pixelId must contain 5-32 digits");
   }
   if (options?.ga4 && !/^G-[A-Z0-9]{4,20}$/.test(options.ga4.measurementId)) {
-    throw new TypeError("providers.ga4.measurementId must be a GA4 measurement ID");
+    throw new TypeError(
+      "providers.ga4.measurementId must be a GA4 measurement ID",
+    );
   }
 }
 
-function loadProviderScript(documentRef: Document, id: string, source: string): void {
-  if (documentRef.getElementById?.(id) || !documentRef.createElement || !documentRef.head) return;
+function loadProviderScript(
+  documentRef: Document,
+  id: string,
+  source: string,
+): void {
+  if (
+    documentRef.getElementById?.(id) ||
+    !documentRef.createElement ||
+    !documentRef.head
+  )
+    return;
   const script = documentRef.createElement("script");
   script.id = id;
   script.async = true;
@@ -682,6 +898,16 @@ function isBrowserMetaEvent(eventName: string): boolean {
   return ["page_view", "view_content", "search"].includes(eventName);
 }
 
+function isCommerceEvent(eventName: string): boolean {
+  return COMMERCE_EVENT_NAMES.has(eventName);
+}
+
+function isClientCommerceEvent(
+  eventName: string,
+): eventName is ClientCommerceAnalyticsEventName {
+  return CLIENT_COMMERCE_EVENT_NAMES.has(eventName);
+}
+
 function ga4Event(
   eventName: string,
   eventId: string,
@@ -707,17 +933,44 @@ function ga4Event(
       currency: properties.currency,
       items:
         ga4Items(properties.items, properties.currency) ??
-        (itemId ? [compact({ item_id: itemId, quantity: properties.quantity })] : undefined),
+        (itemId
+          ? [compact({ item_id: itemId, quantity: properties.quantity })]
+          : undefined),
     }),
   };
 }
 
-function providerValue(valueMinor: unknown, currency: unknown): number | undefined {
-  if (typeof valueMinor !== "number" || typeof currency !== "string") return undefined;
+function providerValue(
+  valueMinor: unknown,
+  currency: unknown,
+): number | undefined {
+  if (typeof valueMinor !== "number" || typeof currency !== "string")
+    return undefined;
   const normalizedCurrency = currency.toUpperCase();
-  const zeroDecimal = new Set(["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF"]);
+  const zeroDecimal = new Set([
+    "BIF",
+    "CLP",
+    "DJF",
+    "GNF",
+    "JPY",
+    "KMF",
+    "KRW",
+    "MGA",
+    "PYG",
+    "RWF",
+    "UGX",
+    "VND",
+    "VUV",
+    "XAF",
+    "XOF",
+    "XPF",
+  ]);
   const threeDecimal = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
-  const divisor = zeroDecimal.has(normalizedCurrency) ? 1 : threeDecimal.has(normalizedCurrency) ? 1_000 : 100;
+  const divisor = zeroDecimal.has(normalizedCurrency)
+    ? 1
+    : threeDecimal.has(normalizedCurrency)
+      ? 1_000
+      : 100;
   return valueMinor / divisor;
 }
 
@@ -725,7 +978,8 @@ function validateMoney(valueMinor: number, currency: string): void {
   if (!Number.isSafeInteger(valueMinor) || valueMinor < 0) {
     throw new RangeError("valueMinor must be a non-negative safe integer");
   }
-  if (!/^[A-Za-z]{3}$/.test(currency)) throw new TypeError("currency must be an ISO 4217 code");
+  if (!/^[A-Za-z]{3}$/.test(currency))
+    throw new TypeError("currency must be an ISO 4217 code");
 }
 
 function providerItems(items: unknown, currency: unknown): unknown {
@@ -742,9 +996,15 @@ function providerItems(items: unknown, currency: unknown): unknown {
 
 function providerItemCount(items: unknown): number | undefined {
   if (!Array.isArray(items)) return undefined;
-  const quantities = items.map((item) => (item as Record<string, unknown>).quantity);
-  if (!quantities.every((quantity) => typeof quantity === "number")) return undefined;
-  return quantities.reduce((total, quantity) => total + (quantity as number), 0);
+  const quantities = items.map(
+    (item) => (item as Record<string, unknown>).quantity,
+  );
+  if (!quantities.every((quantity) => typeof quantity === "number"))
+    return undefined;
+  return quantities.reduce(
+    (total, quantity) => total + (quantity as number),
+    0,
+  );
 }
 
 function ga4Items(items: unknown, currency: unknown): unknown {
@@ -767,14 +1027,20 @@ function commerceItemIds(properties: Record<string, unknown>): string[] {
   if (Array.isArray(properties.items)) {
     const ids = properties.items
       .map((item) => (item as Record<string, unknown>).item_id)
-      .filter((itemId): itemId is string => typeof itemId === "string" && itemId.length > 0);
+      .filter(
+        (itemId): itemId is string =>
+          typeof itemId === "string" && itemId.length > 0,
+      );
     if (ids.length > 0) return ids;
   }
   const itemId = commerceItemId(properties);
   return typeof itemId === "string" && itemId.length > 0 ? [itemId] : [];
 }
 
-function analyticsStorageNamespace(endpoint: string, publishableKey: string): string {
+function analyticsStorageNamespace(
+  endpoint: string,
+  publishableKey: string,
+): string {
   const input = `${endpoint}\0${publishableKey}`;
   let hash = 2_166_136_261;
   for (let index = 0; index < input.length; index += 1) {
@@ -784,7 +1050,10 @@ function analyticsStorageNamespace(endpoint: string, publishableKey: string): st
   return (hash >>> 0).toString(36);
 }
 
-function observeHistory(windowRef: Window & typeof globalThis, listener: () => void): () => void {
+function observeHistory(
+  windowRef: Window & typeof globalThis,
+  listener: () => void,
+): () => void {
   const history = windowRef.history;
   if (!history?.pushState || !history?.replaceState) return () => {};
   let state = historyObservers.get(history);
@@ -814,8 +1083,10 @@ function observeHistory(windowRef: Window & typeof globalThis, listener: () => v
     if (!current) return;
     current.listeners.delete(listener);
     if (current.listeners.size === 0) {
-      if (history.pushState === current.pushWrapper) history.pushState = current.pushState;
-      if (history.replaceState === current.replaceWrapper) history.replaceState = current.replaceState;
+      if (history.pushState === current.pushWrapper)
+        history.pushState = current.pushState;
+      if (history.replaceState === current.replaceWrapper)
+        history.replaceState = current.replaceState;
       historyObservers.delete(history);
     }
   };
@@ -831,7 +1102,9 @@ interface HistoryObserverState {
 
 const historyObservers = new WeakMap<History, HistoryObserverState>();
 
-export function createStorefrontAnalytics(options: AnalyticsOptions): ChaosStorefrontAnalytics {
+export function createStorefrontAnalytics(
+  options: AnalyticsOptions,
+): ChaosStorefrontAnalytics {
   return new ChaosStorefrontAnalytics(options);
 }
 
@@ -854,7 +1127,9 @@ function persistentIdentifier(
 function isUuid(value: string | null | undefined): boolean {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
   );
 }
 
@@ -873,12 +1148,16 @@ function currentSourceUrl(
 ): string | undefined {
   const documentHref = documentRef.location?.href;
   if (isHttpUrl(documentHref)) return withoutUrlFragment(documentHref);
-  const windowLocation = (windowRef as unknown as { location?: Location }).location;
+  const windowLocation = (windowRef as unknown as { location?: Location })
+    .location;
   const origin = windowLocation?.origin;
   const path = documentRef.location?.pathname;
   if (!isHttpUrl(origin) || typeof path !== "string") return undefined;
   try {
-    return new URL(`${path}${documentRef.location?.search ?? ""}`, origin).toString();
+    return new URL(
+      `${path}${documentRef.location?.search ?? ""}`,
+      origin,
+    ).toString();
   } catch {
     return undefined;
   }
@@ -888,7 +1167,10 @@ function isHttpUrl(value: string | undefined): value is string {
   if (!value) return false;
   try {
     const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname)
+    );
   } catch {
     return false;
   }
@@ -903,7 +1185,10 @@ function withoutUrlFragment(value: string): string {
 function readCookie(documentRef: Document, name: string): string | undefined {
   const cookie = documentRef.cookie;
   if (typeof cookie !== "string") return undefined;
-  const value = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  const value = cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`));
   if (!value) return undefined;
   const raw = value.slice(name.length + 1);
   if (!raw) return undefined;
@@ -916,7 +1201,8 @@ function readCookie(documentRef: Document, name: string): string | undefined {
 
 function writeCookie(documentRef: Document, name: string, value: string): void {
   try {
-    const secure = documentRef.location?.protocol === "https:" ? "; Secure" : "";
+    const secure =
+      documentRef.location?.protocol === "https:" ? "; Secure" : "";
     documentRef.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${META_FBC_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`;
   } catch {
     // Cookie storage is optional; the event still carries the matching value.
@@ -929,7 +1215,10 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
-function boundedText(value: string | undefined, maximumLength: number): string | undefined {
+function boundedText(
+  value: string | undefined,
+  maximumLength: number,
+): string | undefined {
   return typeof value === "string" &&
     value.length >= 1 &&
     value.length <= maximumLength &&
@@ -938,8 +1227,12 @@ function boundedText(value: string | undefined, maximumLength: number): string |
     : undefined;
 }
 
-function compact<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+function compact<T extends Record<string, unknown>>(
+  value: T,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  );
 }
 
 function captureTrafficTouchpoint(
@@ -948,25 +1241,57 @@ function captureTrafficTouchpoint(
 ): TrafficTouchpoint {
   const parameters = new URLSearchParams(search ?? "");
   return compact({
-    source: boundedText(parameters.get("utm_source") ?? undefined, MAX_UTM_VALUE_LENGTH),
-    medium: boundedText(parameters.get("utm_medium") ?? undefined, MAX_UTM_VALUE_LENGTH),
-    campaign: boundedText(parameters.get("utm_campaign") ?? undefined, MAX_UTM_VALUE_LENGTH),
-    campaign_id: boundedText(parameters.get("utm_id") ?? undefined, MAX_UTM_VALUE_LENGTH),
-    term: boundedText(parameters.get("utm_term") ?? undefined, MAX_UTM_VALUE_LENGTH),
-    content: boundedText(parameters.get("utm_content") ?? undefined, MAX_UTM_VALUE_LENGTH),
+    source: boundedText(
+      parameters.get("utm_source") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
+    medium: boundedText(
+      parameters.get("utm_medium") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
+    campaign: boundedText(
+      parameters.get("utm_campaign") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
+    campaign_id: boundedText(
+      parameters.get("utm_id") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
+    term: boundedText(
+      parameters.get("utm_term") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
+    content: boundedText(
+      parameters.get("utm_content") ?? undefined,
+      MAX_UTM_VALUE_LENGTH,
+    ),
     referrer_domain: referrerHost(referrer),
-    fbclid: boundedText(parameters.get("fbclid") ?? undefined, 512),
+    fbclid: boundedText(
+      parameters.get("fbclid") ?? undefined,
+      MAX_META_BROWSER_ID_LENGTH,
+    ),
     gclid: boundedText(parameters.get("gclid") ?? undefined, 512),
   }) as TrafficTouchpoint;
 }
 
 function isNonDirectTouchpoint(value: TrafficTouchpoint): boolean {
-  return Boolean(value.source || value.medium || value.campaign || value.referrer_domain || value.fbclid || value.gclid);
+  return Boolean(
+    value.source ||
+    value.medium ||
+    value.campaign ||
+    value.referrer_domain ||
+    value.fbclid ||
+    value.gclid,
+  );
 }
 
-function readTrafficTouchpoint(storage: Storage | undefined, key: string): TrafficTouchpoint | undefined {
+function readTrafficTouchpoint(
+  storage: Storage | undefined,
+  key: string,
+): TrafficTouchpoint | undefined {
   const value = readStoredJson(storage, key);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const candidate = value as Record<string, unknown>;
   const result = compact({
     source: storedText(candidate.source, MAX_UTM_VALUE_LENGTH),
@@ -976,14 +1301,16 @@ function readTrafficTouchpoint(storage: Storage | undefined, key: string): Traff
     term: storedText(candidate.term, MAX_UTM_VALUE_LENGTH),
     content: storedText(candidate.content, MAX_UTM_VALUE_LENGTH),
     referrer_domain: storedText(candidate.referrer_domain, 253),
-    fbclid: storedText(candidate.fbclid, 512),
+    fbclid: storedText(candidate.fbclid, MAX_META_BROWSER_ID_LENGTH),
     gclid: storedText(candidate.gclid, 512),
   }) as TrafficTouchpoint;
   return result;
 }
 
 function storedText(value: unknown, maximumLength: number): string | undefined {
-  return typeof value === "string" ? boundedText(value, maximumLength) : undefined;
+  return typeof value === "string"
+    ? boundedText(value, maximumLength)
+    : undefined;
 }
 
 function readStoredJson(storage: Storage | undefined, key: string): unknown {
@@ -995,7 +1322,11 @@ function readStoredJson(storage: Storage | undefined, key: string): unknown {
   }
 }
 
-function writeStoredJson(storage: Storage | undefined, key: string, value: unknown): void {
+function writeStoredJson(
+  storage: Storage | undefined,
+  key: string,
+  value: unknown,
+): void {
   try {
     storage?.setItem(key, JSON.stringify(value));
   } catch {
@@ -1018,7 +1349,9 @@ function validQueuedEvent(value: unknown): value is QueuedEvent {
 
 function validateEventName(eventName: string): void {
   if (!isValidEventName(eventName)) {
-    throw new TypeError("eventName must be 1-64 lowercase snake_case characters");
+    throw new TypeError(
+      "eventName must be 1-64 lowercase snake_case characters",
+    );
   }
 }
 
@@ -1027,33 +1360,48 @@ function isValidEventName(value: unknown): value is string {
 }
 
 function validFbc(value: string | undefined): value is string {
-  if (!value) return false;
+  if (!value || value.length > MAX_META_BROWSER_ID_LENGTH) return false;
   const match = /^fb\.\d+\.(\d{13})\.[^\s]+$/.exec(value);
   return match !== null && Number.isSafeInteger(Number(match[1]));
 }
 
 function validateEventProperties(properties: Record<string, unknown>): void {
   if (!isValidEventProperties(properties)) {
-    throw new TypeError("event properties must be a JSON object no larger than 32768 bytes");
+    throw new TypeError(
+      "event properties must be a JSON object no larger than 32768 bytes",
+    );
   }
 }
 
-function isValidEventProperties(value: unknown): value is Record<string, unknown> {
+function isValidEventProperties(
+  value: unknown,
+): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   try {
     const serialized = JSON.stringify(value);
-    return typeof serialized === "string" && new TextEncoder().encode(serialized).byteLength <= MAX_PROPERTIES_BYTES;
+    return (
+      typeof serialized === "string" &&
+      new TextEncoder().encode(serialized).byteLength <= MAX_PROPERTIES_BYTES
+    );
   } catch {
     return false;
   }
 }
 
 function isPermanentClientError(error: unknown): error is ChaosApiError {
-  return error instanceof ChaosApiError && error.status >= 400 && error.status < 500 && error.status !== 429;
+  return (
+    error instanceof ChaosApiError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 429
+  );
 }
 
 function isSplittableClientError(error: unknown): error is ChaosApiError {
-  return error instanceof ChaosApiError && (error.status === 400 || error.status === 422);
+  return (
+    error instanceof ChaosApiError &&
+    (error.status === 400 || error.status === 422)
+  );
 }
 
 function mergeCollectionResults(
@@ -1070,5 +1418,8 @@ function mergeCollectionResults(
 }
 
 function isValidGa4EventName(eventName: string): boolean {
-  return eventName.length <= MAX_GA4_EVENT_NAME_BYTES && /^[A-Za-z][A-Za-z0-9_]*$/.test(eventName);
+  return (
+    eventName.length <= MAX_GA4_EVENT_NAME_BYTES &&
+    /^[A-Za-z][A-Za-z0-9_]*$/.test(eventName)
+  );
 }

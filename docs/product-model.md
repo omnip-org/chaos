@@ -48,9 +48,16 @@ while a Stripe Embedded Checkout session is pending. Chaos creates one Order and
 one Stripe Checkout Session per payment attempt; Stripe collects the checkout
 address and calculates tax, promotions, shipping, and the final total. Verified
 Stripe webhooks reconcile those facts onto the Order, while Chaos retains
-inventory and fulfillment state. The server-side `InitiateCheckout` analytics
-event uses the item subtotal known when that provisional Order is created; the
-server-side `Purchase` event uses the final provider-reconciled total.
+inventory and fulfillment state. The browser SDK prepares one attributed
+commerce envelope before the cart or checkout request, but the business request
+remains analytics-agnostic. After a successful response, the SDK sends the
+event through the common `/analytics/events` endpoint with canonical response
+values and projects the same event ID to browser providers. The browser-side
+`InitiateCheckout` event is stored with its `order_id`; the server-side
+`Purchase` event later looks up that exact event and combines its attribution
+with the final provider-reconciled total. No attribution is stored on the
+Order, and Meta can deduplicate the Pixel and CAPI copies using the shared
+event ID.
 
 ## Payment and Refund
 
