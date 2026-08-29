@@ -16,7 +16,7 @@ preserve the dependency direction in
 | [`deployment.md`](deployment.md) | Production topology, secrets, bootstrap, rollout, and rollback |
 | [`media-upload.md`](media-upload.md) | MCP Host direct-upload flow, Product/Option Value/Variant media scopes, and fallback resolution |
 | [`postgresql-extensions.md`](postgresql-extensions.md) | PostgreSQL image and extension lifecycle |
-| [`adr/`](adr/) | Historical decisions and their status; an amended ADR must be read with its named successor |
+| [`adr/`](adr/) | Durable decisions and their status; Accepted ADRs describe current constraints, while Proposed ADRs describe future design |
 
 ## Runtime entry points
 
@@ -47,7 +47,7 @@ preserve the dependency direction in
 | Stock and reservations | `inventory` | MCP inventory tools and inventory repository | `commerce` |
 | Shopper, carts, checkout, and orders | `sales` | Storefront HTTP and sales repositories | `commerce` |
 | Payments and refunds | `payments` | MCP payment tools and Stripe adapters | `commerce` |
-| Shipping, fulfillment, and returns | `fulfillment` | MCP fulfillment tools and shipping adapters | `commerce` |
+| Shipping and fulfillment | `fulfillment` | MCP fulfillment tools and manual shipping adapter | `commerce` |
 | Payment webhooks and payment queues | core payment workflows | Stripe adapters and Worker loops | `commerce` |
 | Generic outbox and event routing | core event workflows | Worker loops and integration repositories | `integration` |
 | Commerce events and external provider delivery | `analytics` | Storefront collection, MCP settings, and Worker delivery | `integration` |
@@ -60,7 +60,7 @@ HTTP delivery code is grouped by public responsibility under
 
 - `identity/` contains account bootstrap and User Access Key endpoints;
 - `storefront/` contains every publishable Store API surface;
-- `storefront/v1/carts.rs` contains payment creation; Provider callbacks are mounted under `/integrations/v1/webhooks`;
+- `storefront/v1/carts.rs` contains cart and checkout delivery; Provider callbacks are mounted under `/integrations/v1/webhooks`;
 - `health.rs` contains health checks;
 - `shared/` contains transport extractors, envelopes, and test support.
 
@@ -89,7 +89,6 @@ not in application use cases.
   checkout, order, and analytics records follow that `shopper_id`.
 - `deploy/` contains the production-equivalent Compose topology and origin TLS
   certificate used behind Cloudflare.
-- `scripts/storefront-demo.mjs` exercises the supported commerce flow.
 
 ## Required verification
 

@@ -84,6 +84,8 @@ invariant.
   the maintenance Worker removes terminal rows older than thirty days without
   growing duplicate PGMQ archive tables.
 
-This ADR supersedes the custom event-queue lease mechanics described in ADRs
-0002, 0007, 0014, 0025, and 0026. Their deployment and domain decisions remain
-in force.
+This ADR is the current source for PGMQ queue mechanics. The deployment,
+provider-boundary, worker-ownership, and analytics decisions in ADRs 0002,
+0007, 0025, and 0026 remain in force where they do not conflict with this
+queue implementation. ADR 0014 remains a future fulfillment proposal; this
+ADR supersedes its queue-mechanics assumptions where they conflict with PGMQ.

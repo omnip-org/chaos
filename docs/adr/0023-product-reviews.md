@@ -1,6 +1,6 @@
 # ADR 0023: Product Reviews
 
-- Status: Amended by ADR 0025, ADR 0028, and ADR 0030
+- Status: Accepted
 - Date: 2026-08-17
 
 ## Context

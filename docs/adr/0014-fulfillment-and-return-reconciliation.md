@@ -1,7 +1,9 @@
 # ADR 0014: Fulfillment and Return Reconciliation
 
-- Status: Accepted
+- Status: Proposed
 - Date: 2026-08-16
+
+> This ADR describes future behavior and is not implemented in the current codebase. Current Fulfillment supports manual create, shipped, delivered, and cancelled transitions. Returns and return reconciliation remain future work; this document must not be used as current behavior documentation.
 
 ## Context
 

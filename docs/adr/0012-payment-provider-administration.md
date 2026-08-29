@@ -22,11 +22,12 @@ Owners administer Provider accounts through MCP tools, as established by ADR 002
 - one provider API credential reference;
 - one webhook verification secret reference.
 
-There is no separate enabled flag or provider health/readiness state. An account
-is available for checkout when its required credentials are configured. Live
-provider health verification and onboarding-specific state are deferred until a
-provider needs them; they are not part of the account aggregate or checkout
-routing decision.
+The shared Provider account has an `enabled` flag used during account and
+webhook resolution. This flag is not a Provider health/readiness state. An
+account is available for checkout when it is enabled and its required
+credentials are configured. Live provider health verification and
+onboarding-specific state are deferred until a provider needs them; they are
+not part of the account aggregate or checkout routing decision.
 
 The references identify values through the infrastructure secret resolver. They are not plaintext credentials and never appear in response DTOs, logs, events, or persistence snapshots. The current resolver stores AES-256-GCM-encrypted values as opaque `enc://` references in PostgreSQL; only the deployment encryption key remains outside the database. Responses expose only `credentials_configured`.
 

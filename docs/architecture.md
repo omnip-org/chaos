@@ -42,7 +42,7 @@ chaos-worker ----------> chaos-core -> chaos-domain
 - `chaos-api` owns HTTP, MCP, DTOs, extractors, routing, and API dependency composition.
 - `chaos-worker` owns Worker dependency composition and durable background consumers independently of API replicas.
 
-External boundaries that genuinely need replacement live in `chaos-core::ports`; their concrete adapters live beside the use cases under `integrations`, `repositories`, `security`, and `storage`. The API and
+External boundaries that genuinely need replacement live in `chaos-core::contracts`; their concrete adapters live beside the use cases under `integrations`, `repositories`, `security`, and `storage`. The API and
 Worker compose separate runtime dependency sets; starting a Worker does not
 construct HTTP routes, MCP state, OIDC verification, or JWT services.
 

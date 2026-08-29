@@ -20,7 +20,7 @@ MCP Product/Variant/Collection detail results and Storefront Product/Variant/Col
 - Storefront clients can carry rich, per-item merchandising content without a schema migration for every new content shape, at the cost of Chaos being unable to search, validate, or localize anything inside it.
 - The 32 KiB bound is enforced identically in the domain (before any write) and in PostgreSQL (as defense in depth against a future write path that bypasses the domain type), so a stored value is never larger than what the domain already accepted.
 - MCP product and collection create/update tools expose metadata directly. Metadata is not part of the Storefront write surface.
-- Metadata is not translated by the Store-scoped Catalog localization introduced in ADR 0019. A client that needs localized merchandising content must currently encode that inside the JSON value itself.
+- Metadata is not translated by Chaos. A client that needs localized merchandising content must currently encode that inside the JSON value itself.
 - Product metadata media references should be changed through the typed Media tools. Wholesale Product metadata replacement cannot silently remove or alter an active managed reference.
 
 ## Rejected alternatives
@@ -31,4 +31,4 @@ Modeling the known content shapes (taglines, comparison tables, size guides, and
 
 ### Give metadata its own PUT endpoint separate from content update
 
-A dedicated endpoint would let a client update metadata without resending title/description, but it would also let a client observe or create a Product/Collection state with content and metadata written by two non-atomic requests. Folding metadata into the existing content update keeps one write and one audit event.
+A dedicated endpoint would let a client update metadata without resending title/description, but it would also let a client observe or create a Product/Collection state with content and metadata written by two non-atomic requests. Folding metadata into the existing content update keeps one atomic write and one catalog mutation boundary.

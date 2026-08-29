@@ -13,14 +13,14 @@ Catalog owns manual Collections. A Collection belongs to exactly one Store and h
 
 Collection publication is an explicit relation to a Sales Channel. Only an active Collection can be published to an active Channel in the same Store. Storefront Collection reads require the Store, Channel, Collection, and Collection publication to be active. A Product in that Collection is visible and counted only when that Product is independently active and published to the same Channel. Product listing with a Collection handle preserves the manual membership position across cursor pages.
 
-Owner and Member Store memberships may mutate Collections under the current coarse role policy. Mutations are idempotent and append typed immutable audit events for creation, content updates, lifecycle transitions, membership replacement, publication, and unpublication. Runtime privileges prohibit deleting Collection roots or changing audit events; RLS protects all Collection tables.
+Owner and Member Store memberships may mutate Collections under the current coarse role policy. Mutations are idempotent. RLS and runtime privileges protect Collection rows, while archived Collections retain their identity and cannot be reactivated.
 
 ## Consequences
 
 - Collection membership cannot bypass Product publication or lifecycle rules.
 - The same Collection may be visible on one Sales Channel and absent on another.
 - Replacing membership is atomic, deterministic, and safe to retry.
-- Archived Collections retain their identity and audit evidence and cannot be reactivated.
+- Archived Collections retain their identity and cannot be reactivated.
 - Automated rule-based Collections remain a future aggregate behavior rather than hidden query syntax in the manual model.
 
 ## Rejected alternatives

@@ -70,7 +70,7 @@ defaults. The global source template files live in
 `crates/chaos-core/templates/email/`: `order-confirmed.subject.txt`,
 `order-confirmed.txt`, and `order-confirmed.html`.
 
-Adding or changing an encrypted Provider Key takes effect on the next Provider operation. It does not require a deployment or restart. Submit a new value through MCP and update the Provider account reference when the 24-hour application-level overlap is required.
+Adding or changing an encrypted Provider Key takes effect on the next Provider operation. It does not require a deployment or restart. Submit the new value through MCP and update the Provider account reference; the previous reference is not retained.
 
 ## Deployment
 
@@ -134,7 +134,7 @@ The legacy bootstrap remains available for clients that cannot use OAuth:
 4. Create or administer the Store through MCP tools. Membership is checked for every tool call.
 5. Create only public Storefront Keys for storefront or Sales Channel clients. The returned plaintext has the form `pk_<24 Base58 characters>` and must be treated as a client credential.
 6. Upload third-party credentials and configure Providers through MCP tools.
-7. Activate the Store and exercise a non-destructive quote or test transaction.
+7. Activate the Store and exercise a non-destructive read or test transaction.
 
 ## Deployment secrets and rotation
 

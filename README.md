@@ -44,7 +44,7 @@ curl --insecure --header 'Host: chaos.omnip.org' https://localhost/health/live
 curl --insecure --header 'Host: chaos.omnip.org' https://localhost/health/ready
 ```
 
-Users sign in with a configured Google or Apple identity token. Chaos validates the provider token and issues a short-lived JWT; it stores no passwords or human sessions. Commerce notification delivery is currently outside Chaos.
+Users sign in with a configured Google or Apple identity token. Chaos validates the provider token and issues a short-lived JWT; it stores no passwords or human sessions. Identity does not send authentication email. Order-confirmation email is delivered by the Worker through the Store's configured Resend account.
 
 Stop the stack:
 
