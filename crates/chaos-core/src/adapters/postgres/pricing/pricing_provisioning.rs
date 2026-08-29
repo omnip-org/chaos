@@ -145,7 +145,7 @@ impl PostgresPricingProvisioningTransaction {
         .map_err(map_pricing_write_error)?;
         for price in price_list.prices() {
             sqlx::query(
-                "INSERT INTO commerce.prices \
+                "INSERT INTO commerce.price_list_items \
                  (id, store_id, price_list_id, product_variant_id, \
                   amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
@@ -337,7 +337,7 @@ mod tests {
         let stored: (String, String, i64) = sqlx::query_as(
             "SELECT price_list.status::text, price_list.currency::text, price.amount_minor \
              FROM commerce.price_lists AS price_list \
-             INNER JOIN commerce.prices AS price \
+             INNER JOIN commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.id = $1",

@@ -91,7 +91,7 @@ impl PostgresStorefrontCatalogRepository {
                     variant.meta \
              FROM commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
-             INNER JOIN commerce.prices AS price \
+             INNER JOIN commerce.price_list_items AS price \
                ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
@@ -396,7 +396,7 @@ impl PostgresStorefrontCatalogRepository {
                     price.amount_minor, selected.currency, variant.meta \
              FROM commerce.product_variants AS variant \
              INNER JOIN selected_price_list AS selected ON true \
-             INNER JOIN commerce.prices AS price \
+             INNER JOIN commerce.price_list_items AS price \
                ON price.store_id = variant.store_id \
               AND price.price_list_id = selected.id \
               AND price.product_variant_id = variant.id \
@@ -1173,7 +1173,7 @@ mod tests {
             ),
         ] {
             sqlx::query(
-                "INSERT INTO commerce.prices \
+                "INSERT INTO commerce.price_list_items \
                  (id, store_id, price_list_id, \
                   product_variant_id, amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",

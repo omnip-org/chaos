@@ -523,7 +523,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.prices \
+            "INSERT INTO commerce.price_list_items \
              (id, store_id, price_list_id, product_variant_id, amount_minor) \
              VALUES ($1, $2, $3, $4, 4200)",
         )

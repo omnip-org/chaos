@@ -331,7 +331,7 @@ CREATE TABLE commerce.price_lists (
     CONSTRAINT price_lists_validity_window_check        CHECK (starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at)
 );
 
-CREATE TABLE commerce.prices (
+CREATE TABLE commerce.price_list_items (
     id                   UUID         NOT NULL PRIMARY KEY,
     store_id             UUID         NOT NULL,
     price_list_id        UUID         NOT NULL,
@@ -374,7 +374,7 @@ CREATE INDEX review_media_assets_review_idx ON commerce.review_media_assets (sto
 CREATE INDEX review_media_assets_media_asset_idx ON commerce.review_media_assets (store_id, media_asset_id, review_id);
 CREATE INDEX product_documents_search_idx ON commerce.product_documents USING GIN (document);
 CREATE INDEX price_lists_store_activation_idx ON commerce.price_lists (store_id, status, currency, starts_at, ends_at);
-CREATE INDEX prices_variant_lookup_idx ON commerce.prices (store_id, product_variant_id, price_list_id);
+CREATE INDEX prices_variant_lookup_idx ON commerce.price_list_items (store_id, product_variant_id, price_list_id);
 
 CREATE FUNCTION commerce.refresh_product_document (store_id UUID, product_id UUID)
 RETURNS VOID
@@ -446,7 +446,7 @@ ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.review_media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.price_lists ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.prices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.price_list_items ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.products
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -512,7 +512,7 @@ CREATE POLICY store_isolation ON commerce.price_lists
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.prices
+CREATE POLICY store_isolation ON commerce.price_list_items
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -536,7 +536,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.review_media_assets,
        commerce.product_documents,
        commerce.price_lists,
-       commerce.prices
+       commerce.price_list_items
     TO chaos_runtime;
 
 REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.product_media_assets,

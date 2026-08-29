@@ -51,7 +51,7 @@ async fn resolve_variant(
           AND publication.sales_channel_id = $1 \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = variant.store_id AND price_list.id = $2 \
-         INNER JOIN commerce.prices AS price \
+         INNER JOIN commerce.price_list_items AS price \
            ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
          WHERE variant.store_id = $3 AND variant.id = $4 \
@@ -344,7 +344,7 @@ async fn refresh_cart_lines(
           AND publication.sales_channel_id = $1 \
          INNER JOIN commerce.price_lists AS price_list \
            ON price_list.store_id = cart_line.store_id AND price_list.id = $2 \
-         INNER JOIN commerce.prices AS price \
+         INNER JOIN commerce.price_list_items AS price \
            ON price.store_id = variant.store_id AND price.price_list_id = price_list.id \
           AND price.product_variant_id = variant.id \
          WHERE cart_line.store_id = $3 \

@@ -82,7 +82,7 @@ impl PostgresPricingManagementRepository {
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM commerce.price_lists AS price_list \
-             LEFT JOIN commerce.prices AS price \
+             LEFT JOIN commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.store_id = $1 \
@@ -116,7 +116,7 @@ impl PostgresPricingManagementRepository {
                     price_list.status::text, price_list.starts_at, price_list.ends_at, \
                     count(price.id), price_list.created_at, price_list.updated_at \
              FROM commerce.price_lists AS price_list \
-             LEFT JOIN commerce.prices AS price \
+             LEFT JOIN commerce.price_list_items AS price \
               ON price.store_id = price_list.store_id \
               AND price.price_list_id = price_list.id \
              WHERE price_list.store_id = $1 AND price_list.id = $2 \
@@ -131,7 +131,7 @@ impl PostgresPricingManagementRepository {
             return Ok(None);
         };
         let prices = sqlx::query_as::<_, (Uuid, i64)>(
-            "SELECT product_variant_id, amount_minor FROM commerce.prices \
+            "SELECT product_variant_id, amount_minor FROM commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2 \
              ORDER BY product_variant_id ASC",
         )
@@ -186,7 +186,7 @@ impl PostgresPricingManagementTransaction {
             return Ok(None);
         };
         let variant_ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT product_variant_id FROM commerce.prices \
+            "SELECT product_variant_id FROM commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -259,7 +259,7 @@ impl PostgresPricingManagementTransaction {
             )));
         }
         sqlx::query(
-            "DELETE FROM commerce.prices \
+            "DELETE FROM commerce.price_list_items \
              WHERE store_id = $1 AND price_list_id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -269,7 +269,7 @@ impl PostgresPricingManagementTransaction {
         .map_err(database_error)?;
         for price in price_list.prices() {
             sqlx::query(
-                "INSERT INTO commerce.prices \
+                "INSERT INTO commerce.price_list_items \
                  (id, store_id, price_list_id, product_variant_id, amount_minor) \
                  VALUES ($1, $2, $3, $4, $5)",
             )
@@ -501,7 +501,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO commerce.prices \
+            "INSERT INTO commerce.price_list_items \
              (id, store_id, price_list_id, product_variant_id, amount_minor) \
              VALUES ($1, $2, $3, $4, 2500)",
         )
