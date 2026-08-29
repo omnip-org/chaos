@@ -320,7 +320,7 @@ impl PostgresCatalogManagementTransaction {
         variant_id: ProductVariantId,
     ) -> Result<Option<ProductVariantContentSnapshot>, ApplicationError> {
         sqlx::query_as::<_, ProductVariantContentSnapshot>(
-            "SELECT title, sku::text AS sku, track_inventory, meta, \
+            "SELECT variant.title, variant.sku::text AS sku, variant.track_inventory, variant.meta, \
                     product.revision \
              FROM commerce.product_variants AS variant \
              INNER JOIN commerce.products AS product \
