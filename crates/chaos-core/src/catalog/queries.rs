@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use chaos_domain::{catalog::ProductId, store::StoreId};
+use chaos_domain::{
+    catalog::{ProductId, ProductStatus},
+    store::StoreId,
+};
 
 use crate::{
     ApplicationError,
@@ -28,11 +31,14 @@ impl CatalogQueries {
         store_id: StoreId,
         after: Option<ProductId>,
         limit: u16,
+        query: Option<&str>,
+        status: Option<ProductStatus>,
     ) -> Result<ProductPage, ApplicationError> {
         let limit = limit.clamp(1, 100);
+        let query = query.filter(|value| !value.trim().is_empty());
         let mut items = self
             .repository
-            .list_products(actor, store_id, after, limit + 1)
+            .list_products(actor, store_id, after, limit + 1, query, status)
             .await?
             .ok_or_else(|| ApplicationError::NotFound {
                 resource: "store",

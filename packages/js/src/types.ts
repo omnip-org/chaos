@@ -46,8 +46,14 @@ export interface ProductVariant {
   metadata?: unknown;
 }
 
+export type ProductMediaScope = "product" | "option_value" | "variant";
+
 export interface ProductMedia {
   id: UUID;
+  /** Where this Media is attached; Product media is the final fallback. */
+  scope: ProductMediaScope;
+  option_id?: UUID;
+  option_value_id?: UUID;
   product_variant_id?: UUID;
   media_type: string;
   kind: "image" | "video";

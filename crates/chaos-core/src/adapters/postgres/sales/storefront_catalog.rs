@@ -150,6 +150,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT id, name::text, position \
              FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
+               AND archived_at IS NULL \
              ORDER BY position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -161,6 +162,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT id, option_id, value::text, position \
              FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
+               AND archived_at IS NULL \
              ORDER BY option_id ASC, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -211,15 +213,55 @@ impl PostgresStorefrontCatalogRepository {
         actor: &MachineActor,
         product_id: ProductId,
     ) -> Result<Vec<StorefrontMediaAsset>, ApplicationError> {
-        let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, String, String, i16, String)>(
-            "SELECT media.id,link.product_variant_id,media.media_type,media.media_kind::text,\
-                    link.alt_text,link.position,media.public_url \
+        let rows = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                String,
+                Option<Uuid>,
+                Option<Uuid>,
+                Option<Uuid>,
+                String,
+                String,
+                String,
+                i16,
+                String,
+            ),
+        >(
+            "SELECT media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
+                    media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
              FROM commerce.product_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
-             ORDER BY link.position,media.id",
+             UNION ALL \
+             SELECT media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
+                    media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
+             FROM commerce.product_option_value_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             INNER JOIN commerce.product_options AS option \
+                ON option.store_id=link.store_id AND option.product_id=link.product_id \
+               AND option.id=link.option_id AND option.archived_at IS NULL \
+             INNER JOIN commerce.product_option_values AS option_value \
+                ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
+               AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
+               AND option_value.archived_at IS NULL \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+               AND link.archived_at IS NULL AND media.status='ready' \
+             UNION ALL \
+             SELECT media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
+                    media.media_type,media.media_kind::text,link.alt_text,link.position,media.public_url \
+             FROM commerce.product_variant_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             INNER JOIN commerce.product_variants AS variant \
+                ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
+               AND variant.id=link.product_variant_id AND variant.status='active' \
+             WHERE link.store_id=$1 AND link.product_id=$2 \
+               AND link.archived_at IS NULL AND media.status='ready' \
+             ORDER BY 9, 2, 1",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -228,11 +270,38 @@ impl PostgresStorefrontCatalogRepository {
         .map_err(database_error)?;
         rows.into_iter()
             .map(|row| {
+                let scope = match row.1.as_str() {
+                    "product" => crate::contracts::StorefrontMediaScope::Product,
+                    "option_value" => crate::contracts::StorefrontMediaScope::OptionValue {
+                        option_id: ProductOptionId::from_uuid(row.2.ok_or_else(|| {
+                            ApplicationError::Unexpected(anyhow::anyhow!(
+                                "database contains an Option Value media row without an Option"
+                            ))
+                        })?),
+                        option_value_id: ProductOptionValueId::from_uuid(row.3.ok_or_else(|| {
+                            ApplicationError::Unexpected(anyhow::anyhow!(
+                                "database contains an Option Value media row without an Option Value"
+                            ))
+                        })?),
+                    },
+                    "variant" => crate::contracts::StorefrontMediaScope::Variant {
+                        product_variant_id: ProductVariantId::from_uuid(row.4.ok_or_else(|| {
+                            ApplicationError::Unexpected(anyhow::anyhow!(
+                                "database contains a Variant media row without a Variant"
+                            ))
+                        })?),
+                    },
+                    _ => {
+                        return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                            "database contains an invalid Product media scope"
+                        )));
+                    }
+                };
                 Ok(StorefrontMediaAsset {
                     id: MediaAssetId::from_uuid(row.0),
-                    product_variant_id: row.1.map(ProductVariantId::from_uuid),
-                    media_type: row.2,
-                    kind: match row.3.as_str() {
+                    scope,
+                    media_type: row.5,
+                    kind: match row.6.as_str() {
                         "image" => MediaKind::Image,
                         "video" => MediaKind::Video,
                         _ => {
@@ -241,13 +310,13 @@ impl PostgresStorefrontCatalogRepository {
                             )));
                         }
                     },
-                    alt_text: row.4,
-                    position: u16::try_from(row.5).map_err(|_| {
+                    alt_text: row.7,
+                    position: u16::try_from(row.8).map_err(|_| {
                         ApplicationError::Unexpected(anyhow::anyhow!(
                             "database contains an invalid Media position"
                         ))
                     })?,
-                    url: row.6,
+                    url: row.9,
                 })
             })
             .collect()
@@ -464,6 +533,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT product_id, id, name::text, position \
              FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+               AND archived_at IS NULL \
              ORDER BY product_id, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -475,6 +545,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT product_id, id, option_id, value::text, position \
              FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+               AND archived_at IS NULL \
              ORDER BY product_id, option_id ASC, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -544,6 +615,9 @@ impl PostgresStorefrontCatalogRepository {
             (
                 Uuid,
                 Uuid,
+                String,
+                Option<Uuid>,
+                Option<Uuid>,
                 Option<Uuid>,
                 String,
                 String,
@@ -552,14 +626,40 @@ impl PostgresStorefrontCatalogRepository {
                 String,
             ),
         >(
-            "SELECT link.product_id, media.id, link.product_variant_id, media.media_type, \
-                    media.media_kind::text, link.alt_text, link.position, media.public_url \
+            "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
+                    media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
              FROM commerce.product_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
                AND link.archived_at IS NULL AND media.status = 'ready' \
-             ORDER BY link.product_id, link.position, media.id",
+             UNION ALL \
+             SELECT link.product_id, media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
+                    media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+             FROM commerce.product_option_value_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             INNER JOIN commerce.product_options AS option \
+                ON option.store_id=link.store_id AND option.product_id=link.product_id \
+               AND option.id=link.option_id AND option.archived_at IS NULL \
+             INNER JOIN commerce.product_option_values AS option_value \
+                ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
+               AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
+               AND option_value.archived_at IS NULL \
+             WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
+               AND link.archived_at IS NULL AND media.status = 'ready' \
+             UNION ALL \
+             SELECT link.product_id, media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
+                    media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+             FROM commerce.product_variant_media_assets AS link \
+             INNER JOIN commerce.media_assets AS media \
+                ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             INNER JOIN commerce.product_variants AS variant \
+                ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
+               AND variant.id=link.product_variant_id AND variant.status='active' \
+             WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
+               AND link.archived_at IS NULL AND media.status = 'ready' \
+             ORDER BY 1, 10, 3, 2",
         )
         .bind(actor.store_id.as_uuid())
         .bind(product_ids)
@@ -567,7 +667,19 @@ impl PostgresStorefrontCatalogRepository {
         .await
         .map_err(database_error)?;
         let mut media_by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
-        for (product_id, id, product_variant_id, media_type, kind, alt_text, position, url) in rows
+        for (
+            product_id,
+            id,
+            scope_name,
+            option_id,
+            option_value_id,
+            product_variant_id,
+            media_type,
+            kind,
+            alt_text,
+            position,
+            url,
+        ) in rows
         {
             let kind = match kind.as_str() {
                 "image" => MediaKind::Image,
@@ -583,7 +695,37 @@ impl PostgresStorefrontCatalogRepository {
                 .or_default()
                 .push(StorefrontMediaAsset {
                     id: MediaAssetId::from_uuid(id),
-                    product_variant_id: product_variant_id.map(ProductVariantId::from_uuid),
+                    scope: match scope_name.as_str() {
+                        "product" => crate::contracts::StorefrontMediaScope::Product,
+                        "option_value" => crate::contracts::StorefrontMediaScope::OptionValue {
+                            option_id: ProductOptionId::from_uuid(option_id.ok_or_else(|| {
+                                ApplicationError::Unexpected(anyhow::anyhow!(
+                                    "database contains an Option Value media row without an Option"
+                                ))
+                            })?),
+                            option_value_id: ProductOptionValueId::from_uuid(
+                                option_value_id.ok_or_else(|| {
+                                    ApplicationError::Unexpected(anyhow::anyhow!(
+                                        "database contains an Option Value media row without an Option Value"
+                                    ))
+                                })?,
+                            ),
+                        },
+                        "variant" => crate::contracts::StorefrontMediaScope::Variant {
+                            product_variant_id: ProductVariantId::from_uuid(
+                                product_variant_id.ok_or_else(|| {
+                                    ApplicationError::Unexpected(anyhow::anyhow!(
+                                        "database contains a Variant media row without a Variant"
+                                    ))
+                                })?,
+                            ),
+                        },
+                        _ => {
+                            return Err(ApplicationError::Unexpected(anyhow::anyhow!(
+                                "database contains an invalid Product media scope"
+                            )));
+                        }
+                    },
                     media_type,
                     kind,
                     alt_text,
@@ -942,8 +1084,15 @@ async fn variant_selected_options(
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
+         INNER JOIN commerce.product_option_values AS value \
+           ON value.store_id = selection.store_id \
+          AND value.product_id = selection.product_id \
+          AND value.option_id = selection.option_id \
+          AND value.id = selection.option_value_id \
          WHERE selection.store_id = $1 \
            AND selection.product_id = $2 \
+           AND option.archived_at IS NULL \
+           AND value.archived_at IS NULL \
          ORDER BY selection.variant_id ASC, option.position ASC",
     )
     .bind(actor.store_id.as_uuid())
@@ -979,8 +1128,15 @@ async fn variant_selected_options_for_products(
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
+         INNER JOIN commerce.product_option_values AS value \
+           ON value.store_id = selection.store_id \
+          AND value.product_id = selection.product_id \
+          AND value.option_id = selection.option_id \
+          AND value.id = selection.option_value_id \
          WHERE selection.store_id = $1 \
            AND selection.product_id = ANY($2::uuid[]) \
+           AND option.archived_at IS NULL \
+           AND value.archived_at IS NULL \
          ORDER BY selection.product_id ASC, selection.variant_id ASC, option.position ASC",
     )
     .bind(actor.store_id.as_uuid())

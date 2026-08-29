@@ -2,7 +2,8 @@ use crate::{
     ApplicationError,
     contracts::{
         AdminActor, CatalogProductDetail, CatalogProductListItem, CatalogProductOption,
-        CatalogProductOptionValue, CatalogProductVariant, CatalogSelectedOption,
+        CatalogProductOptionValue, CatalogProductPublication, CatalogProductVariant,
+        CatalogSelectedOption,
     },
     error::database_error,
 };
@@ -11,6 +12,7 @@ use chaos_domain::{
         ProductId, ProductOptionId, ProductOptionValueId, ProductStatus, ProductVariantId,
         VariantStatus,
     },
+    store::SalesChannelId,
     store::StoreId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -35,6 +37,8 @@ impl PostgresCatalogReadRepository {
         store_id: StoreId,
         after: Option<ProductId>,
         limit: u16,
+        query: Option<&str>,
+        status: Option<ProductStatus>,
     ) -> Result<Option<Vec<CatalogProductListItem>>, ApplicationError> {
         let mut transaction = self.begin(actor).await?;
         if !store_exists(&mut transaction, store_id).await? {
@@ -50,22 +54,31 @@ impl PostgresCatalogReadRepository {
                 i64,
                 OffsetDateTime,
                 OffsetDateTime,
+                i64,
             ),
         >(
             "SELECT product.id, product.handle::text, product.title, product.status::text, \
-                    count(variant.id), product.created_at, product.updated_at \
+                    count(variant.id), product.created_at, product.updated_at, product.revision \
              FROM commerce.products AS product \
              LEFT JOIN commerce.product_variants AS variant \
               ON variant.store_id = product.store_id \
               AND variant.product_id = product.id \
+              AND variant.status = 'active' \
+             LEFT JOIN commerce.product_documents AS document \
+              ON document.store_id = product.store_id \
+              AND document.product_id = product.id \
              WHERE product.store_id = $1 \
                AND ($2::uuid IS NULL OR product.id > $2) \
+               AND ($3::text IS NULL OR product.status = $3::commerce.product_status) \
+               AND ($4::text IS NULL OR document.document @@ websearch_to_tsquery('simple', $4)) \
              GROUP BY product.id \
              ORDER BY product.id ASC \
-             LIMIT $3",
+             LIMIT $5",
         )
         .bind(store_id.as_uuid())
         .bind(after.map(ProductId::as_uuid))
+        .bind(status.map(ProductStatus::as_str))
+        .bind(query)
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
         .await
@@ -74,7 +87,7 @@ impl PostgresCatalogReadRepository {
 
         rows.into_iter()
             .map(
-                |(id, handle, title, status, variant_count, created_at, updated_at)| {
+                |(id, handle, title, status, variant_count, created_at, updated_at, revision)| {
                     Ok(CatalogProductListItem {
                         id: ProductId::from_uuid(id),
                         handle,
@@ -83,6 +96,7 @@ impl PostgresCatalogReadRepository {
                         variant_count: u32::try_from(variant_count).map_err(|_| {
                             corrupt_database_value("product variant count is out of range")
                         })?,
+                        revision,
                         created_at,
                         updated_at,
                     })
@@ -110,10 +124,11 @@ impl PostgresCatalogReadRepository {
                 Option<serde_json::Value>,
                 OffsetDateTime,
                 OffsetDateTime,
+                i64,
             ),
         >(
             "SELECT id, handle::text, title, description, status::text, meta, \
-                    created_at, updated_at \
+                    created_at, updated_at, revision \
              FROM commerce.products \
              WHERE store_id = $1 AND id = $2",
         )
@@ -122,28 +137,37 @@ impl PostgresCatalogReadRepository {
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let Some((id, handle, title, description, status, metadata, created_at, updated_at)) =
-            product
+        let Some((
+            id,
+            handle,
+            title,
+            description,
+            status,
+            metadata,
+            created_at,
+            updated_at,
+            revision,
+        )) = product
         else {
             return Ok(None);
         };
 
-        let option_rows = sqlx::query_as::<_, (Uuid, String, i16)>(
-            "SELECT id, name::text, position \
+        let option_rows = sqlx::query_as::<_, (Uuid, String, i16, Option<OffsetDateTime>)>(
+            "SELECT id, name::text, position, archived_at \
              FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
-             ORDER BY position ASC",
+             ORDER BY position ASC, id ASC",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
         .fetch_all(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16)>(
-            "SELECT id, option_id, value::text, position \
+        let value_rows = sqlx::query_as::<_, (Uuid, Uuid, String, i16, Option<OffsetDateTime>)>(
+            "SELECT id, option_id, value::text, position, archived_at \
              FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
-             ORDER BY option_id ASC, position ASC",
+             ORDER BY option_id ASC, position ASC, id ASC",
         )
         .bind(store_id.as_uuid())
         .bind(product_id.as_uuid())
@@ -200,16 +224,17 @@ impl PostgresCatalogReadRepository {
 
         let mut options = option_rows
             .into_iter()
-            .map(|(id, name, position)| {
+            .map(|(id, name, position, archived_at)| {
                 Ok(CatalogProductOption {
                     id: ProductOptionId::from_uuid(id),
                     name,
                     position: position_from_database(position)?,
+                    archived_at,
                     values: Vec::new(),
                 })
             })
             .collect::<Result<Vec<_>, ApplicationError>>()?;
-        for (id, option_id, value, position) in value_rows {
+        for (id, option_id, value, position, archived_at) in value_rows {
             let option = options
                 .iter_mut()
                 .find(|option| option.id.as_uuid() == option_id)
@@ -218,6 +243,7 @@ impl PostgresCatalogReadRepository {
                 id: ProductOptionValueId::from_uuid(id),
                 value,
                 position: position_from_database(position)?,
+                archived_at,
             });
         }
         let mut variants = variant_rows
@@ -257,12 +283,60 @@ impl PostgresCatalogReadRepository {
             title,
             description,
             status: parse_product_status(&status)?,
+            revision,
             options,
             variants,
             metadata,
             created_at,
             updated_at,
         }))
+    }
+
+    pub(crate) async fn list_product_publications(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+    ) -> Result<Vec<CatalogProductPublication>, ApplicationError> {
+        let mut transaction = self.begin(actor).await?;
+        let rows = sqlx::query_scalar::<_, Uuid>(
+            "SELECT sales_channel_id \
+             FROM commerce.product_publications \
+             WHERE store_id = $1 AND product_id = $2 \
+             ORDER BY sales_channel_id ASC",
+        )
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|sales_channel_id| CatalogProductPublication {
+                sales_channel_id: SalesChannelId::from_uuid(sales_channel_id),
+            })
+            .collect())
+    }
+
+    pub(crate) async fn product_revision(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+    ) -> Result<Option<i64>, ApplicationError> {
+        let mut transaction = self.begin(actor).await?;
+        let revision = sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM commerce.products \
+             WHERE store_id = $1 AND id = $2",
+        )
+        .bind(store_id.as_uuid())
+        .bind(product_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        Ok(revision)
     }
 }
 
@@ -463,7 +537,7 @@ mod tests {
             CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(runtime_pool)));
 
         let first_page = queries
-            .list_products(AdminActor::Store(owner), store_id, None, 1)
+            .list_products(AdminActor::Store(owner), store_id, None, 1, None, None)
             .await
             .unwrap();
         assert_eq!(first_page.items.len(), 1);
@@ -476,6 +550,8 @@ mod tests {
                 store_id,
                 Some(detail_product_id),
                 1,
+                None,
+                None,
             )
             .await
             .unwrap();
@@ -502,7 +578,14 @@ mod tests {
         ));
         assert!(matches!(
             queries
-                .list_products(AdminActor::Store(owner), StoreId::new(), None, 10)
+                .list_products(
+                    AdminActor::Store(owner),
+                    StoreId::new(),
+                    None,
+                    10,
+                    None,
+                    None
+                )
                 .await,
             Err(ApplicationError::NotFound {
                 resource: "store",

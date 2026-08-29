@@ -15,6 +15,7 @@ CREATE TABLE commerce.products (
     description TEXT                       NOT NULL DEFAULT '',
     status      commerce.product_status    NOT NULL DEFAULT 'draft',
     meta        JSONB,
+    revision    BIGINT                     NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ                NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -25,7 +26,8 @@ CREATE TABLE commerce.products (
     CONSTRAINT products_title_length_check         CHECK (length(trim(title)) BETWEEN 1 AND 255),
     CONSTRAINT products_description_length_check   CHECK (length(description) <= 100000),
     CONSTRAINT products_meta_size_check            CHECK (meta IS NULL OR pg_column_size(meta) <= 32768),
-    CONSTRAINT products_meta_is_object_check       CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object')
+    CONSTRAINT products_meta_is_object_check       CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    CONSTRAINT products_revision_nonnegative_check CHECK (revision >= 0)
 );
 
 CREATE TABLE commerce.product_options (
@@ -34,11 +36,10 @@ CREATE TABLE commerce.product_options (
     product_id  UUID              NOT NULL,
     name        extensions.citext NOT NULL,
     position    SMALLINT          NOT NULL,
+    archived_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_options_store_id_product_id_name_key        UNIQUE (store_id, product_id, name),
-    CONSTRAINT product_options_store_id_product_id_position_key    UNIQUE (store_id, product_id, position),
     CONSTRAINT product_options_store_id_product_id_id_key          UNIQUE (store_id, product_id, id),
     CONSTRAINT product_options_store_id_product_id_fkey            FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
     CONSTRAINT product_options_name_length_check                   CHECK (length(trim(name::text)) BETWEEN 1 AND 80),
@@ -52,11 +53,10 @@ CREATE TABLE commerce.product_option_values (
     option_id   UUID              NOT NULL,
     value       extensions.citext NOT NULL,
     position    SMALLINT          NOT NULL,
+    archived_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_option_values_store_id_product_id_option_id_value_key       UNIQUE (store_id, product_id, option_id, value),
-    CONSTRAINT product_option_values_store_id_product_id_option_id_position_key    UNIQUE (store_id, product_id, option_id, position),
     CONSTRAINT product_option_values_store_id_product_id_option_id_id_key          UNIQUE (store_id, product_id, option_id, id),
     CONSTRAINT product_option_values_store_id_product_id_option_id_fkey            FOREIGN KEY (store_id, product_id, option_id) REFERENCES commerce.product_options (store_id, product_id, id) ON DELETE CASCADE,
     CONSTRAINT product_option_values_value_length_check                            CHECK (length(trim(value::text)) BETWEEN 1 AND 120),
@@ -188,21 +188,56 @@ CREATE TABLE commerce.media_assets (
 );
 
 CREATE TABLE commerce.product_media_assets (
+    store_id       UUID         NOT NULL,
+    product_id     UUID         NOT NULL,
+    media_asset_id UUID         NOT NULL,
+    alt_text       TEXT         NOT NULL DEFAULT '',
+    position       SMALLINT     NOT NULL,
+    archived_at    TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT product_media_assets_pkey                      PRIMARY KEY (store_id, product_id, media_asset_id),
+    CONSTRAINT product_media_assets_store_id_product_fkey     FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_store_id_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_media_assets_alt_text_check            CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT product_media_assets_position_check            CHECK (position BETWEEN 0 AND 99)
+);
+
+CREATE TABLE commerce.product_option_value_media_assets (
+    store_id        UUID         NOT NULL,
+    product_id      UUID         NOT NULL,
+    option_id       UUID         NOT NULL,
+    option_value_id UUID         NOT NULL,
+    media_asset_id  UUID         NOT NULL,
+    alt_text        TEXT         NOT NULL DEFAULT '',
+    position        SMALLINT     NOT NULL,
+    archived_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT product_option_value_media_assets_pkey               PRIMARY KEY (store_id, product_id, option_id, option_value_id, media_asset_id),
+    CONSTRAINT product_option_value_media_assets_product_fkey       FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_option_value_media_assets_option_value_fkey  FOREIGN KEY (store_id, product_id, option_id, option_value_id) REFERENCES commerce.product_option_values (store_id, product_id, option_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_option_value_media_assets_media_asset_fkey   FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_option_value_media_assets_alt_text_check     CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT product_option_value_media_assets_position_check     CHECK (position BETWEEN 0 AND 99)
+);
+
+CREATE TABLE commerce.product_variant_media_assets (
     store_id           UUID         NOT NULL,
     product_id         UUID         NOT NULL,
-    product_variant_id UUID,
+    product_variant_id UUID         NOT NULL,
     media_asset_id     UUID         NOT NULL,
     alt_text           TEXT         NOT NULL DEFAULT '',
     position           SMALLINT     NOT NULL,
     archived_at        TIMESTAMPTZ,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT product_media_assets_pkey                          PRIMARY KEY (store_id, product_id, media_asset_id),
-    CONSTRAINT product_media_assets_store_id_product_fkey         FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_media_assets_store_id_product_variant_fkey FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants (store_id, product_id, id),
-    CONSTRAINT product_media_assets_store_id_media_asset_fkey     FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
-    CONSTRAINT product_media_assets_alt_text_check                CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
-    CONSTRAINT product_media_assets_position_check                CHECK (position BETWEEN 0 AND 99)
+    CONSTRAINT product_variant_media_assets_pkey             PRIMARY KEY (store_id, product_id, product_variant_id, media_asset_id),
+    CONSTRAINT product_variant_media_assets_product_fkey     FOREIGN KEY (store_id, product_id) REFERENCES commerce.products (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_variant_media_assets_variant_fkey     FOREIGN KEY (store_id, product_id, product_variant_id) REFERENCES commerce.product_variants (store_id, product_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_variant_media_assets_media_asset_fkey FOREIGN KEY (store_id, media_asset_id) REFERENCES commerce.media_assets (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT product_variant_media_assets_alt_text_check   CHECK (length(alt_text) <= 500 AND alt_text !~ '[[:cntrl:]]'),
+    CONSTRAINT product_variant_media_assets_position_check   CHECK (position BETWEEN 0 AND 99)
 );
 
 CREATE TABLE commerce.product_meta_media_assets (
@@ -349,6 +384,10 @@ CREATE TABLE commerce.price_list_items (
 CREATE INDEX products_store_status_created_idx ON commerce.products (store_id, status, created_at DESC, id DESC);
 CREATE UNIQUE INDEX product_variants_store_sku_key ON commerce.product_variants (store_id, sku) WHERE sku IS NOT NULL;
 CREATE INDEX product_variants_product_status_idx ON commerce.product_variants (store_id, product_id, status);
+CREATE UNIQUE INDEX product_options_active_name_idx ON commerce.product_options (store_id, product_id, name) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX product_options_active_position_idx ON commerce.product_options (store_id, product_id, position) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX product_option_values_active_value_idx ON commerce.product_option_values (store_id, product_id, option_id, value) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX product_option_values_active_position_idx ON commerce.product_option_values (store_id, product_id, option_id, position) WHERE archived_at IS NULL;
 CREATE INDEX variant_selected_options_product_idx ON commerce.variant_selected_options (store_id, product_id, variant_id, option_id);
 CREATE INDEX variant_selected_options_option_value_idx ON commerce.variant_selected_options (store_id, product_id, option_id, option_value_id, variant_id);
 CREATE INDEX product_publications_channel_product_idx ON commerce.product_publications (store_id, sales_channel_id, product_id);
@@ -359,8 +398,13 @@ CREATE INDEX collection_publications_channel_collection_idx ON commerce.collecti
 CREATE INDEX media_assets_store_status_idx ON commerce.media_assets (store_id, status, created_at, id);
 CREATE UNIQUE INDEX product_media_assets_position_active_idx ON commerce.product_media_assets (store_id, product_id, position) WHERE archived_at IS NULL;
 CREATE INDEX product_media_assets_product_idx ON commerce.product_media_assets (store_id, product_id, position, media_asset_id);
-CREATE INDEX product_media_assets_variant_idx ON commerce.product_media_assets (store_id, product_id, product_variant_id) WHERE product_variant_id IS NOT NULL;
 CREATE INDEX product_media_assets_media_asset_idx ON commerce.product_media_assets (store_id, media_asset_id, product_id);
+CREATE UNIQUE INDEX product_option_value_media_assets_position_active_idx ON commerce.product_option_value_media_assets (store_id, product_id, option_id, option_value_id, position) WHERE archived_at IS NULL;
+CREATE INDEX product_option_value_media_assets_target_idx ON commerce.product_option_value_media_assets (store_id, product_id, option_id, option_value_id, position, media_asset_id);
+CREATE INDEX product_option_value_media_assets_media_asset_idx ON commerce.product_option_value_media_assets (store_id, media_asset_id, product_id);
+CREATE UNIQUE INDEX product_variant_media_assets_position_active_idx ON commerce.product_variant_media_assets (store_id, product_id, product_variant_id, position) WHERE archived_at IS NULL;
+CREATE INDEX product_variant_media_assets_target_idx ON commerce.product_variant_media_assets (store_id, product_id, product_variant_id, position, media_asset_id);
+CREATE INDEX product_variant_media_assets_media_asset_idx ON commerce.product_variant_media_assets (store_id, media_asset_id, product_id, product_variant_id);
 CREATE UNIQUE INDEX product_meta_media_assets_path_active_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path) WHERE archived_at IS NULL;
 CREATE INDEX product_meta_media_assets_product_idx ON commerce.product_meta_media_assets (store_id, product_id, meta_path, media_asset_id);
 CREATE INDEX product_meta_media_assets_media_asset_idx ON commerce.product_meta_media_assets (store_id, media_asset_id, product_id);
@@ -399,6 +443,7 @@ AS $$
         LEFT JOIN commerce.product_variants AS variant
             ON variant.store_id = product.store_id
             AND variant.product_id = product.id
+            AND variant.status = 'active'
     WHERE
         product.store_id = $1
         AND product.id = $2
@@ -428,7 +473,7 @@ $$;
 CREATE TRIGGER price_lists_currency_matches_store BEFORE INSERT OR UPDATE OF currency, store_id ON commerce.price_lists FOR EACH ROW EXECUTE FUNCTION commerce.check_price_list_currency();
 
 CREATE TRIGGER products_search_change AFTER INSERT OR UPDATE OF handle, title, description ON commerce.products FOR EACH ROW EXECUTE FUNCTION commerce.capture_product_change();
-CREATE TRIGGER variants_search_change AFTER INSERT OR UPDATE OF title, sku OR DELETE ON commerce.product_variants FOR EACH ROW EXECUTE FUNCTION commerce.capture_variant_change();
+CREATE TRIGGER variants_search_change AFTER INSERT OR UPDATE OF title, sku, status OR DELETE ON commerce.product_variants FOR EACH ROW EXECUTE FUNCTION commerce.capture_variant_change();
 
 ALTER TABLE commerce.products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_options ENABLE ROW LEVEL SECURITY;
@@ -441,6 +486,8 @@ ALTER TABLE commerce.collection_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.collection_publications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.product_option_value_media_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.product_variant_media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.product_meta_media_assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.reviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.review_media_assets ENABLE ROW LEVEL SECURITY;
@@ -492,6 +539,14 @@ CREATE POLICY store_isolation ON commerce.product_media_assets
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
+CREATE POLICY store_isolation ON commerce.product_option_value_media_assets
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
+CREATE POLICY store_isolation ON commerce.product_variant_media_assets
+    USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
+    WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
+
 CREATE POLICY store_isolation ON commerce.product_meta_media_assets
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
@@ -531,6 +586,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.collection_publications,
        commerce.media_assets,
        commerce.product_media_assets,
+       commerce.product_option_value_media_assets,
+       commerce.product_variant_media_assets,
        commerce.product_meta_media_assets,
        commerce.reviews,
        commerce.review_media_assets,
@@ -540,6 +597,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
     TO chaos_runtime;
 
 REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.product_media_assets,
+                commerce.product_option_value_media_assets, commerce.product_variant_media_assets,
                 commerce.product_meta_media_assets,
                 commerce.reviews, commerce.review_media_assets FROM chaos_runtime;
 

@@ -18,6 +18,8 @@ export type { AnalyticsOptions, PageViewInput } from "./analytics.js";
 
 export { ChaosApiError } from "./errors.js";
 
+export { resolveProductMedia } from "./media.js";
+
 export { CartResource } from "./resources/cart.js";
 export { CatalogResource } from "./resources/catalog.js";
 export { OrdersResource } from "./resources/orders.js";

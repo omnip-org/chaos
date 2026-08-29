@@ -7,8 +7,8 @@ use chaos_core::{
     catalog::SubmitReviewInput,
     contracts::{
         ReviewSummary, StorefrontCatalogProduct, StorefrontCatalogVariant, StorefrontMediaAsset,
-        StorefrontProductCollection, StorefrontProductOption, StorefrontProductOptionValue,
-        StorefrontSelectedOption,
+        StorefrontMediaScope, StorefrontProductCollection, StorefrontProductOption,
+        StorefrontProductOptionValue, StorefrontSelectedOption,
     },
 };
 use chaos_domain::catalog::{MediaAssetStatus, ProductId, ReviewId};
@@ -114,6 +114,11 @@ struct StorefrontProductCollectionData {
 #[derive(Serialize)]
 struct StorefrontMediaData {
     id: Uuid,
+    scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_value_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     product_variant_id: Option<Uuid>,
     media_type: String,
@@ -221,9 +226,27 @@ fn selected_option_data(selection: StorefrontSelectedOption) -> StorefrontSelect
 }
 
 fn media_data(media: StorefrontMediaAsset) -> StorefrontMediaData {
+    let (scope, option_id, option_value_id, product_variant_id) = match media.scope {
+        StorefrontMediaScope::Product => ("product", None, None, None),
+        StorefrontMediaScope::OptionValue {
+            option_id,
+            option_value_id,
+        } => (
+            "option_value",
+            Some(option_id.as_uuid()),
+            Some(option_value_id.as_uuid()),
+            None,
+        ),
+        StorefrontMediaScope::Variant { product_variant_id } => {
+            ("variant", None, None, Some(product_variant_id.as_uuid()))
+        }
+    };
     StorefrontMediaData {
         id: media.id.as_uuid(),
-        product_variant_id: media.product_variant_id.map(|id| id.as_uuid()),
+        scope,
+        option_id,
+        option_value_id,
+        product_variant_id,
         media_type: media.media_type,
         kind: media.kind.as_str(),
         alt_text: media.alt_text,
