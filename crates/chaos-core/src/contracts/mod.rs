@@ -77,7 +77,7 @@ pub use shipping::{ShippingCommand, ShippingOperation, ShippingProvider, Shippin
 pub use store::{
     StoreListItem, StoreMembershipItem, StoreMembershipRepository, StoreReadRepository,
 };
-pub use store_administration::{SalesChannelAdminItem, StoreAdminItem};
+pub use store_administration::{SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem};
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
     StorefrontContext, StorefrontMediaAsset, StorefrontMediaScope, StorefrontProductCollection,

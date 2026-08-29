@@ -29,3 +29,10 @@ pub struct SalesChannelAdminItem {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+
+pub struct ShippingCountryAdminItem {
+    pub country_code: String,
+    pub enabled: bool,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}

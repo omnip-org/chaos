@@ -11,7 +11,7 @@ use chaos_domain::{
 use crate::{
     ApplicationError,
     adapters::postgres::PostgresStoreAdministrationRepository,
-    contracts::{AdminActor, SalesChannelAdminItem, StoreAdminItem},
+    contracts::{AdminActor, SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem},
 };
 
 use super::Page;
@@ -54,6 +54,13 @@ pub struct ChangeSalesChannelStatusInput {
     pub sales_channel_id: SalesChannelId,
 }
 
+pub struct SetShippingCountryInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub country_code: String,
+    pub enabled: bool,
+}
+
 pub struct StoreAdministration {
     repository: Arc<PostgresStoreAdministrationRepository>,
 }
@@ -85,6 +92,28 @@ impl StoreAdministration {
         )?;
         self.repository
             .update_store(input.actor, input.store_id, &replacement)
+            .await
+    }
+
+    pub async fn list_shipping_countries(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+    ) -> Result<Vec<ShippingCountryAdminItem>, ApplicationError> {
+        self.repository
+            .list_shipping_countries(actor, store_id)
+            .await?
+            .ok_or_else(|| store_not_found(store_id))
+    }
+
+    pub async fn set_shipping_country(
+        &self,
+        input: SetShippingCountryInput,
+    ) -> Result<ShippingCountryAdminItem, ApplicationError> {
+        input.actor.require_owner()?;
+        let country_code = parse_shipping_country_code(input.country_code)?;
+        self.repository
+            .set_shipping_country(input.actor, input.store_id, &country_code, input.enabled)
             .await
     }
 
@@ -230,5 +259,41 @@ fn channel_not_found(sales_channel_id: SalesChannelId) -> ApplicationError {
     ApplicationError::NotFound {
         resource: "sales_channel",
         id: sales_channel_id.as_uuid().to_string(),
+    }
+}
+
+fn parse_shipping_country_code(value: String) -> Result<String, ApplicationError> {
+    let value = value.trim().to_ascii_uppercase();
+    if value.len() != 2 || !value.bytes().all(|byte| byte.is_ascii_uppercase()) {
+        return Err(ApplicationError::Validation {
+            violations: vec![chaos_domain::FieldViolation {
+                field: "country_code",
+                reason: "must be a two-letter ISO 3166-1 alpha-2 code".into(),
+            }],
+        });
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_shipping_country_code;
+    use crate::ApplicationError;
+
+    #[test]
+    fn normalizes_shipping_country_codes() {
+        assert_eq!(parse_shipping_country_code(" ca ".into()).unwrap(), "CA");
+    }
+
+    #[test]
+    fn rejects_invalid_shipping_country_codes() {
+        assert!(matches!(
+            parse_shipping_country_code("CAN".into()),
+            Err(ApplicationError::Validation { .. })
+        ));
+        assert!(matches!(
+            parse_shipping_country_code("C1".into()),
+            Err(ApplicationError::Validation { .. })
+        ));
     }
 }

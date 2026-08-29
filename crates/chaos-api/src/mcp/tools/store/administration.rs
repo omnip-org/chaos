@@ -1,8 +1,8 @@
 use chaos_core::{
-    contracts::{SalesChannelAdminItem, StoreAdminItem},
+    contracts::{SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem},
     store::{
         ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
-        UpdateSalesChannelInput, UpdateStoreInput,
+        SetShippingCountryInput, UpdateSalesChannelInput, UpdateStoreInput,
     },
 };
 use chaos_domain::store::SalesChannelId;
@@ -93,6 +93,18 @@ pub struct ChangeSalesChannelStatusParams {
     pub confirm: bool,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct SetShippingCountryParams {
+    /// The Store UUID to modify.
+    pub store_id: String,
+    /// Two-letter ISO 3166-1 alpha-2 destination country code.
+    pub country_code: String,
+    /// Whether the Store accepts shipments to this country.
+    pub enabled: bool,
+    /// Must be explicitly set to true. This action affects live store data.
+    pub confirm: bool,
+}
+
 #[tool_router(router = store_admin_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
     #[tool(description = "Get the selected Store.")]
@@ -121,6 +133,80 @@ impl ChaosMcp {
             .await
         {
             Ok(item) => Ok(text_result(store_json(item))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(description = "List shipping destination countries in the selected Store.")]
+    async fn list_shipping_countries(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<StoreIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::mcp::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            &parts,
+            &params.store_id,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        let store_id = actor.store_id();
+        match self
+            .state
+            .store_administration
+            .list_shipping_countries(actor, store_id)
+            .await
+        {
+            Ok(items) => Ok(text_result(json!({
+                "items": items
+                    .into_iter()
+                    .map(shipping_country_json)
+                    .collect::<Vec<_>>(),
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Enable or disable one shipping destination country in the selected Store. \
+                        Requires confirm: true."
+    )]
+    async fn set_shipping_country(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<SetShippingCountryParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match crate::mcp::auth::authenticate_mcp(
+            &self.state.access_key_authentication,
+            &self.state.store_queries,
+            &parts,
+            &params.store_id,
+        )
+        .await
+        {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let store_id = actor.store_id();
+        match self
+            .state
+            .store_administration
+            .set_shipping_country(SetShippingCountryInput {
+                actor,
+                store_id,
+                country_code: params.country_code,
+                enabled: params.enabled,
+            })
+            .await
+        {
+            Ok(item) => Ok(text_result(shipping_country_json(item))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -480,6 +566,15 @@ fn sales_channel_json(item: SalesChannelAdminItem) -> serde_json::Value {
         "storefront_origin": item.storefront_origin.as_str(),
         "status": item.status.as_str(),
         "is_default": item.is_default,
+        "created_at": format_time(item.created_at),
+        "updated_at": format_time(item.updated_at),
+    })
+}
+
+fn shipping_country_json(item: ShippingCountryAdminItem) -> serde_json::Value {
+    json!({
+        "country_code": item.country_code,
+        "enabled": item.enabled,
         "created_at": format_time(item.created_at),
         "updated_at": format_time(item.updated_at),
     })

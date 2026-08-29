@@ -148,6 +148,8 @@ mod tests {
         assert!(aggregate_router.has_route("list_review_media"));
         assert!(aggregate_router.has_route("archive_review_media"));
         assert!(aggregate_router.has_route("create_manual_review"));
+        assert!(aggregate_router.has_route("list_shipping_countries"));
+        assert!(aggregate_router.has_route("set_shipping_country"));
         assert!(!aggregate_router.has_route("prepare_product_media_upload"));
         assert!(!aggregate_router.has_route("prepare_review_media_upload"));
         assert!(!aggregate_router.has_route("upload_product_media"));

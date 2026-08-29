@@ -1,6 +1,6 @@
 use crate::{
     ApplicationError,
-    contracts::{AdminActor, SalesChannelAdminItem, StoreAdminItem},
+    contracts::{AdminActor, SalesChannelAdminItem, ShippingCountryAdminItem, StoreAdminItem},
     error::database_error,
 };
 use chaos_domain::{
@@ -63,6 +63,8 @@ type ChannelRow = (
     OffsetDateTime,
 );
 
+type ShippingCountryRow = (String, bool, OffsetDateTime, OffsetDateTime);
+
 impl PostgresStoreAdministrationRepository {
     pub(crate) async fn get_store(
         &self,
@@ -109,6 +111,57 @@ impl PostgresStoreAdministrationRepository {
         }
         transaction.commit().await.map_err(database_error)?;
         Ok(store_id)
+    }
+
+    pub(crate) async fn list_shipping_countries(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+    ) -> Result<Option<Vec<ShippingCountryAdminItem>>, ApplicationError> {
+        let mut transaction = self.begin(&actor).await?;
+        if !store_exists(&mut transaction, store_id).await? {
+            return Ok(None);
+        }
+        let rows = sqlx::query_as::<_, ShippingCountryRow>(
+            "SELECT country_code::text, enabled, created_at, updated_at \
+             FROM commerce.store_shipping_countries \
+             WHERE store_id = $1 ORDER BY country_code",
+        )
+        .bind(store_id.as_uuid())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        rows.into_iter()
+            .map(shipping_country_item)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) async fn set_shipping_country(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        country_code: &str,
+        enabled: bool,
+    ) -> Result<ShippingCountryAdminItem, ApplicationError> {
+        let mut transaction = self.begin(&actor).await?;
+        require_writable_store(&mut transaction, store_id).await?;
+        let row = sqlx::query_as::<_, ShippingCountryRow>(
+            "INSERT INTO commerce.store_shipping_countries \
+             (store_id, country_code, enabled) VALUES ($1, $2, $3) \
+             ON CONFLICT (store_id, country_code) DO UPDATE SET \
+                 enabled = EXCLUDED.enabled, updated_at = CURRENT_TIMESTAMP \
+             RETURNING country_code::text, enabled, created_at, updated_at",
+        )
+        .bind(store_id.as_uuid())
+        .bind(country_code)
+        .bind(enabled)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        transaction.commit().await.map_err(database_error)?;
+        shipping_country_item(row)
     }
 
     pub(crate) async fn change_store_status(
@@ -348,6 +401,18 @@ fn channel_item(row: ChannelRow) -> Result<SalesChannelAdminItem, ApplicationErr
     })
 }
 
+fn shipping_country_item(
+    row: ShippingCountryRow,
+) -> Result<ShippingCountryAdminItem, ApplicationError> {
+    let (country_code, enabled, created_at, updated_at) = row;
+    Ok(ShippingCountryAdminItem {
+        country_code,
+        enabled,
+        created_at,
+        updated_at,
+    })
+}
+
 fn corrupt_status() -> ApplicationError {
     ApplicationError::Unexpected(anyhow::anyhow!("database contains an unknown status"))
 }
@@ -408,7 +473,8 @@ mod tests {
         contracts::AdminActor,
         store::{
             ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
-            StoreAdministration, StoreQueries, UpdateSalesChannelInput, UpdateStoreInput,
+            SetShippingCountryInput, StoreAdministration, StoreQueries, UpdateSalesChannelInput,
+            UpdateStoreInput,
         },
     };
     use chaos_domain::identity::UserId;
@@ -475,6 +541,14 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
+            "INSERT INTO commerce.store_shipping_countries (store_id, country_code) \
+             VALUES ($1, 'US')",
+        )
+        .bind(store_id.as_uuid())
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+        sqlx::query(
             "INSERT INTO commerce.store_sales_channels \
              (id, store_id, code, name, storefront_origin, is_default) \
              VALUES ($1, $2, 'web', 'Online Store', $3, true)",
@@ -501,6 +575,35 @@ mod tests {
                 .unwrap()
                 .status,
             StoreStatus::Active
+        );
+        let shipping_countries = service
+            .list_shipping_countries(AdminActor::Store(owner), store_id)
+            .await
+            .unwrap();
+        assert_eq!(shipping_countries.len(), 1);
+        assert_eq!(shipping_countries[0].country_code, "US");
+        assert!(shipping_countries[0].enabled);
+        let canada = service
+            .set_shipping_country(SetShippingCountryInput {
+                actor: AdminActor::Store(owner),
+                store_id,
+                country_code: " ca ".into(),
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(canada.country_code, "CA");
+        assert!(canada.enabled);
+        let shipping_countries = service
+            .list_shipping_countries(AdminActor::Store(owner), store_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            shipping_countries
+                .iter()
+                .map(|item| item.country_code.as_str())
+                .collect::<Vec<_>>(),
+            ["CA", "US"]
         );
         service
             .update_store(UpdateStoreInput {

@@ -39,7 +39,9 @@ originating operation.
 
 - Integration account configuration is exposed only through capability-specific
   tools today: Stripe account administration, provider secret creation, Meta
-  destination configuration, and the manual shipping account listing.
+  destination configuration, and the manual shipping account listing. Store
+  shipping destination countries are managed through the Store administration
+  tools.
 - Webhook ingress remains HTTP: verify the signature first, persist recognized
   and unknown provider events in the shared Integration inbox, then let the
   Worker classify an unknown event as `unsupported`.

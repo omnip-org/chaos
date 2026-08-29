@@ -14,6 +14,6 @@ pub use publishable_keys::{
 pub use queries::{Page, StoreActor, StoreQueries};
 pub use store_administration::{
     ChangeSalesChannelStatusInput, ChangeStoreStatusInput, CreateSalesChannelInput,
-    StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
+    SetShippingCountryInput, StoreAdministration, UpdateSalesChannelInput, UpdateStoreInput,
 };
 pub use store_membership::StoreMembershipManagement;

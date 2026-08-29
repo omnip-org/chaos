@@ -41,7 +41,7 @@ preserve the dependency direction in
 | Product area | Domain and use cases | Delivery and adapters | Database ownership |
 | --- | --- | --- | --- |
 | Users, external identity, Access Keys | `identity` | HTTP auth and identity adapter | `identity` |
-| Stores, memberships, channels, Publishable Keys | `store` | MCP Store tools and Store repositories | `commerce` |
+| Stores, memberships, channels, shipping countries, Publishable Keys | `store` | MCP Store tools and Store repositories | `commerce` |
 | Products, variants, collections, media | `catalog` | MCP catalog tools and catalog repositories | `commerce` |
 | Price lists | `pricing` | MCP pricing tools and pricing repositories | `commerce` |
 | Stock and reservations | `inventory` | MCP inventory tools and inventory repository | `commerce` |
