@@ -4,15 +4,20 @@ use crate::{
     contracts::{
         AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
         MediaAssetStorageRecord, ProductMediaAssetItem, ProductMediaAssetLinkRecord,
-        ProductMediaAssetMutation, ProductMetaMediaAssetItem, ProductMetaMediaAssetLinkRecord,
-        ProductMetaMediaAssetMutation, ReviewMediaAssetItem, ReviewMediaAssetLinkRecord,
-        ReviewMediaAssetMutation,
+        ProductMediaAssetMutation, ProductMediaScope, ProductMetaMediaAssetItem,
+        ProductMetaMediaAssetLinkRecord, ProductMetaMediaAssetMutation,
+        ProductOptionValueMediaAssetLinkRecord, ProductOptionValueMediaAssetMutation,
+        ProductVariantMediaAssetLinkRecord, ProductVariantMediaAssetMutation, ReviewMediaAssetItem,
+        ReviewMediaAssetLinkRecord, ReviewMediaAssetMutation,
     },
     error::database_error,
 };
 use chaos_domain::{
     FieldViolation,
-    catalog::{MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductVariantId, ReviewId},
+    catalog::{
+        MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductOptionId,
+        ProductOptionValueId, ProductVariantId, ReviewId,
+    },
     store::StoreId,
 };
 use serde_json::{Map, Value, json};
@@ -67,6 +72,9 @@ struct ProductMediaRow {
     asset_id: Uuid,
     store_id: Uuid,
     product_id: Uuid,
+    scope: String,
+    option_id: Option<Uuid>,
+    option_value_id: Option<Uuid>,
     product_variant_id: Option<Uuid>,
     file_name: String,
     media_type: String,
@@ -170,24 +178,69 @@ impl PostgresMediaAssetRepository {
         if !exists {
             return Ok(None);
         }
-        let rows = sqlx::query_as::<_, ProductMediaRow>(
-            "SELECT media.id AS asset_id, media.store_id, link.product_id, \
-                    link.product_variant_id, media.file_name, media.media_type, \
-                    media.media_kind::text, media.byte_size, media.sha256_digest, \
-                    media.status::text, media.public_url, media.created_at, media.updated_at, \
-                    link.alt_text, link.position, link.archived_at AS link_archived_at, \
-                    media.object_key \
-             FROM commerce.product_media_assets AS link \
-             INNER JOIN commerce.media_assets AS media \
-                ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-             WHERE link.store_id=$1 AND link.product_id=$2 \
-             ORDER BY link.position, media.id",
+        let rows = product_media_rows(&mut tx, store_id, product_id).await?;
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter()
+            .map(product_item)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) async fn list_product_option_value(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+    ) -> Result<Option<Vec<ProductMediaAssetItem>>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        let valid = ensure_product_option_value(
+            &mut tx,
+            store_id,
+            product_id,
+            option_id,
+            option_value_id,
+            false,
         )
-        .bind(store_id.as_uuid())
-        .bind(product_id.as_uuid())
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(database_error)?;
+        .await?;
+        if !valid {
+            return Ok(None);
+        }
+        let rows = product_media_rows(&mut tx, store_id, product_id)
+            .await?
+            .into_iter()
+            .filter(|row| {
+                row.option_id == Some(option_id.as_uuid())
+                    && row.option_value_id == Some(option_value_id.as_uuid())
+            })
+            .collect::<Vec<_>>();
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter()
+            .map(product_item)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    pub(crate) async fn list_product_variant(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        product_variant_id: ProductVariantId,
+    ) -> Result<Option<Vec<ProductMediaAssetItem>>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        let valid =
+            ensure_product_variant(&mut tx, store_id, product_id, product_variant_id, false)
+                .await?;
+        if !valid {
+            return Ok(None);
+        }
+        let rows = product_media_rows(&mut tx, store_id, product_id)
+            .await?
+            .into_iter()
+            .filter(|row| row.product_variant_id == Some(product_variant_id.as_uuid()))
+            .collect::<Vec<_>>();
         tx.commit().await.map_err(database_error)?;
         rows.into_iter()
             .map(product_item)
@@ -285,25 +338,17 @@ impl PostgresMediaAssetRepository {
         record: ProductMediaAssetLinkRecord,
     ) -> Result<ProductMediaAssetItem, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        ensure_product(
-            &mut tx,
-            record.store_id,
-            record.product_id,
-            record.product_variant_id,
-        )
-        .await?;
+        ensure_product(&mut tx, record.store_id, record.product_id).await?;
         ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
         sqlx::query(
             "INSERT INTO commerce.product_media_assets \
-             (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
-             VALUES ($1,$2,$3,$4,$5,$6) \
+             (store_id, product_id, media_asset_id, alt_text, position) \
+             VALUES ($1,$2,$3,$4,$5) \
              ON CONFLICT (store_id, product_id, media_asset_id) DO UPDATE \
-                 SET product_variant_id=EXCLUDED.product_variant_id, \
-                     alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+                 SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
         )
         .bind(record.store_id.as_uuid())
         .bind(record.product_id.as_uuid())
-        .bind(record.product_variant_id.map(ProductVariantId::as_uuid))
         .bind(record.media_asset_id.as_uuid())
         .bind(&record.alt_text)
         .bind(i16::try_from(record.position).map_err(|_| invalid_snapshot())?)
@@ -320,6 +365,228 @@ impl PostgresMediaAssetRepository {
         .ok_or_else(|| not_found(record.media_asset_id))?;
         tx.commit().await.map_err(database_error)?;
         product_item(row)
+    }
+
+    pub(crate) async fn attach_product_option_value(
+        &self,
+        actor: AdminActor,
+        record: ProductOptionValueMediaAssetLinkRecord,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, record.store_id, record.product_id).await?;
+        ensure_product_option_value(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.option_id,
+            record.option_value_id,
+            true,
+        )
+        .await?;
+        ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
+        sqlx::query(
+            "INSERT INTO commerce.product_option_value_media_assets \
+             (store_id, product_id, option_id, option_value_id, media_asset_id, alt_text, position) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7) \
+             ON CONFLICT (store_id, product_id, option_id, option_value_id, media_asset_id) DO UPDATE \
+                 SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(record.option_id.as_uuid())
+        .bind(record.option_value_id.as_uuid())
+        .bind(record.media_asset_id.as_uuid())
+        .bind(&record.alt_text)
+        .bind(i16::try_from(record.position).map_err(|_| invalid_snapshot())?)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_product_option_value_media_error)?;
+        let row = load_product_option_value(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.option_id,
+            record.option_value_id,
+            record.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(record.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_item(row)
+    }
+
+    pub(crate) async fn attach_product_variant(
+        &self,
+        actor: AdminActor,
+        record: ProductVariantMediaAssetLinkRecord,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, record.store_id, record.product_id).await?;
+        ensure_product_variant(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.product_variant_id,
+            true,
+        )
+        .await?;
+        ensure_ready_asset(&mut tx, record.store_id, record.media_asset_id, None).await?;
+        sqlx::query(
+            "INSERT INTO commerce.product_variant_media_assets \
+             (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
+             VALUES ($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT (store_id, product_id, product_variant_id, media_asset_id) DO UPDATE \
+                 SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+        )
+        .bind(record.store_id.as_uuid())
+        .bind(record.product_id.as_uuid())
+        .bind(record.product_variant_id.as_uuid())
+        .bind(record.media_asset_id.as_uuid())
+        .bind(&record.alt_text)
+        .bind(i16::try_from(record.position).map_err(|_| invalid_snapshot())?)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_product_variant_media_error)?;
+        let row = load_product_variant(
+            &mut tx,
+            record.store_id,
+            record.product_id,
+            record.product_variant_id,
+            record.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(record.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_item(row)
+    }
+
+    pub(crate) async fn replace_product(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        items: Vec<crate::catalog::ProductMediaItemInput>,
+        changed_at: OffsetDateTime,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, store_id, product_id).await?;
+        let previous = active_product_media_asset_ids(&mut tx, store_id, product_id).await?;
+        archive_product_links(&mut tx, store_id, product_id, changed_at).await?;
+        for item in &items {
+            ensure_ready_asset(&mut tx, store_id, item.media_asset_id, None).await?;
+            insert_product_link(&mut tx, store_id, product_id, item).await?;
+        }
+        for media_asset_id in previous {
+            archive_unreferenced_asset(&mut tx, store_id, media_asset_id, changed_at).await?;
+        }
+        let rows = product_media_rows(&mut tx, store_id, product_id).await?;
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter().map(product_item).collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn replace_product_option_value(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+        items: Vec<crate::catalog::ProductMediaItemInput>,
+        changed_at: OffsetDateTime,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, store_id, product_id).await?;
+        ensure_product_option_value(
+            &mut tx,
+            store_id,
+            product_id,
+            option_id,
+            option_value_id,
+            true,
+        )
+        .await?;
+        let previous = active_option_value_media_asset_ids(
+            &mut tx,
+            store_id,
+            product_id,
+            option_id,
+            option_value_id,
+        )
+        .await?;
+        archive_option_value_links(
+            &mut tx,
+            store_id,
+            product_id,
+            option_id,
+            option_value_id,
+            changed_at,
+        )
+        .await?;
+        for item in &items {
+            ensure_ready_asset(&mut tx, store_id, item.media_asset_id, None).await?;
+            insert_option_value_link(
+                &mut tx,
+                store_id,
+                product_id,
+                option_id,
+                option_value_id,
+                item,
+            )
+            .await?;
+        }
+        for media_asset_id in previous {
+            archive_unreferenced_asset(&mut tx, store_id, media_asset_id, changed_at).await?;
+        }
+        let rows = product_media_rows(&mut tx, store_id, product_id)
+            .await?
+            .into_iter()
+            .filter(|row| {
+                row.option_id == Some(option_id.as_uuid())
+                    && row.option_value_id == Some(option_value_id.as_uuid())
+            })
+            .collect::<Vec<_>>();
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter().map(product_item).collect()
+    }
+
+    pub(crate) async fn replace_product_variant(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        product_variant_id: ProductVariantId,
+        items: Vec<crate::catalog::ProductMediaItemInput>,
+        changed_at: OffsetDateTime,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        ensure_product(&mut tx, store_id, product_id).await?;
+        ensure_product_variant(&mut tx, store_id, product_id, product_variant_id, true).await?;
+        let previous =
+            active_variant_media_asset_ids(&mut tx, store_id, product_id, product_variant_id)
+                .await?;
+        archive_variant_links(
+            &mut tx,
+            store_id,
+            product_id,
+            product_variant_id,
+            changed_at,
+        )
+        .await?;
+        for item in &items {
+            ensure_ready_asset(&mut tx, store_id, item.media_asset_id, None).await?;
+            insert_variant_link(&mut tx, store_id, product_id, product_variant_id, item).await?;
+        }
+        for media_asset_id in previous {
+            archive_unreferenced_asset(&mut tx, store_id, media_asset_id, changed_at).await?;
+        }
+        let rows = product_media_rows(&mut tx, store_id, product_id)
+            .await?
+            .into_iter()
+            .filter(|row| row.product_variant_id == Some(product_variant_id.as_uuid()))
+            .collect::<Vec<_>>();
+        tx.commit().await.map_err(database_error)?;
+        rows.into_iter().map(product_item).collect()
     }
 
     pub(crate) async fn attach_review(
@@ -369,7 +636,7 @@ impl PostgresMediaAssetRepository {
         record: ProductMetaMediaAssetLinkRecord,
     ) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
         let mut tx = self.begin(&actor).await?;
-        ensure_product(&mut tx, record.store_id, record.product_id, None).await?;
+        ensure_product(&mut tx, record.store_id, record.product_id).await?;
         let segments = parse_json_pointer(&record.meta_path)?;
         let (metadata,) = sqlx::query_as::<_, (Option<Value>,)>(
             "SELECT meta FROM commerce.products \
@@ -518,6 +785,12 @@ impl PostgresMediaAssetRepository {
                     SELECT 1 FROM commerce.product_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
+                    SELECT 1 FROM commerce.product_option_value_media_assets \
+                    WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
+                    UNION ALL \
+                    SELECT 1 FROM commerce.product_variant_media_assets \
+                    WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
+                    UNION ALL \
                     SELECT 1 FROM commerce.review_media_assets \
                     WHERE store_id=$1 AND media_asset_id=$2 AND archived_at IS NULL \
                     UNION ALL \
@@ -595,6 +868,132 @@ impl PostgresMediaAssetRepository {
             &mut tx,
             mutation.store_id,
             mutation.product_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_item(row)
+    }
+
+    pub(crate) async fn archive_product_option_value(
+        &self,
+        actor: AdminActor,
+        mutation: ProductOptionValueMediaAssetMutation,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        lock_product(&mut tx, mutation.store_id, mutation.product_id).await?;
+        ensure_product_option_value(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.option_id,
+            mutation.option_value_id,
+            true,
+        )
+        .await?;
+        load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        load_product_option_value(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.option_id,
+            mutation.option_value_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        sqlx::query(
+            "UPDATE commerce.product_option_value_media_assets \
+             SET archived_at=COALESCE(archived_at,$5) \
+             WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
+               AND media_asset_id=$6",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.product_id.as_uuid())
+        .bind(mutation.option_id.as_uuid())
+        .bind(mutation.option_value_id.as_uuid())
+        .bind(mutation.changed_at)
+        .bind(mutation.media_asset_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        archive_unreferenced_asset(
+            &mut tx,
+            mutation.store_id,
+            mutation.media_asset_id,
+            mutation.changed_at,
+        )
+        .await?;
+        let row = load_product_option_value(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.option_id,
+            mutation.option_value_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        tx.commit().await.map_err(database_error)?;
+        product_item(row)
+    }
+
+    pub(crate) async fn archive_product_variant(
+        &self,
+        actor: AdminActor,
+        mutation: ProductVariantMediaAssetMutation,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        let mut tx = self.begin(&actor).await?;
+        lock_product(&mut tx, mutation.store_id, mutation.product_id).await?;
+        ensure_product_variant(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.product_variant_id,
+            true,
+        )
+        .await?;
+        load_asset_for_update(&mut tx, mutation.store_id, mutation.media_asset_id)
+            .await?
+            .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        load_product_variant(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.product_variant_id,
+            mutation.media_asset_id,
+        )
+        .await?
+        .ok_or_else(|| not_found(mutation.media_asset_id))?;
+        sqlx::query(
+            "UPDATE commerce.product_variant_media_assets \
+             SET archived_at=COALESCE(archived_at,$4) \
+             WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
+               AND media_asset_id=$5",
+        )
+        .bind(mutation.store_id.as_uuid())
+        .bind(mutation.product_id.as_uuid())
+        .bind(mutation.product_variant_id.as_uuid())
+        .bind(mutation.changed_at)
+        .bind(mutation.media_asset_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+        archive_unreferenced_asset(
+            &mut tx,
+            mutation.store_id,
+            mutation.media_asset_id,
+            mutation.changed_at,
+        )
+        .await?;
+        let row = load_product_variant(
+            &mut tx,
+            mutation.store_id,
+            mutation.product_id,
+            mutation.product_variant_id,
             mutation.media_asset_id,
         )
         .await?
@@ -731,6 +1130,258 @@ impl PostgresMediaAssetRepository {
     }
 }
 
+async fn product_media_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+) -> Result<Vec<ProductMediaRow>, ApplicationError> {
+    sqlx::query_as::<_, ProductMediaRow>(
+        "SELECT media.id AS asset_id, media.store_id, link.product_id, \
+                'product'::text AS scope, NULL::uuid AS option_id, \
+                NULL::uuid AS option_value_id, NULL::uuid AS product_variant_id, \
+                media.file_name, media.media_type, media.media_kind::text, \
+                media.byte_size, media.sha256_digest, media.status::text, \
+                media.public_url, media.created_at, media.updated_at, link.alt_text, \
+                link.position, link.archived_at AS link_archived_at, media.object_key \
+         FROM commerce.product_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.product_id=$2 \
+         UNION ALL \
+         SELECT media.id AS asset_id, media.store_id, link.product_id, \
+                'option_value'::text AS scope, link.option_id, link.option_value_id, \
+                NULL::uuid AS product_variant_id, media.file_name, media.media_type, \
+                media.media_kind::text, media.byte_size, media.sha256_digest, \
+                media.status::text, media.public_url, media.created_at, media.updated_at, \
+                link.alt_text, link.position, link.archived_at AS link_archived_at, \
+                media.object_key \
+         FROM commerce.product_option_value_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.product_id=$2 \
+         UNION ALL \
+         SELECT media.id AS asset_id, media.store_id, link.product_id, \
+                'variant'::text AS scope, NULL::uuid AS option_id, \
+                NULL::uuid AS option_value_id, link.product_variant_id, \
+                media.file_name, media.media_type, media.media_kind::text, \
+                media.byte_size, media.sha256_digest, media.status::text, \
+                media.public_url, media.created_at, media.updated_at, link.alt_text, \
+                link.position, link.archived_at AS link_archived_at, media.object_key \
+         FROM commerce.product_variant_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id=$1 AND link.product_id=$2 \
+         ORDER BY position, scope, asset_id",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(database_error)
+}
+
+async fn insert_product_link(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    item: &crate::catalog::ProductMediaItemInput,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO commerce.product_media_assets \
+         (store_id, product_id, media_asset_id, alt_text, position) \
+         VALUES ($1,$2,$3,$4,$5) \
+         ON CONFLICT (store_id, product_id, media_asset_id) DO UPDATE \
+             SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(item.media_asset_id.as_uuid())
+    .bind(&item.alt_text)
+    .bind(i16::try_from(item.position).map_err(|_| invalid_snapshot())?)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_product_media_error)?;
+    Ok(())
+}
+
+async fn insert_option_value_link(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    option_id: ProductOptionId,
+    option_value_id: ProductOptionValueId,
+    item: &crate::catalog::ProductMediaItemInput,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO commerce.product_option_value_media_assets \
+         (store_id, product_id, option_id, option_value_id, media_asset_id, alt_text, position) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7) \
+         ON CONFLICT (store_id, product_id, option_id, option_value_id, media_asset_id) DO UPDATE \
+             SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(option_id.as_uuid())
+    .bind(option_value_id.as_uuid())
+    .bind(item.media_asset_id.as_uuid())
+    .bind(&item.alt_text)
+    .bind(i16::try_from(item.position).map_err(|_| invalid_snapshot())?)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_product_option_value_media_error)?;
+    Ok(())
+}
+
+async fn insert_variant_link(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: ProductVariantId,
+    item: &crate::catalog::ProductMediaItemInput,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "INSERT INTO commerce.product_variant_media_assets \
+         (store_id, product_id, product_variant_id, media_asset_id, alt_text, position) \
+         VALUES ($1,$2,$3,$4,$5,$6) \
+         ON CONFLICT (store_id, product_id, product_variant_id, media_asset_id) DO UPDATE \
+             SET alt_text=EXCLUDED.alt_text, position=EXCLUDED.position, archived_at=NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(product_variant_id.as_uuid())
+    .bind(item.media_asset_id.as_uuid())
+    .bind(&item.alt_text)
+    .bind(i16::try_from(item.position).map_err(|_| invalid_snapshot())?)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_product_variant_media_error)?;
+    Ok(())
+}
+
+async fn active_product_media_asset_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+) -> Result<Vec<MediaAssetId>, ApplicationError> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT media_asset_id FROM commerce.product_media_assets \
+         WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map(|ids| ids.into_iter().map(MediaAssetId::from_uuid).collect())
+    .map_err(database_error)
+}
+
+async fn active_option_value_media_asset_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    option_id: ProductOptionId,
+    option_value_id: ProductOptionValueId,
+) -> Result<Vec<MediaAssetId>, ApplicationError> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT media_asset_id FROM commerce.product_option_value_media_assets \
+         WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
+           AND archived_at IS NULL FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(option_id.as_uuid())
+    .bind(option_value_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map(|ids| ids.into_iter().map(MediaAssetId::from_uuid).collect())
+    .map_err(database_error)
+}
+
+async fn active_variant_media_asset_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: ProductVariantId,
+) -> Result<Vec<MediaAssetId>, ApplicationError> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT media_asset_id FROM commerce.product_variant_media_assets \
+         WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
+           AND archived_at IS NULL FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(product_variant_id.as_uuid())
+    .fetch_all(&mut **tx)
+    .await
+    .map(|ids| ids.into_iter().map(MediaAssetId::from_uuid).collect())
+    .map_err(database_error)
+}
+
+async fn archive_product_links(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    changed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "UPDATE commerce.product_media_assets SET archived_at=$3 \
+         WHERE store_id=$1 AND product_id=$2 AND archived_at IS NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(changed_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn archive_option_value_links(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    option_id: ProductOptionId,
+    option_value_id: ProductOptionValueId,
+    changed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "UPDATE commerce.product_option_value_media_assets SET archived_at=$5 \
+         WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND option_value_id=$4 \
+           AND archived_at IS NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(option_id.as_uuid())
+    .bind(option_value_id.as_uuid())
+    .bind(changed_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn archive_variant_links(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: ProductVariantId,
+    changed_at: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    sqlx::query(
+        "UPDATE commerce.product_variant_media_assets SET archived_at=$4 \
+         WHERE store_id=$1 AND product_id=$2 AND product_variant_id=$3 \
+           AND archived_at IS NULL",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(product_variant_id.as_uuid())
+    .bind(changed_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
 async fn insert_asset(
     tx: &mut Transaction<'_, Postgres>,
     record: &CreateMediaAssetRecord,
@@ -761,7 +1412,6 @@ async fn ensure_product(
     tx: &mut Transaction<'_, Postgres>,
     store_id: StoreId,
     product_id: ProductId,
-    product_variant_id: Option<ProductVariantId>,
 ) -> Result<(), ApplicationError> {
     let status = sqlx::query_scalar::<_, String>(
         "SELECT status::text FROM commerce.products \
@@ -775,27 +1425,65 @@ async fn ensure_product(
     if status.as_deref() == Some("archived") || status.is_none() {
         return Err(not_found_product(product_id));
     }
-    if let Some(variant) = product_variant_id {
-        let valid: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM commerce.product_variants \
-             WHERE store_id=$1 AND product_id=$2 AND id=$3)",
-        )
-        .bind(store_id.as_uuid())
-        .bind(product_id.as_uuid())
-        .bind(variant.as_uuid())
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(database_error)?;
-        if !valid {
-            return Err(ApplicationError::Validation {
-                violations: vec![FieldViolation {
-                    field: "product_variant_id",
-                    reason: "must identify a Variant of the same Product".into(),
-                }],
-            });
-        }
-    }
     Ok(())
+}
+
+async fn ensure_product_option_value(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    option_id: ProductOptionId,
+    option_value_id: ProductOptionValueId,
+    error_on_missing: bool,
+) -> Result<bool, ApplicationError> {
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM commerce.product_option_values \
+         WHERE store_id=$1 AND product_id=$2 AND option_id=$3 AND id=$4)",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(option_id.as_uuid())
+    .bind(option_value_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    if !valid && error_on_missing {
+        return Err(ApplicationError::Validation {
+            violations: vec![FieldViolation {
+                field: "option_value_id",
+                reason: "must identify an Option Value of the same Product and Option".into(),
+            }],
+        });
+    }
+    Ok(valid)
+}
+
+async fn ensure_product_variant(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: ProductVariantId,
+    error_on_missing: bool,
+) -> Result<bool, ApplicationError> {
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM commerce.product_variants \
+         WHERE store_id=$1 AND product_id=$2 AND id=$3)",
+    )
+    .bind(store_id.as_uuid())
+    .bind(product_id.as_uuid())
+    .bind(product_variant_id.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    if !valid && error_on_missing {
+        return Err(ApplicationError::Validation {
+            violations: vec![FieldViolation {
+                field: "product_variant_id",
+                reason: "must identify a Variant of the same Product".into(),
+            }],
+        });
+    }
+    Ok(valid)
 }
 
 async fn lock_product(
@@ -908,6 +1596,18 @@ async fn archive_unreferenced_asset(
                AND product_link.archived_at IS NULL \
            ) \
            AND NOT EXISTS ( \
+             SELECT 1 FROM commerce.product_option_value_media_assets AS option_value_link \
+             WHERE option_value_link.store_id=media.store_id \
+               AND option_value_link.media_asset_id=media.id \
+               AND option_value_link.archived_at IS NULL \
+           ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM commerce.product_variant_media_assets AS variant_link \
+             WHERE variant_link.store_id=media.store_id \
+               AND variant_link.media_asset_id=media.id \
+               AND variant_link.archived_at IS NULL \
+           ) \
+           AND NOT EXISTS ( \
              SELECT 1 FROM commerce.review_media_assets AS review_link \
              WHERE review_link.store_id=media.store_id \
                AND review_link.media_asset_id=media.id \
@@ -969,24 +1669,44 @@ async fn load_product(
     product_id: ProductId,
     media_asset_id: MediaAssetId,
 ) -> Result<Option<ProductMediaRow>, ApplicationError> {
-    sqlx::query_as::<_, ProductMediaRow>(
-        "SELECT media.id AS asset_id, media.store_id, link.product_id, \
-                link.product_variant_id, media.file_name, media.media_type, \
-                media.media_kind::text, media.byte_size, media.sha256_digest, \
-                media.status::text, media.public_url, media.created_at, media.updated_at, \
-                link.alt_text, link.position, link.archived_at AS link_archived_at, \
-                media.object_key \
-         FROM commerce.product_media_assets AS link \
-         INNER JOIN commerce.media_assets AS media \
-            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
-         WHERE link.store_id=$1 AND link.product_id=$2 AND link.media_asset_id=$3",
-    )
-    .bind(store_id.as_uuid())
-    .bind(product_id.as_uuid())
-    .bind(media_asset_id.as_uuid())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(database_error)
+    Ok(product_media_rows(tx, store_id, product_id)
+        .await?
+        .into_iter()
+        .find(|row| row.asset_id == media_asset_id.as_uuid() && row.scope == "product"))
+}
+
+async fn load_product_option_value(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    option_id: ProductOptionId,
+    option_value_id: ProductOptionValueId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<ProductMediaRow>, ApplicationError> {
+    Ok(product_media_rows(tx, store_id, product_id)
+        .await?
+        .into_iter()
+        .find(|row| {
+            row.asset_id == media_asset_id.as_uuid()
+                && row.option_id == Some(option_id.as_uuid())
+                && row.option_value_id == Some(option_value_id.as_uuid())
+        }))
+}
+
+async fn load_product_variant(
+    tx: &mut Transaction<'_, Postgres>,
+    store_id: StoreId,
+    product_id: ProductId,
+    product_variant_id: ProductVariantId,
+    media_asset_id: MediaAssetId,
+) -> Result<Option<ProductMediaRow>, ApplicationError> {
+    Ok(product_media_rows(tx, store_id, product_id)
+        .await?
+        .into_iter()
+        .find(|row| {
+            row.asset_id == media_asset_id.as_uuid()
+                && row.product_variant_id == Some(product_variant_id.as_uuid())
+        }))
 }
 
 async fn load_review(
@@ -1055,10 +1775,25 @@ fn item(row: MediaRow) -> Result<MediaAssetItem, ApplicationError> {
 }
 
 fn product_item(row: ProductMediaRow) -> Result<ProductMediaAssetItem, ApplicationError> {
+    let scope = match row.scope.as_str() {
+        "product" => ProductMediaScope::Product,
+        "option_value" => ProductMediaScope::OptionValue {
+            option_id: ProductOptionId::from_uuid(row.option_id.ok_or_else(invalid_snapshot)?),
+            option_value_id: ProductOptionValueId::from_uuid(
+                row.option_value_id.ok_or_else(invalid_snapshot)?,
+            ),
+        },
+        "variant" => ProductMediaScope::Variant {
+            product_variant_id: ProductVariantId::from_uuid(
+                row.product_variant_id.ok_or_else(invalid_snapshot)?,
+            ),
+        },
+        _ => return Err(invalid_snapshot()),
+    };
     Ok(ProductMediaAssetItem {
         asset: media_item_from_product(&row)?,
         product_id: ProductId::from_uuid(row.product_id),
-        product_variant_id: row.product_variant_id.map(ProductVariantId::from_uuid),
+        scope,
         alt_text: row.alt_text,
         position: u16::try_from(row.position).map_err(|_| invalid_snapshot())?,
         archived_at: row.link_archived_at,
@@ -1373,21 +2108,37 @@ fn encode_digest(value: &[u8]) -> Result<String, ApplicationError> {
 }
 
 fn map_product_media_error(error: sqlx::Error) -> ApplicationError {
-    if let sqlx::Error::Database(db) = &error {
-        if db.constraint() == Some("product_media_assets_position_active_idx") {
-            return ApplicationError::Conflict {
-                code: "media_position_taken",
-                message: "the Media position is already occupied for this Product",
-            };
-        }
-        if db.constraint() == Some("product_media_assets_store_id_product_variant_fkey") {
-            return ApplicationError::Validation {
-                violations: vec![FieldViolation {
-                    field: "product_variant_id",
-                    reason: "must identify a Variant of the same Product".into(),
-                }],
-            };
-        }
+    if let sqlx::Error::Database(db) = &error
+        && db.constraint() == Some("product_media_assets_position_active_idx")
+    {
+        return ApplicationError::Conflict {
+            code: "media_position_taken",
+            message: "the Media position is already occupied for this Product",
+        };
+    }
+    database_error(error)
+}
+
+fn map_product_option_value_media_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(db) = &error
+        && db.constraint() == Some("product_option_value_media_assets_position_active_idx")
+    {
+        return ApplicationError::Conflict {
+            code: "media_position_taken",
+            message: "the Media position is already occupied for this Product Option Value",
+        };
+    }
+    database_error(error)
+}
+
+fn map_product_variant_media_error(error: sqlx::Error) -> ApplicationError {
+    if let sqlx::Error::Database(db) = &error
+        && db.constraint() == Some("product_variant_media_assets_position_active_idx")
+    {
+        return ApplicationError::Conflict {
+            code: "media_position_taken",
+            message: "the Media position is already occupied for this Product Variant",
+        };
     }
     database_error(error)
 }

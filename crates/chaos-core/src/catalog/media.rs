@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use chaos_domain::{
-    catalog::{MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ReviewId},
+    catalog::{
+        MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ProductOptionId,
+        ProductOptionValueId, ProductVariantId, ReviewId,
+    },
     store::StoreId,
 };
 use time::{Duration, OffsetDateTime};
@@ -13,7 +16,9 @@ use crate::{
         AdminActor, CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation,
         MediaAssetStorageRecord, MediaStorage, MediaUploadRequest, ProductMediaAssetItem,
         ProductMediaAssetLinkRecord, ProductMediaAssetMutation, ProductMetaMediaAssetItem,
-        ProductMetaMediaAssetLinkRecord, ProductMetaMediaAssetMutation, ReviewMediaAssetItem,
+        ProductMetaMediaAssetLinkRecord, ProductMetaMediaAssetMutation,
+        ProductOptionValueMediaAssetLinkRecord, ProductOptionValueMediaAssetMutation,
+        ProductVariantMediaAssetLinkRecord, ProductVariantMediaAssetMutation, ReviewMediaAssetItem,
         ReviewMediaAssetLinkRecord, ReviewMediaAssetMutation,
     },
 };
@@ -53,10 +58,63 @@ pub struct AttachProductMediaInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
-    pub product_variant_id: Option<chaos_domain::catalog::ProductVariantId>,
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+}
+
+pub struct AttachProductOptionValueMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+}
+
+pub struct AttachProductVariantMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+}
+
+pub struct ProductMediaItemInput {
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+}
+
+pub struct ReplaceProductMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub items: Vec<ProductMediaItemInput>,
+    pub now: OffsetDateTime,
+}
+
+pub struct ReplaceProductOptionValueMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub items: Vec<ProductMediaItemInput>,
+    pub now: OffsetDateTime,
+}
+
+pub struct ReplaceProductVariantMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
+    pub items: Vec<ProductMediaItemInput>,
+    pub now: OffsetDateTime,
 }
 
 pub struct AttachReviewMediaInput {
@@ -83,6 +141,25 @@ pub struct ArchiveProductMediaInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
     pub product_id: ProductId,
+    pub media_asset_id: MediaAssetId,
+    pub now: OffsetDateTime,
+}
+
+pub struct ArchiveProductOptionValueMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub now: OffsetDateTime,
+}
+
+pub struct ArchiveProductVariantMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
     pub media_asset_id: MediaAssetId,
     pub now: OffsetDateTime,
 }
@@ -240,11 +317,109 @@ impl MediaAdministration {
                 ProductMediaAssetLinkRecord {
                     store_id: input.store_id,
                     product_id: input.product_id,
+                    media_asset_id: input.media_asset_id,
+                    alt_text: input.alt_text,
+                    position: input.position,
+                },
+            )
+            .await
+    }
+
+    pub async fn attach_product_option_value(
+        &self,
+        input: AttachProductOptionValueMediaInput,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        input.actor.require_human()?;
+        validate_position(input.position)?;
+        validate_alt_text(&input.alt_text)?;
+        self.repository
+            .attach_product_option_value(
+                input.actor,
+                ProductOptionValueMediaAssetLinkRecord {
+                    store_id: input.store_id,
+                    product_id: input.product_id,
+                    option_id: input.option_id,
+                    option_value_id: input.option_value_id,
+                    media_asset_id: input.media_asset_id,
+                    alt_text: input.alt_text,
+                    position: input.position,
+                },
+            )
+            .await
+    }
+
+    pub async fn attach_product_variant(
+        &self,
+        input: AttachProductVariantMediaInput,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        input.actor.require_human()?;
+        validate_position(input.position)?;
+        validate_alt_text(&input.alt_text)?;
+        self.repository
+            .attach_product_variant(
+                input.actor,
+                ProductVariantMediaAssetLinkRecord {
+                    store_id: input.store_id,
+                    product_id: input.product_id,
                     product_variant_id: input.product_variant_id,
                     media_asset_id: input.media_asset_id,
                     alt_text: input.alt_text,
                     position: input.position,
                 },
+            )
+            .await
+    }
+
+    pub async fn replace_product(
+        &self,
+        input: ReplaceProductMediaInput,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        input.actor.require_human()?;
+        validate_media_items(&input.items)?;
+        self.repository
+            .replace_product(
+                input.actor,
+                input.store_id,
+                input.product_id,
+                input.items,
+                input.now,
+            )
+            .await
+    }
+
+    pub async fn replace_product_option_value(
+        &self,
+        input: ReplaceProductOptionValueMediaInput,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        input.actor.require_human()?;
+        validate_media_items(&input.items)?;
+        self.repository
+            .replace_product_option_value(
+                input.actor,
+                input.store_id,
+                input.product_id,
+                input.option_id,
+                input.option_value_id,
+                input.items,
+                input.now,
+            )
+            .await
+    }
+
+    pub async fn replace_product_variant(
+        &self,
+        input: ReplaceProductVariantMediaInput,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        input.actor.require_human()?;
+        validate_media_items(&input.items)?;
+        self.repository
+            .replace_product_variant(
+                input.actor,
+                input.store_id,
+                input.product_id,
+                input.product_variant_id,
+                input.items,
+                input.now,
             )
             .await
     }
@@ -304,6 +479,38 @@ impl MediaAdministration {
             .ok_or_else(|| not_found("product", product_id.as_uuid().to_string()))
     }
 
+    pub async fn list_product_option_value(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        self.repository
+            .list_product_option_value(actor, store_id, product_id, option_id, option_value_id)
+            .await?
+            .ok_or_else(|| {
+                not_found(
+                    "product option value",
+                    option_value_id.as_uuid().to_string(),
+                )
+            })
+    }
+
+    pub async fn list_product_variant(
+        &self,
+        actor: AdminActor,
+        store_id: StoreId,
+        product_id: ProductId,
+        product_variant_id: ProductVariantId,
+    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+        self.repository
+            .list_product_variant(actor, store_id, product_id, product_variant_id)
+            .await?
+            .ok_or_else(|| not_found("product variant", product_variant_id.as_uuid().to_string()))
+    }
+
     pub async fn list_review(
         &self,
         actor: AdminActor,
@@ -339,6 +546,45 @@ impl MediaAdministration {
                 ProductMediaAssetMutation {
                     store_id: input.store_id,
                     product_id: input.product_id,
+                    media_asset_id: input.media_asset_id,
+                    changed_at: input.now,
+                },
+            )
+            .await
+    }
+
+    pub async fn archive_product_option_value(
+        &self,
+        input: ArchiveProductOptionValueMediaInput,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        input.actor.require_human()?;
+        self.repository
+            .archive_product_option_value(
+                input.actor,
+                ProductOptionValueMediaAssetMutation {
+                    store_id: input.store_id,
+                    product_id: input.product_id,
+                    option_id: input.option_id,
+                    option_value_id: input.option_value_id,
+                    media_asset_id: input.media_asset_id,
+                    changed_at: input.now,
+                },
+            )
+            .await
+    }
+
+    pub async fn archive_product_variant(
+        &self,
+        input: ArchiveProductVariantMediaInput,
+    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+        input.actor.require_human()?;
+        self.repository
+            .archive_product_variant(
+                input.actor,
+                ProductVariantMediaAssetMutation {
+                    store_id: input.store_id,
+                    product_id: input.product_id,
+                    product_variant_id: input.product_variant_id,
                     media_asset_id: input.media_asset_id,
                     changed_at: input.now,
                 },
@@ -480,6 +726,29 @@ fn validate_alt_text(value: &str) -> Result<(), ApplicationError> {
             "alt_text",
             "must contain at most 500 non-control characters",
         ));
+    }
+    Ok(())
+}
+
+fn validate_media_items(items: &[ProductMediaItemInput]) -> Result<(), ApplicationError> {
+    if items.len() > 100 {
+        return Err(validation("items", "must contain at most 100 media assets"));
+    }
+
+    let mut media_asset_ids = HashSet::with_capacity(items.len());
+    let mut positions = HashSet::with_capacity(items.len());
+    for item in items {
+        validate_position(item.position)?;
+        validate_alt_text(&item.alt_text)?;
+        if !media_asset_ids.insert(item.media_asset_id.as_uuid()) {
+            return Err(validation(
+                "items",
+                "must not contain the same media asset more than once",
+            ));
+        }
+        if !positions.insert(item.position) {
+            return Err(validation("items", "must not contain duplicate positions"));
+        }
     }
     Ok(())
 }

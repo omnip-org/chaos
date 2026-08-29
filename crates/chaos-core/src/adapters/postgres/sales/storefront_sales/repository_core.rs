@@ -6,15 +6,16 @@ use crate::{
     ApplicationError,
     error::database_error,
     contracts::{
-        CartDetail, CartLineItem, MachineActor, OrderDetail,
-        ShopperActor, StorefrontMediaAsset,
+        CartDetail, CartLineItem, MachineActor, OrderDetail, ShopperActor,
+        StorefrontMediaAsset, StorefrontMediaScope, StorefrontSelectedOption,
+        resolve_storefront_media,
         StripeCheckoutDraft,
     },
     sales::StripeCheckoutRequest,
 };
 use chaos_domain::{
     CurrencyCode,
-    catalog::{ProductId, ProductVariantId},
+    catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
     pricing::{Money, PriceListId},
     sales::{
         Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId,
@@ -61,6 +62,9 @@ type CartLineRow = (Uuid, Uuid, String, String, Option<String>, bool, i32, i64);
 type CartMediaRow = (
     Uuid,
     Uuid,
+    String,
+    Option<Uuid>,
+    Option<Uuid>,
     Option<Uuid>,
     String,
     String,

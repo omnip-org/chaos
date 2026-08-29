@@ -18,9 +18,11 @@ object or its integrity metadata.
 4. Call `complete_media_upload` with the returned `media_asset_id` and
    `confirm: true`. Chaos performs a storage metadata check and marks the asset
    `ready` only when the type, size, and SHA-256 match.
-5. Attach the ready asset with exactly one of the typed tools:
-   `attach_product_media`, `attach_review_media`, or
-   `attach_product_meta_media`.
+5. Attach the ready asset with one of the typed tools. Product catalog media
+   uses `attach_product_media` for the Product fallback gallery,
+   `attach_product_option_value_media` for a Color/Length value, or
+   `attach_product_variant_media` for one exact Variant. Review and metadata
+   media use `attach_review_media` and `attach_product_meta_media`.
 
 If the presigned request expires before the PUT, call
 `refresh_media_upload` and repeat step 3. A Media Asset can be attached to
@@ -31,6 +33,40 @@ multiple targets; it is archived only after every active attachment is removed.
 The upload request contains a short-lived bearer credential and is intentionally
 included in the model-visible tool result so the current MCP Host can use it.
 Hosts should still avoid logging it and must upload before it expires.
+
+## Product media scopes and fallback
+
+One verified `media_assets` row represents one physical object. Link rows may
+reuse that object across any number of Products, Option Values, and Variants;
+the link tables hold independent `alt_text`, `position`, and archive state.
+
+Product catalog media has three scopes:
+
+- `product`: the default gallery for the Product.
+- `option_value`: media for a value such as `Color=Red` or `Length=100cm`.
+- `variant`: media for one exact combination, such as `Red + 160cm`.
+
+For a selected Variant, the effective gallery is resolved in this order:
+
+1. Exact Variant links, when at least one exists.
+2. Links for the selected Option Values, when at least one matches.
+3. Product links.
+
+The resolver deduplicates by `media_asset_id`, so one image shared by a Color
+and Length value is returned once. The Storefront Product API returns the
+active ready rules in `media`, with a `scope` and the relevant IDs. The JS SDK
+exports `resolveProductMedia(product, variant)` for the same deterministic
+resolution. Storefront cart lines already contain the resolved gallery.
+
+For frequent gallery editing, use the atomic `replace_product_media`,
+`replace_product_option_value_media`, or `replace_product_variant_media` MCP
+tool. The `items` array is the complete desired state: existing links omitted
+from it are archived, supplied links are inserted or updated, and an empty
+array clears that target. Every item must have a unique position from 0 to 99.
+Use the corresponding `list_*` tools to inspect a target or
+`list_product_media` to inspect all three scopes. The corresponding
+`archive_*` tools remove one link without deleting a shared physical object;
+an asset is archived only after its last active link is removed.
 
 ## Product metadata images
 

@@ -6,7 +6,9 @@ use axum::{
 };
 use chaos_core::{
     ApplicationError,
-    contracts::{CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset},
+    contracts::{
+        CartDetail, CartLineItem, PaymentClientAction, StorefrontMediaAsset, StorefrontMediaScope,
+    },
     payments::CreatePaymentAttemptInput,
     sales::CreateStripeCheckoutInput,
     sales::{CreateCartInput, RemoveCartLineInput, SetCartLineInput},
@@ -68,6 +70,11 @@ struct CartLineData {
 #[derive(Serialize)]
 struct CartMediaData {
     id: Uuid,
+    scope: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    option_value_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     product_variant_id: Option<Uuid>,
     media_type: String,
@@ -184,9 +191,27 @@ fn cart_line_data(line: CartLineItem) -> CartLineData {
 }
 
 fn cart_media_data(media: StorefrontMediaAsset) -> CartMediaData {
+    let (scope, option_id, option_value_id, product_variant_id) = match media.scope {
+        StorefrontMediaScope::Product => ("product", None, None, None),
+        StorefrontMediaScope::OptionValue {
+            option_id,
+            option_value_id,
+        } => (
+            "option_value",
+            Some(option_id.as_uuid()),
+            Some(option_value_id.as_uuid()),
+            None,
+        ),
+        StorefrontMediaScope::Variant { product_variant_id } => {
+            ("variant", None, None, Some(product_variant_id.as_uuid()))
+        }
+    };
     CartMediaData {
         id: media.id.as_uuid(),
-        product_variant_id: media.product_variant_id.map(|id| id.as_uuid()),
+        scope,
+        option_id,
+        option_value_id,
+        product_variant_id,
         media_type: media.media_type,
         kind: media.kind.as_str(),
         alt_text: media.alt_text,

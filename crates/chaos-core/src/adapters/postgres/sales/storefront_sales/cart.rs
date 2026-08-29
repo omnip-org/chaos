@@ -207,10 +207,10 @@ async fn load_cart(
     }))
 }
 
-/// Media for the exact Product+Variant of each Cart line: a variant-specific
-/// attachment (`link.product_variant_id` matching this line's variant) plus
-/// every product-level attachment (`link.product_variant_id IS NULL`), so a
-/// line for one variant never shows another variant's exclusive photos.
+/// Media for each Cart line follows the same fallback contract as the catalog:
+/// exact Variant media, then media attached to one of the Variant's selected
+/// Option Values, then Product media. The selected Option Values are loaded in
+/// one query so a cart with many lines does not perform one media query per line.
 async fn load_cart_media(
     transaction: &mut Transaction<'static, Postgres>,
     actor: &MachineActor,
@@ -221,14 +221,30 @@ async fn load_cart_media(
         return Ok(HashMap::new());
     }
     let rows = sqlx::query_as::<_, CartMediaRow>(
-        "SELECT link.product_id, media.id, link.product_variant_id, media.media_type, \
-                media.media_kind::text, link.alt_text, link.position, media.public_url \
+        "SELECT link.product_id, media.id, 'product'::text, NULL::uuid, NULL::uuid, NULL::uuid, \
+                media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
          FROM commerce.product_media_assets AS link \
          INNER JOIN commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
          WHERE link.store_id = $1 AND link.product_id = ANY($2) \
            AND link.archived_at IS NULL AND media.status = 'ready' \
-         ORDER BY link.product_id, link.position, media.id",
+         UNION ALL \
+         SELECT link.product_id, media.id, 'option_value'::text, link.option_id, link.option_value_id, NULL::uuid, \
+                media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+         FROM commerce.product_option_value_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id = $1 AND link.product_id = ANY($2) \
+           AND link.archived_at IS NULL AND media.status = 'ready' \
+         UNION ALL \
+         SELECT link.product_id, media.id, 'variant'::text, NULL::uuid, NULL::uuid, link.product_variant_id, \
+                media.media_type, media.media_kind::text, link.alt_text, link.position, media.public_url \
+         FROM commerce.product_variant_media_assets AS link \
+         INNER JOIN commerce.media_assets AS media \
+            ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         WHERE link.store_id = $1 AND link.product_id = ANY($2) \
+           AND link.archived_at IS NULL AND media.status = 'ready' \
+         ORDER BY 1, 10, 3, 2",
     )
     .bind(actor.store_id.as_uuid())
     .bind(&product_ids)
@@ -237,7 +253,7 @@ async fn load_cart_media(
     .map_err(database_error)?;
     let mut by_product: HashMap<Uuid, Vec<StorefrontMediaAsset>> = HashMap::new();
     for row in rows {
-        let kind = match row.4.as_str() {
+        let kind = match row.7.as_str() {
             "image" => chaos_domain::catalog::MediaKind::Image,
             "video" => chaos_domain::catalog::MediaKind::Video,
             _ => return Err(corrupt_sales_state()),
@@ -247,31 +263,69 @@ async fn load_cart_media(
             .or_default()
             .push(StorefrontMediaAsset {
                 id: chaos_domain::catalog::MediaAssetId::from_uuid(row.1),
-                product_variant_id: row
-                    .2
-                    .map(chaos_domain::catalog::ProductVariantId::from_uuid),
-                media_type: row.3,
+                scope: match row.2.as_str() {
+                    "product" => StorefrontMediaScope::Product,
+                    "option_value" => StorefrontMediaScope::OptionValue {
+                        option_id: ProductOptionId::from_uuid(row.3.ok_or_else(
+                            corrupt_sales_state,
+                        )?),
+                        option_value_id: ProductOptionValueId::from_uuid(
+                            row.4.ok_or_else(corrupt_sales_state)?,
+                        ),
+                    },
+                    "variant" => StorefrontMediaScope::Variant {
+                        product_variant_id: ProductVariantId::from_uuid(
+                            row.5.ok_or_else(corrupt_sales_state)?,
+                        ),
+                    },
+                    _ => return Err(corrupt_sales_state()),
+                },
+                media_type: row.6,
                 kind,
-                alt_text: row.5,
-                position: u16::try_from(row.6).map_err(unexpected_conversion)?,
-                url: row.7,
+                alt_text: row.8,
+                position: u16::try_from(row.9).map_err(unexpected_conversion)?,
+                url: row.10,
             });
     }
+
+    let variant_ids = lines.iter().map(|line| line.1).collect::<Vec<_>>();
+    let selected_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+        "SELECT variant_id, option_id, option_value_id \
+         FROM commerce.variant_selected_options \
+         WHERE store_id=$1 AND product_id=ANY($2) AND variant_id=ANY($3) \
+         ORDER BY variant_id, option_id",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(&product_ids)
+    .bind(&variant_ids)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let mut selected_by_variant: HashMap<Uuid, Vec<StorefrontSelectedOption>> = HashMap::new();
+    for (variant_id, option_id, option_value_id) in selected_rows {
+        selected_by_variant
+            .entry(variant_id)
+            .or_default()
+            .push(StorefrontSelectedOption {
+                option_id: ProductOptionId::from_uuid(option_id),
+                option_value_id: ProductOptionValueId::from_uuid(option_value_id),
+            });
+    }
+
     let mut by_line = HashMap::new();
     for line in lines {
         let (product_id, product_variant_id) = (line.0, line.1);
         let scoped = by_product
             .get(&product_id)
             .map(|assets| {
-                assets
-                    .iter()
-                    .filter(|asset| {
-                        asset
-                            .product_variant_id
-                            .is_none_or(|id| id.as_uuid() == product_variant_id)
-                    })
-                    .cloned()
-                    .collect()
+                resolve_storefront_media(
+                    assets,
+                    ProductVariantId::from_uuid(product_variant_id),
+                    selected_by_variant
+                        .get(&product_variant_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )
             })
             .unwrap_or_default();
         by_line.insert((product_id, product_variant_id), scoped);

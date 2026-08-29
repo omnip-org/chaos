@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chaos_domain::{
     catalog::{
-        MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductVariantId,
-        ReviewId,
+        MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductOptionId,
+        ProductOptionValueId, ProductVariantId, ReviewId,
     },
     store::StoreId,
 };
@@ -31,10 +31,22 @@ pub struct MediaAssetItem {
 pub struct ProductMediaAssetItem {
     pub asset: MediaAssetItem,
     pub product_id: ProductId,
-    pub product_variant_id: Option<ProductVariantId>,
+    pub scope: ProductMediaScope,
     pub alt_text: String,
     pub position: u16,
     pub archived_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProductMediaScope {
+    Product,
+    OptionValue {
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+    },
+    Variant {
+        product_variant_id: ProductVariantId,
+    },
 }
 
 pub struct ReviewMediaAssetItem {
@@ -92,7 +104,25 @@ pub struct MediaAssetMutation {
 pub struct ProductMediaAssetLinkRecord {
     pub store_id: StoreId,
     pub product_id: ProductId,
-    pub product_variant_id: Option<ProductVariantId>,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+}
+
+pub struct ProductOptionValueMediaAssetLinkRecord {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+}
+
+pub struct ProductVariantMediaAssetLinkRecord {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
@@ -118,6 +148,23 @@ pub struct ProductMetaMediaAssetLinkRecord {
 pub struct ProductMediaAssetMutation {
     pub store_id: StoreId,
     pub product_id: ProductId,
+    pub media_asset_id: MediaAssetId,
+    pub changed_at: OffsetDateTime,
+}
+
+pub struct ProductOptionValueMediaAssetMutation {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub changed_at: OffsetDateTime,
+}
+
+pub struct ProductVariantMediaAssetMutation {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
     pub media_asset_id: MediaAssetId,
     pub changed_at: OffsetDateTime,
 }

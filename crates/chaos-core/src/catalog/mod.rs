@@ -104,9 +104,12 @@ pub use management::{
 };
 pub use media::{
     ArchiveMediaAssetInput, ArchiveProductMediaInput, ArchiveProductMetaMediaInput,
-    ArchiveReviewMediaInput, AttachProductMediaInput, AttachProductMetaMediaInput,
-    AttachReviewMediaInput, CompleteMediaUploadInput, CreateMediaUploadInput, CreatedMediaAsset,
-    MediaAdministration, RefreshMediaUploadInput,
+    ArchiveProductOptionValueMediaInput, ArchiveProductVariantMediaInput, ArchiveReviewMediaInput,
+    AttachProductMediaInput, AttachProductMetaMediaInput, AttachProductOptionValueMediaInput,
+    AttachProductVariantMediaInput, AttachReviewMediaInput, CompleteMediaUploadInput,
+    CreateMediaUploadInput, CreatedMediaAsset, MediaAdministration, ProductMediaItemInput,
+    RefreshMediaUploadInput, ReplaceProductMediaInput, ReplaceProductOptionValueMediaInput,
+    ReplaceProductVariantMediaInput,
 };
 pub use queries::{CatalogQueries, ProductPage};
 pub use reviews::{
