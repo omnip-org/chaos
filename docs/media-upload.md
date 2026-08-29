@@ -28,7 +28,10 @@ If the presigned request expires before the PUT, call
 `refresh_media_upload` and repeat step 3. A Media Asset can be attached to
 multiple targets; it is archived only after every active attachment is removed.
 `get_media_asset` returns the reusable asset state, while
-`archive_media_asset` handles an unreferenced asset.
+`list_media_assets` supports paginated discovery by lifecycle status, media kind,
+SHA-256 digest, and file-name fragment. `archive_media_asset` handles an
+unreferenced asset, and `restore_media_asset` can restore an archived asset when
+its original object URL is still retained.
 
 The upload request contains a short-lived bearer credential and is intentionally
 included in the model-visible tool result so the current MCP Host can use it.
@@ -67,6 +70,22 @@ Use the corresponding `list_*` tools to inspect a target or
 `list_product_media` to inspect all three scopes. The corresponding
 `archive_*` tools remove one link without deleting a shared physical object;
 an asset is archived only after its last active link is removed.
+
+When several targets must change together, use `batch_replace_product_media`.
+It accepts Product, Option Value, and exact Variant targets and commits all
+target replacements atomically. `expected_revision` protects the whole batch
+from overwriting a newer Product edit. Every Product media mutation returns
+the new Product revision so an automation can continue without an extra
+workspace read. Product metadata media mutations use the same optimistic
+concurrency boundary, but should be treated as a separate metadata workflow.
+
+Use `get_product_workspace` before editing. It returns the canonical Product
+configuration, archived records, raw media rules, publication IDs, and the
+revision needed for optimistic concurrency. Use `resolve_product_media` to
+preview the effective gallery for one Variant using the same precedence as the
+Storefront and JavaScript SDK. The product configuration synchronization tool
+also archives media links belonging to removed Option Values or Variants, so
+orphaned physical assets can be safely archived or restored later.
 
 ## Product metadata images
 

@@ -24,7 +24,18 @@ A publication and client-delivery surface within one Store, such as web, mobile,
 
 ## Product and Variant
 
-A Product is Store-owned catalog content. Variants are purchasable combinations of Product options. Product lifecycle and channel publication are separate decisions: a Product must be active and published to a channel before that channel may serve it.
+A Product is Store-owned catalog content. Variants are purchasable combinations of
+Product options. Option, Option Value, and Variant identifiers are stable across
+catalog edits; removing one from the active configuration archives it instead of
+reusing its identity. This lets media rules and external integrations retain
+stable references while an editor changes the active set.
+
+Product lifecycle and channel publication are separate decisions: a Product must
+be active and published to a channel before that channel may serve it. Product
+configuration changes, canonical content changes, publication changes, and
+catalog media changes increment the Product revision. An active Product must
+retain at least one active Variant. MCP writers can pass the revision returned by
+a workspace read as `expected_revision` to reject stale updates.
 
 ## Order
 

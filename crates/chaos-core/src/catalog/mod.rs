@@ -3,12 +3,14 @@ use chaos_domain::catalog::CatalogMetadata;
 use crate::ApplicationError;
 
 mod collections;
+mod configuration;
 mod create_product;
 mod management;
 mod media;
 mod queries;
 mod reviews;
 mod storefront;
+mod workspace;
 
 pub(crate) fn parse_metadata(
     value: Option<serde_json::Value>,
@@ -94,22 +96,32 @@ pub use collections::{
     CreateCollectionInput, ReplaceCollectionProductsInput, StorefrontCollections,
     UpdateCollectionInput,
 };
+pub use configuration::{
+    ConfigurationViolation, ProductConfigurationDraft, ProductConfigurationManagement,
+    ProductConfigurationOptionInput, ProductConfigurationOptionValueInput,
+    ProductConfigurationValidation, ProductConfigurationVariantInput,
+    SyncProductConfigurationInput, SyncProductConfigurationOutput, validate_configuration,
+    validate_product_configuration,
+};
 pub use create_product::{
     CreateProduct, CreateProductInput, CreateProductOptionInput, CreateProductOutput,
     CreateProductSelectedOptionInput, CreateProductVariantInput,
 };
 pub use management::{
-    CatalogManagement, ChangeProductStatusInput, ProductPublicationInput, UpdateProductInput,
-    UpdateProductVariantInput,
+    CatalogManagement, ChangeProductStatusInput, PatchProductInput, PatchProductVariantInput,
+    ProductMutationOutput, ProductPublicationInput, UpdateProductInput, UpdateProductVariantInput,
 };
 pub use media::{
     ArchiveMediaAssetInput, ArchiveProductMediaInput, ArchiveProductMetaMediaInput,
     ArchiveProductOptionValueMediaInput, ArchiveProductVariantMediaInput, ArchiveReviewMediaInput,
     AttachProductMediaInput, AttachProductMetaMediaInput, AttachProductOptionValueMediaInput,
-    AttachProductVariantMediaInput, AttachReviewMediaInput, CompleteMediaUploadInput,
-    CreateMediaUploadInput, CreatedMediaAsset, MediaAdministration, ProductMediaItemInput,
+    AttachProductVariantMediaInput, AttachReviewMediaInput, BatchReplaceProductMediaInput,
+    BatchReplaceProductMediaOutput, BatchReplaceProductMediaTarget, CompleteMediaUploadInput,
+    CreateMediaUploadInput, CreatedMediaAsset, ListMediaAssetsInput, MediaAdministration,
+    MediaAssetPage, ProductMediaItemInput, ProductMediaMutationOutput,
+    ProductMediaReplacementOutput, ProductMediaTarget, ProductMetaMediaMutationOutput,
     RefreshMediaUploadInput, ReplaceProductMediaInput, ReplaceProductOptionValueMediaInput,
-    ReplaceProductVariantMediaInput,
+    ReplaceProductVariantMediaInput, RestoreMediaAssetInput,
 };
 pub use queries::{CatalogQueries, ProductPage};
 pub use reviews::{
@@ -117,6 +129,10 @@ pub use reviews::{
     ReviewAdministration, StorefrontReviews, SubmitReviewInput,
 };
 pub use storefront::{StorefrontCatalog, StorefrontProductPage};
+pub use workspace::{
+    ProductMediaResolutionSource, ProductWorkspaceQueries, ResolvedProductMedia,
+    resolve_product_media,
+};
 
 #[cfg(test)]
 mod tests {

@@ -14,17 +14,18 @@ use chaos_core::{
     },
     adapters::postgres::{
         DefaultPublishableKeyGenerator, PostgresAnalyticsDestinationStore,
-        PostgresAnalyticsEventStore, PostgresCatalogManagementRepository,
-        PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
-        PostgresCollectionRepository, PostgresEmailRepository, PostgresFulfillmentRepository,
-        PostgresIntegrationAccountRepository, PostgresIntegrationWebhookRepository,
-        PostgresInventoryRepository, PostgresMediaAssetRepository,
-        PostgresOrderManagementRepository, PostgresPricingManagementRepository,
-        PostgresPricingProvisioningRepository, PostgresPublishableKeyRepository,
-        PostgresReviewRepository, PostgresStoreAdministrationRepository,
-        PostgresStoreMembershipRepository, PostgresStoreProvisioningRepository,
-        PostgresStoreReadRepository, PostgresStorefrontCatalogRepository,
-        PostgresStorefrontSalesRepository, PostgresStripeRepository,
+        PostgresAnalyticsEventStore, PostgresCatalogConfigurationRepository,
+        PostgresCatalogManagementRepository, PostgresCatalogProvisioningRepository,
+        PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresEmailRepository,
+        PostgresFulfillmentRepository, PostgresIntegrationAccountRepository,
+        PostgresIntegrationWebhookRepository, PostgresInventoryRepository,
+        PostgresMediaAssetRepository, PostgresOrderManagementRepository,
+        PostgresPricingManagementRepository, PostgresPricingProvisioningRepository,
+        PostgresPublishableKeyRepository, PostgresReviewRepository,
+        PostgresStoreAdministrationRepository, PostgresStoreMembershipRepository,
+        PostgresStoreProvisioningRepository, PostgresStoreReadRepository,
+        PostgresStorefrontCatalogRepository, PostgresStorefrontSalesRepository,
+        PostgresStripeRepository,
     },
     adapters::security::{
         identity::{
@@ -45,7 +46,8 @@ use chaos_core::{
     catalog::StorefrontCatalog,
     catalog::{
         CatalogManagement, CatalogQueries, CollectionAdministration, CreateProduct,
-        MediaAdministration, ReviewAdministration, StorefrontCollections, StorefrontReviews,
+        MediaAdministration, ProductConfigurationManagement, ProductWorkspaceQueries,
+        ReviewAdministration, StorefrontCollections, StorefrontReviews,
     },
     contracts::{
         Clock, IdentityAuthentication, MediaStorage, PaymentWebhookVerifierRegistry,
@@ -93,6 +95,8 @@ pub struct ApiState {
     pub create_product: Arc<CreateProduct>,
     pub catalog_queries: Arc<CatalogQueries>,
     pub catalog_management: Arc<CatalogManagement>,
+    pub product_configuration: Arc<ProductConfigurationManagement>,
+    pub product_workspace_queries: Arc<ProductWorkspaceQueries>,
     pub collection_administration: Arc<CollectionAdministration>,
     pub storefront_collections: Arc<StorefrontCollections>,
     pub review_administration: Arc<ReviewAdministration>,
@@ -196,9 +200,18 @@ impl ApiState {
         let create_product = CreateProduct::new(Arc::new(
             PostgresCatalogProvisioningRepository::new(infrastructure.runtime_pool()),
         ));
-        let catalog_queries = CatalogQueries::new(Arc::new(PostgresCatalogReadRepository::new(
+        let catalog_read_repository = Arc::new(PostgresCatalogReadRepository::new(
             infrastructure.runtime_pool(),
-        )));
+        ));
+        let catalog_queries = CatalogQueries::new(catalog_read_repository.clone());
+        let media_repository = Arc::new(PostgresMediaAssetRepository::new(
+            infrastructure.runtime_pool(),
+        ));
+        let product_workspace_queries =
+            ProductWorkspaceQueries::new(catalog_read_repository, media_repository.clone());
+        let product_configuration = ProductConfigurationManagement::new(Arc::new(
+            PostgresCatalogConfigurationRepository::new(infrastructure.runtime_pool()),
+        ));
         let catalog_management = CatalogManagement::new(Arc::new(
             PostgresCatalogManagementRepository::new(infrastructure.runtime_pool()),
         ));
@@ -227,12 +240,7 @@ impl ApiState {
             } else {
                 Arc::new(UnavailableMediaStorage)
             };
-        let media_administration = MediaAdministration::new(
-            Arc::new(PostgresMediaAssetRepository::new(
-                infrastructure.runtime_pool(),
-            )),
-            media_storage,
-        );
+        let media_administration = MediaAdministration::new(media_repository, media_storage);
         let create_price_list = CreatePriceList::new(Arc::new(
             PostgresPricingProvisioningRepository::new(infrastructure.runtime_pool()),
         ));
@@ -348,6 +356,8 @@ impl ApiState {
             create_product: Arc::new(create_product),
             catalog_queries: Arc::new(catalog_queries),
             catalog_management: Arc::new(catalog_management),
+            product_configuration: Arc::new(product_configuration),
+            product_workspace_queries: Arc::new(product_workspace_queries),
             collection_administration: Arc::new(collection_administration),
             storefront_collections: Arc::new(storefront_collections),
             review_administration: Arc::new(review_administration),

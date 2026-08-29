@@ -234,6 +234,13 @@ async fn load_cart_media(
          FROM commerce.product_option_value_media_assets AS link \
          INNER JOIN commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         INNER JOIN commerce.product_options AS option \
+            ON option.store_id=link.store_id AND option.product_id=link.product_id \
+           AND option.id=link.option_id AND option.archived_at IS NULL \
+         INNER JOIN commerce.product_option_values AS option_value \
+            ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
+           AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
+           AND option_value.archived_at IS NULL \
          WHERE link.store_id = $1 AND link.product_id = ANY($2) \
            AND link.archived_at IS NULL AND media.status = 'ready' \
          UNION ALL \
@@ -242,6 +249,9 @@ async fn load_cart_media(
          FROM commerce.product_variant_media_assets AS link \
          INNER JOIN commerce.media_assets AS media \
             ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+         INNER JOIN commerce.product_variants AS variant \
+            ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
+           AND variant.id=link.product_variant_id AND variant.status='active' \
          WHERE link.store_id = $1 AND link.product_id = ANY($2) \
            AND link.archived_at IS NULL AND media.status = 'ready' \
          ORDER BY 1, 10, 3, 2",
@@ -290,10 +300,28 @@ async fn load_cart_media(
 
     let variant_ids = lines.iter().map(|line| line.1).collect::<Vec<_>>();
     let selected_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-        "SELECT variant_id, option_id, option_value_id \
-         FROM commerce.variant_selected_options \
-         WHERE store_id=$1 AND product_id=ANY($2) AND variant_id=ANY($3) \
-         ORDER BY variant_id, option_id",
+        "SELECT selection.variant_id, selection.option_id, selection.option_value_id \
+         FROM commerce.variant_selected_options AS selection \
+         INNER JOIN commerce.product_options AS option \
+           ON option.store_id=selection.store_id \
+          AND option.product_id=selection.product_id \
+          AND option.id=selection.option_id \
+          AND option.archived_at IS NULL \
+         INNER JOIN commerce.product_option_values AS option_value \
+           ON option_value.store_id=selection.store_id \
+          AND option_value.product_id=selection.product_id \
+          AND option_value.option_id=selection.option_id \
+          AND option_value.id=selection.option_value_id \
+          AND option_value.archived_at IS NULL \
+         INNER JOIN commerce.product_variants AS variant \
+           ON variant.store_id=selection.store_id \
+          AND variant.product_id=selection.product_id \
+          AND variant.id=selection.variant_id \
+          AND variant.status='active' \
+         WHERE selection.store_id=$1 \
+           AND selection.product_id=ANY($2) \
+           AND selection.variant_id=ANY($3) \
+         ORDER BY selection.variant_id, selection.option_id",
     )
     .bind(actor.store_id.as_uuid())
     .bind(&product_ids)

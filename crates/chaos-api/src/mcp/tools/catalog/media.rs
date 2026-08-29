@@ -4,9 +4,10 @@ use chaos_core::{
         ArchiveProductOptionValueMediaInput, ArchiveProductVariantMediaInput,
         ArchiveReviewMediaInput, AttachProductMediaInput, AttachProductMetaMediaInput,
         AttachProductOptionValueMediaInput, AttachProductVariantMediaInput, AttachReviewMediaInput,
-        CompleteMediaUploadInput, CreateMediaUploadInput, ProductMediaItemInput,
+        BatchReplaceProductMediaInput, BatchReplaceProductMediaTarget, CompleteMediaUploadInput,
+        CreateMediaUploadInput, ListMediaAssetsInput, ProductMediaItemInput, ProductMediaTarget,
         RefreshMediaUploadInput, ReplaceProductMediaInput, ReplaceProductOptionValueMediaInput,
-        ReplaceProductVariantMediaInput,
+        ReplaceProductVariantMediaInput, RestoreMediaAssetInput, resolve_product_media,
     },
     contracts::{
         MediaAssetItem, MediaUploadRequest, ProductMediaAssetItem, ProductMetaMediaAssetItem,
@@ -14,7 +15,8 @@ use chaos_core::{
     },
 };
 use chaos_domain::catalog::{
-    MediaAssetId, ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId, ReviewId,
+    MediaAssetId, MediaAssetStatus, MediaKind, ProductId, ProductOptionId, ProductOptionValueId,
+    ProductVariantId, ReviewId,
 };
 use rmcp::{
     ErrorData,
@@ -88,6 +90,72 @@ pub struct ArchiveMediaAssetParams {
 }
 
 #[derive(Deserialize, Serialize, JsonSchema)]
+pub struct RestoreMediaAssetParams {
+    /// The Store UUID that owns the Media Asset.
+    pub store_id: String,
+    /// An archived ready Media Asset's UUID.
+    pub media_asset_id: String,
+    /// Must be explicitly set to true.
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ListMediaAssetsParams {
+    /// The Store UUID that owns the Media Assets.
+    pub store_id: String,
+    /// Opaque cursor from a previous page's next_cursor.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Optional lifecycle status: pending_upload, ready, or archived.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Optional media kind: image or video.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Optional exact lowercase SHA-256 digest.
+    #[serde(default)]
+    pub sha256_hex: Option<String>,
+    /// Optional case-insensitive file-name fragment.
+    #[serde(default)]
+    pub file_name: Option<String>,
+    /// Maximum number of assets to return (1-100). Defaults to 20.
+    #[serde(default)]
+    pub limit: Option<u16>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ResolveProductMediaParams {
+    pub store_id: String,
+    pub product_id: String,
+    pub product_variant_id: String,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct BatchProductMediaTargetParams {
+    /// Target scope: product, option_value, or variant.
+    pub scope: String,
+    #[serde(default)]
+    pub option_id: Option<String>,
+    #[serde(default)]
+    pub option_value_id: Option<String>,
+    #[serde(default)]
+    pub product_variant_id: Option<String>,
+    /// Complete desired gallery for this target. An empty array clears it.
+    pub items: Vec<ProductMediaItemParams>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct BatchReplaceProductMediaParams {
+    pub store_id: String,
+    pub product_id: String,
+    /// Up to 100 distinct targets, applied atomically in one transaction.
+    pub targets: Vec<BatchProductMediaTargetParams>,
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
+    pub confirm: bool,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub struct AttachProductMediaParams {
     /// The Store UUID containing the product.
     pub store_id: String,
@@ -102,6 +170,9 @@ pub struct AttachProductMediaParams {
     /// Display order among the product's media (0-99).
     #[serde(default)]
     pub position: u16,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This changes catalog presentation.
     pub confirm: bool,
 }
@@ -125,6 +196,9 @@ pub struct AttachProductOptionValueMediaParams {
     /// Display order among this Option Value's media (0-99).
     #[serde(default)]
     pub position: u16,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This changes catalog presentation.
     pub confirm: bool,
 }
@@ -145,6 +219,9 @@ pub struct AttachProductVariantMediaParams {
     /// Display order among this Variant's media (0-99).
     #[serde(default)]
     pub position: u16,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This changes catalog presentation.
     pub confirm: bool,
 }
@@ -169,6 +246,9 @@ pub struct ReplaceProductMediaParams {
     pub product_id: String,
     /// The complete desired Product gallery. An empty array clears the gallery.
     pub items: Vec<ProductMediaItemParams>,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This atomically replaces the gallery.
     pub confirm: bool,
 }
@@ -185,6 +265,9 @@ pub struct ReplaceProductOptionValueMediaParams {
     pub option_value_id: String,
     /// The complete desired Option Value gallery. An empty array clears it.
     pub items: Vec<ProductMediaItemParams>,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This atomically replaces the gallery.
     pub confirm: bool,
 }
@@ -199,6 +282,9 @@ pub struct ReplaceProductVariantMediaParams {
     pub product_variant_id: String,
     /// The complete desired Variant gallery. An empty array clears it.
     pub items: Vec<ProductMediaItemParams>,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This atomically replaces the gallery.
     pub confirm: bool,
 }
@@ -234,6 +320,9 @@ pub struct AttachProductMetaMediaParams {
     /// Alt text stored with the metadata reference.
     #[serde(default)]
     pub alt_text: String,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This updates product metadata.
     pub confirm: bool,
 }
@@ -292,6 +381,9 @@ pub struct ArchiveProductMediaParams {
     pub product_id: String,
     /// The Media Asset's UUID.
     pub media_asset_id: String,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This removes the Product attachment.
     pub confirm: bool,
 }
@@ -308,6 +400,9 @@ pub struct ArchiveProductOptionValueMediaParams {
     pub option_value_id: String,
     /// The Media Asset's UUID.
     pub media_asset_id: String,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This removes the Option Value attachment.
     pub confirm: bool,
 }
@@ -322,6 +417,9 @@ pub struct ArchiveProductVariantMediaParams {
     pub product_variant_id: String,
     /// The Media Asset's UUID.
     pub media_asset_id: String,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This removes the Variant attachment.
     pub confirm: bool,
 }
@@ -348,12 +446,229 @@ pub struct ArchiveProductMetaMediaParams {
     pub media_asset_id: String,
     /// The same RFC 6901 JSON Pointer used when attaching the media.
     pub meta_path: String,
+    /// Reject the write if the Product changed since this revision.
+    #[serde(default)]
+    pub expected_revision: Option<i64>,
     /// Must be explicitly set to true. This removes the metadata reference.
     pub confirm: bool,
 }
 
 #[tool_router(router = media_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
+    #[tool(
+        description = "List reusable Media Assets in the selected Store for discovery before \
+                        attaching or replacing Product media. Filter by status, kind, exact SHA-256, \
+                        or file-name fragment. Paginated; use next_cursor for the next page."
+    )]
+    async fn list_media_assets(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ListMediaAssetsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.authenticate(&parts, &params.store_id).await {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        let status = match params.status.as_deref() {
+            Some(value) => match MediaAssetStatus::parse(value) {
+                Some(status) => Some(status),
+                None => {
+                    return Ok(invalid_media_parameter(
+                        "status",
+                        "unknown Media Asset status",
+                    ));
+                }
+            },
+            None => None,
+        };
+        let kind = match params.kind.as_deref() {
+            Some(value) => match MediaKind::parse(value) {
+                Some(kind) => Some(kind),
+                None => return Ok(invalid_media_parameter("kind", "must be image or video")),
+            },
+            None => None,
+        };
+        let after = match params.cursor.as_deref() {
+            Some(value) => match parse_media_asset_id(value) {
+                Ok(id) => Some(id),
+                Err(result) => return Ok(result),
+            },
+            None => None,
+        };
+        match self
+            .state
+            .media_administration
+            .list_assets(ListMediaAssetsInput {
+                store_id: actor.store_id(),
+                actor,
+                after,
+                limit: params.limit.unwrap_or(20),
+                status,
+                kind,
+                sha256_hex: params.sha256_hex,
+                file_name: params.file_name,
+            })
+            .await
+        {
+            Ok(page) => {
+                let items = page
+                    .items
+                    .into_iter()
+                    .map(media_asset_json)
+                    .collect::<Vec<_>>();
+                let next_cursor = page.has_more.then(|| {
+                    items
+                        .last()
+                        .and_then(|item| item["id"].as_str().map(String::from))
+                });
+                Ok(text_result(json!({
+                    "items": items,
+                    "has_more": page.has_more,
+                    "next_cursor": next_cursor.flatten(),
+                })))
+            }
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Restore an archived reusable Media Asset whose original object URL is \
+                        retained. This is useful after a link replacement automatically archived \
+                        an otherwise unused asset; restore it before attaching it again. Requires \
+                        confirm: true."
+    )]
+    async fn restore_media_asset(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<RestoreMediaAssetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.authenticate(&parts, &params.store_id).await {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let media_asset_id = match parse_media_asset_id(&params.media_asset_id) {
+            Ok(id) => id,
+            Err(result) => return Ok(result),
+        };
+        let store_id = actor.store_id();
+        match self
+            .state
+            .media_administration
+            .restore(RestoreMediaAssetInput {
+                actor,
+                store_id,
+                media_asset_id,
+                now: self.state.clock.now(),
+            })
+            .await
+        {
+            Ok(asset) => Ok(text_result(media_asset_json(asset))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Preview the effective storefront gallery for one Product Variant. Resolution \
+                        is exact Variant media first, then the union of matching Option Value media \
+                        with duplicate assets removed, then Product fallback media. Only active ready \
+                        assets are returned. This is read-only."
+    )]
+    async fn resolve_product_media(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ResolveProductMediaParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.authenticate(&parts, &params.store_id).await {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        let product_id = match parse_product_id(&params.product_id) {
+            Ok(id) => id,
+            Err(result) => return Ok(result),
+        };
+        let product_variant_id = match parse_product_variant_id(&params.product_variant_id) {
+            Ok(id) => id,
+            Err(result) => return Ok(result),
+        };
+        let store_id = actor.store_id();
+        let workspace = match self
+            .state
+            .product_workspace_queries
+            .get(actor, store_id, product_id)
+            .await
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return Ok(tool_error(error)),
+        };
+        match resolve_product_media(&workspace, product_variant_id) {
+            Ok(resolved) => Ok(text_result(json!({
+                "product_id": product_id.as_uuid(),
+                "product_variant_id": product_variant_id.as_uuid(),
+                "source": resolved.source.as_str(),
+                "matched_option_value_ids": resolved.matched_option_value_ids.into_iter().map(|id| id.as_uuid()).collect::<Vec<_>>(),
+                "items": resolved.items.into_iter().map(product_media_json).collect::<Vec<_>>(),
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
+    #[tool(
+        description = "Atomically replace the complete galleries of up to 100 distinct Product, \
+                        Option Value, and Variant targets in one transaction. The same ready Media \
+                        Asset may appear in any number of targets. Empty items clear a target. Use \
+                        expected_revision to prevent overwriting another catalog edit. Requires \
+                        confirm: true."
+    )]
+    async fn batch_replace_product_media(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<BatchReplaceProductMediaParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let actor = match self.authenticate(&parts, &params.store_id).await {
+            Ok(actor) => actor,
+            Err(result) => return Ok(result),
+        };
+        if let Err(result) = require_confirmation(params.confirm) {
+            return Ok(result);
+        }
+        let product_id = match parse_product_id(&params.product_id) {
+            Ok(id) => id,
+            Err(result) => return Ok(result),
+        };
+        let targets = match params
+            .targets
+            .iter()
+            .map(parse_batch_media_target)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(targets) => targets,
+            Err(result) => return Ok(result),
+        };
+        match self
+            .state
+            .media_administration
+            .batch_replace_product(BatchReplaceProductMediaInput {
+                store_id: actor.store_id(),
+                actor,
+                product_id,
+                targets,
+                expected_revision: params.expected_revision,
+                now: self.state.clock.now(),
+            })
+            .await
+        {
+            Ok(output) => Ok(text_result(json!({
+                "product_id": product_id.as_uuid(),
+                "revision": output.revision,
+                "items": output.items.into_iter().map(product_media_json).collect::<Vec<_>>(),
+            }))),
+            Err(error) => Ok(tool_error(error)),
+        }
+    }
+
     #[tool(
         description = "Prepare a reusable direct Media upload in the selected Store. Provide \
                         only file metadata and the exact lowercase SHA-256 digest; do not send \
@@ -580,10 +895,15 @@ impl ChaosMcp {
                 media_asset_id,
                 alt_text: params.alt_text,
                 position: params.position,
+                changed_at: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -635,10 +955,15 @@ impl ChaosMcp {
                 media_asset_id,
                 alt_text: params.alt_text,
                 position: params.position,
+                changed_at: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -684,10 +1009,15 @@ impl ChaosMcp {
                 media_asset_id,
                 alt_text: params.alt_text,
                 position: params.position,
+                changed_at: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -728,10 +1058,11 @@ impl ChaosMcp {
                 product_id,
                 items,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(items) => Ok(text_result(product_media_list_json(items))),
+            Ok(output) => Ok(text_result(product_media_replacement_json(output))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -781,10 +1112,11 @@ impl ChaosMcp {
                 option_value_id,
                 items,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(items) => Ok(text_result(product_media_list_json(items))),
+            Ok(output) => Ok(text_result(product_media_replacement_json(output))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -829,10 +1161,11 @@ impl ChaosMcp {
                 product_variant_id,
                 items,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(items) => Ok(text_result(product_media_list_json(items))),
+            Ok(output) => Ok(text_result(product_media_replacement_json(output))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -884,8 +1217,9 @@ impl ChaosMcp {
         description = "Attach a ready image Media Asset to a Product metadata JSON Pointer. Chaos \
                         sets the managed media_asset_id and alt_text fields at the path while \
                         preserving other presentation fields, and records the attachment \
-                        transactionally. Replacing an existing path archives its previous link. \
-                        Requires confirm: true."
+                        transactionally. Replacing an existing path archives its previous link. Use \
+                        expected_revision to avoid overwriting a newer Product edit. Requires \
+                        confirm: true."
     )]
     async fn attach_product_meta_media(
         &self,
@@ -919,10 +1253,14 @@ impl ChaosMcp {
                 meta_path: params.meta_path,
                 alt_text: params.alt_text,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_meta_media_json(item))),
+            Ok(output) => Ok(text_result(json!({
+                "revision": output.revision,
+                "item": product_meta_media_json(output.item),
+            }))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -961,8 +1299,8 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List all Media attachments for one Product Option Value, including pending \
-                        and archived links."
+        description = "List all Media attachments for one active Product Option Value, including \
+                        pending and archived links."
     )]
     async fn list_product_option_value_media(
         &self,
@@ -998,7 +1336,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List all Media attachments for one exact Product Variant, including \
+        description = "List all Media attachments for one active Product Variant, including \
                         pending and archived links."
     )]
     async fn list_product_variant_media(
@@ -1126,10 +1464,14 @@ impl ChaosMcp {
                 product_id,
                 media_asset_id,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -1221,10 +1563,14 @@ impl ChaosMcp {
                 option_value_id,
                 media_asset_id,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -1269,17 +1615,22 @@ impl ChaosMcp {
                 product_variant_id,
                 media_asset_id,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_media_json(item))),
+            Ok(output) => Ok(text_result(product_media_mutation_json(
+                output.item,
+                output.revision,
+            ))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 
     #[tool(
         description = "Archive a Product metadata Media attachment and remove its metadata \
-                        reference if it still points at the same asset. Requires confirm: true."
+                        reference if it still points at the same asset. Use expected_revision to \
+                        avoid overwriting a newer Product edit. Requires confirm: true."
     )]
     async fn archive_product_meta_media(
         &self,
@@ -1312,10 +1663,14 @@ impl ChaosMcp {
                 media_asset_id,
                 meta_path: params.meta_path,
                 now: self.state.clock.now(),
+                expected_revision: params.expected_revision,
             })
             .await
         {
-            Ok(item) => Ok(text_result(product_meta_media_json(item))),
+            Ok(output) => Ok(text_result(json!({
+                "revision": output.revision,
+                "item": product_meta_media_json(output.item),
+            }))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -1333,6 +1688,99 @@ impl ChaosMcp {
         )
         .await
     }
+}
+
+fn parse_batch_media_target(
+    target: &BatchProductMediaTargetParams,
+) -> Result<BatchReplaceProductMediaTarget, CallToolResult> {
+    let items = target
+        .items
+        .iter()
+        .map(parse_product_media_item)
+        .collect::<Result<Vec<_>, _>>()?;
+    let parsed = match target.scope.as_str() {
+        "product" => {
+            if target.option_id.is_some()
+                || target.option_value_id.is_some()
+                || target.product_variant_id.is_some()
+            {
+                return Err(invalid_media_parameter(
+                    "targets",
+                    "product targets must not include option or variant IDs",
+                ));
+            }
+            ProductMediaTarget::Product
+        }
+        "option_value" => {
+            let option_id = target
+                .option_id
+                .as_deref()
+                .ok_or_else(|| {
+                    invalid_media_parameter("targets", "option_value targets need option_id")
+                })
+                .and_then(parse_product_option_id)?;
+            let option_value_id = target
+                .option_value_id
+                .as_deref()
+                .ok_or_else(|| {
+                    invalid_media_parameter("targets", "option_value targets need option_value_id")
+                })
+                .and_then(parse_product_option_value_id)?;
+            if target.product_variant_id.is_some() {
+                return Err(invalid_media_parameter(
+                    "targets",
+                    "option_value targets must not include product_variant_id",
+                ));
+            }
+            ProductMediaTarget::OptionValue {
+                option_id,
+                option_value_id,
+            }
+        }
+        "variant" => {
+            let product_variant_id = target
+                .product_variant_id
+                .as_deref()
+                .ok_or_else(|| {
+                    invalid_media_parameter("targets", "variant targets need product_variant_id")
+                })
+                .and_then(parse_product_variant_id)?;
+            if target.option_id.is_some() || target.option_value_id.is_some() {
+                return Err(invalid_media_parameter(
+                    "targets",
+                    "variant targets must not include option IDs",
+                ));
+            }
+            ProductMediaTarget::Variant { product_variant_id }
+        }
+        _ => {
+            return Err(invalid_media_parameter(
+                "targets.scope",
+                "must be product, option_value, or variant",
+            ));
+        }
+    };
+    Ok(BatchReplaceProductMediaTarget {
+        target: parsed,
+        items,
+    })
+}
+
+fn parse_product_media_item(
+    item: &ProductMediaItemParams,
+) -> Result<ProductMediaItemInput, CallToolResult> {
+    Ok(ProductMediaItemInput {
+        media_asset_id: parse_media_asset_id(&item.media_asset_id)?,
+        alt_text: item.alt_text.clone(),
+        position: item.position,
+    })
+}
+
+fn invalid_media_parameter(field: &'static str, message: &'static str) -> CallToolResult {
+    CallToolResult::structured_error(json!({
+        "code": "invalid_params",
+        "message": format!("{field}: {message}"),
+    }))
 }
 
 fn media_asset_json(item: MediaAssetItem) -> serde_json::Value {
@@ -1383,6 +1831,21 @@ fn product_media_json(item: ProductMediaAssetItem) -> serde_json::Value {
     value["position"] = json!(position);
     value["archived_at"] = json!(archived_at.map(format_time));
     value
+}
+
+fn product_media_mutation_json(item: ProductMediaAssetItem, revision: i64) -> serde_json::Value {
+    let mut value = product_media_json(item);
+    value["revision"] = json!(revision);
+    value
+}
+
+fn product_media_replacement_json(
+    output: chaos_core::catalog::ProductMediaReplacementOutput,
+) -> serde_json::Value {
+    json!({
+        "revision": output.revision,
+        "items": output.items.into_iter().map(product_media_json).collect::<Vec<_>>(),
+    })
 }
 
 fn product_media_list_json(items: Vec<ProductMediaAssetItem>) -> serde_json::Value {

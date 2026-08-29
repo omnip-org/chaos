@@ -62,6 +62,23 @@ The MCP API exposes one clear CRUD surface for each Product scope:
 - `archive_*` removes one target link while preserving the shared physical
   object when another active link still references it.
 
+The catalog MCP workspace adds the surrounding editing workflow:
+
+- `get_product_workspace` returns one editable snapshot containing canonical
+  configuration, archived records, raw media rules, publications, and the
+  Product revision;
+- `list_media_assets` and `restore_media_asset` make reusable asset discovery
+  and recovery explicit;
+- `resolve_product_media` previews the effective gallery for one Variant;
+- `batch_replace_product_media` replaces up to 100 distinct Product, Option
+  Value, or Variant targets atomically.
+
+All Product media mutations accept an optional `expected_revision` and return
+the resulting revision. A stale writer receives a conflict
+instead of silently overwriting a newer catalog edit. The first-party JavaScript
+SDK already implements the same pure resolver, so this data-model change does
+not require a storefront SDK contract change.
+
 All mutating tools retain explicit `confirm: true`. Replacements validate the
 whole request before opening the database transaction and never leave a
 partially applied target state.

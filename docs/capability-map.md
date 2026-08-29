@@ -40,6 +40,20 @@ replacement, then passes the relevant services into HTTP and MCP delivery.
 
 ## Important cross-capability flows
 
+### Product configuration and media editing
+
+```text
+MCP catalog/products.rs + media.rs
+  -> chaos-core catalog/workspace.rs, configuration.rs, media.rs
+  -> catalog read/configuration/media repositories
+  -> commerce products, options, variants, and reusable media link tables
+```
+
+The Product revision is the optimistic-concurrency boundary for canonical
+content, configuration, publication, and Product gallery mutations. Storefront
+media remains raw rule data plus exact Variant -> Option Value -> Product
+fallback resolution; the JavaScript SDK mirrors that resolver.
+
 ### Product publication
 
 ```text

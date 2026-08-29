@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use chaos_domain::{
     catalog::{
-        MediaAssetId, MediaAssetStatus, MediaDescriptor, ProductId, ProductOptionId,
+        MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductOptionId,
         ProductOptionValueId, ProductVariantId, ReviewId,
     },
     store::StoreId,
@@ -54,6 +54,29 @@ pub struct ArchiveMediaAssetInput {
     pub now: OffsetDateTime,
 }
 
+pub struct RestoreMediaAssetInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub media_asset_id: MediaAssetId,
+    pub now: OffsetDateTime,
+}
+
+pub struct ListMediaAssetsInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub after: Option<MediaAssetId>,
+    pub limit: u16,
+    pub status: Option<MediaAssetStatus>,
+    pub kind: Option<MediaKind>,
+    pub sha256_hex: Option<String>,
+    pub file_name: Option<String>,
+}
+
+pub struct MediaAssetPage {
+    pub items: Vec<MediaAssetItem>,
+    pub has_more: bool,
+}
+
 pub struct AttachProductMediaInput {
     pub actor: AdminActor,
     pub store_id: StoreId,
@@ -61,6 +84,8 @@ pub struct AttachProductMediaInput {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct AttachProductOptionValueMediaInput {
@@ -72,6 +97,8 @@ pub struct AttachProductOptionValueMediaInput {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct AttachProductVariantMediaInput {
@@ -82,6 +109,8 @@ pub struct AttachProductVariantMediaInput {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ProductMediaItemInput {
@@ -96,6 +125,7 @@ pub struct ReplaceProductMediaInput {
     pub product_id: ProductId,
     pub items: Vec<ProductMediaItemInput>,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ReplaceProductOptionValueMediaInput {
@@ -106,6 +136,7 @@ pub struct ReplaceProductOptionValueMediaInput {
     pub option_value_id: ProductOptionValueId,
     pub items: Vec<ProductMediaItemInput>,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ReplaceProductVariantMediaInput {
@@ -115,6 +146,38 @@ pub struct ReplaceProductVariantMediaInput {
     pub product_variant_id: ProductVariantId,
     pub items: Vec<ProductMediaItemInput>,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProductMediaTarget {
+    Product,
+    OptionValue {
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+    },
+    Variant {
+        product_variant_id: ProductVariantId,
+    },
+}
+
+pub struct BatchReplaceProductMediaTarget {
+    pub target: ProductMediaTarget,
+    pub items: Vec<ProductMediaItemInput>,
+}
+
+pub struct BatchReplaceProductMediaInput {
+    pub actor: AdminActor,
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub targets: Vec<BatchReplaceProductMediaTarget>,
+    pub expected_revision: Option<i64>,
+    pub now: OffsetDateTime,
+}
+
+pub struct BatchReplaceProductMediaOutput {
+    pub revision: i64,
+    pub items: Vec<ProductMediaAssetItem>,
 }
 
 pub struct AttachReviewMediaInput {
@@ -135,6 +198,7 @@ pub struct AttachProductMetaMediaInput {
     pub meta_path: String,
     pub alt_text: String,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ArchiveProductMediaInput {
@@ -143,6 +207,7 @@ pub struct ArchiveProductMediaInput {
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ArchiveProductOptionValueMediaInput {
@@ -153,6 +218,7 @@ pub struct ArchiveProductOptionValueMediaInput {
     pub option_value_id: ProductOptionValueId,
     pub media_asset_id: MediaAssetId,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ArchiveProductVariantMediaInput {
@@ -162,6 +228,22 @@ pub struct ArchiveProductVariantMediaInput {
     pub product_variant_id: ProductVariantId,
     pub media_asset_id: MediaAssetId,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
+}
+
+pub struct ProductMediaMutationOutput {
+    pub revision: i64,
+    pub item: ProductMediaAssetItem,
+}
+
+pub struct ProductMediaReplacementOutput {
+    pub revision: i64,
+    pub items: Vec<ProductMediaAssetItem>,
+}
+
+pub struct ProductMetaMediaMutationOutput {
+    pub revision: i64,
+    pub item: ProductMetaMediaAssetItem,
 }
 
 pub struct ArchiveReviewMediaInput {
@@ -179,6 +261,7 @@ pub struct ArchiveProductMetaMediaInput {
     pub media_asset_id: MediaAssetId,
     pub meta_path: String,
     pub now: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct CreatedMediaAsset {
@@ -304,10 +387,65 @@ impl MediaAdministration {
             .await
     }
 
+    pub async fn restore(
+        &self,
+        input: RestoreMediaAssetInput,
+    ) -> Result<MediaAssetItem, ApplicationError> {
+        input.actor.require_human()?;
+        self.repository
+            .restore_asset(
+                input.actor,
+                MediaAssetMutation {
+                    store_id: input.store_id,
+                    media_asset_id: input.media_asset_id,
+                    changed_at: input.now,
+                },
+            )
+            .await
+    }
+
+    pub async fn list_assets(
+        &self,
+        input: ListMediaAssetsInput,
+    ) -> Result<MediaAssetPage, ApplicationError> {
+        let limit = input.limit.clamp(1, 100);
+        if let Some(digest) = &input.sha256_hex
+            && (digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        {
+            return Err(ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "sha256_hex",
+                    reason: "must be 64 lowercase hexadecimal characters".into(),
+                }],
+            });
+        }
+        let mut items = self
+            .repository
+            .list_assets(
+                input.actor,
+                input.store_id,
+                input.after,
+                limit + 1,
+                input.status,
+                input.kind,
+                input.sha256_hex.as_deref(),
+                input.file_name.as_deref(),
+            )
+            .await?;
+        let has_more = items.len() > usize::from(limit);
+        if has_more {
+            items.pop();
+        }
+        Ok(MediaAssetPage { items, has_more })
+    }
+
     pub async fn attach_product(
         &self,
         input: AttachProductMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_position(input.position)?;
         validate_alt_text(&input.alt_text)?;
@@ -320,15 +458,18 @@ impl MediaAdministration {
                     media_asset_id: input.media_asset_id,
                     alt_text: input.alt_text,
                     position: input.position,
+                    changed_at: input.changed_at,
                 },
+                input.expected_revision,
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn attach_product_option_value(
         &self,
         input: AttachProductOptionValueMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_position(input.position)?;
         validate_alt_text(&input.alt_text)?;
@@ -343,15 +484,18 @@ impl MediaAdministration {
                     media_asset_id: input.media_asset_id,
                     alt_text: input.alt_text,
                     position: input.position,
+                    changed_at: input.changed_at,
                 },
+                input.expected_revision,
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn attach_product_variant(
         &self,
         input: AttachProductVariantMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_position(input.position)?;
         validate_alt_text(&input.alt_text)?;
@@ -365,15 +509,18 @@ impl MediaAdministration {
                     media_asset_id: input.media_asset_id,
                     alt_text: input.alt_text,
                     position: input.position,
+                    changed_at: input.changed_at,
                 },
+                input.expected_revision,
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn replace_product(
         &self,
         input: ReplaceProductMediaInput,
-    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+    ) -> Result<ProductMediaReplacementOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_media_items(&input.items)?;
         self.repository
@@ -383,14 +530,16 @@ impl MediaAdministration {
                 input.product_id,
                 input.items,
                 input.now,
+                input.expected_revision,
             )
             .await
+            .map(|(revision, items)| ProductMediaReplacementOutput { revision, items })
     }
 
     pub async fn replace_product_option_value(
         &self,
         input: ReplaceProductOptionValueMediaInput,
-    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+    ) -> Result<ProductMediaReplacementOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_media_items(&input.items)?;
         self.repository
@@ -402,14 +551,16 @@ impl MediaAdministration {
                 input.option_value_id,
                 input.items,
                 input.now,
+                input.expected_revision,
             )
             .await
+            .map(|(revision, items)| ProductMediaReplacementOutput { revision, items })
     }
 
     pub async fn replace_product_variant(
         &self,
         input: ReplaceProductVariantMediaInput,
-    ) -> Result<Vec<ProductMediaAssetItem>, ApplicationError> {
+    ) -> Result<ProductMediaReplacementOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_media_items(&input.items)?;
         self.repository
@@ -420,8 +571,49 @@ impl MediaAdministration {
                 input.product_variant_id,
                 input.items,
                 input.now,
+                input.expected_revision,
             )
             .await
+            .map(|(revision, items)| ProductMediaReplacementOutput { revision, items })
+    }
+
+    pub async fn batch_replace_product(
+        &self,
+        input: BatchReplaceProductMediaInput,
+    ) -> Result<BatchReplaceProductMediaOutput, ApplicationError> {
+        input.actor.require_human()?;
+        if input.targets.is_empty() || input.targets.len() > 100 {
+            return Err(ApplicationError::Validation {
+                violations: vec![chaos_domain::FieldViolation {
+                    field: "targets",
+                    reason: "must contain between 1 and 100 targets".into(),
+                }],
+            });
+        }
+        let mut seen = HashSet::new();
+        for target in &input.targets {
+            if !seen.insert(target.target) {
+                return Err(ApplicationError::Validation {
+                    violations: vec![chaos_domain::FieldViolation {
+                        field: "targets",
+                        reason: "must not contain the same media target more than once".into(),
+                    }],
+                });
+            }
+            validate_media_items(&target.items)?;
+        }
+        let (revision, items) = self
+            .repository
+            .batch_replace_product(
+                input.actor,
+                input.store_id,
+                input.product_id,
+                input.targets,
+                input.expected_revision,
+                input.now,
+            )
+            .await?;
+        Ok(BatchReplaceProductMediaOutput { revision, items })
     }
 
     pub async fn attach_review(
@@ -448,7 +640,7 @@ impl MediaAdministration {
     pub async fn attach_product_meta(
         &self,
         input: AttachProductMetaMediaInput,
-    ) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMetaMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         validate_alt_text(&input.alt_text)?;
         crate::catalog::parse_json_pointer(&input.meta_path)?;
@@ -462,9 +654,11 @@ impl MediaAdministration {
                     meta_path: input.meta_path,
                     alt_text: input.alt_text,
                     changed_at: input.now,
+                    expected_revision: input.expected_revision,
                 },
             )
             .await
+            .map(|(revision, item)| ProductMetaMediaMutationOutput { revision, item })
     }
 
     pub async fn list_product(
@@ -538,7 +732,7 @@ impl MediaAdministration {
     pub async fn archive_product(
         &self,
         input: ArchiveProductMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         self.repository
             .archive_product(
@@ -548,15 +742,17 @@ impl MediaAdministration {
                     product_id: input.product_id,
                     media_asset_id: input.media_asset_id,
                     changed_at: input.now,
+                    expected_revision: input.expected_revision,
                 },
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn archive_product_option_value(
         &self,
         input: ArchiveProductOptionValueMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         self.repository
             .archive_product_option_value(
@@ -568,15 +764,17 @@ impl MediaAdministration {
                     option_value_id: input.option_value_id,
                     media_asset_id: input.media_asset_id,
                     changed_at: input.now,
+                    expected_revision: input.expected_revision,
                 },
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn archive_product_variant(
         &self,
         input: ArchiveProductVariantMediaInput,
-    ) -> Result<ProductMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         self.repository
             .archive_product_variant(
@@ -587,9 +785,11 @@ impl MediaAdministration {
                     product_variant_id: input.product_variant_id,
                     media_asset_id: input.media_asset_id,
                     changed_at: input.now,
+                    expected_revision: input.expected_revision,
                 },
             )
             .await
+            .map(|(revision, item)| ProductMediaMutationOutput { revision, item })
     }
 
     pub async fn archive_review(
@@ -613,7 +813,7 @@ impl MediaAdministration {
     pub async fn archive_product_meta(
         &self,
         input: ArchiveProductMetaMediaInput,
-    ) -> Result<ProductMetaMediaAssetItem, ApplicationError> {
+    ) -> Result<ProductMetaMediaMutationOutput, ApplicationError> {
         input.actor.require_human()?;
         crate::catalog::parse_json_pointer(&input.meta_path)?;
         self.repository
@@ -625,9 +825,11 @@ impl MediaAdministration {
                     media_asset_id: input.media_asset_id,
                     meta_path: input.meta_path,
                     changed_at: input.now,
+                    expected_revision: input.expected_revision,
                 },
             )
             .await
+            .map(|(revision, item)| ProductMetaMediaMutationOutput { revision, item })
     }
 
     async fn refresh_pending(

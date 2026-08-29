@@ -36,6 +36,14 @@ impl MediaKind {
             Self::Video => "video",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "image" => Some(Self::Image),
+            "video" => Some(Self::Video),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

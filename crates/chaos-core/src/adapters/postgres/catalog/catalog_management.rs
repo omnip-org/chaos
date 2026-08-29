@@ -57,12 +57,13 @@ impl PostgresCatalogManagementTransaction {
     pub(crate) async fn load_lifecycle(
         &mut self,
     ) -> Result<Option<ProductLifecycleSnapshot>, ApplicationError> {
-        let row = sqlx::query_as::<_, (String, i64)>(
+        let row = sqlx::query_as::<_, (String, i64, i64)>(
             "SELECT product.status::text, (\
                  SELECT count(*) FROM commerce.product_variants AS variant \
                  WHERE variant.store_id = product.store_id \
-                   AND variant.product_id = product.id\
-             ) \
+                   AND variant.product_id = product.id \
+                   AND variant.status = 'active'\
+             ), product.revision \
              FROM commerce.products AS product \
              WHERE product.store_id = $1 AND product.id = $2 \
              FOR UPDATE",
@@ -72,7 +73,7 @@ impl PostgresCatalogManagementTransaction {
         .fetch_optional(&mut *self.transaction)
         .await
         .map_err(database_error)?;
-        row.map(|(status, variant_count)| {
+        row.map(|(status, variant_count, revision)| {
             Ok(ProductLifecycleSnapshot {
                 status: ProductStatus::parse(&status).ok_or_else(|| {
                     ApplicationError::Unexpected(anyhow::anyhow!(
@@ -84,6 +85,7 @@ impl PostgresCatalogManagementTransaction {
                         "product variant count is out of range"
                     ))
                 })?,
+                revision,
             })
         })
         .transpose()
@@ -98,6 +100,7 @@ impl PostgresCatalogManagementTransaction {
         let result = sqlx::query(
             "UPDATE commerce.products \
              SET handle = $3, title = $4, description = $5, meta = $6::jsonb, \
+                 revision = revision + 1, \
                  updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
@@ -176,7 +179,21 @@ impl PostgresCatalogManagementTransaction {
         .execute(&mut *self.transaction)
         .await
         .map_err(map_catalog_write_error)?;
-        Ok(result.rows_affected() == 1)
+        if result.rows_affected() == 1 {
+            sqlx::query(
+                "UPDATE commerce.products \
+                 SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id=$1 AND id=$2",
+            )
+            .bind(self.store_id.as_uuid())
+            .bind(self.product_id.as_uuid())
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(database_error)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub(crate) async fn set_status(
@@ -185,7 +202,8 @@ impl PostgresCatalogManagementTransaction {
     ) -> Result<(), ApplicationError> {
         let result = sqlx::query(
             "UPDATE commerce.products \
-             SET status = $3::commerce.product_status, updated_at = CURRENT_TIMESTAMP \
+             SET status = $3::commerce.product_status, revision = revision + 1, \
+                 updated_at = CURRENT_TIMESTAMP \
              WHERE store_id = $1 AND id = $2",
         )
         .bind(self.store_id.as_uuid())
@@ -225,7 +243,7 @@ impl PostgresCatalogManagementTransaction {
         &mut self,
         sales_channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO commerce.product_publications \
              (store_id, product_id, sales_channel_id) \
              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -236,6 +254,18 @@ impl PostgresCatalogManagementTransaction {
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;
+        if inserted.rows_affected() == 1 {
+            sqlx::query(
+                "UPDATE commerce.products \
+                 SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id=$1 AND id=$2",
+            )
+            .bind(self.store_id.as_uuid())
+            .bind(self.product_id.as_uuid())
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(database_error)?;
+        }
         Ok(())
     }
 
@@ -243,7 +273,7 @@ impl PostgresCatalogManagementTransaction {
         &mut self,
         sales_channel_id: SalesChannelId,
     ) -> Result<(), ApplicationError> {
-        sqlx::query(
+        let deleted = sqlx::query(
             "DELETE FROM commerce.product_publications \
              WHERE store_id = $1 \
                AND product_id = $2 AND sales_channel_id = $3",
@@ -254,12 +284,90 @@ impl PostgresCatalogManagementTransaction {
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;
+        if deleted.rows_affected() == 1 {
+            sqlx::query(
+                "UPDATE commerce.products \
+                 SET revision = revision + 1, updated_at = CURRENT_TIMESTAMP \
+                 WHERE store_id=$1 AND id=$2",
+            )
+            .bind(self.store_id.as_uuid())
+            .bind(self.product_id.as_uuid())
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(database_error)?;
+        }
         Ok(())
+    }
+
+    pub(crate) async fn load_product_content(
+        &mut self,
+    ) -> Result<Option<ProductContentSnapshot>, ApplicationError> {
+        sqlx::query_as::<_, ProductContentSnapshot>(
+            "SELECT handle::text AS handle, title, description, meta, revision \
+             FROM commerce.products \
+             WHERE store_id=$1 AND id=$2 \
+             FOR UPDATE",
+        )
+        .bind(self.store_id.as_uuid())
+        .bind(self.product_id.as_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(database_error)
+    }
+
+    pub(crate) async fn load_variant_content(
+        &mut self,
+        variant_id: ProductVariantId,
+    ) -> Result<Option<ProductVariantContentSnapshot>, ApplicationError> {
+        sqlx::query_as::<_, ProductVariantContentSnapshot>(
+            "SELECT title, sku::text AS sku, track_inventory, meta, \
+                    product.revision \
+             FROM commerce.product_variants AS variant \
+             INNER JOIN commerce.products AS product \
+              ON product.store_id=variant.store_id AND product.id=variant.product_id \
+             WHERE variant.store_id=$1 AND variant.product_id=$2 AND variant.id=$3 \
+             FOR UPDATE OF variant, product",
+        )
+        .bind(self.store_id.as_uuid())
+        .bind(self.product_id.as_uuid())
+        .bind(variant_id.as_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(database_error)
+    }
+
+    pub(crate) async fn product_revision(&mut self) -> Result<i64, ApplicationError> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT revision FROM commerce.products WHERE store_id=$1 AND id=$2",
+        )
+        .bind(self.store_id.as_uuid())
+        .bind(self.product_id.as_uuid())
+        .fetch_one(&mut *self.transaction)
+        .await
+        .map_err(database_error)
     }
 
     pub(crate) async fn commit(self) -> Result<(), ApplicationError> {
         self.transaction.commit().await.map_err(database_error)
     }
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct ProductContentSnapshot {
+    pub(crate) handle: String,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) meta: Option<Value>,
+    pub(crate) revision: i64,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct ProductVariantContentSnapshot {
+    pub(crate) title: String,
+    pub(crate) sku: Option<String>,
+    pub(crate) track_inventory: bool,
+    pub(crate) meta: Option<Value>,
+    pub(crate) revision: i64,
 }
 
 fn map_catalog_write_error(error: sqlx::Error) -> ApplicationError {
@@ -422,6 +530,7 @@ mod tests {
                     actor: AdminActor::Store(owner),
                     store_id,
                     product_id: empty_product_id,
+                    expected_revision: None,
                 })
                 .await,
             Err(ApplicationError::Validation { .. })
@@ -433,6 +542,7 @@ mod tests {
                     store_id,
                     product_id,
                     sales_channel_id: channel_id,
+                    expected_revision: None,
                 })
                 .await,
             Err(ApplicationError::Validation { .. })
@@ -447,6 +557,7 @@ mod tests {
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
                 metadata: None,
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -459,10 +570,12 @@ mod tests {
                 title: "Updated Product".into(),
                 description: "Updated description".into(),
                 metadata: None,
+                expected_revision: None,
             })
             .await
             .unwrap();
-        assert_eq!(updated, replay);
+        assert_eq!(updated.product_id, replay.product_id);
+        assert!(replay.revision > updated.revision);
 
         let updated_variant = service
             .update_variant(UpdateProductVariantInput {
@@ -474,6 +587,7 @@ mod tests {
                 sku: Some("UPDATED-SKU".into()),
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -487,10 +601,12 @@ mod tests {
                 sku: Some("UPDATED-SKU".into()),
                 track_inventory: false,
                 metadata: Some(serde_json::json!({ "source": "test" })),
+                expected_revision: None,
             })
             .await
             .unwrap();
-        assert_eq!(updated_variant, replayed_variant);
+        assert_eq!(updated_variant.product_id, replayed_variant.product_id);
+        assert!(replayed_variant.revision > updated_variant.revision);
         let stored_variant: (String, String, bool, serde_json::Value) = sqlx::query_as(
             "SELECT title, sku::text, track_inventory, meta \
              FROM commerce.product_variants WHERE id = $1",
@@ -514,6 +630,7 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -524,6 +641,7 @@ mod tests {
                     store_id,
                     product_id,
                     sales_channel_id: other_channel_id,
+                    expected_revision: None,
                 })
                 .await,
             Err(ApplicationError::NotFound {
@@ -537,6 +655,7 @@ mod tests {
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -545,6 +664,7 @@ mod tests {
                 actor: AdminActor::Store(owner),
                 store_id,
                 product_id,
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -578,6 +698,7 @@ mod tests {
                 store_id,
                 product_id,
                 sales_channel_id: channel_id,
+                expected_revision: None,
             })
             .await
             .unwrap();
@@ -683,6 +804,7 @@ mod tests {
                     actor: publishable_machine,
                     store_id,
                     product_id,
+                    expected_revision: None,
                 })
                 .await,
             Err(ApplicationError::Forbidden)

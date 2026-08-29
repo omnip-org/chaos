@@ -14,6 +14,7 @@ use crate::ApplicationError;
 ///
 /// This type deliberately has no business target. Product galleries, review images,
 /// and metadata content all point at the same verified object record.
+#[derive(Clone)]
 pub struct MediaAssetItem {
     pub id: MediaAssetId,
     pub store_id: StoreId,
@@ -28,6 +29,7 @@ pub struct MediaAssetItem {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Clone)]
 pub struct ProductMediaAssetItem {
     pub asset: MediaAssetItem,
     pub product_id: ProductId,
@@ -107,6 +109,7 @@ pub struct ProductMediaAssetLinkRecord {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
 }
 
 pub struct ProductOptionValueMediaAssetLinkRecord {
@@ -117,6 +120,7 @@ pub struct ProductOptionValueMediaAssetLinkRecord {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
 }
 
 pub struct ProductVariantMediaAssetLinkRecord {
@@ -126,6 +130,7 @@ pub struct ProductVariantMediaAssetLinkRecord {
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
 }
 
 pub struct ReviewMediaAssetLinkRecord {
@@ -143,6 +148,7 @@ pub struct ProductMetaMediaAssetLinkRecord {
     pub meta_path: String,
     pub alt_text: String,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ProductMediaAssetMutation {
@@ -150,6 +156,7 @@ pub struct ProductMediaAssetMutation {
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ProductOptionValueMediaAssetMutation {
@@ -159,6 +166,7 @@ pub struct ProductOptionValueMediaAssetMutation {
     pub option_value_id: ProductOptionValueId,
     pub media_asset_id: MediaAssetId,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ProductVariantMediaAssetMutation {
@@ -167,6 +175,7 @@ pub struct ProductVariantMediaAssetMutation {
     pub product_variant_id: ProductVariantId,
     pub media_asset_id: MediaAssetId,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ReviewMediaAssetMutation {
@@ -182,6 +191,7 @@ pub struct ProductMetaMediaAssetMutation {
     pub media_asset_id: MediaAssetId,
     pub meta_path: String,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 #[async_trait]

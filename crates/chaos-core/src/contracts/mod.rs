@@ -32,7 +32,8 @@ pub use analytics::{
 pub use catalog_management::ProductLifecycleSnapshot;
 pub use catalog_read::{
     CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
-    CatalogProductVariant, CatalogSelectedOption,
+    CatalogProductPublication, CatalogProductVariant, CatalogProductWorkspace,
+    CatalogSelectedOption,
 };
 pub use clock::Clock;
 pub use collection::{

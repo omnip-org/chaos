@@ -150,6 +150,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT id, name::text, position \
              FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = $2 \
+               AND archived_at IS NULL \
              ORDER BY position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -161,6 +162,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT id, option_id, value::text, position \
              FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = $2 \
+               AND archived_at IS NULL \
              ORDER BY option_id ASC, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -239,6 +241,13 @@ impl PostgresStorefrontCatalogRepository {
              FROM commerce.product_option_value_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             INNER JOIN commerce.product_options AS option \
+                ON option.store_id=link.store_id AND option.product_id=link.product_id \
+               AND option.id=link.option_id AND option.archived_at IS NULL \
+             INNER JOIN commerce.product_option_values AS option_value \
+                ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
+               AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
+               AND option_value.archived_at IS NULL \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
              UNION ALL \
@@ -247,6 +256,9 @@ impl PostgresStorefrontCatalogRepository {
              FROM commerce.product_variant_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id=link.store_id AND media.id=link.media_asset_id \
+             INNER JOIN commerce.product_variants AS variant \
+                ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
+               AND variant.id=link.product_variant_id AND variant.status='active' \
              WHERE link.store_id=$1 AND link.product_id=$2 \
                AND link.archived_at IS NULL AND media.status='ready' \
              ORDER BY 9, 2, 1",
@@ -521,6 +533,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT product_id, id, name::text, position \
              FROM commerce.product_options \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+               AND archived_at IS NULL \
              ORDER BY product_id, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -532,6 +545,7 @@ impl PostgresStorefrontCatalogRepository {
             "SELECT product_id, id, option_id, value::text, position \
              FROM commerce.product_option_values \
              WHERE store_id = $1 AND product_id = ANY($2::uuid[]) \
+               AND archived_at IS NULL \
              ORDER BY product_id, option_id ASC, position ASC",
         )
         .bind(actor.store_id.as_uuid())
@@ -625,6 +639,13 @@ impl PostgresStorefrontCatalogRepository {
              FROM commerce.product_option_value_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             INNER JOIN commerce.product_options AS option \
+                ON option.store_id=link.store_id AND option.product_id=link.product_id \
+               AND option.id=link.option_id AND option.archived_at IS NULL \
+             INNER JOIN commerce.product_option_values AS option_value \
+                ON option_value.store_id=link.store_id AND option_value.product_id=link.product_id \
+               AND option_value.option_id=link.option_id AND option_value.id=link.option_value_id \
+               AND option_value.archived_at IS NULL \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
                AND link.archived_at IS NULL AND media.status = 'ready' \
              UNION ALL \
@@ -633,6 +654,9 @@ impl PostgresStorefrontCatalogRepository {
              FROM commerce.product_variant_media_assets AS link \
              INNER JOIN commerce.media_assets AS media \
                 ON media.store_id = link.store_id AND media.id = link.media_asset_id \
+             INNER JOIN commerce.product_variants AS variant \
+                ON variant.store_id=link.store_id AND variant.product_id=link.product_id \
+               AND variant.id=link.product_variant_id AND variant.status='active' \
              WHERE link.store_id = $1 AND link.product_id = ANY($2::uuid[]) \
                AND link.archived_at IS NULL AND media.status = 'ready' \
              ORDER BY 1, 10, 3, 2",
@@ -1060,8 +1084,15 @@ async fn variant_selected_options(
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
+         INNER JOIN commerce.product_option_values AS value \
+           ON value.store_id = selection.store_id \
+          AND value.product_id = selection.product_id \
+          AND value.option_id = selection.option_id \
+          AND value.id = selection.option_value_id \
          WHERE selection.store_id = $1 \
            AND selection.product_id = $2 \
+           AND option.archived_at IS NULL \
+           AND value.archived_at IS NULL \
          ORDER BY selection.variant_id ASC, option.position ASC",
     )
     .bind(actor.store_id.as_uuid())
@@ -1097,8 +1128,15 @@ async fn variant_selected_options_for_products(
            ON option.store_id = selection.store_id \
           AND option.product_id = selection.product_id \
           AND option.id = selection.option_id \
+         INNER JOIN commerce.product_option_values AS value \
+           ON value.store_id = selection.store_id \
+          AND value.product_id = selection.product_id \
+          AND value.option_id = selection.option_id \
+          AND value.id = selection.option_value_id \
          WHERE selection.store_id = $1 \
            AND selection.product_id = ANY($2::uuid[]) \
+           AND option.archived_at IS NULL \
+           AND value.archived_at IS NULL \
          ORDER BY selection.product_id ASC, selection.variant_id ASC, option.position ASC",
     )
     .bind(actor.store_id.as_uuid())

@@ -113,6 +113,10 @@ mod tests {
         assert!(aggregate_router.has_route("complete_media_upload"));
         assert!(aggregate_router.has_route("get_media_asset"));
         assert!(aggregate_router.has_route("archive_media_asset"));
+        assert!(aggregate_router.has_route("list_media_assets"));
+        assert!(aggregate_router.has_route("restore_media_asset"));
+        assert!(aggregate_router.has_route("resolve_product_media"));
+        assert!(aggregate_router.has_route("batch_replace_product_media"));
         assert!(aggregate_router.has_route("attach_product_media"));
         assert!(aggregate_router.has_route("attach_product_option_value_media"));
         assert!(aggregate_router.has_route("attach_product_variant_media"));
@@ -129,6 +133,11 @@ mod tests {
         assert!(aggregate_router.has_route("archive_product_option_value_media"));
         assert!(aggregate_router.has_route("archive_product_variant_media"));
         assert!(aggregate_router.has_route("archive_product_meta_media"));
+        assert!(aggregate_router.has_route("get_product_workspace"));
+        assert!(aggregate_router.has_route("preview_product_configuration"));
+        assert!(aggregate_router.has_route("sync_product_configuration"));
+        assert!(aggregate_router.has_route("patch_product"));
+        assert!(aggregate_router.has_route("patch_product_variant"));
         assert!(aggregate_router.has_route("list_email_accounts"));
         assert!(aggregate_router.has_route("get_email_account"));
         assert!(aggregate_router.has_route("create_email_account"));
