@@ -236,7 +236,7 @@ impl PostgresReviewRepository {
                 message: "all review images must finish uploading before approval",
             });
         }
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE commerce.reviews \
              SET status=$3::commerce.review_status, \
                  verified_buyer=$4, \
@@ -253,6 +253,12 @@ impl PostgresReviewRepository {
         .await
         .map_err(database_error)?
         .rows_affected();
+        if updated != 1 {
+            return Err(ApplicationError::Conflict {
+                code: "review_already_moderated",
+                message: "the review has already been approved or rejected",
+            });
+        }
         tx.commit().await.map_err(database_error)?;
         Ok(review_id)
     }

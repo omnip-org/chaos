@@ -161,50 +161,12 @@ impl Refund {
     pub fn provider_reference(&self) -> Option<&str> {
         self.provider_reference.as_deref()
     }
-
-    pub fn succeed(&mut self, provider_reference: String) -> Result<bool, DomainError> {
-        self.finish(RefundStatus::Succeeded, provider_reference)
-    }
-
-    pub fn fail(&mut self, provider_reference: String) -> Result<bool, DomainError> {
-        self.finish(RefundStatus::Failed, provider_reference)
-    }
-
-    fn finish(
-        &mut self,
-        target: RefundStatus,
-        provider_reference: String,
-    ) -> Result<bool, DomainError> {
-        if self.status == target && self.provider_reference.as_deref() == Some(&provider_reference)
-        {
-            return Ok(false);
-        }
-        if self.status != RefundStatus::Pending {
-            return Err(invalid_transition(self.status.as_str(), target.as_str()));
-        }
-        if provider_reference.trim().is_empty() || provider_reference.chars().count() > 255 {
-            return Err(validation(
-                "provider_reference",
-                "must contain 1-255 characters",
-            ));
-        }
-        self.provider_reference = Some(provider_reference);
-        self.status = target;
-        Ok(true)
-    }
 }
 
 fn validation(field: &'static str, reason: &'static str) -> DomainError {
     DomainError::Validation(vec![FieldViolation {
         field,
         reason: reason.into(),
-    }])
-}
-
-fn invalid_transition(from: &str, to: &str) -> DomainError {
-    DomainError::Validation(vec![FieldViolation {
-        field: "status",
-        reason: format!("cannot transition from {from} to {to}"),
     }])
 }
 
@@ -240,7 +202,7 @@ mod tests {
             )
             .is_err()
         );
-        let mut refund = Refund::create(
+        let refund = Refund::create(
             order_id,
             PaymentAttemptStatus::Captured,
             captured,
@@ -248,8 +210,6 @@ mod tests {
             1_000,
         )
         .unwrap();
-        assert!(refund.succeed("refund".into()).unwrap());
-        assert!(!refund.succeed("refund".into()).unwrap());
-        assert!(refund.fail("other".into()).is_err());
+        assert_eq!(refund.status(), RefundStatus::Pending);
     }
 }

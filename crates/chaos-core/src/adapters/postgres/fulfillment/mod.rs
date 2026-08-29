@@ -177,42 +177,66 @@ impl PostgresFulfillmentRepository {
     ) -> Result<FulfillmentDetail, ApplicationError> {
         let mut transaction = self.begin_admin(&actor).await?;
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
-        fulfillment.mark_shipped(tracking_number, tracking_url)?;
-        sqlx::query(
-            "UPDATE commerce.fulfillments \
-                SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
-                    shipped_at = $5, updated_at = $5 \
-              WHERE store_id = $1 AND id = $2 AND status = 'awaiting_pickup'",
-        )
-        .bind(store_id.as_uuid())
-        .bind(id.as_uuid())
-        .bind(fulfillment.tracking_number())
-        .bind(fulfillment.tracking_url())
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        let transitioned = fulfillment.mark_shipped(tracking_number, tracking_url)?;
+        let update_result = if transitioned {
+            sqlx::query(
+                "UPDATE commerce.fulfillments \
+                    SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
+                        shipped_at = $5, updated_at = $5 \
+                  WHERE store_id = $1 AND id = $2 AND status = 'awaiting_pickup'",
+            )
+            .bind(store_id.as_uuid())
+            .bind(id.as_uuid())
+            .bind(fulfillment.tracking_number())
+            .bind(fulfillment.tracking_url())
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        } else {
+            // Already `shipped`: the status transition is a no-op, but the caller may still
+            // be correcting the tracking number/url, so persist those fields directly rather
+            // than silently discarding the update (status/shipped_at are left untouched).
+            sqlx::query(
+                "UPDATE commerce.fulfillments \
+                    SET tracking_number = $3, tracking_url = $4, updated_at = $5 \
+                  WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
+            )
+            .bind(store_id.as_uuid())
+            .bind(id.as_uuid())
+            .bind(fulfillment.tracking_number())
+            .bind(fulfillment.tracking_url())
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?
+        };
+        if update_result.rows_affected() != 1 {
+            return Err(fulfillment_not_found(id));
+        }
         let order_id = fulfillment.order_id();
-        sqlx::query(
-            "INSERT INTO integration.event_outbox \
-             (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
-             VALUES ($1, $2, 'fulfillment', $3, 'fulfillment.shipped', $4)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(store_id.as_uuid())
-        .bind(id.as_uuid())
-        .bind(serde_json::json!({
-            "aggregate_id": id.as_uuid(),
-            "fulfillment_id": id.as_uuid(),
-            "order_id": order_id.as_uuid(),
-            "shipping_provider_account_id": fulfillment.shipping_provider_account_id().as_uuid(),
-            "tracking_number": fulfillment.tracking_number(),
-            "tracking_url": fulfillment.tracking_url(),
-            "operation": "shipped",
-        }))
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
+        if transitioned {
+            sqlx::query(
+                "INSERT INTO integration.event_outbox \
+                 (id, store_id, aggregate_type, aggregate_id, internal_event_type, payload) \
+                 VALUES ($1, $2, 'fulfillment', $3, 'fulfillment.shipped', $4)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(store_id.as_uuid())
+            .bind(id.as_uuid())
+            .bind(serde_json::json!({
+                "aggregate_id": id.as_uuid(),
+                "fulfillment_id": id.as_uuid(),
+                "order_id": order_id.as_uuid(),
+                "shipping_provider_account_id": fulfillment.shipping_provider_account_id().as_uuid(),
+                "tracking_number": fulfillment.tracking_number(),
+                "tracking_url": fulfillment.tracking_url(),
+                "operation": "shipped",
+            }))
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
             .await?
