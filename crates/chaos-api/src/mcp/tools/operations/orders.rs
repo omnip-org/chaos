@@ -1,5 +1,8 @@
-use chaos_core::{contracts::OrderListFilter, sales::ChangeOrderStatusInput};
-use chaos_domain::sales::{OrderId, OrderStatus};
+use chaos_core::{
+    contracts::{OrderDetail, OrderListFilter},
+    sales::ChangeOrderStatusInput,
+};
+use chaos_domain::sales::{OrderContact, OrderId, OrderStatus, PostalAddress};
 use rmcp::{
     ErrorData,
     handler::server::{common::Extension, wrapper::Parameters},
@@ -63,8 +66,11 @@ pub struct ChangeOrderStatusParams {
 
 #[tool_router(router = orders_tool_router, vis = "pub(in crate::mcp::tools)")]
 impl ChaosMcp {
-    #[tool(description = "List orders in the selected Store. Paginated; use the \
-                        returned next_cursor for more pages.")]
+    #[tool(
+        description = "List order summaries in the selected Store. Paginated; use the \
+                        returned next_cursor for more pages. Call get_order for full customer, \
+                        address, line, payment, refund, and fulfillment details."
+    )]
     async fn list_orders(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -114,7 +120,7 @@ impl ChaosMcp {
                 let items = page
                     .items
                     .into_iter()
-                    .map(order_summary)
+                    .map(order_list_item)
                     .collect::<Vec<_>>();
                 let next_cursor = page
                     .has_more
@@ -134,7 +140,11 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Get a single order's summary in the selected Store.")]
+    #[tool(
+        description = "Get a single order's full detail in the selected Store, including \
+                        customer contact data, billing and shipping addresses, line items, \
+                        payment attempts, refunds, and fulfillments."
+    )]
     async fn get_order(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -163,7 +173,7 @@ impl ChaosMcp {
             .get_order(actor, store_id, order_id)
             .await
         {
-            Ok(detail) => Ok(text_result(order_summary(detail))),
+            Ok(detail) => Ok(text_result(order_detail(detail))),
             Err(error) => Ok(tool_error(error)),
         }
     }
@@ -235,31 +245,82 @@ impl ChaosMcp {
             })
             .await
         {
-            Ok(detail) => Ok(text_result(order_summary(detail))),
+            Ok(detail) => Ok(text_result(order_detail(detail))),
             Err(error) => Ok(tool_error(error)),
         }
     }
 }
 
-fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Value {
+fn order_list_item(detail: OrderDetail) -> serde_json::Value {
     json!({
         "id": detail.id.as_uuid(),
         "order_number": detail.order_number.as_str(),
+        "shopper_id": detail.shopper_id.as_uuid(),
         "status": detail.status.as_str(),
         "payment_status": detail.payment_status.as_str(),
         "shipping_status": detail.shipping_status.as_str(),
-        "payment_provider": detail.payment_provider.map(|value| value.as_str()),
-        "payment_provider_reference_id": detail.payment_provider_reference_id,
-        "shipping_provider": detail.shipping_provider.map(|value| value.as_str()),
-        "shipping_provider_reference_id": detail.shipping_provider_reference_id,
         "currency": detail.currency.as_str(),
-        "subtotal_amount_minor": detail.subtotal_amount_minor,
-        "discount_amount_minor": detail.discount_amount_minor,
-        "tax_amount_minor": detail.tax_amount_minor,
-        "shipping_amount_minor": detail.shipping_amount_minor,
         "total_amount_minor": detail.total_amount_minor,
         "refunded_amount_minor": detail.refunded_amount_minor,
-        "lines": detail.lines.into_iter().map(|line| json!({
+        "contact_email": detail.identity.contact().email(),
+        "line_count": detail.lines.len(),
+        "created_at": format_time(detail.created_at),
+        "updated_at": format_time(detail.updated_at),
+    })
+}
+
+fn order_detail(detail: OrderDetail) -> serde_json::Value {
+    let OrderDetail {
+        id,
+        order_number,
+        shopper_id,
+        price_list_id,
+        currency,
+        status,
+        payment_status,
+        shipping_status,
+        payment_provider,
+        payment_provider_reference_id,
+        shipping_provider,
+        shipping_provider_reference_id,
+        identity,
+        subtotal_amount_minor,
+        discount_amount_minor,
+        tax_amount_minor,
+        shipping_amount_minor,
+        total_amount_minor,
+        refunded_amount_minor,
+        lines,
+        payment_attempt,
+        refunds,
+        fulfillments,
+        created_at,
+        updated_at,
+    } = detail;
+
+    json!({
+        "id": id.as_uuid(),
+        "order_number": order_number.as_str(),
+        "shopper_id": shopper_id.as_uuid(),
+        "price_list_id": price_list_id.as_uuid(),
+        "status": status.as_str(),
+        "payment_status": payment_status.as_str(),
+        "shipping_status": shipping_status.as_str(),
+        "payment_provider": payment_provider.map(|value| value.as_str()),
+        "payment_provider_reference_id": payment_provider_reference_id,
+        "shipping_provider": shipping_provider.map(|value| value.as_str()),
+        "shipping_provider_reference_id": shipping_provider_reference_id,
+        "contact": order_contact_data(identity.contact()),
+        "billing_address": identity.billing_address().map(postal_address_data),
+        "shipping_address": identity.shipping_address().map(postal_address_data),
+        "currency": currency.as_str(),
+        "subtotal_amount_minor": subtotal_amount_minor,
+        "discount_amount_minor": discount_amount_minor,
+        "tax_amount_minor": tax_amount_minor,
+        "shipping_amount_minor": shipping_amount_minor,
+        "total_amount_minor": total_amount_minor,
+        "refunded_amount_minor": refunded_amount_minor,
+        "lines": lines.into_iter().map(|line| json!({
             "product_id": line.product_id.as_uuid(),
             "product_variant_id": line.product_variant_id.as_uuid(),
             "product_title": line.product_title,
@@ -270,7 +331,7 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
             "unit_price_amount_minor": line.unit_price_amount_minor,
             "subtotal_amount_minor": line.subtotal_amount_minor,
         })).collect::<Vec<_>>(),
-        "payment_attempt": detail.payment_attempt.map(|attempt| json!({
+        "payment_attempt": payment_attempt.map(|attempt| json!({
             "status": attempt.status.as_str(),
             "amount_minor": attempt.amount_minor,
             "provider_reference_id": attempt.provider_reference_id,
@@ -278,7 +339,7 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
             "created_at": format_time(attempt.created_at),
             "updated_at": format_time(attempt.updated_at),
         })),
-        "refunds": detail.refunds.into_iter().map(|refund| json!({
+        "refunds": refunds.into_iter().map(|refund| json!({
             "id": refund.id.as_uuid(),
             "status": refund.status.as_str(),
             "amount_minor": refund.amount_minor,
@@ -287,7 +348,7 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
             "created_at": format_time(refund.created_at),
             "updated_at": format_time(refund.updated_at),
         })).collect::<Vec<_>>(),
-        "fulfillments": detail.fulfillments.into_iter().map(|fulfillment| json!({
+        "fulfillments": fulfillments.into_iter().map(|fulfillment| json!({
             "id": fulfillment.id.as_uuid(),
             "shipping_provider_account_id": fulfillment.shipping_provider_account_id.as_uuid(),
             "status": fulfillment.status.as_str(),
@@ -299,8 +360,28 @@ fn order_summary(detail: chaos_core::contracts::OrderDetail) -> serde_json::Valu
             "created_at": format_time(fulfillment.created_at),
             "updated_at": format_time(fulfillment.updated_at),
         })).collect::<Vec<_>>(),
-        "created_at": format_time(detail.created_at),
-        "updated_at": format_time(detail.updated_at),
+        "created_at": format_time(created_at),
+        "updated_at": format_time(updated_at),
+    })
+}
+
+fn order_contact_data(contact: &OrderContact) -> serde_json::Value {
+    json!({
+        "email": contact.email(),
+        "phone": contact.phone(),
+    })
+}
+
+fn postal_address_data(address: &PostalAddress) -> serde_json::Value {
+    json!({
+        "full_name": address.full_name(),
+        "company": address.company(),
+        "address_line1": address.address_line1(),
+        "address_line2": address.address_line2(),
+        "locality": address.locality(),
+        "administrative_area": address.administrative_area(),
+        "postal_code": address.postal_code(),
+        "country_code": address.country_code(),
     })
 }
 
@@ -319,4 +400,121 @@ fn parse_uuid_field(value: &str, field: &'static str) -> Result<uuid::Uuid, Call
 
 fn format_time(value: time::OffsetDateTime) -> String {
     value.format(&Rfc3339).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{order_detail, order_list_item};
+    use chaos_core::contracts::OrderDetail;
+    use chaos_domain::{
+        CurrencyCode,
+        pricing::PriceListId,
+        sales::{
+            OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus,
+            OrderShippingStatus, OrderStatus, PostalAddress, ShopperId,
+        },
+    };
+    use serde_json::json;
+    use time::OffsetDateTime;
+
+    fn sample_order() -> (OrderDetail, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
+        let order_id = OrderId::new();
+        let shopper_id = ShopperId::new();
+        let price_list_id = PriceListId::new();
+        let contact =
+            OrderContact::new(Some("buyer@example.com"), Some("+14155552671".to_owned())).unwrap();
+        let billing_address = PostalAddress::new(
+            "Buyer",
+            Some("Chaos Inc".to_owned()),
+            "1 Market Street",
+            Some("Suite 100".to_owned()),
+            "San Francisco",
+            Some("CA".to_owned()),
+            Some("94105".to_owned()),
+            "US",
+        )
+        .unwrap();
+        let shipping_address = PostalAddress::new(
+            "Buyer",
+            None,
+            "2 Market Street",
+            None,
+            "San Francisco",
+            Some("CA".to_owned()),
+            Some("94105".to_owned()),
+            "US",
+        )
+        .unwrap();
+
+        (
+            OrderDetail {
+                id: order_id,
+                order_number: OrderNumber::parse("W-20260820-7K4M9Q2D").unwrap(),
+                shopper_id,
+                price_list_id,
+                currency: CurrencyCode::USD,
+                status: OrderStatus::Pending,
+                payment_status: OrderPaymentStatus::Pending,
+                shipping_status: OrderShippingStatus::Pending,
+                payment_provider: None,
+                payment_provider_reference_id: None,
+                shipping_provider: None,
+                shipping_provider_reference_id: None,
+                identity: OrderIdentity::new(
+                    contact,
+                    Some(billing_address),
+                    Some(shipping_address),
+                ),
+                subtotal_amount_minor: 1_000,
+                discount_amount_minor: 100,
+                tax_amount_minor: 90,
+                shipping_amount_minor: 50,
+                total_amount_minor: 1_040,
+                refunded_amount_minor: 0,
+                lines: Vec::new(),
+                payment_attempt: None,
+                refunds: Vec::new(),
+                fulfillments: Vec::new(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                updated_at: OffsetDateTime::UNIX_EPOCH,
+            },
+            order_id.as_uuid(),
+            shopper_id.as_uuid(),
+            price_list_id.as_uuid(),
+        )
+    }
+
+    #[test]
+    fn full_order_detail_includes_customer_identity() {
+        let (order, order_id, shopper_id, price_list_id) = sample_order();
+        let value = order_detail(order);
+
+        assert_eq!(value["id"], json!(order_id));
+        assert_eq!(value["shopper_id"], json!(shopper_id));
+        assert_eq!(value["price_list_id"], json!(price_list_id));
+        assert_eq!(value["contact"]["email"], "buyer@example.com");
+        assert_eq!(value["contact"]["phone"], "+14155552671");
+        assert_eq!(value["billing_address"]["address_line1"], "1 Market Street");
+        assert_eq!(value["billing_address"]["company"], "Chaos Inc");
+        assert_eq!(
+            value["shipping_address"]["address_line1"],
+            "2 Market Street"
+        );
+        assert_eq!(value["shipping_address"]["country_code"], "US");
+    }
+
+    #[test]
+    fn order_list_item_omits_nested_operational_details() {
+        let (order, _, shopper_id, _) = sample_order();
+        let value = order_list_item(order);
+
+        assert_eq!(value["shopper_id"], json!(shopper_id));
+        assert_eq!(value["contact_email"], "buyer@example.com");
+        assert_eq!(value["line_count"], 0);
+        assert!(value.get("contact").is_none());
+        assert!(value.get("billing_address").is_none());
+        assert!(value.get("lines").is_none());
+        assert!(value.get("refunds").is_none());
+        assert!(value.get("fulfillments").is_none());
+    }
 }
