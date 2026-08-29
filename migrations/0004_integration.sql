@@ -625,6 +625,7 @@ BEGIN
     LEFT JOIN commerce.product_variants AS variant
         ON variant.store_id = product.store_id
        AND variant.product_id = product.id
+       AND variant.status = 'active'
     WHERE product.store_id = requested_store_id
     GROUP BY product.store_id, product.id;
 

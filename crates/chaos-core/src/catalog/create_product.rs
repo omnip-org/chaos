@@ -41,8 +41,30 @@ pub struct CreateProductInput {
 }
 
 #[derive(Debug)]
+pub struct CreatedProductOptionValue {
+    pub id: ProductOptionValueId,
+}
+
+#[derive(Debug)]
+pub struct CreatedProductOption {
+    pub id: chaos_domain::catalog::ProductOptionId,
+    pub values: Vec<CreatedProductOptionValue>,
+}
+
+#[derive(Debug)]
+pub struct CreatedProductVariant {
+    pub id: chaos_domain::catalog::ProductVariantId,
+    pub selected_options: Vec<(
+        chaos_domain::catalog::ProductOptionId,
+        chaos_domain::catalog::ProductOptionValueId,
+    )>,
+}
+
+#[derive(Debug)]
 pub struct CreateProductOutput {
     pub product_id: ProductId,
+    pub options: Vec<CreatedProductOption>,
+    pub variants: Vec<CreatedProductVariant>,
 }
 
 pub struct CreateProduct {
@@ -67,6 +89,30 @@ impl CreateProduct {
         transaction.commit().await?;
         Ok(CreateProductOutput {
             product_id: product.id(),
+            options: product
+                .options()
+                .iter()
+                .map(|option| CreatedProductOption {
+                    id: option.id(),
+                    values: option
+                        .values()
+                        .iter()
+                        .map(|value| CreatedProductOptionValue { id: value.id() })
+                        .collect(),
+                })
+                .collect(),
+            variants: product
+                .variants()
+                .iter()
+                .map(|variant| CreatedProductVariant {
+                    id: variant.id(),
+                    selected_options: variant
+                        .selected_options()
+                        .iter()
+                        .map(|selection| (selection.option_id(), selection.option_value_id()))
+                        .collect(),
+                })
+                .collect(),
         })
     }
 }

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chaos_domain::{
     catalog::{
-        MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductVariantId,
-        ReviewId,
+        MediaAssetId, MediaAssetStatus, MediaDescriptor, MediaKind, ProductId, ProductOptionId,
+        ProductOptionValueId, ProductVariantId, ReviewId,
     },
     store::StoreId,
 };
@@ -14,6 +14,7 @@ use crate::ApplicationError;
 ///
 /// This type deliberately has no business target. Product galleries, review images,
 /// and metadata content all point at the same verified object record.
+#[derive(Clone)]
 pub struct MediaAssetItem {
     pub id: MediaAssetId,
     pub store_id: StoreId,
@@ -28,13 +29,26 @@ pub struct MediaAssetItem {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Clone)]
 pub struct ProductMediaAssetItem {
     pub asset: MediaAssetItem,
     pub product_id: ProductId,
-    pub product_variant_id: Option<ProductVariantId>,
+    pub scope: ProductMediaScope,
     pub alt_text: String,
     pub position: u16,
     pub archived_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProductMediaScope {
+    Product,
+    OptionValue {
+        option_id: ProductOptionId,
+        option_value_id: ProductOptionValueId,
+    },
+    Variant {
+        product_variant_id: ProductVariantId,
+    },
 }
 
 pub struct ReviewMediaAssetItem {
@@ -92,10 +106,31 @@ pub struct MediaAssetMutation {
 pub struct ProductMediaAssetLinkRecord {
     pub store_id: StoreId,
     pub product_id: ProductId,
-    pub product_variant_id: Option<ProductVariantId>,
     pub media_asset_id: MediaAssetId,
     pub alt_text: String,
     pub position: u16,
+    pub changed_at: OffsetDateTime,
+}
+
+pub struct ProductOptionValueMediaAssetLinkRecord {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+    pub changed_at: OffsetDateTime,
+}
+
+pub struct ProductVariantMediaAssetLinkRecord {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
+    pub media_asset_id: MediaAssetId,
+    pub alt_text: String,
+    pub position: u16,
+    pub changed_at: OffsetDateTime,
 }
 
 pub struct ReviewMediaAssetLinkRecord {
@@ -113,6 +148,7 @@ pub struct ProductMetaMediaAssetLinkRecord {
     pub meta_path: String,
     pub alt_text: String,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ProductMediaAssetMutation {
@@ -120,6 +156,26 @@ pub struct ProductMediaAssetMutation {
     pub product_id: ProductId,
     pub media_asset_id: MediaAssetId,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
+}
+
+pub struct ProductOptionValueMediaAssetMutation {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub option_id: ProductOptionId,
+    pub option_value_id: ProductOptionValueId,
+    pub media_asset_id: MediaAssetId,
+    pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
+}
+
+pub struct ProductVariantMediaAssetMutation {
+    pub store_id: StoreId,
+    pub product_id: ProductId,
+    pub product_variant_id: ProductVariantId,
+    pub media_asset_id: MediaAssetId,
+    pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 pub struct ReviewMediaAssetMutation {
@@ -135,6 +191,7 @@ pub struct ProductMetaMediaAssetMutation {
     pub media_asset_id: MediaAssetId,
     pub meta_path: String,
     pub changed_at: OffsetDateTime,
+    pub expected_revision: Option<i64>,
 }
 
 #[async_trait]

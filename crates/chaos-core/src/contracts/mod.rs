@@ -32,7 +32,8 @@ pub use analytics::{
 pub use catalog_management::ProductLifecycleSnapshot;
 pub use catalog_read::{
     CatalogProductDetail, CatalogProductListItem, CatalogProductOption, CatalogProductOptionValue,
-    CatalogProductVariant, CatalogSelectedOption,
+    CatalogProductPublication, CatalogProductVariant, CatalogProductWorkspace,
+    CatalogSelectedOption,
 };
 pub use clock::Clock;
 pub use collection::{
@@ -58,9 +59,11 @@ pub use inventory::{InventoryAdjustment, VariantInventoryView};
 pub use media::{
     CreateMediaAssetRecord, MediaAssetItem, MediaAssetMutation, MediaAssetStorageRecord,
     MediaStorage, MediaUploadRequest, ProductMediaAssetItem, ProductMediaAssetLinkRecord,
-    ProductMediaAssetMutation, ProductMetaMediaAssetItem, ProductMetaMediaAssetLinkRecord,
-    ProductMetaMediaAssetMutation, ReviewMediaAssetItem, ReviewMediaAssetLinkRecord,
-    ReviewMediaAssetMutation, StoredMediaObject,
+    ProductMediaAssetMutation, ProductMediaScope, ProductMetaMediaAssetItem,
+    ProductMetaMediaAssetLinkRecord, ProductMetaMediaAssetMutation,
+    ProductOptionValueMediaAssetLinkRecord, ProductOptionValueMediaAssetMutation,
+    ProductVariantMediaAssetLinkRecord, ProductVariantMediaAssetMutation, ReviewMediaAssetItem,
+    ReviewMediaAssetLinkRecord, ReviewMediaAssetMutation, StoredMediaObject,
 };
 pub use pricing::{PriceListDetail, PriceListMutationSnapshot, PriceListReadItem, PriceReadItem};
 pub use provider_secret::{IntegrationSecretResolver, ProviderSecretKind, ProviderSecretWriter};
@@ -77,8 +80,9 @@ pub use store::{
 pub use store_administration::{SalesChannelAdminItem, StoreAdminItem};
 pub use storefront_catalog::{
     StorefrontCatalogProduct, StorefrontCatalogRepository, StorefrontCatalogVariant,
-    StorefrontContext, StorefrontMediaAsset, StorefrontProductCollection, StorefrontProductOption,
-    StorefrontProductOptionValue, StorefrontSelectedOption,
+    StorefrontContext, StorefrontMediaAsset, StorefrontMediaScope, StorefrontProductCollection,
+    StorefrontProductOption, StorefrontProductOptionValue, StorefrontSelectedOption,
+    resolve_storefront_media,
 };
 pub use stripe::{
     OrderMetadataContext, PaymentAttemptDetail, PaymentCheckoutDetails, PaymentClientAction,

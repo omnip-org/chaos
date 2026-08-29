@@ -17,9 +17,9 @@ pub use analytics::{
     PostgresAnalyticsDeliveryStore, PostgresAnalyticsDestinationStore, PostgresAnalyticsEventStore,
 };
 pub use catalog::{
-    PostgresCatalogManagementRepository, PostgresCatalogProvisioningRepository,
-    PostgresCatalogReadRepository, PostgresCollectionRepository, PostgresMediaAssetRepository,
-    PostgresReviewRepository,
+    PostgresCatalogConfigurationRepository, PostgresCatalogManagementRepository,
+    PostgresCatalogProvisioningRepository, PostgresCatalogReadRepository,
+    PostgresCollectionRepository, PostgresMediaAssetRepository, PostgresReviewRepository,
 };
 pub use fulfillment::PostgresFulfillmentRepository;
 pub(crate) use integrations::{EmailBrandWrite, EmailProviderAccountWrite};

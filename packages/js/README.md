@@ -27,6 +27,7 @@ npm install @omnip-org/chaos-js
 ```ts
 import {
   createStorefrontClient,
+  resolveProductMedia,
   toPurchaseAnalyticsInput,
 } from "@omnip-org/chaos-js";
 import { mountEmbeddedCheckout } from "@omnip-org/chaos-js/stripe";
@@ -45,6 +46,12 @@ const chaos = createStorefrontClient({
 // Catalog
 const { data: products } = await chaos.catalog.listProducts({ q: "shoes" });
 const { data: product } = await chaos.catalog.getProduct("running-shoes");
+
+// Product media is returned as compact, reusable rules. Resolve the gallery
+// after the shopper selects a Variant: exact Variant, matching Option Value,
+// then Product fallback media.
+const selectedVariant = product.variants[0]!;
+const gallery = resolveProductMedia(product, selectedVariant);
 
 // Cart — the shopper token is acquired and persisted automatically on the
 // first shopper-scoped call, then reused for every subsequent Cart/Checkout call.
