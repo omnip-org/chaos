@@ -15,7 +15,7 @@ export async function mountEmbeddedCheckout(
   }
   const stripe = await loadStripe(action.public_key);
   if (!stripe) throw new Error("Stripe failed to load");
-  const checkout = await stripe.createEmbeddedCheckoutPage({
+  const checkout = await stripe.initEmbeddedCheckout({
     clientSecret: action.client_token,
   });
   checkout.mount(container);

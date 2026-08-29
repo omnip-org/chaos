@@ -631,6 +631,7 @@ test("payments create an embedded Checkout session without an email", async () =
 
 test("checkout idempotency follows the cart snapshot instead of the cart id", async () => {
   let cartVersion = 4;
+  let cartQuantity = 1;
   const idempotencyKeys: string[] = [];
   const client = createStorefrontClient({
     publishableKey: "public_test",
@@ -643,10 +644,24 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
         return jsonResponse(200, {
           data: {
             id: "cart-1",
+            price_list_id: "price-list-1",
             version: cartVersion,
             currency: "USD",
             subtotal_amount_minor: 2_000,
-            lines: [],
+            lines: [
+              {
+                product_id: "product-1",
+                product_variant_id: "variant-1",
+                product_title: "Trail pack",
+                variant_title: "One size",
+                sku: "PACK-1",
+                track_inventory: false,
+                quantity: cartQuantity,
+                unit_price_amount_minor: 2_000,
+                subtotal_amount_minor: 2_000 * cartQuantity,
+                media: [],
+              },
+            ],
           },
         });
       }
@@ -671,10 +686,13 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
   await client.payments.createEmbeddedCheckout("cart-1", options);
   cartVersion = 5;
   await client.payments.createEmbeddedCheckout("cart-1", options);
+  cartQuantity = 2;
+  await client.payments.createEmbeddedCheckout("cart-1", options);
 
-  assert.equal(idempotencyKeys.length, 3);
+  assert.equal(idempotencyKeys.length, 4);
   assert.equal(idempotencyKeys[0], idempotencyKeys[1]);
-  assert.notEqual(idempotencyKeys[1], idempotencyKeys[2]);
+  assert.equal(idempotencyKeys[1], idempotencyKeys[2]);
+  assert.notEqual(idempotencyKeys[2], idempotencyKeys[3]);
 });
 
 test("commerce resources record one event after the mutation succeeds", async () => {

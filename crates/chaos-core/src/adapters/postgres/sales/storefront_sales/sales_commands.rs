@@ -189,7 +189,42 @@ impl PostgresStorefrontSalesRepository {
         let channel_id = require_channel(actor)?;
         let mut transaction = self.begin_shopper(shopper).await?;
         ensure_cart_owner(&mut transaction, actor, cart_id, shopper.shopper_id).await?;
-        let header = lock_active_cart(&mut transaction, actor, cart_id).await?;
+
+        if let Some(draft) = existing_checkout_draft(
+            &mut transaction,
+            actor,
+            shopper,
+            cart_id,
+            email,
+            &request,
+        )
+        .await?
+        {
+            transaction.commit().await.map_err(database_error)?;
+            return Ok(draft);
+        }
+
+        // The Cart row is the serialization boundary for checkout creation.
+        // A concurrent request can observe the Attempt only after this lock is
+        // released, so the second request must re-read it instead of creating
+        // another Order or inventory reservation.
+        let header = lock_cart(&mut transaction, actor, cart_id).await?;
+        if header.3 != "active" {
+            if let Some(draft) = existing_checkout_draft(
+                &mut transaction,
+                actor,
+                shopper,
+                cart_id,
+                email,
+                &request,
+            )
+            .await?
+            {
+                transaction.commit().await.map_err(database_error)?;
+                return Ok(draft);
+            }
+            return Err(cart_not_active());
+        }
         if header.0 != channel_id.as_uuid() {
             return Err(cart_not_found(cart_id));
         }
@@ -226,7 +261,7 @@ impl PostgresStorefrontSalesRepository {
         if usize::try_from(existing_count).ok() != Some(lines.len()) {
             return Err(cart_line_unavailable());
         }
-        let cart = Cart::rehydrate(
+        let mut cart = Cart::rehydrate(
             cart_id,
             actor.store_id,
             channel_id,
@@ -235,10 +270,24 @@ impl PostgresStorefrontSalesRepository {
             CartStatus::Active,
             lines.clone(),
         )?;
+        cart.begin_checkout()?;
         let requested_order_id = OrderId::new();
+        let checkout_attempt_id = CheckoutAttemptId::new();
+        let successor_cart_id = CartId::new();
         let subtotal = cart.total()?.amount_minor();
+        let (shipping_policy_version, shipping_countries) =
+            load_shipping_policy(&mut transaction, actor).await?;
         let request_fingerprint =
-            checkout_request_fingerprint(actor, cart_id, email, &request, &cart);
+            checkout_request_fingerprint(
+                actor,
+                cart_id,
+                header.4,
+                email,
+                &request,
+                &cart,
+                shipping_policy_version,
+                &shipping_countries,
+            );
 
         let order_number = generate_order_number(request.now)?;
         let payment_provider_account_id: Uuid = sqlx::query_scalar(
@@ -256,16 +305,14 @@ impl PostgresStorefrontSalesRepository {
         .await
         .map_err(database_error)?
         .ok_or_else(payment_provider_unavailable)?;
-        let inserted_order_id: Option<Uuid> = sqlx::query_scalar(
+        sqlx::query(
             "INSERT INTO commerce.orders \
              (id, store_id, order_number, sales_channel_id, cart_id, shopper_id, idempotency_key, \
               price_list_id, currency, payment_provider_account_id, contact_email, \
-              checkout_request_fingerprint, \
+             checkout_request_fingerprint, \
              subtotal_amount_minor, discount_amount_minor, tax_amount_minor, \
              shipping_amount_minor, total_amount_minor, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14) \
-             ON CONFLICT (store_id, sales_channel_id, shopper_id, idempotency_key) DO NOTHING \
-             RETURNING id",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,0,0,0,$14,$14)",
         )
         .bind(requested_order_id.as_uuid())
         .bind(actor.store_id.as_uuid())
@@ -281,58 +328,72 @@ impl PostgresStorefrontSalesRepository {
         .bind(request_fingerprint.as_slice())
         .bind(subtotal)
         .bind(request.now)
-        .fetch_optional(&mut *transaction)
+        .execute(&mut *transaction)
         .await
-        .map_err(database_error)?;
-        let Some(_) = inserted_order_id else {
-            let existing = sqlx::query_as::<
-                _,
-                (Uuid, Uuid, String, i64, String, Option<String>, Option<Vec<u8>>),
-            >(
-                "SELECT order_row.id, order_row.cart_id, order_row.currency::text, order_row.subtotal_amount_minor, account.provider::text, \
-                        order_row.contact_email::text AS contact_email, \
-                        order_row.checkout_request_fingerprint \
-                 FROM commerce.orders AS order_row \
-                 INNER JOIN integration.provider_accounts AS account \
-                   ON account.id = order_row.payment_provider_account_id \
-                  AND account.store_id = order_row.store_id \
-                  AND account.capability = 'payment' \
-                 WHERE order_row.store_id = $1 AND order_row.sales_channel_id = $2 \
-                   AND order_row.shopper_id = $3 AND order_row.idempotency_key = $4",
-            )
-            .bind(actor.store_id.as_uuid())
-            .bind(channel_id.as_uuid())
-            .bind(shopper.shopper_id.as_uuid())
-            .bind(request.idempotency_key)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(database_error)?;
-            // Orders created before the fingerprint column was introduced
-            // cannot be reconstructed reliably from their historical Cart;
-            // retain the stored Cart, contact, and Provider guards. Every new
-            // Order carries the stronger request fingerprint.
-            let fingerprint_mismatch = existing.1 != cart_id.as_uuid()
-                || existing.5.as_deref() != email
-                || existing
-                    .6
-                    .as_deref()
-                    .is_some_and(|fingerprint| fingerprint != request_fingerprint.as_slice());
-            if existing.4 != request.payment_provider.as_str() || fingerprint_mismatch {
-                return Err(idempotency_key_reused());
-            }
-            transaction.commit().await.map_err(database_error)?;
-            return Ok(StripeCheckoutDraft {
-                order_id: OrderId::from_uuid(existing.0),
-                currency: parse_currency(&existing.2)?,
-                subtotal_amount_minor: existing.3,
-                expires_at: request.expires_at,
-            });
-        };
+        .map_err(checkout_insert_error)?;
         let order_id = requested_order_id;
         reserve_inventory_for_cart(&mut transaction, actor, &cart).await?;
         insert_order_lines(&mut transaction, actor, order_id, &cart, request.now).await?;
+
+        sqlx::query(
+            "INSERT INTO commerce.carts \
+             (id, store_id, shopper_id, sales_channel_id, price_list_id) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(successor_cart_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .bind(header.1)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE commerce.carts SET status = 'checkout_pending', \
+                    version = version + 1, updated_at = $3 \
+             WHERE store_id = $1 AND id = $2 AND status = 'active'",
+        )
+        .bind(actor.store_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(request.now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO commerce.checkout_attempts \
+             (id, store_id, sales_channel_id, shopper_id, source_cart_id, successor_cart_id, \
+              order_id, payment_provider_account_id, client_idempotency_key, \
+              provider_idempotency_key, return_url, request_fingerprint, shipping_policy_version, \
+              shipping_countries_snapshot, expires_at, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)",
+        )
+        .bind(checkout_attempt_id.as_uuid())
+        .bind(actor.store_id.as_uuid())
+        .bind(channel_id.as_uuid())
+        .bind(shopper.shopper_id.as_uuid())
+        .bind(cart_id.as_uuid())
+        .bind(successor_cart_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(payment_provider_account_id)
+        .bind(request.idempotency_key)
+        .bind(Uuid::now_v7())
+        .bind(&request.return_url)
+        .bind(request_fingerprint.as_slice())
+        .bind(shipping_policy_version)
+        .bind(serde_json::to_value(&shipping_countries).map_err(unexpected_conversion)?)
+        .bind(request.expires_at)
+        .bind(request.now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(checkout_insert_error)?;
+        let successor_cart = load_cart(&mut transaction, actor, successor_cart_id)
+            .await?
+            .ok_or_else(|| cart_not_found(successor_cart_id))?;
         let draft = StripeCheckoutDraft {
+            checkout_attempt_id,
             order_id,
+            source_cart_id: cart_id,
+            successor_cart_id: successor_cart.id,
             currency,
             subtotal_amount_minor: subtotal,
             expires_at: request.expires_at,
@@ -392,6 +453,106 @@ impl PostgresStorefrontSalesRepository {
         transaction.commit().await.map_err(database_error)?;
         Ok(order)
     }
+}
+
+async fn existing_checkout_draft(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+    shopper: &ShopperActor,
+    cart_id: CartId,
+    email: Option<&str>,
+    request: &StripeCheckoutRequest,
+) -> Result<Option<StripeCheckoutDraft>, ApplicationError> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            Uuid,
+            String,
+            Uuid,
+            String,
+            Option<String>,
+            String,
+            String,
+            i64,
+            OffsetDateTime,
+        ),
+    >(
+        "SELECT attempt.id, attempt.order_id, attempt.successor_cart_id, \
+                attempt.status::text, attempt.client_idempotency_key, attempt.return_url, \
+                sales_order.contact_email::text, account.provider::text, \
+                sales_order.currency::text, sales_order.subtotal_amount_minor, attempt.expires_at \
+         FROM commerce.checkout_attempts AS attempt \
+         INNER JOIN commerce.orders AS sales_order \
+           ON sales_order.store_id = attempt.store_id AND sales_order.id = attempt.order_id \
+         INNER JOIN integration.provider_accounts AS account \
+           ON account.store_id = attempt.store_id AND account.id = attempt.payment_provider_account_id \
+         WHERE attempt.store_id = $1 AND attempt.sales_channel_id = $2 \
+           AND attempt.shopper_id = $3 AND attempt.source_cart_id = $4",
+    )
+    .bind(actor.store_id.as_uuid())
+    .bind(actor.sales_channel_id.map(SalesChannelId::as_uuid))
+    .bind(shopper.shopper_id.as_uuid())
+    .bind(cart_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    if row.4 != request.idempotency_key {
+        return Err(checkout_cart_already_started());
+    }
+    if row.5 != request.return_url
+        || row.6.as_deref() != email
+        || row.7 != request.payment_provider.as_str()
+    {
+        return Err(idempotency_key_reused());
+    }
+    let status = CheckoutAttemptStatus::parse(&row.3).ok_or_else(corrupt_sales_state)?;
+    if !matches!(status, CheckoutAttemptStatus::Creating | CheckoutAttemptStatus::Open) {
+        return Err(checkout_attempt_not_open());
+    }
+    let successor_cart_id = CartId::from_uuid(row.2);
+    let successor_cart = load_cart(transaction, actor, successor_cart_id)
+        .await?
+        .ok_or_else(|| cart_not_found(successor_cart_id))?;
+    Ok(Some(StripeCheckoutDraft {
+        checkout_attempt_id: CheckoutAttemptId::from_uuid(row.0),
+        order_id: OrderId::from_uuid(row.1),
+        source_cart_id: cart_id,
+        successor_cart_id: successor_cart.id,
+        currency: parse_currency(&row.8)?,
+        subtotal_amount_minor: row.9,
+        expires_at: row.10,
+    }))
+}
+
+async fn load_shipping_policy(
+    transaction: &mut Transaction<'static, Postgres>,
+    actor: &MachineActor,
+) -> Result<(i64, Vec<String>), ApplicationError> {
+    let version: i64 = sqlx::query_scalar(
+        "SELECT shipping_policy_version FROM commerce.stores WHERE id = $1 FOR SHARE",
+    )
+    .bind(actor.store_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let countries = sqlx::query_scalar::<_, String>(
+        "SELECT country_code::text FROM commerce.store_shipping_countries \
+         WHERE store_id = $1 AND enabled ORDER BY country_code",
+    )
+    .bind(actor.store_id.as_uuid())
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if countries.is_empty() {
+        return Err(shipping_countries_unavailable());
+    }
+    Ok((version, countries))
 }
 
 fn ensure_cart_version(current: i64, expected: u64) -> Result<(), ApplicationError> {

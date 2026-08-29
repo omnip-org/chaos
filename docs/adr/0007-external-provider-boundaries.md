@@ -33,7 +33,7 @@ Provider SDK types, error types, event names, credentials, and payloads remain i
 
 `payments` remains a bounded context because Payment Attempts, captures, Refunds, settlement currency, and reconciliation are business records. A Stripe adapter implements payment application ports; Stripe does not become a domain module.
 
-The initial adapter maps provider-neutral payment commands to Stripe Embedded Checkout Sessions, supplies the Order idempotency key as Stripe's provider idempotency key, and maps Checkout Session outcomes into the existing payment state machines. Checkout creation is synchronous because the browser needs the Session client secret immediately; refunds and webhook processing remain durable Worker jobs. Raw Stripe webhook bodies are verified against the exact endpoint account before Store resolution, stored in the durable inbox, deduplicated by Provider Account and provider event identity, and processed without assuming event order.
+The initial adapter maps provider-neutral payment commands to Stripe Embedded Checkout Sessions, supplies the Checkout Attempt's durable provider idempotency key to Stripe, and maps Checkout Session outcomes into the existing payment state machines. Checkout creation is synchronous because the browser needs the Session client secret immediately; the Attempt stores the provider session and client secret so a return, remount, or lost response resumes the same Stripe Session. Refunds and webhook processing remain durable Worker jobs. Raw Stripe webhook bodies are verified against the exact endpoint account before Store resolution, stored in the durable inbox, deduplicated by Provider Account and provider event identity, and processed without assuming event order.
 
 Stripe Connect is not supported by the initial adapter. Each Store configures the direct Stripe account that owns its API keys; the Chaos Provider Account UUID, not a Stripe account label, routes webhooks. Provider credentials are stored only as opaque encrypted references; PostgreSQL never stores recoverable plaintext credentials.
 
@@ -55,7 +55,16 @@ A separate `logistics` bounded context is deferred. It becomes justified only wh
 
 Each worker claims only event types owned by its consumer. Claim leases have an expiry and can be recovered after process termination. A worker stops accepting claims during shutdown, completes or safely releases in-flight work, and never relies on process-local ownership for correctness.
 
-Checkout uses the Order idempotency key for the database uniqueness boundary and as Stripe's provider idempotency key. Other external calls rely on their durable business state and provider keys where available. Webhook handlers acknowledge only after authenticated durable receipt, return quickly, tolerate duplicates and out-of-order delivery, and keep provider API versions explicit. Retry policy distinguishes transient failures from permanent validation or configuration failures. Dead-letter replay is audited and does not mutate the original payload.
+Checkout uses a Checkout Attempt as the database lifecycle boundary: the client
+idempotency key deduplicates the shopper request, while a separate provider key
+is reused for every Stripe retry. The source Cart becomes `checkout_pending` and
+an active successor Cart receives later shopping changes. Other external calls
+rely on their durable business state and provider keys where available. Webhook
+handlers acknowledge only after authenticated durable receipt, return quickly,
+tolerate duplicates and out-of-order delivery, and keep provider API versions
+explicit. Retry policy distinguishes transient failures from permanent validation
+or configuration failures. Dead-letter replay is audited and does not mutate the
+original payload.
 
 ## Consequences
 

@@ -29,7 +29,43 @@ macro_rules! payment_id {
     };
 }
 
+payment_id!(CheckoutAttemptId);
 payment_id!(RefundId);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckoutAttemptStatus {
+    Creating,
+    Open,
+    Paid,
+    Failed,
+    Cancelled,
+    Expired,
+}
+
+impl CheckoutAttemptStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Open => "open",
+            Self::Paid => "paid",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "creating" => Some(Self::Creating),
+            "open" => Some(Self::Open),
+            "paid" => Some(Self::Paid),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaymentAttemptStatus {
     Pending,

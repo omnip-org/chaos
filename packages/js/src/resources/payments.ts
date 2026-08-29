@@ -1,6 +1,8 @@
 import type { ChaosStorefrontClient } from "../client.js";
 import type {
+  Cart,
   DataEnvelope,
+  CheckoutAttempt,
   EmbeddedCheckoutOptions,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutSession,
@@ -29,27 +31,53 @@ export class PaymentsResource {
   ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
     const cart = await this.client.cart.get(cartId);
     const checkout = await this.createEmbeddedCheckoutForCart(cart.data, options);
+    const successorCart = await this.client.cart.get(
+      checkout.data.successor_cart_id,
+    );
     return {
       data: {
         checkout: checkout.data,
-        cart: cart.data,
+        cart: successorCart.data,
       },
     };
   }
 
+  async resumeEmbeddedCheckout(
+    checkoutAttemptId: string,
+  ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
+    if (!checkoutAttemptId.trim()) {
+      throw new TypeError("checkoutAttemptId is required");
+    }
+    return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
+      `/checkout-attempts/${encodeURIComponent(checkoutAttemptId)}/resume`,
+      {
+        method: "POST",
+        requiresShopperToken: true,
+      },
+    );
+  }
+
+  listCheckoutAttempts(): Promise<DataEnvelope<CheckoutAttempt[]>> {
+    return this.client.request<DataEnvelope<CheckoutAttempt[]>>(
+      "/checkout-attempts",
+      { method: "GET", requiresShopperToken: true },
+    );
+  }
+
+  getCheckoutAttempt(
+    checkoutAttemptId: string,
+  ): Promise<DataEnvelope<CheckoutAttempt>> {
+    if (!checkoutAttemptId.trim()) {
+      throw new TypeError("checkoutAttemptId is required");
+    }
+    return this.client.request<DataEnvelope<CheckoutAttempt>>(
+      `/checkout-attempts/${encodeURIComponent(checkoutAttemptId)}`,
+      { method: "GET", requiresShopperToken: true },
+    );
+  }
+
   private async createEmbeddedCheckoutForCart(
-    cart: {
-      id: string;
-      version: number;
-      subtotal_amount_minor: number;
-      currency: string;
-      lines: Array<{
-        product_id: string;
-        product_variant_id: string;
-        quantity: number;
-        unit_price_amount_minor: number;
-      }>;
-    },
+    cart: Cart,
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     const body = toEmbeddedCheckoutRequest(options);
@@ -94,14 +122,31 @@ function toEmbeddedCheckoutRequest(
 }
 
 function checkoutIdempotencyKey(
-  cart: { id: string; version: number },
+  cart: Cart,
   request: EmbeddedCheckoutRequest,
 ): string {
-  // A cart version is the server's immutable checkout snapshot boundary. The
-  // same key is therefore safe for a lost-response retry, while any cart
-  // mutation (or meaningful checkout option change) receives a new key.
+  // The source Cart changes status and version when checkout starts. Exclude
+  // those server-side lifecycle fields so a lost response can safely retry
+  // with the same key; include the actual cart snapshot so a real cart edit
+  // receives a new key.
   return stableUuid(
-    JSON.stringify(["embedded-checkout", cart.id, cart.version, request]),
+    JSON.stringify([
+      "embedded-checkout-v2",
+      cart.id,
+      cart.price_list_id,
+      cart.currency,
+      cart.lines.map((line) => [
+        line.product_id,
+        line.product_variant_id,
+        line.product_title,
+        line.variant_title,
+        line.sku,
+        line.track_inventory,
+        line.quantity,
+        line.unit_price_amount_minor,
+      ]),
+      request,
+    ]),
   );
 }
 

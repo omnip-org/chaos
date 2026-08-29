@@ -3,7 +3,9 @@ use chaos_domain::{
     catalog::{ProductId, ProductVariantId},
     fulfillment::{FulfillmentId, FulfillmentStatus, ShippingProviderAccountId},
     integration::{PaymentProvider, ShippingProvider},
-    payments::{PaymentAttemptStatus, RefundId, RefundStatus},
+    payments::{
+        CheckoutAttemptId, CheckoutAttemptStatus, PaymentAttemptStatus, RefundId, RefundStatus,
+    },
     pricing::PriceListId,
     sales::{
         CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderShippingStatus,
@@ -42,10 +44,24 @@ pub struct CartDetail {
 }
 
 pub struct StripeCheckoutDraft {
+    pub checkout_attempt_id: CheckoutAttemptId,
     pub order_id: OrderId,
+    pub source_cart_id: CartId,
+    pub successor_cart_id: CartId,
     pub currency: CurrencyCode,
     pub subtotal_amount_minor: i64,
     pub expires_at: OffsetDateTime,
+}
+
+pub struct CheckoutAttemptDetail {
+    pub id: CheckoutAttemptId,
+    pub order_id: OrderId,
+    pub source_cart_id: CartId,
+    pub successor_cart_id: CartId,
+    pub status: CheckoutAttemptStatus,
+    pub expires_at: OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 pub struct OrderLineItem {
@@ -60,10 +76,9 @@ pub struct OrderLineItem {
     pub subtotal_amount_minor: i64,
 }
 
-/// The Order's payment state, if checkout has started. A failed or expired
-/// attempt cancels the whole Order rather than allowing a retry, so this is
-/// tracked directly on `commerce.orders` — there is never a second attempt
-/// to reconcile against the first.
+/// The Order's payment state, if checkout has started. Checkout lifecycle
+/// identity and provider session state live in `CheckoutAttemptDetail`; this
+/// is the payment summary projected onto the Order detail.
 pub struct OrderPaymentAttemptItem {
     pub status: PaymentAttemptStatus,
     pub amount_minor: i64,

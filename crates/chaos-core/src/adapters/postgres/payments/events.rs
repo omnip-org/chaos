@@ -69,80 +69,6 @@ async fn insert_order_confirmed_event(
     Ok(())
 }
 
-async fn load_attempt(
-    transaction: &mut Transaction<'static, Postgres>,
-    store_id: StoreId,
-    channel_id: Option<SalesChannelId>,
-    shopper_id: Option<Uuid>,
-    order_id: OrderId,
-) -> Result<Option<PaymentAttemptDetail>, ApplicationError> {
-    // subtotal_amount_minor is the pre-tax reference amount Chaos already
-    // knows when a checkout attempt is created; total_amount_minor is a
-    // Stripe-reported fact filled in only after the checkout session
-    // settles, so it is not yet meaningful here. prepare_payment_command
-    // validates a checkout outbox job's amount against this same
-    // subtotal_amount_minor column, so both must agree.
-    let row = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            OffsetDateTime,
-            OffsetDateTime,
-        ),
-    >(
-        "SELECT sales_order.id, sales_order.subtotal_amount_minor, \
-                sales_order.currency::text, sales_order.payment_status::text, \
-                sales_order.payment_provider_reference_id, sales_order.payment_failure_code, \
-                sales_order.created_at, sales_order.updated_at \
-         FROM commerce.orders AS sales_order \
-         WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
-           AND ($3::uuid IS NULL OR sales_order.sales_channel_id = $3) \
-           AND ($4::uuid IS NULL OR sales_order.shopper_id = $4)",
-    )
-    .bind(store_id.as_uuid())
-    .bind(order_id.as_uuid())
-    .bind(channel_id.map(SalesChannelId::as_uuid))
-    .bind(shopper_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    row.map(payment_attempt_detail).transpose()
-}
-
-fn payment_attempt_detail(
-    row: (
-        Uuid,
-        i64,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        OffsetDateTime,
-        OffsetDateTime,
-    ),
-) -> Result<PaymentAttemptDetail, ApplicationError> {
-    Ok(PaymentAttemptDetail {
-        order_id: OrderId::from_uuid(row.0),
-        amount_minor: row.1,
-        currency: CurrencyCode::parse(&row.2)?,
-        status: match row.3.as_str() {
-            "pending" => PaymentAttemptStatus::Pending,
-            "paid" | "partially_refunded" | "refunded" => PaymentAttemptStatus::Captured,
-            "failed" => PaymentAttemptStatus::Failed,
-            _ => return Err(corrupt_payment_state()),
-        },
-        provider_reference_id: row.4,
-        failure_code: row.5,
-        created_at: row.6,
-        updated_at: row.7,
-    })
-}
-
 /// Updates the Order's `payment_status` summary only when it still matches
 /// one of `from_statuses`, so an out-of-order or replayed webhook cannot
 /// clobber a state that has already moved on (e.g. a late `payment.captured`
@@ -378,6 +304,17 @@ async fn apply_payment_event(
                     .await?;
         }
         confirm_paid_order(transaction, store_id, order_id, &order_status, now).await?;
+        sqlx::query(
+            "UPDATE commerce.checkout_attempts \
+             SET status = 'paid', updated_at = $3 \
+             WHERE store_id = $1 AND order_id = $2 AND status IN ('creating', 'open')",
+        )
+        .bind(store_id.as_uuid())
+        .bind(order_id.as_uuid())
+        .bind(now)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
         let items = load_order_analytics_items(
             transaction,
             store_id.as_uuid(),
@@ -456,7 +393,20 @@ async fn apply_payment_event(
         if !applied {
             return Ok(order_id);
         }
-        cancel_pending_order(transaction, store_id, order_id, &order_status, now).await?;
+        let checkout_status = if event_type == "payment.cancelled" {
+            "cancelled"
+        } else {
+            "failed"
+        };
+        cancel_pending_order(
+            transaction,
+            store_id,
+            order_id,
+            &order_status,
+            checkout_status,
+            now,
+        )
+        .await?;
     }
     Ok(order_id)
 }
@@ -768,6 +718,7 @@ async fn cancel_pending_order(
     store_id: StoreId,
     order_id: OrderId,
     status: &str,
+    checkout_status: &str,
     now: OffsetDateTime,
 ) -> Result<(), ApplicationError> {
     let status = OrderStatus::parse(status).ok_or_else(corrupt_payment_state)?;
@@ -787,6 +738,31 @@ async fn cancel_pending_order(
     .await
     .map_err(database_error)?;
     release_order_inventory(transaction, store_id.as_uuid(), order_id.as_uuid()).await?;
+    sqlx::query(
+        "UPDATE commerce.checkout_attempts \
+         SET status = $3::commerce.checkout_attempt_status, updated_at = $4 \
+         WHERE store_id = $1 AND order_id = $2 AND status IN ('creating', 'open')",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(checkout_status)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query(
+        "UPDATE commerce.carts AS cart SET status = 'abandoned', version = version + 1, updated_at = $3 \
+         FROM commerce.orders AS sales_order \
+         WHERE sales_order.store_id = $1 AND sales_order.id = $2 \
+           AND cart.store_id = sales_order.store_id AND cart.id = sales_order.cart_id \
+           AND cart.status = 'checkout_pending'",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .bind(now)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     Ok(())
 }
 
@@ -848,7 +824,7 @@ async fn confirm_paid_order(
     if let Some(cart_id) = cart_id {
         sqlx::query(
             "UPDATE commerce.carts SET status = 'completed', version = version + 1, updated_at = $3 \
-             WHERE store_id = $1 AND id = $2 AND status = 'active'",
+             WHERE store_id = $1 AND id = $2 AND status IN ('active', 'checkout_pending')",
         )
         .bind(store_id.as_uuid())
         .bind(cart_id)

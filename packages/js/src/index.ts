@@ -66,6 +66,8 @@ export {
   getTrackedOrderFromRequest,
   peekCartSession,
   persistCartSession,
+  listCheckoutAttemptsFromRequest,
+  resumeEmbeddedCheckoutFromRequest,
   updateCartLine,
   updateCartLineFromRequest,
   DEFAULT_CART_COOKIE_NAME,

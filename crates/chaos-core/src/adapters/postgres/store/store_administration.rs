@@ -146,7 +146,24 @@ impl PostgresStoreAdministrationRepository {
         enabled: bool,
     ) -> Result<ShippingCountryAdminItem, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
-        require_writable_store(&mut transaction, store_id).await?;
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM commerce.stores \
+             WHERE id = $1 AND status = 'active' FOR UPDATE",
+        )
+        .bind(store_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| store_not_found(store_id))?;
+        let previous_enabled: Option<bool> = sqlx::query_scalar(
+            "SELECT enabled FROM commerce.store_shipping_countries \
+             WHERE store_id = $1 AND country_code = $2 FOR UPDATE",
+        )
+        .bind(store_id.as_uuid())
+        .bind(country_code)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
         let row = sqlx::query_as::<_, ShippingCountryRow>(
             "INSERT INTO commerce.store_shipping_countries \
              (store_id, country_code, enabled) VALUES ($1, $2, $3) \
@@ -160,6 +177,18 @@ impl PostgresStoreAdministrationRepository {
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
+        if previous_enabled != Some(enabled) {
+            sqlx::query(
+                "UPDATE commerce.stores \
+                 SET shipping_policy_version = shipping_policy_version + 1, \
+                     updated_at = CURRENT_TIMESTAMP \
+                 WHERE id = $1",
+            )
+            .bind(store_id.as_uuid())
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        }
         transaction.commit().await.map_err(database_error)?;
         shipping_country_item(row)
     }

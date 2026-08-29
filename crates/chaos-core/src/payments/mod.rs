@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
+    payments::{CheckoutAttemptId, CheckoutAttemptStatus},
     sales::OrderId,
     store::{StoreId, StoreRole},
     stripe::{PaymentSecretReference, StripeAccount, StripeAccountId},
@@ -12,7 +13,7 @@ use crate::{
     ApplicationError,
     adapters::postgres::PostgresStripeRepository,
     contracts::{
-        AdminActor, IntegrationQueue, MachineActor, PaymentAttemptDetail, PaymentClientAction,
+        AdminActor, CheckoutAttemptDetail, IntegrationQueue, MachineActor, PaymentClientAction,
         PaymentProviderRegistry, PaymentWebhookVerifierRegistry, QueueJob, RefundDetail,
         ShopperActor, StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage,
         VerifiedWebhookEvent, WebhookInbox, WebhookProcessingResult,
@@ -22,15 +23,18 @@ use crate::{
 
 pub struct CreatePaymentAttemptInput {
     pub actor: ShopperActor,
-    pub order_id: OrderId,
-    pub provider: String,
-    pub return_url: Option<String>,
+    pub checkout_attempt_id: CheckoutAttemptId,
     pub now: OffsetDateTime,
-    pub idempotency_key: uuid::Uuid,
+}
+
+pub struct ResumePaymentAttemptInput {
+    pub actor: ShopperActor,
+    pub checkout_attempt_id: CheckoutAttemptId,
+    pub now: OffsetDateTime,
 }
 
 pub struct EmbeddedCheckoutResult {
-    pub attempt: PaymentAttemptDetail,
+    pub attempt: CheckoutAttemptDetail,
     pub client_action: PaymentClientAction,
 }
 
@@ -181,54 +185,91 @@ impl PaymentService {
         input: CreatePaymentAttemptInput,
     ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
         require_checkout_key(&input.actor.machine)?;
-        let return_url =
-            input
-                .return_url
-                .as_deref()
-                .ok_or_else(|| ApplicationError::Validation {
-                    violations: vec![chaos_domain::FieldViolation {
-                        field: "return_url",
-                        reason: "return_url is required for provider-hosted Embedded Checkout"
-                            .into(),
-                    }],
-                })?;
+        self.open_embedded_checkout(input.actor, input.checkout_attempt_id, input.now)
+            .await
+    }
+
+    pub async fn resume_embedded_checkout(
+        &self,
+        input: ResumePaymentAttemptInput,
+    ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
+        require_checkout_key(&input.actor.machine)?;
+        self.open_embedded_checkout(input.actor, input.checkout_attempt_id, input.now)
+            .await
+    }
+
+    pub async fn get_checkout_attempt(
+        &self,
+        actor: &ShopperActor,
+        attempt_id: CheckoutAttemptId,
+    ) -> Result<CheckoutAttemptDetail, ApplicationError> {
+        require_checkout_key(&actor.machine)?;
         self.repository
-            .create_attempt(&input.actor, input.order_id)
-            .await?;
-        let command = self
-            .repository
-            .prepare_checkout_command(
-                &input.actor,
-                input.order_id,
-                &input.provider,
-                return_url,
-                &input.idempotency_key.to_string(),
-            )
-            .await?;
-        let provider = self
-            .payment_providers
-            .get(&input.provider)
-            .ok_or_else(payment_provider_not_supported)?;
-        let result = provider.execute(command).await?;
-        self.repository
-            .record_checkout_result(&input.actor, input.order_id, &result, input.now)
-            .await?;
-        let client_action = result
-            .client_action
-            .ok_or_else(|| ApplicationError::Unavailable {
-                service: "stripe_checkout_client_secret",
-                source: anyhow::anyhow!("Stripe Checkout Session client secret is missing"),
-            })?;
+            .get_checkout_attempt(actor, attempt_id)
+            .await?
+            .ok_or_else(|| checkout_attempt_not_found(attempt_id))
+    }
+
+    pub async fn list_checkout_attempts(
+        &self,
+        actor: &ShopperActor,
+    ) -> Result<Vec<CheckoutAttemptDetail>, ApplicationError> {
+        require_checkout_key(&actor.machine)?;
+        self.repository.list_checkout_attempts(actor).await
+    }
+
+    async fn open_embedded_checkout(
+        &self,
+        actor: ShopperActor,
+        checkout_attempt_id: CheckoutAttemptId,
+        now: OffsetDateTime,
+    ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
         let attempt = self
             .repository
-            .get_attempt(&input.actor, input.order_id)
+            .get_checkout_attempt_payment(&actor, checkout_attempt_id)
             .await?
-            .ok_or_else(|| ApplicationError::NotFound {
-                resource: "order",
-                id: input.order_id.as_uuid().to_string(),
-            })?;
+            .ok_or_else(|| checkout_attempt_not_found(checkout_attempt_id))?;
+        ensure_checkout_attempt_open(&attempt.detail, now)?;
+        if let Some(client_action) = attempt.client_action()? {
+            return Ok(EmbeddedCheckoutResult {
+                attempt: attempt.detail,
+                client_action,
+            });
+        }
+
+        let provider = self
+            .payment_providers
+            .get(&attempt.provider)
+            .ok_or_else(payment_provider_not_supported)?;
+        let command = self
+            .repository
+            .prepare_checkout_command(&actor, &attempt)
+            .await?;
+        let result = provider.execute(command).await?;
+        if result.client_action.is_none() {
+            self.repository
+                .fail_checkout_attempt(
+                    &actor,
+                    checkout_attempt_id,
+                    "checkout_client_action_missing",
+                    now,
+                )
+                .await?;
+            return Err(checkout_client_action_missing());
+        }
+        self.repository
+            .record_checkout_result(&actor, checkout_attempt_id, &result, now)
+            .await?;
+        let attempt = self
+            .repository
+            .get_checkout_attempt_payment(&actor, checkout_attempt_id)
+            .await?
+            .ok_or_else(|| checkout_attempt_not_found(checkout_attempt_id))?;
+        let client_action = attempt
+            .client_action()?
+            .ok_or_else(checkout_client_action_missing)?;
         Ok(EmbeddedCheckoutResult {
-            attempt,
+            attempt: attempt.detail,
             client_action,
         })
     }
@@ -463,6 +504,43 @@ fn payment_provider_not_supported() -> ApplicationError {
     ApplicationError::Conflict {
         code: "payment_provider_not_supported",
         message: "the configured Payment provider has no adapter",
+    }
+}
+
+fn ensure_checkout_attempt_open(
+    attempt: &CheckoutAttemptDetail,
+    now: OffsetDateTime,
+) -> Result<(), ApplicationError> {
+    if attempt.expires_at <= now {
+        return Err(ApplicationError::Conflict {
+            code: "checkout_attempt_expired",
+            message: "the Checkout Attempt has expired; start a new checkout from the active Cart",
+        });
+    }
+    if matches!(
+        attempt.status,
+        CheckoutAttemptStatus::Creating | CheckoutAttemptStatus::Open
+    ) {
+        Ok(())
+    } else {
+        Err(ApplicationError::Conflict {
+            code: "checkout_attempt_not_open",
+            message: "the Checkout Attempt is no longer available for payment",
+        })
+    }
+}
+
+fn checkout_attempt_not_found(attempt_id: CheckoutAttemptId) -> ApplicationError {
+    ApplicationError::NotFound {
+        resource: "checkout_attempt",
+        id: attempt_id.as_uuid().to_string(),
+    }
+}
+
+fn checkout_client_action_missing() -> ApplicationError {
+    ApplicationError::Unavailable {
+        service: "stripe_checkout_client_secret",
+        source: anyhow::anyhow!("Stripe Checkout Session client secret is missing"),
     }
 }
 

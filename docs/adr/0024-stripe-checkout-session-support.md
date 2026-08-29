@@ -11,19 +11,22 @@ Checkout, so supporting both adapters created two client contracts and two
 webhook event families before the product needed them.
 
 Stripe Checkout creates a Checkout Session with a `cs_` identifier. The browser
-receives its short-lived client secret through the provider-neutral
-`PaymentClientAction` contract and passes it to Stripe's Embedded Checkout
-component. Chaos never persists that client secret.
+receives its client secret through the provider-neutral `PaymentClientAction`
+contract and passes it to Stripe's Embedded Checkout component. Chaos persists
+the client secret and provider session ID on the Checkout Attempt so it can resume
+the same payment after a browser back, remount, or lost response; it never
+creates a second Session for that Attempt.
 
 Checkout creation is a synchronous API operation: Chaos commits the pending
-Order first, creates the Stripe Session outside the database transaction, and
-returns the client handoff in the same response. Chaos does not persist the
-returned `cs_` identifier; the Order's `pi_` PaymentIntent reference is filled
-from the verified payment webhook and is the durable provider lookup key. The
-Order's client idempotency key is sent to Stripe as its provider idempotency key,
-so a retry does not create a second Session. Chaos itself deduplicates the
-Order through the `(store_id, sales_channel_id, shopper_id, idempotency_key)`
-database constraint.
+Order, freezes the source Cart, creates the Checkout Attempt, and creates the
+Stripe Session outside the database transaction. The response includes the
+Attempt identity and a new active successor Cart. The Attempt's provider session
+ID, client secret, shipping-policy snapshot, and durable provider idempotency key
+are persisted. A retry resumes the same Attempt and Session; the Order's `pi_`
+PaymentIntent reference is still filled from the verified payment webhook and
+remains the durable refund lookup key. Chaos deduplicates the client request
+through the Attempt/Order constraints and never creates another Order for the
+same source Cart.
 
 Payment webhooks are Store-scoped payment input. A Stripe event for a
 direct Stripe account does not carry a Chaos Store identifier, and Stripe
@@ -124,8 +127,10 @@ becomes the authoritative business snapshot after webhook reconciliation.
 - Stripe account health verification is intentionally deferred; account
   configuration currently exposes only whether the required secret references
   are present.
-- Chaos owns one business Order per checkout attempt. It does not persist a
-  second local Checkout aggregate or duplicate contact/address/line snapshots.
+- Chaos owns one business Order and one Checkout Attempt per source Cart
+  checkout. The source Cart is frozen and a successor Cart is created for later
+  shopping; the Attempt stores provider-session recovery state without
+  duplicating the Order's line/address snapshots.
 - Stripe Dashboard refunds and API-created refunds are reconciled through the
   verified `charge.refunded`, `refund.created`, `refund.updated`, and
   `refund.failed` events. The `reconcile_refunds` admin tool can replay the

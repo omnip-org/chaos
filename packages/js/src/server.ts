@@ -10,6 +10,7 @@ import type {
   BrowserAnalyticsEvent,
   Cart,
   CartLineMutation,
+  CheckoutAttempt,
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
@@ -296,7 +297,7 @@ export async function updateCartLineFromRequest(
   );
 }
 
-/** Creates checkout from the cookie-backed cart and returns the exact cart snapshot used for analytics. */
+/** Creates checkout from the cookie-backed cart and returns its active successor Cart. */
 export async function createEmbeddedCheckoutFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -309,7 +310,7 @@ export async function createEmbeddedCheckoutFromRequest(
     throw invalidRequest("returnUrl is required");
   }
   const email = typeof body.email === "string" && body.email ? body.email : undefined;
-  const session = await getOrCreateCartSession(client, cookies, options);
+  const session = await getOrCreateCheckoutCartSession(client, cookies, options);
   const response = await client.payments.createEmbeddedCheckoutWithCart(
     session.cart.id,
     {
@@ -317,6 +318,71 @@ export async function createEmbeddedCheckoutFromRequest(
       ...(email ? { email } : {}),
     },
   );
+  persistCartSession(cookies, response.data, options);
+  return response;
+}
+
+/**
+ * Checkout retries must be able to address the source Cart after its status
+ * moved to `checkout_pending`. The general cart helper intentionally treats
+ * every non-active Cart as stale and would create a second Cart here.
+ */
+async function getOrCreateCheckoutCartSession(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  options: StorefrontSessionOptions = {},
+): Promise<StorefrontSession> {
+  const cartCookieName = options.cartCookieName ?? DEFAULT_CART_COOKIE_NAME;
+  const existingCartId = cookies.get(cartCookieName)?.value;
+  if (existingCartId) {
+    try {
+      const current = await client.cart.get(existingCartId);
+      if (
+        current.data.status === "active" ||
+        current.data.status === "checkout_pending"
+      ) {
+        return { cart: current.data };
+      }
+    } catch (error) {
+      if (
+        !(error instanceof ChaosApiError) ||
+        ![401, 403, 404].includes(error.status)
+      ) {
+        throw error;
+      }
+    }
+  }
+  return getOrCreateCartSession(client, cookies, options);
+}
+
+/** Lists payment attempts that can still be resumed for the current shopper. */
+export async function listCheckoutAttemptsFromRequest(
+  client: ChaosStorefrontClient,
+): Promise<CheckoutAttempt[]> {
+  const response = await client.payments.listCheckoutAttempts();
+  return response.data;
+}
+
+/** Resumes a persisted Checkout Attempt and rotates the cookie to its successor Cart. */
+export async function resumeEmbeddedCheckoutFromRequest(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  request: Request,
+  options: StorefrontSessionOptions = {},
+): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
+  const body = await readJsonRecord(request, "resume_checkout");
+  const checkoutAttemptId = body.checkoutAttemptId;
+  if (typeof checkoutAttemptId !== "string" || !checkoutAttemptId) {
+    throw invalidRequest("checkoutAttemptId is required");
+  }
+  const checkout = await client.payments.resumeEmbeddedCheckout(checkoutAttemptId);
+  const successorCart = await client.cart.get(checkout.data.successor_cart_id);
+  const response = {
+    data: {
+      checkout: checkout.data,
+      cart: successorCart.data,
+    },
+  } satisfies DataEnvelope<EmbeddedCheckoutCreation>;
   persistCartSession(cookies, response.data, options);
   return response;
 }

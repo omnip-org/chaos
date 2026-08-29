@@ -150,7 +150,7 @@ export interface Cart {
   id: UUID;
   price_list_id: UUID;
   currency: CurrencyCode;
-  status: "active" | "completed" | "abandoned";
+  status: "active" | "checkout_pending" | "completed" | "abandoned";
   version: number;
   lines: CartLine[];
   subtotal_amount_minor: number;
@@ -325,8 +325,32 @@ export interface EmbeddedCheckoutOptions {
 }
 
 export interface EmbeddedCheckoutSession {
+  checkout_attempt_id: UUID;
   order_id: UUID;
+  source_cart_id: UUID;
+  successor_cart_id: UUID;
+  status: CheckoutAttemptStatus;
+  expires_at: string;
   client_action: PaymentClientAction;
+}
+
+export type CheckoutAttemptStatus =
+  | "creating"
+  | "open"
+  | "paid"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface CheckoutAttempt {
+  id: UUID;
+  order_id: UUID;
+  source_cart_id: UUID;
+  successor_cart_id: UUID;
+  status: CheckoutAttemptStatus;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Browser-facing result of creating a checkout from a cookie-backed cart. */

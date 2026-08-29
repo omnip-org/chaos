@@ -2,6 +2,7 @@ import { ChaosApiError, throwForResponse } from "./errors.js";
 import type { ChaosStorefrontAnalytics } from "./analytics.js";
 import type {
   CartLineMutation,
+  CheckoutAttempt,
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
@@ -184,6 +185,56 @@ export class BrowserCheckoutResource {
     this.client.recordCheckoutCreation(creation);
     return creation;
   }
+
+  async resumeEmbeddedCheckout(
+    checkoutAttemptId: string,
+  ): Promise<EmbeddedCheckoutCreation> {
+    if (!checkoutAttemptId.trim()) {
+      throw new TypeError("checkoutAttemptId is required");
+    }
+    const response = await this.client.request<DataEnvelope<EmbeddedCheckoutCreation>>(
+      "/checkout/resume",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkoutAttemptId }),
+      },
+    );
+    const creation = requireData<EmbeddedCheckoutCreation>(
+      response,
+      "invalid_checkout_response",
+    );
+    if (!isEmbeddedCheckoutCreation(creation)) {
+      throw new ChaosApiError(
+        502,
+        "invalid_checkout_response",
+        "checkout response is invalid",
+      );
+    }
+    return creation;
+  }
+
+  async listCheckoutAttempts(): Promise<CheckoutAttempt[]> {
+    const response = await this.client.request<DataEnvelope<CheckoutAttempt[]>>(
+      "/checkout-attempts",
+      { method: "GET" },
+    );
+    const attempts = requireData<CheckoutAttempt[]>(
+      response,
+      "invalid_checkout_attempts_response",
+    );
+    if (
+      !Array.isArray(attempts) ||
+      !attempts.every((attempt) => isCheckoutAttempt(attempt))
+    ) {
+      throw new ChaosApiError(
+        502,
+        "invalid_checkout_attempts_response",
+        "checkout attempts response is invalid",
+      );
+    }
+    return attempts;
+  }
 }
 
 export class BrowserOrderResource {
@@ -266,12 +317,42 @@ function isEmbeddedCheckoutCreation(
   }
   const checkout = value.checkout;
   return (
+    typeof checkout.checkout_attempt_id === "string" &&
     typeof checkout.order_id === "string" &&
+    typeof checkout.source_cart_id === "string" &&
+    typeof checkout.successor_cart_id === "string" &&
+    isCheckoutAttemptStatus(checkout.status) &&
+    typeof checkout.expires_at === "string" &&
     isRecord(checkout.client_action) &&
     checkout.client_action.type === "mount_embedded_checkout" &&
     typeof checkout.client_action.public_key === "string" &&
     typeof checkout.client_action.client_token === "string" &&
     isCart(value.cart)
+  );
+}
+
+function isCheckoutAttempt(value: unknown): value is CheckoutAttempt {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.order_id === "string" &&
+    typeof value.source_cart_id === "string" &&
+    typeof value.successor_cart_id === "string" &&
+    isCheckoutAttemptStatus(value.status) &&
+    typeof value.expires_at === "string" &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string"
+  );
+}
+
+function isCheckoutAttemptStatus(value: unknown): boolean {
+  return (
+    value === "creating" ||
+    value === "open" ||
+    value === "paid" ||
+    value === "failed" ||
+    value === "cancelled" ||
+    value === "expired"
   );
 }
 

@@ -16,6 +16,7 @@ use crate::{
 use chaos_domain::{
     CurrencyCode,
     catalog::{ProductId, ProductOptionId, ProductOptionValueId, ProductVariantId},
+    payments::{CheckoutAttemptId, CheckoutAttemptStatus},
     pricing::{Money, PriceListId},
     sales::{
         Cart, CartId, CartLine, CartStatus, OrderId, OrderNumber, ShopperId,
@@ -195,15 +196,19 @@ fn fingerprint_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn checkout_request_fingerprint(
     actor: &MachineActor,
     cart_id: CartId,
+    cart_version: i64,
     email: Option<&str>,
     request: &StripeCheckoutRequest,
     cart: &Cart,
+    shipping_policy_version: i64,
+    shipping_countries: &[String],
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"chaos-checkout-request-v1");
+    hasher.update(b"chaos-checkout-request-v2");
     fingerprint_part(&mut hasher, actor.store_id.as_uuid().as_bytes());
     fingerprint_part(
         &mut hasher,
@@ -214,10 +219,16 @@ fn checkout_request_fingerprint(
             .as_bytes(),
     );
     fingerprint_part(&mut hasher, cart_id.as_uuid().as_bytes());
+    fingerprint_part(&mut hasher, &cart_version.to_be_bytes());
     fingerprint_part(&mut hasher, cart.price_list_id().as_uuid().as_bytes());
     fingerprint_part(&mut hasher, cart.currency().as_str().as_bytes());
     fingerprint_part(&mut hasher, request.payment_provider.as_str().as_bytes());
+    fingerprint_part(&mut hasher, request.return_url.as_bytes());
     fingerprint_part(&mut hasher, email.unwrap_or_default().as_bytes());
+    fingerprint_part(&mut hasher, &shipping_policy_version.to_be_bytes());
+    for country in shipping_countries {
+        fingerprint_part(&mut hasher, country.as_bytes());
+    }
     for line in cart.lines() {
         fingerprint_part(&mut hasher, line.product_id().as_uuid().as_bytes());
         fingerprint_part(&mut hasher, line.product_variant_id().as_uuid().as_bytes());
@@ -231,6 +242,20 @@ fn unexpected_conversion(
     error: impl std::error::Error + Send + Sync + 'static,
 ) -> ApplicationError {
     ApplicationError::Unexpected(error.into())
+}
+
+fn checkout_insert_error(error: sqlx::Error) -> ApplicationError {
+    let constraint = match &error {
+        sqlx::Error::Database(database) => database.constraint(),
+        _ => None,
+    };
+    match constraint {
+        Some("orders_store_id_sales_channel_id_shopper_id_idempotency_key_key")
+        | Some("checkout_attempts_store_channel_shopper_idempotency_key") => {
+            idempotency_key_reused()
+        }
+        _ => database_error(error),
+    }
 }
 
 fn cart_not_found(cart_id: CartId) -> ApplicationError {
@@ -251,6 +276,27 @@ fn cart_not_active() -> ApplicationError {
     ApplicationError::Conflict {
         code: "cart_not_active",
         message: "the Cart is no longer active",
+    }
+}
+
+fn checkout_cart_already_started() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_cart_already_started",
+        message: "the Cart already has a checkout in progress; resume that checkout or use the active successor Cart",
+    }
+}
+
+fn checkout_attempt_not_open() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "checkout_attempt_not_open",
+        message: "the Checkout Attempt is no longer available for payment",
+    }
+}
+
+fn shipping_countries_unavailable() -> ApplicationError {
+    ApplicationError::Conflict {
+        code: "shipping_countries_unavailable",
+        message: "the Store has no enabled shipping destinations",
     }
 }
 

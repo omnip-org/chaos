@@ -4,6 +4,7 @@ import test from "node:test";
 import { CatalogResource } from "../resources/catalog.js";
 import {
   addCartLine,
+  createEmbeddedCheckoutFromRequest,
   createProductReviewFromRequest,
   type StorefrontCookieJar,
 } from "../server.js";
@@ -108,9 +109,14 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
 test("browser checkout bridge forwards shared checkout options", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const recorded: string[] = [];
-  const creation = {
-    checkout: {
-      order_id: "00000000-0000-4000-8000-000000000041",
+	const creation = {
+		checkout: {
+			checkout_attempt_id: "00000000-0000-4000-8000-000000000040",
+			order_id: "00000000-0000-4000-8000-000000000041",
+			source_cart_id: "00000000-0000-4000-8000-000000000042",
+			successor_cart_id: "00000000-0000-4000-8000-000000000043",
+			status: "open" as const,
+			expires_at: "2026-08-29T12:00:00Z",
       client_action: {
         type: "mount_embedded_checkout" as const,
         public_key: "pk_test_store",
@@ -156,6 +162,127 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     ],
   });
   assert.deepEqual(recorded, ["checkout", "purchase"]);
+});
+
+test("browser checkout bridge resumes a persisted attempt without creating another one", async () => {
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  const creation = {
+    checkout: {
+      checkout_attempt_id: "00000000-0000-4000-8000-000000000050",
+      order_id: "00000000-0000-4000-8000-000000000051",
+      source_cart_id: "00000000-0000-4000-8000-000000000052",
+      successor_cart_id: "00000000-0000-4000-8000-000000000053",
+      status: "open" as const,
+      expires_at: "2026-08-29T12:00:00Z",
+      client_action: {
+        type: "mount_embedded_checkout" as const,
+        public_key: "pk_test_store",
+        client_token: "cs_test_token",
+      },
+    },
+    cart: cart([]),
+  };
+  const attempts = [
+    {
+      id: creation.checkout.checkout_attempt_id,
+      order_id: creation.checkout.order_id,
+      source_cart_id: creation.checkout.source_cart_id,
+      successor_cart_id: creation.checkout.successor_cart_id,
+      status: "open" as const,
+      expires_at: creation.checkout.expires_at,
+      created_at: "2026-08-29T11:30:00Z",
+      updated_at: "2026-08-29T11:31:00Z",
+    },
+  ];
+  const browser = createStorefrontBrowserClient({
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = { url: String(input), init: init ?? {} };
+      requests.push(request);
+      if (request.url === "/api/checkout-attempts") {
+        return new Response(JSON.stringify({ data: attempts }), { status: 200 });
+      }
+      assert.equal(request.url, "/api/checkout/resume");
+      assert.equal(request.init.method, "POST");
+      assert.deepEqual(JSON.parse(String(request.init.body)), {
+        checkoutAttemptId: creation.checkout.checkout_attempt_id,
+      });
+      return new Response(JSON.stringify({ data: creation }), { status: 200 });
+    }) as typeof fetch,
+  });
+
+  assert.deepEqual(await browser.checkout.listCheckoutAttempts(), attempts);
+  assert.deepEqual(
+    await browser.checkout.resumeEmbeddedCheckout(
+      creation.checkout.checkout_attempt_id,
+    ),
+    creation,
+  );
+  assert.equal(requests[0]?.init.credentials, "same-origin");
+  assert.equal(requests[1]?.init.credentials, "same-origin");
+});
+
+test("server checkout bridge keeps a pending source cart addressable after a lost response", async () => {
+  const writes = new Map<string, string>();
+  const cookies: StorefrontCookieJar = {
+    get: (name) => {
+      const value = writes.get(name);
+      return value === undefined ? undefined : { value };
+    },
+    set: (name, value) => writes.set(name, value),
+  };
+  writes.set("chaos_cart_id", "source-cart");
+  let usedCreate = false;
+  const response = {
+    data: {
+      checkout: {
+        checkout_attempt_id: "00000000-0000-4000-8000-000000000060",
+        order_id: "00000000-0000-4000-8000-000000000061",
+        source_cart_id: "source-cart",
+        successor_cart_id: "successor-cart",
+        status: "open" as const,
+        expires_at: "2026-08-29T12:00:00Z",
+        client_action: {
+          type: "mount_embedded_checkout" as const,
+          public_key: "pk_test_store",
+          client_token: "cs_test_token",
+        },
+      },
+      cart: { ...cart([]), id: "successor-cart" },
+    },
+  };
+  const client = {
+    cart: {
+      get: async () => ({
+        data: { ...cart([]), id: "source-cart", status: "checkout_pending" },
+      }),
+      getOrCreate: async () => {
+        usedCreate = true;
+        return { data: cart([]) };
+      },
+    },
+    payments: {
+      createEmbeddedCheckoutWithCart: async (cartId: string) => {
+        assert.equal(cartId, "source-cart");
+        return response;
+      },
+    },
+  } as unknown as ChaosStorefrontClient;
+
+  const result = await createEmbeddedCheckoutFromRequest(
+    client,
+    cookies,
+    new Request("https://shop.example/checkout", {
+      method: "POST",
+      body: JSON.stringify({
+        returnUrl: "https://shop.example/checkout/confirmation",
+      }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+
+  assert.equal(usedCreate, false);
+  assert.deepEqual(result, response);
+  assert.equal(writes.get("chaos_cart_id"), "successor-cart");
 });
 
 test("server review and cart adapters own form parsing and cookie persistence", async () => {

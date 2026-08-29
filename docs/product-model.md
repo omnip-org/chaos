@@ -54,17 +54,19 @@ rather than as a separate Customer profile.
 
 ## Cart and Checkout
 
-A Cart is a mutable Storefront working set owned by a Shopper. It remains active
-while a Stripe Embedded Checkout session is pending. Chaos creates one Order and
-one Stripe Checkout Session per payment attempt; Stripe collects the checkout
-address and calculates tax, promotions, shipping, and the final total. Verified
-Stripe webhooks reconcile those facts onto the Order, while Chaos retains
-inventory and fulfillment state. The browser SDK prepares one attributed
+A Cart is a mutable Storefront working set owned by a Shopper. Starting checkout
+freezes the source Cart as `checkout_pending`, creates one durable Checkout
+Attempt and one provisional Order, and returns a new empty active successor Cart
+for future shopping. The source Cart cannot be edited or used to create another
+checkout. Stripe collects the checkout address and calculates tax, promotions,
+shipping, and the final total. Verified Stripe webhooks reconcile those facts onto
+the Order, while Chaos retains inventory and fulfillment state. The browser SDK prepares one attributed
 commerce envelope before the cart or checkout request, but the business request
 remains analytics-agnostic. After a successful response, the SDK sends the
 event through the common `/analytics/events` endpoint with canonical response
 values and projects the same event ID to browser providers. The browser-side
-`InitiateCheckout` event is stored with its `order_id`; the server-side
+`InitiateCheckout` event is stored with its `order_id`; resuming an Attempt does
+not emit a second initiation event. The server-side
 `Purchase` event later looks up that exact event and combines its attribution
 with the final provider-reconciled total. No attribution is stored on the
 Order, and Meta can deduplicate the Pixel and CAPI copies using the shared

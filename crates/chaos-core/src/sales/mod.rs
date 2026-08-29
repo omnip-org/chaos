@@ -43,6 +43,7 @@ pub struct CreateStripeCheckoutInput {
     /// directly when the storefront does not already have one, and a
     /// verified payment webhook backfills it onto the Order afterward.
     pub email: Option<String>,
+    pub return_url: String,
     pub payment_provider: PaymentProvider,
     pub now: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,
@@ -53,6 +54,7 @@ pub(crate) struct StripeCheckoutRequest {
     pub now: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub idempotency_key: uuid::Uuid,
+    pub return_url: String,
 }
 
 pub struct StorefrontSales {
@@ -142,6 +144,7 @@ impl StorefrontSales {
                     now: input.now,
                     expires_at: input.now + Duration::minutes(30),
                     idempotency_key: input.idempotency_key,
+                    return_url: input.return_url,
                 },
             )
             .await
