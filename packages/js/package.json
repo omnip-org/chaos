@@ -28,7 +28,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@stripe/stripe-js": "^4.10.0"
+    "@stripe/stripe-js": "^9.14.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
