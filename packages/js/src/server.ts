@@ -297,7 +297,7 @@ export async function updateCartLineFromRequest(
   );
 }
 
-/** Creates checkout from the cookie-backed active Cart and rotates to a new active Cart. */
+/** Creates checkout from the cookie-backed Cart and rotates to a new active Cart. */
 export async function createEmbeddedCheckoutFromRequest(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
@@ -310,16 +310,51 @@ export async function createEmbeddedCheckoutFromRequest(
     throw invalidRequest("returnUrl is required");
   }
   const email = typeof body.email === "string" && body.email ? body.email : undefined;
-  const session = await getOrCreateCartSession(client, cookies, options);
-  const response = await client.payments.createEmbeddedCheckoutWithCart(
-    session.cart.id,
-    {
-      returnUrl,
-      ...(email ? { email } : {}),
-    },
+  const resolved = resolveSessionOptions(options);
+  const existingCartId = cookies.get(resolved.cartCookieName)?.value;
+  if (existingCartId && client.getShopperToken()) {
+    const activeCart = await client.cart.getActive(existingCartId);
+    if (activeCart) {
+      persistCartSession(cookies, { cart: activeCart.data }, resolved);
+      return createCheckoutWithCart(
+        client,
+        cookies,
+        activeCart.data,
+        returnUrl,
+        email,
+        resolved,
+      );
+    }
+
+    // The response may have been lost after Chaos locked the source Cart but
+    // before the new Cart cookie was written. Resume that Order instead of
+    // attempting checkout against a newly created empty Cart.
+    if (client.getShopperToken()) {
+      const pending = await client.payments.listPendingPaymentOrders();
+      const pendingOrder = pending.data.find(
+        (order) => order.source_cart_id === existingCartId,
+      );
+      if (pendingOrder) {
+        return resumeCheckoutWithNewCart(
+          client,
+          cookies,
+          pendingOrder.order_id,
+          returnUrl,
+          resolved,
+        );
+      }
+    }
+  }
+
+  const session = await getOrCreateCartSession(client, cookies, resolved);
+  return createCheckoutWithCart(
+    client,
+    cookies,
+    session.cart,
+    returnUrl,
+    email,
+    resolved,
   );
-  persistCartSession(cookies, response.data, options);
-  return response;
 }
 
 /** Lists Orders that can still be resumed for the current shopper. */
@@ -346,6 +381,35 @@ export async function resumeEmbeddedCheckoutFromRequest(
   if (returnUrl !== undefined && (typeof returnUrl !== "string" || !returnUrl)) {
     throw invalidRequest("returnUrl is invalid");
   }
+  return resumeCheckoutWithNewCart(client, cookies, orderId, returnUrl, options);
+}
+
+async function createCheckoutWithCart(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  cart: Cart,
+  returnUrl: string,
+  email: string | undefined,
+  options: StorefrontSessionOptions,
+): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
+  const response = await client.payments.createEmbeddedCheckoutWithCart(
+    cart.id,
+    {
+      returnUrl,
+      ...(email ? { email } : {}),
+    },
+  );
+  persistCartSession(cookies, response.data, options);
+  return response;
+}
+
+async function resumeCheckoutWithNewCart(
+  client: ChaosStorefrontClient,
+  cookies: StorefrontCookieJar,
+  orderId: string,
+  returnUrl: string | undefined,
+  options: StorefrontSessionOptions,
+): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
   const checkout = await client.payments.resumeEmbeddedCheckout(
     orderId,
     returnUrl === undefined ? undefined : { returnUrl },

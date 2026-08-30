@@ -50,6 +50,32 @@ construct HTTP routes, MCP state, OIDC verification, or JWT services.
 
 Bounded contexts may depend on another context only through a small core-level interface when there is a real external or test seam. HTTP and MCP handlers do not execute SQL. Database records do not become domain entities.
 
+## Public contract boundary
+
+`packages/js` is the source of truth for the public Storefront HTTP contract.
+It is the only place where storefront request paths, wire DTOs, response
+envelopes, and browser/server checkout bridges are defined. A consuming
+storefront must use those exported SDK resources and helpers rather than
+recreating a transport client, copying DTOs, or calling a Chaos Storefront path
+directly for a capability already exposed by the SDK.
+
+The boundary has two independent safeguards:
+
+- TypeScript annotations such as `request<T>()` describe expected data but do
+  not validate JSON at runtime. SDK resource methods must validate response
+  envelopes before reading fields that control commerce or payment behavior.
+- Production integration code must not use `as any`, `as unknown as`, or an
+  equivalent cast to force an external response into a local contract. A cast
+  is acceptable only in an isolated test double or infrastructure adapter with
+  an explicit reason; the actual JSON shape must still be covered by a test.
+
+A wire-contract change is a vertical change. Update the API DTO/handler, the
+`chaos-js` type and runtime validator, the SDK tests/fixtures, and every
+consumer's locked dependency in the same release sequence. The consumer must
+be checked against the published SDK version that the deployment will run;
+building against a locally available or semver-compatible package is not proof
+that the deployed API and storefront agree.
+
 ## Identity
 
 Identity owns:
@@ -137,9 +163,12 @@ the form and stores final provider facts on the Order after a verified webhook.
 
 The browser may lose the response, unmount Stripe, or return from Stripe without
 paying. All of those paths resume the same pending Order and stored client
-action. A successful payment confirms the Order and clears the action; a
-provider failure or expiry cancels the Order, releases the reservation, and
-clears the action. The source Cart remains `locked` in every payment outcome.
+action. The server checkout bridge also checks for a pending Order belonging to
+the Cart cookie before creating a replacement Cart, so a lost response cannot
+turn a retry into checkout against an empty Cart. A successful payment confirms
+the Order and clears the action; a provider failure or expiry cancels the Order,
+releases the reservation, and clears the action. The source Cart remains
+`locked` in every payment outcome.
 There is no local checkout expiry job: the provider callback is the source of
 truth. New products are added only to a separate active Cart and a later
 checkout creates a new Order.

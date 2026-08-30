@@ -123,6 +123,22 @@ an active default channel intentionally blocks the migration for operator repair
 - Keep transactions short and never perform network calls while holding database locks.
 - Add comments only for non-obvious invariants or operational constraints.
 
+### Named SQL row contracts
+
+`sqlx::query_as` with a named `FromRow` struct maps result columns by their
+runtime names. Rust field names do not repair a missing or changed SQL column,
+and expressions can receive a database-generated name that is not the Rust
+field name. Therefore every named-row projection must give every expression,
+cast, `CASE`, `COALESCE`, `NULLIF`, and joined/qualified value an explicit
+`AS <rust_field_name>` alias. Do not rely on positional order or an inferred
+expression label for a named row.
+
+Prefer SQLx compile-time query macros when the repository's build has the
+migrated schema or offline metadata available. When runtime `query_as` is
+required, the owning repository and its integration test must be updated in
+the same change. A migration or query projection is not complete until a
+fresh migrated database exercises the affected read/write path.
+
 ### PostgreSQL enum and status columns
 
 PostgreSQL enum columns are typed boundaries. Application SQL must not rely on

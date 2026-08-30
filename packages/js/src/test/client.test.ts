@@ -535,6 +535,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
         return jsonResponse(201, {
           data: {
             order_id: "order-1",
+            source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -574,6 +575,67 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   });
 });
 
+test("payments reject a checkout response that is missing required fields", async () => {
+  let sequence = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => `id-${++sequence}`,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, {
+          data: {
+            id: "cart-1",
+            version: 4,
+            currency: "USD",
+            subtotal_amount_minor: 2_000,
+            lines: [],
+          },
+        });
+      }
+      return jsonResponse(201, { data: { order_id: "order-1" } });
+    }) as unknown as typeof fetch,
+  });
+
+  await assert.rejects(
+    client.payments.createEmbeddedCheckout("cart-1", {
+      returnUrl: "https://shop.example.com/checkout/success",
+    }),
+    (error: unknown) =>
+      error instanceof ChaosApiError &&
+      error.status === 502 &&
+      error.code === "invalid_checkout_response",
+  );
+});
+
+test("payments reject malformed pending payment orders", async () => {
+  let sequence = 0;
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    randomUUID: () => `id-${++sequence}`,
+    fetch: (async (url: string) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      return jsonResponse(200, { data: [{ order_id: "order-1" }] });
+    }) as unknown as typeof fetch,
+  });
+
+  await assert.rejects(
+    client.payments.listPendingPaymentOrders(),
+    (error: unknown) =>
+      error instanceof ChaosApiError &&
+      error.status === 502 &&
+      error.code === "invalid_pending_payment_orders_response",
+  );
+});
+
 test("payments create an embedded Checkout session without an email", async () => {
   const requests: Array<{ url: string; body: string | undefined }> = [];
   let sequence = 0;
@@ -605,6 +667,7 @@ test("payments create an embedded Checkout session without an email", async () =
         return jsonResponse(201, {
           data: {
             order_id: "order-1",
+            source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
               public_key: "pk_test_stripe",
@@ -671,6 +734,7 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
       return jsonResponse(201, {
         data: {
           order_id: "55555555-5555-4555-8555-555555555555",
+          source_cart_id: "cart-1",
           client_action: {
             type: "mount_embedded_checkout",
             public_key: "pk_test_stripe",
@@ -838,7 +902,17 @@ test("checkout records InitiateCheckout after the session is created", async () 
       };
     }
     requestBody = options.body;
-    return { data: { order_id: "55555555-5555-4555-8555-555555555555" } };
+    return {
+      data: {
+        order_id: "55555555-5555-4555-8555-555555555555",
+        source_cart_id: "cart-1",
+        client_action: {
+          type: "mount_embedded_checkout",
+          public_key: "pk_test_stripe",
+          client_token: "cs_test_secret",
+        },
+      },
+    };
   };
 
   await client.payments.createEmbeddedCheckout("cart-1", {

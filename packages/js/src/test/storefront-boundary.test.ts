@@ -237,7 +237,12 @@ test("server checkout bridge rotates away from a locked source cart", async () =
     },
   };
   const client = {
+    getShopperToken: () => "shopper-token",
     cart: {
+      getActive: async (cartId: string) => {
+        assert.equal(cartId, "source-cart");
+        return null;
+      },
       getOrCreate: async (cartId?: string) => {
         assert.equal(cartId, "source-cart");
         usedCreate = true;
@@ -245,6 +250,7 @@ test("server checkout bridge rotates away from a locked source cart", async () =
       },
     },
     payments: {
+      listPendingPaymentOrders: async () => ({ data: [] }),
       createEmbeddedCheckoutWithCart: async (cartId: string) => {
         assert.equal(cartId, "active-cart");
         return response;
@@ -266,6 +272,82 @@ test("server checkout bridge rotates away from a locked source cart", async () =
 
   assert.equal(usedCreate, true);
   assert.deepEqual(result, response);
+  assert.equal(writes.get("chaos_cart_id"), "active-cart");
+});
+
+test("server checkout bridge resumes a pending Order after a lost response", async () => {
+  const writes = new Map<string, string>([["chaos_cart_id", "source-cart"]]);
+  const cookies: StorefrontCookieJar = {
+    get: (name) => {
+      const value = writes.get(name);
+      return value === undefined ? undefined : { value };
+    },
+    set: (name, value) => writes.set(name, value),
+  };
+  const checkout = {
+    order_id: "00000000-0000-4000-8000-000000000071",
+    source_cart_id: "source-cart",
+    client_action: {
+      type: "mount_embedded_checkout" as const,
+      public_key: "pk_test_store",
+      client_token: "cs_test_token",
+    },
+  };
+  let resumed = false;
+  let createdFromCart = false;
+  const client = {
+    getShopperToken: () => "shopper-token",
+    cart: {
+      getActive: async (cartId: string) => {
+        assert.equal(cartId, "source-cart");
+        return null;
+      },
+      getOrCreate: async () => {
+        return { data: { ...cart([]), id: "active-cart" } };
+      },
+    },
+    payments: {
+      listPendingPaymentOrders: async () => ({
+        data: [
+          {
+            order_id: checkout.order_id,
+            source_cart_id: checkout.source_cart_id,
+            currency: "USD",
+            subtotal_amount_minor: 0,
+            created_at: "2026-08-29T11:30:00Z",
+            updated_at: "2026-08-29T11:31:00Z",
+          },
+        ],
+      }),
+      resumeEmbeddedCheckout: async (orderId: string, options?: { returnUrl: string }) => {
+        assert.equal(orderId, checkout.order_id);
+        assert.equal(options?.returnUrl, "https://shop.example/checkout/confirmation");
+        resumed = true;
+        return { data: checkout };
+      },
+      createEmbeddedCheckoutWithCart: async () => {
+        createdFromCart = true;
+        throw new Error("must resume the pending Order");
+      },
+    },
+  } as unknown as ChaosStorefrontClient;
+
+  const result = await createEmbeddedCheckoutFromRequest(
+    client,
+    cookies,
+    new Request("https://shop.example/checkout", {
+      method: "POST",
+      body: JSON.stringify({
+        returnUrl: "https://shop.example/checkout/confirmation",
+      }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+
+  assert.equal(resumed, true);
+  assert.equal(createdFromCart, false);
+  assert.equal(result.data.checkout.order_id, checkout.order_id);
+  assert.equal(result.data.cart.id, "active-cart");
   assert.equal(writes.get("chaos_cart_id"), "active-cart");
 });
 

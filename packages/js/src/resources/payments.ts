@@ -1,4 +1,5 @@
 import type { ChaosStorefrontClient } from "../client.js";
+import { ChaosApiError } from "../errors.js";
 import type {
   Cart,
   DataEnvelope,
@@ -47,7 +48,7 @@ export class PaymentsResource {
     if (!orderId.trim()) {
       throw new TypeError("orderId is required");
     }
-    return this.client.request<DataEnvelope<EmbeddedCheckoutSession>>(
+    const response = await this.client.request<unknown>(
       `/orders/${encodeURIComponent(orderId)}/checkout`,
       {
         method: "POST",
@@ -55,13 +56,15 @@ export class PaymentsResource {
         requiresShopperToken: true,
       },
     );
+    return requireEmbeddedCheckoutSession(response);
   }
 
-  listPendingPaymentOrders(): Promise<DataEnvelope<PendingPaymentOrder[]>> {
-    return this.client.request<DataEnvelope<PendingPaymentOrder[]>>(
+  async listPendingPaymentOrders(): Promise<DataEnvelope<PendingPaymentOrder[]>> {
+    const response = await this.client.request<unknown>(
       "/orders/pending-payment",
       { method: "GET", requiresShopperToken: true },
     );
+    return requirePendingPaymentOrders(response);
   }
 
   private async createEmbeddedCheckoutForCart(
@@ -69,20 +72,22 @@ export class PaymentsResource {
     options: EmbeddedCheckoutOptions,
   ): Promise<DataEnvelope<EmbeddedCheckoutSession>> {
     const body = toEmbeddedCheckoutRequest(options);
-    const response = await this.client.request<
-      DataEnvelope<EmbeddedCheckoutSession>
-    >(`/carts/${encodeURIComponent(cart.id)}/checkout`, {
-      method: "POST",
-      body,
-      requiresShopperToken: true,
-      idempotencyKey: checkoutIdempotencyKey(cart, body),
-    });
+    const response = await this.client.request<unknown>(
+      `/carts/${encodeURIComponent(cart.id)}/checkout`,
+      {
+        method: "POST",
+        body,
+        requiresShopperToken: true,
+        idempotencyKey: checkoutIdempotencyKey(cart, body),
+      },
+    );
+    const checkout = requireEmbeddedCheckoutSession(response);
 
     if (cart.status === "active") {
       try {
         this.client.analytics?.recordInitiateCheckout({
           cartId: cart.id,
-          orderId: response.data.order_id,
+          orderId: checkout.data.order_id,
           valueMinor: cart.subtotal_amount_minor,
           currency: cart.currency,
           items: cart.lines.map((line) => ({
@@ -96,8 +101,79 @@ export class PaymentsResource {
         // The checkout session already exists; analytics is best-effort.
       }
     }
-    return response;
+    return checkout;
   }
+}
+
+function requireEmbeddedCheckoutSession(
+  value: unknown,
+): DataEnvelope<EmbeddedCheckoutSession> {
+  const data = requireData(value, "invalid_checkout_response");
+  if (!isEmbeddedCheckoutSession(data)) {
+    throw new ChaosApiError(
+      502,
+      "invalid_checkout_response",
+      "storefront checkout response is invalid",
+    );
+  }
+  return { data };
+}
+
+function requirePendingPaymentOrders(
+  value: unknown,
+): DataEnvelope<PendingPaymentOrder[]> {
+  const data = requireData(value, "invalid_pending_payment_orders_response");
+  if (
+    !Array.isArray(data) ||
+    !data.every(isPendingPaymentOrder)
+  ) {
+    throw new ChaosApiError(
+      502,
+      "invalid_pending_payment_orders_response",
+      "storefront pending payment orders response is invalid",
+    );
+  }
+  return { data };
+}
+
+function requireData(value: unknown, code: string): unknown {
+  if (!isRecord(value) || !("data" in value) || value.data === null) {
+    throw new ChaosApiError(502, code, "storefront response is invalid");
+  }
+  return value.data;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isEmbeddedCheckoutSession(
+  value: unknown,
+): value is EmbeddedCheckoutSession {
+  if (!isRecord(value) || !isRecord(value.client_action)) return false;
+  return (
+    isNonEmptyString(value.order_id) &&
+    isNonEmptyString(value.source_cart_id) &&
+    value.client_action.type === "mount_embedded_checkout" &&
+    isNonEmptyString(value.client_action.public_key) &&
+    isNonEmptyString(value.client_action.client_token)
+  );
+}
+
+function isPendingPaymentOrder(value: unknown): value is PendingPaymentOrder {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.order_id) &&
+    isNonEmptyString(value.source_cart_id) &&
+    isNonEmptyString(value.currency) &&
+    Number.isSafeInteger(value.subtotal_amount_minor) &&
+    isNonEmptyString(value.created_at) &&
+    isNonEmptyString(value.updated_at)
+  );
 }
 
 function toEmbeddedCheckoutRequest(

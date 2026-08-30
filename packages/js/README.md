@@ -78,6 +78,9 @@ const session = creation.checkout;
 // The Order is the durable "waiting for payment" identity. Calling resume with
 // that ID returns the same provider client action and does not create another
 // Stripe Session.
+// If an SSR checkout response is lost before its Cart cookie is rotated, the
+// server helper finds the pending Order for that source Cart and resumes it;
+// it never retries checkout against a newly created empty Cart.
 const pending = await chaos.payments.listPendingPaymentOrders();
 const resumed = await chaos.payments.resumeEmbeddedCheckout(
   pending.data[0]!.order_id,
@@ -137,6 +140,17 @@ cookies, and the corresponding Chaos operation. Framework routes only adapt
 the response or redirect. Browser bridge methods own same-origin paths,
 credentials, response envelopes, typed errors, and successful cart/checkout
 analytics.
+
+### Contract boundary
+
+This package is the canonical Storefront wire contract. A consuming storefront
+must import its request helpers, resources, types, and response validation; it
+must not duplicate Chaos DTOs, construct equivalent API paths, or cast a raw
+response into a local interface. TypeScript generics are not runtime validation,
+so resource methods validate payment and other high-risk response shapes before
+returning them. When the API contract changes, publish this package first,
+update the consumer's lockfile to that exact release, and run the SDK and
+consumer checks against the same version.
 
 Pass `analytics: false` to `createStorefrontClient` to skip constructing the
 collector entirely. Collection starts immediately when the analytics client is
