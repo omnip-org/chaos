@@ -1,4 +1,4 @@
-mod channel_api;
+mod api;
 mod health;
 mod oauth;
 mod shared;
@@ -367,7 +367,7 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", health::routes())
         .merge(oauth::routes())
-        .nest("/api/v1", channel_api::v1::routes())
+        .nest("/api/v1", api::v1::routes())
         .nest("/webhooks/v1", webhooks::v1::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)

@@ -59,9 +59,9 @@ HTTP delivery code is grouped by public responsibility under
 `crates/chaos-api/src/http/`:
 
 - `oauth.rs` contains MCP OAuth discovery, authorization, consent, and token endpoints;
-- `channel_api/` contains the versioned public channel API;
+- `api/` contains the versioned public channel API;
 - `webhooks/` contains provider callback ingress outside the public channel API;
-- `channel_api/v1/carts.rs` contains cart delivery and `checkouts.rs` contains the Cart-based checkout handoff; Provider callbacks are mounted under `/webhooks/v1`;
+- `api/v1/carts.rs` contains cart delivery and `checkouts.rs` contains the Cart-based checkout handoff; Provider callbacks are mounted under `/webhooks/v1`;
 - `health.rs` contains health checks;
 - `shared/` contains transport extractors, envelopes, and test support.
 

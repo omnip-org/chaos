@@ -27,15 +27,15 @@ replacement, then passes the relevant services into HTTP and MCP delivery.
 | --- | --- | --- | --- | --- | --- | --- |
 | Identity and MCP OAuth | `crates/chaos-api/src/http/oauth.rs` | — | `crates/chaos-core/src/identity/` | `crates/chaos-core/src/contracts/identity.rs` | `crates/chaos-core/src/adapters/security/identity.rs`, `crates/chaos-core/src/adapters/security/mcp_oauth.rs` | — |
 | Stores, memberships, and shipping countries | — | `crates/chaos-api/src/mcp/tools/store/` | `crates/chaos-core/src/store/` | `crates/chaos-core/src/contracts/store*.rs` | `crates/chaos-core/src/adapters/postgres/store/` | — |
-| Catalog, media, and reviews | `crates/chaos-api/src/http/channel_api/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-core/src/catalog/` | `crates/chaos-core/src/contracts/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-core/src/adapters/postgres/catalog/`, `adapters/storage/media.rs` | Search indexing in `crates/chaos-core/src/adapters/postgres/search/` |
+| Catalog, media, and reviews | `crates/chaos-api/src/http/api/v1/products.rs`, `collections.rs` | `crates/chaos-api/src/mcp/tools/catalog/` | `crates/chaos-core/src/catalog/` | `crates/chaos-core/src/contracts/catalog*.rs`, `collection.rs`, `media.rs`, `review.rs` | `crates/chaos-core/src/adapters/postgres/catalog/`, `adapters/storage/media.rs` | Search indexing in `crates/chaos-core/src/adapters/postgres/search/` |
 | Price lists | — | `crates/chaos-api/src/mcp/tools/pricing/` | `crates/chaos-core/src/pricing/` | `crates/chaos-core/src/contracts/pricing.rs` | `crates/chaos-core/src/adapters/postgres/pricing/` | — |
-| Storefront catalog | `crates/chaos-api/src/http/channel_api/v1/products.rs`, `collections.rs` | — | `crates/chaos-core/src/catalog/storefront.rs` | `crates/chaos-core/src/contracts/storefront_catalog.rs` | `crates/chaos-core/src/adapters/postgres/sales/storefront_catalog.rs` | Search indexer in `crates/chaos-core/src/adapters/postgres/search/`; Product media rules resolve exact Variant -> Option Value -> Product fallback |
-| Shopper, cart, checkout, and order tracking | `crates/chaos-api/src/http/channel_api/v1/shopper.rs`, `carts.rs`, `checkouts.rs`, `order_tracking.rs` | `crates/chaos-api/src/mcp/tools/operations/orders.rs` | `crates/chaos-core/src/sales/` | `crates/chaos-core/src/contracts/sales.rs` | `crates/chaos-core/src/adapters/postgres/sales/` | Provider expiry callbacks release reservations |
+| Storefront catalog | `crates/chaos-api/src/http/api/v1/products.rs`, `collections.rs` | — | `crates/chaos-core/src/catalog/storefront.rs` | `crates/chaos-core/src/contracts/storefront_catalog.rs` | `crates/chaos-core/src/adapters/postgres/sales/storefront_catalog.rs` | Search indexer in `crates/chaos-core/src/adapters/postgres/search/`; Product media rules resolve exact Variant -> Option Value -> Product fallback |
+| Shopper, cart, checkout, and order tracking | `crates/chaos-api/src/http/api/v1/shopper.rs`, `carts.rs`, `checkouts.rs`, `order_tracking.rs` | `crates/chaos-api/src/mcp/tools/operations/orders.rs` | `crates/chaos-core/src/sales/` | `crates/chaos-core/src/contracts/sales.rs` | `crates/chaos-core/src/adapters/postgres/sales/` | Provider expiry callbacks release reservations |
 | Inventory and reservations | — | `crates/chaos-api/src/mcp/tools/operations/inventory.rs` | `crates/chaos-core/src/inventory/` | `crates/chaos-core/src/contracts/inventory.rs` | `crates/chaos-core/src/adapters/postgres/inventory/` | Reservation transitions are called by sales and payment workflows |
-| Payments and refunds | `crates/chaos-api/src/http/channel_api/v1/checkouts.rs`, `crates/chaos-api/src/http/webhooks/v1/payments.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/payments/` | `crates/chaos-core/src/contracts/stripe.rs` (`PaymentProvider`, registry) | `crates/chaos-core/src/adapters/postgres/payments/`, `adapters/integrations/stripe.rs` | Checkout Session creation is synchronous; refund commands use `chaos_payment_commands`, and verified payment webhooks use `chaos_webhooks`; payment state remains in `commerce` |
+| Payments and refunds | `crates/chaos-api/src/http/api/v1/checkouts.rs`, `crates/chaos-api/src/http/webhooks/v1/payments.rs` | `crates/chaos-api/src/mcp/tools/operations/payments.rs` | `crates/chaos-core/src/payments/` | `crates/chaos-core/src/contracts/stripe.rs` (`PaymentProvider`, registry) | `crates/chaos-core/src/adapters/postgres/payments/`, `adapters/integrations/stripe.rs` | Checkout Session creation is synchronous; refund commands use `chaos_payment_commands`, and verified payment webhooks use `chaos_webhooks`; payment state remains in `commerce` |
 | Email delivery | `crates/chaos-api/src/http/webhooks/v1/email.rs` mounted at `/webhooks/v1` | `crates/chaos-api/src/mcp/tools/integrations/email.rs`, `provider_secrets.rs` | `crates/chaos-core/src/email.rs` | `crates/chaos-core/src/contracts/email.rs` | `crates/chaos-core/src/adapters/postgres/integrations/email.rs`, `adapters/integrations/resend.rs` | `order.confirmed` routes to `chaos_email_commands`; the global server-owned template renders order data and Store brand tokens live under the Email account's `integration.provider_accounts.configuration.brand`; verified email events use the shared `chaos_webhooks` inbox |
 | Fulfillment (manual shipping) | — | `crates/chaos-api/src/mcp/tools/operations/fulfillment.rs` | `crates/chaos-core/src/fulfillment/` and `shipping.rs` | `crates/chaos-core/src/contracts/shipping.rs` | `crates/chaos-core/src/adapters/postgres/fulfillment/`, `adapters/integrations/manual_shipping.rs` | Fulfillment state remains in `commerce`; manual account lookup and Shipping dispatch use `integration` and `chaos_shipping_commands`; Returns and carrier integration are not implemented |
-| Analytics and Meta delivery | `crates/chaos-api/src/http/channel_api/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics/` | `crates/chaos-core/src/contracts/analytics.rs` | `crates/chaos-core/src/adapters/postgres/analytics/`, `adapters/integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
+| Analytics and Meta delivery | `crates/chaos-api/src/http/api/v1/analytics.rs` | `crates/chaos-api/src/mcp/tools/integrations/analytics.rs` | `crates/chaos-core/src/analytics/` | `crates/chaos-core/src/contracts/analytics.rs` | `crates/chaos-core/src/adapters/postgres/analytics/`, `adapters/integrations/analytics/` | Analytics delivery worker in `crates/chaos-worker/src/workers.rs` |
 | Provider secrets | — | `crates/chaos-api/src/mcp/tools/integrations/provider_secrets.rs` | `crates/chaos-core/src/store/provider_secrets.rs` | `crates/chaos-core/src/contracts/provider_secret.rs` | `crates/chaos-core/src/adapters/security/provider_secrets.rs` and Store repositories | — |
 
 ## Important cross-capability flows
@@ -67,7 +67,7 @@ MCP catalog/products.rs
 Storefront visibility continues through:
 
 ```text
-HTTP channel_api/v1/products.rs + collections.rs
+HTTP api/v1/products.rs + collections.rs
   -> chaos-core catalog/storefront.rs
   -> contracts/storefront_catalog.rs
   -> adapters/postgres/sales/storefront_catalog.rs
@@ -77,13 +77,13 @@ HTTP channel_api/v1/products.rs + collections.rs
 ### Checkout and payment
 
 ```text
-HTTP channel_api/v1/shopper.rs + carts.rs + checkouts.rs + order_tracking.rs
+HTTP api/v1/shopper.rs + carts.rs + checkouts.rs + order_tracking.rs
   -> chaos-core sales/
   -> contracts/sales.rs
   -> adapters/postgres/sales/
   -> cart / checkout / order snapshot + inventory reservation
 
-HTTP channel_api/v1/checkouts.rs + webhooks/v1/{payments,email}.rs (mounted at /webhooks/v1)
+HTTP api/v1/checkouts.rs + webhooks/v1/{payments,email}.rs (mounted at /webhooks/v1)
   -> chaos-core payments/
   -> contracts/stripe.rs (`PaymentProvider` port and registry)
   -> adapters/postgres/payments/
@@ -98,7 +98,7 @@ entry point.
 ### Analytics and Meta
 
 ```text
-HTTP channel_api/v1/analytics.rs
+HTTP api/v1/analytics.rs
   -> chaos-core analytics/
   -> contracts/analytics.rs
   -> adapters/postgres/analytics/
