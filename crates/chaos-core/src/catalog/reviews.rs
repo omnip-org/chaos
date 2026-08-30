@@ -39,7 +39,6 @@ pub struct CreateManualReviewInput {
     pub author_email: Option<String>,
     pub source_channel: String,
     pub source_reference: Option<String>,
-    pub publication_consent_confirmed: bool,
     pub now: OffsetDateTime,
 }
 
@@ -101,7 +100,6 @@ impl ReviewAdministration {
                     origin: ReviewOrigin::Storefront,
                     source_channel: None,
                     source_reference: None,
-                    publication_consent_confirmed: true,
                     created_by_user_id: None,
                     created_at: input.now,
                 },
@@ -114,12 +112,6 @@ impl ReviewAdministration {
         input: CreateManualReviewInput,
     ) -> Result<ReviewId, ApplicationError> {
         input.actor.require_human()?;
-        if !input.publication_consent_confirmed {
-            return Err(validation(
-                "publication_consent_confirmed",
-                "must be true for a manually imported review",
-            ));
-        }
         let source_channel = input.source_channel.trim().to_owned();
         validate_bounded_text(&source_channel, "source_channel", 80)?;
         let source_reference = input.source_reference.map(|value| value.trim().to_owned());
@@ -145,7 +137,6 @@ impl ReviewAdministration {
                     content,
                     source_channel,
                     source_reference,
-                    publication_consent_confirmed: input.publication_consent_confirmed,
                     created_by_user_id: input.actor.audit_user_id(),
                     created_at: input.now,
                 },

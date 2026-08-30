@@ -272,7 +272,6 @@ CREATE TABLE commerce.reviews (
     origin                        commerce.review_origin  NOT NULL DEFAULT 'storefront',
     source_channel                TEXT,
     source_reference              TEXT,
-    publication_consent_confirmed BOOLEAN                 NOT NULL DEFAULT true,
     created_by_user_id            UUID,
     approved_at                   TIMESTAMPTZ,
     created_at                    TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -298,14 +297,12 @@ CREATE TABLE commerce.reviews (
             AND source_channel IS NULL
             AND source_reference IS NULL
             AND created_by_user_id IS NULL
-            AND publication_consent_confirmed
         )
         OR (
             NOT is_staff_reply
             AND origin = 'manual'
             AND source_channel IS NOT NULL
             AND created_by_user_id IS NOT NULL
-            AND publication_consent_confirmed
         )
         OR (
             NOT is_staff_reply
@@ -313,7 +310,6 @@ CREATE TABLE commerce.reviews (
             AND source_channel IS NULL
             AND source_reference IS NULL
             AND created_by_user_id IS NULL
-            AND publication_consent_confirmed
         )
     )
 );

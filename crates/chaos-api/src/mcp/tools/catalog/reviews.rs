@@ -62,8 +62,6 @@ pub struct CreateManualReviewParams {
     /// An internal conversation or ticket reference. Do not put the full private message here.
     #[serde(default)]
     pub source_reference: Option<String>,
-    /// Must be explicitly set to true after the customer agreed to public display.
-    pub publication_consent_confirmed: bool,
     /// Must be explicitly set to true. This creates a pending review.
     pub confirm: bool,
 }
@@ -109,9 +107,8 @@ impl ChaosMcp {
                         as a private message, email, or phone call. The review starts pending and \
                         remains invisible on the Storefront until approved. The rating must be \
                         explicitly supplied; do not infer it. This tool does not mark the customer \
-                        as a verified buyer. Set publication_consent_confirmed: true only after \
-                        the customer agreed that the review and attached images may be published. \
-                        Requires confirm: true."
+                        as a verified buyer. Only call this tool after the customer agreed that the \
+                        review and attached images may be published. Requires confirm: true."
     )]
     async fn create_manual_review(
         &self,
@@ -151,7 +148,6 @@ impl ChaosMcp {
                 author_email: params.author_email,
                 source_channel: params.source_channel,
                 source_reference: params.source_reference,
-                publication_consent_confirmed: params.publication_consent_confirmed,
                 now: self.state.clock.now(),
             })
             .await

@@ -98,7 +98,7 @@ CREATE TABLE integration.provider_webhook_inbox (
     CONSTRAINT provider_webhook_inbox_provider_event_type_length_check  CHECK (length(trim(provider_event_type)) BETWEEN 1 AND 255),
     CONSTRAINT provider_webhook_inbox_normalized_event_type_check       CHECK (normalized_event_type IS NULL OR normalized_event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
     CONSTRAINT provider_webhook_inbox_payload_object_check              CHECK (jsonb_typeof(payload) = 'object'),
-    CONSTRAINT provider_webhook_inbox_payload_size_check                CHECK (octet_length(payload::text) <= 32768),
+    CONSTRAINT provider_webhook_inbox_payload_size_check                CHECK (octet_length(payload::text) <= 1048576),
     CONSTRAINT provider_webhook_inbox_aggregate_shape_check             CHECK ((aggregate_type IS NULL AND aggregate_id IS NULL) OR (aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL AND aggregate_type ~ '^[a-z][a-z0-9_]*$')),
     CONSTRAINT provider_webhook_inbox_status_timestamps_check           CHECK ((processing_status = 'pending' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'processed' AND processed_at IS NOT NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'unsupported' AND processed_at IS NULL AND unsupported_at IS NOT NULL AND failed_at IS NULL) OR (processing_status = 'failed' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NOT NULL)),
     CONSTRAINT provider_webhook_inbox_last_error_length_check           CHECK (last_error IS NULL OR length(last_error) <= 2000)
@@ -107,26 +107,13 @@ CREATE TABLE integration.provider_webhook_inbox (
 CREATE INDEX event_outbox_pending_idx ON integration.event_outbox (created_at, id) WHERE processed_at IS NULL AND failed_at IS NULL;
 CREATE INDEX event_outbox_store_idx ON integration.event_outbox (store_id, id);
 CREATE INDEX event_outbox_event_route_idx ON integration.event_outbox (internal_event_type, created_at, id);
-CREATE UNIQUE INDEX event_outbox_pending_search_product_key_idx
-    ON integration.event_outbox (store_id, aggregate_id, internal_event_type)
-    WHERE internal_event_type = 'search.product.changed'
-      AND processed_at IS NULL
-      AND failed_at IS NULL;
-CREATE INDEX event_outbox_terminal_retention_idx
-    ON integration.event_outbox ((COALESCE(processed_at, failed_at)), created_at, id)
-    WHERE processed_at IS NOT NULL OR failed_at IS NOT NULL;
+CREATE UNIQUE INDEX event_outbox_pending_search_product_key_idx ON integration.event_outbox (store_id, aggregate_id, internal_event_type) WHERE internal_event_type = 'search.product.changed' AND processed_at IS NULL AND failed_at IS NULL;
+CREATE INDEX event_outbox_terminal_retention_idx ON integration.event_outbox ((COALESCE(processed_at, failed_at)), created_at, id) WHERE processed_at IS NOT NULL OR failed_at IS NOT NULL;
 CREATE INDEX provider_accounts_store_capability_created_idx ON integration.provider_accounts (store_id, capability, created_at DESC, id DESC);
 CREATE INDEX provider_webhook_inbox_claim_idx ON integration.provider_webhook_inbox (created_at, id) WHERE processing_status = 'pending';
 CREATE INDEX provider_webhook_inbox_order_idx ON integration.provider_webhook_inbox (store_id, aggregate_id, created_at DESC) WHERE aggregate_id IS NOT NULL;
-CREATE INDEX provider_webhook_inbox_provider_account_idx
-    ON integration.provider_webhook_inbox (store_id, provider_account_id, capability, provider, created_at, id);
-CREATE INDEX provider_webhook_inbox_terminal_retention_idx
-    ON integration.provider_webhook_inbox (
-        (COALESCE(processed_at, unsupported_at, failed_at)),
-        received_at,
-        id
-    )
-    WHERE processing_status <> 'pending';
+CREATE INDEX provider_webhook_inbox_provider_account_idx ON integration.provider_webhook_inbox (store_id, provider_account_id, capability, provider, created_at, id);
+CREATE INDEX provider_webhook_inbox_terminal_retention_idx ON integration.provider_webhook_inbox ((COALESCE(processed_at, unsupported_at, failed_at)), received_at, id) WHERE processing_status <> 'pending';
 
 CREATE FUNCTION integration.prevent_provider_account_identity_change ()
 RETURNS TRIGGER

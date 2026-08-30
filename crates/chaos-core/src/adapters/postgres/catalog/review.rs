@@ -58,7 +58,6 @@ struct ReviewInsertRecord {
     origin: ReviewOrigin,
     source_channel: Option<String>,
     source_reference: Option<String>,
-    publication_consent_confirmed: bool,
     created_by_user_id: Option<chaos_domain::identity::UserId>,
     created_at: OffsetDateTime,
 }
@@ -136,7 +135,6 @@ impl PostgresReviewRepository {
                 origin: record.origin,
                 source_channel: record.source_channel,
                 source_reference: record.source_reference,
-                publication_consent_confirmed: record.publication_consent_confirmed,
                 created_by_user_id: record.created_by_user_id,
                 created_at: record.created_at,
             },
@@ -162,7 +160,6 @@ impl PostgresReviewRepository {
                 origin: ReviewOrigin::Manual,
                 source_channel: Some(record.source_channel),
                 source_reference: record.source_reference,
-                publication_consent_confirmed: record.publication_consent_confirmed,
                 created_by_user_id: record.created_by_user_id,
                 created_at: record.created_at,
             },
@@ -418,9 +415,9 @@ async fn insert_review(
         "INSERT INTO commerce.reviews \
          (id, store_id, product_id, rating, title, content, author_name, author_email, \
           status, is_staff_reply, verified_buyer, origin, source_channel, source_reference, \
-          publication_consent_confirmed, created_by_user_id, created_at, updated_at) \
+          created_by_user_id, created_at, updated_at) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',false,false,$9::commerce.review_origin,\
-                 $10,$11,$12,$13,$14,$14)",
+                 $10,$11,$12,$13,$13)",
     )
     .bind(record.id.as_uuid())
     .bind(record.store_id.as_uuid())
@@ -433,7 +430,6 @@ async fn insert_review(
     .bind(record.origin.as_str())
     .bind(record.source_channel)
     .bind(record.source_reference)
-    .bind(record.publication_consent_confirmed)
     .bind(record.created_by_user_id.map(|id| id.as_uuid()))
     .bind(record.created_at)
     .execute(&mut **tx)

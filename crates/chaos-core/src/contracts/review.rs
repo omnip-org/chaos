@@ -46,7 +46,6 @@ pub struct SubmitReviewRecord {
     pub origin: ReviewOrigin,
     pub source_channel: Option<String>,
     pub source_reference: Option<String>,
-    pub publication_consent_confirmed: bool,
     pub created_by_user_id: Option<chaos_domain::identity::UserId>,
     pub created_at: OffsetDateTime,
 }
@@ -58,7 +57,6 @@ pub struct CreateManualReviewRecord {
     pub content: ReviewContent,
     pub source_channel: String,
     pub source_reference: Option<String>,
-    pub publication_consent_confirmed: bool,
     pub created_by_user_id: Option<chaos_domain::identity::UserId>,
     pub created_at: OffsetDateTime,
 }
