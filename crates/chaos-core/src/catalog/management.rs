@@ -275,7 +275,7 @@ impl CatalogManagement {
             .require_publishable()?;
         if !transaction.active_channel_exists(input.channel_id).await? {
             return Err(ApplicationError::NotFound {
-                resource: "sales_channel",
+                resource: "channel",
                 id: input.channel_id.as_uuid().to_string(),
             });
         }

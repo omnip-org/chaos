@@ -670,15 +670,23 @@ mod tests {
             })
             .await
             .unwrap();
-        let initial_archive = service
+        service
             .archive_sales_channel(ChangeSalesChannelStatusInput {
                 actor: AdminActor::Store(owner),
                 store_id,
                 channel_id: initial_channel_id,
             })
+            .await
+            .unwrap();
+        let last_archive = service
+            .archive_sales_channel(ChangeSalesChannelStatusInput {
+                actor: AdminActor::Store(owner),
+                store_id,
+                channel_id,
+            })
             .await;
         assert!(matches!(
-            initial_archive,
+            last_archive,
             Err(ApplicationError::Validation { .. })
         ));
         assert!(
