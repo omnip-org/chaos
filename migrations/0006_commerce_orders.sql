@@ -44,10 +44,10 @@ CREATE TABLE commerce.cart_lines (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT cart_lines_pkey                 PRIMARY KEY (store_id, cart_id, product_variant_id),
-    CONSTRAINT cart_lines_store_id_cart_fkey   FOREIGN KEY (store_id, cart_id) REFERENCES commerce.carts (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT cart_lines_pkey                  PRIMARY KEY (store_id, cart_id, product_variant_id),
+    CONSTRAINT cart_lines_store_id_cart_fkey    FOREIGN KEY (store_id, cart_id) REFERENCES commerce.carts (store_id, id) ON DELETE CASCADE,
     CONSTRAINT cart_lines_store_id_variant_fkey FOREIGN KEY (store_id, product_variant_id) REFERENCES commerce.product_variants (store_id, id),
-    CONSTRAINT cart_lines_quantity_range_check CHECK (quantity BETWEEN 1 AND 999)
+    CONSTRAINT cart_lines_quantity_range_check  CHECK (quantity BETWEEN 1 AND 999)
 );
 
 CREATE TABLE commerce.orders (
