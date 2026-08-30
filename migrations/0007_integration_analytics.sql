@@ -81,7 +81,6 @@ CREATE TABLE integration.analytics_destinations (
     credential_secret_reference TEXT            NOT NULL,
     configuration               JSONB           NOT NULL DEFAULT '{}'::jsonb,
     enabled                     BOOLEAN         NOT NULL,
-    created_by                  UUID            NOT NULL,
     created_at                  TIMESTAMPTZ     NOT NULL,
     updated_at                  TIMESTAMPTZ     NOT NULL,
     schedule_cursor_received_at TIMESTAMPTZ     NOT NULL,
@@ -131,7 +130,6 @@ CREATE FUNCTION integration.configure_analytics_destination (
     p_credential_secret_reference    TEXT,
     p_configuration                  JSONB,
     p_enabled                        BOOLEAN,
-    p_created_by                     UUID,
     p_now                            TIMESTAMPTZ
 )
 RETURNS TABLE (
@@ -158,11 +156,6 @@ BEGIN
             USING ERRCODE = '42501';
     END IF;
 
-    IF p_created_by IS DISTINCT FROM nullif(current_setting('app.user_id', true), '')::uuid THEN
-        RAISE EXCEPTION 'analytics destination user context does not match creator'
-            USING ERRCODE = '42501';
-    END IF;
-
     RETURN QUERY
     INSERT INTO integration.analytics_destinations (
         id,
@@ -172,7 +165,6 @@ BEGIN
         credential_secret_reference,
         configuration,
         enabled,
-        created_by,
         created_at,
         updated_at,
         schedule_cursor_received_at,
@@ -186,7 +178,6 @@ BEGIN
         p_credential_secret_reference,
         p_configuration,
         p_enabled,
-        p_created_by,
         p_now,
         p_now,
         CASE
@@ -490,13 +481,13 @@ CREATE POLICY store_isolation ON integration.analytics_event_keys
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-REVOKE ALL ON FUNCTION integration.configure_analytics_destination (UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, UUID, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.configure_analytics_destination (UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_analytics_deliveries (INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_analytics_event_delivery (UUID, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.enqueue_analytics_event_delivery () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.schedule_analytics_deliveries (INTEGER) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION integration.configure_analytics_destination (UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, UUID, TIMESTAMPTZ) TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION integration.configure_analytics_destination (UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_analytics_deliveries (INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.finish_analytics_event_delivery (UUID, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.schedule_analytics_deliveries (INTEGER) TO chaos_runtime;

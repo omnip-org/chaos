@@ -731,7 +731,7 @@ impl PostgresAnalyticsDestinationStore {
             "SELECT destination_id,destination_provider,destination_external_account_reference,\
                         destination_configuration,destination_enabled,destination_created_at,\
                         destination_updated_at \
-                   FROM integration.configure_analytics_destination($1,$2,$3,$4,$5,$6,$7,$8)",
+                   FROM integration.configure_analytics_destination($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(store.as_uuid())
         .bind(configuration.provider)
@@ -739,7 +739,6 @@ impl PostgresAnalyticsDestinationStore {
         .bind(configuration.credential_secret_reference)
         .bind(configuration.configuration)
         .bind(configuration.enabled)
-        .bind(actor.user_id().as_uuid())
         .bind(now)
         .fetch_one(&mut *tx)
         .await
