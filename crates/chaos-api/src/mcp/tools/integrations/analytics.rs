@@ -52,6 +52,8 @@ pub struct ListAnalyticsEventsParams {
     pub delivery_status: Option<AnalyticsDeliveryStatusParam>,
     /// Optional signed shopper identifier for tracing one consumer journey.
     pub shopper_id: Option<String>,
+    /// Optional Channel identifier for isolating one storefront's events.
+    pub channel_id: Option<String>,
     /// Optional browser session identifier for tracing one visit across events.
     pub session_id: Option<String>,
     /// Optional UTM source filter, matched against the normalized analytics column.
@@ -164,7 +166,7 @@ impl ChaosMcp {
     }
 
     #[tool(
-        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, normalized event source, delivery status, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
+        description = "List behavior events stored in the selected Store and their external delivery observations. Optional filters include any event name, normalized event source, delivery status, channel_id, shopper_id, session_id, utm_source, utm_medium, utm_campaign, utm_term, and utm_content. Raw dynamic properties are returned because this tool is intended for internal behavior analysis."
     )]
     async fn list_analytics_events(
         &self,
@@ -213,6 +215,15 @@ impl ChaosMcp {
             Ok(id) => id,
             Err(_) => return Ok(invalid("shopper_id", "must be a UUID")),
         };
+        let channel_id = match params
+            .channel_id
+            .as_deref()
+            .map(Uuid::parse_str)
+            .transpose()
+        {
+            Ok(id) => id,
+            Err(_) => return Ok(invalid("channel_id", "must be a UUID")),
+        };
         let session_id = match params
             .session_id
             .as_deref()
@@ -235,6 +246,7 @@ impl ChaosMcp {
             source,
             delivery_status,
             shopper_id,
+            channel_id,
             session_id,
             utm_source,
             utm_medium,
@@ -288,6 +300,7 @@ fn analytics_events_json(page: AnalyticsEventPage, limit: u16) -> Value {
             "event_id": event.event_id,
             "event_name": event.event_name,
             "event_source": event.event_source,
+            "channel_id": event.channel_id,
             "shopper_id": event.shopper_id,
             "session_id": event.session_id,
             "utm_source": event.utm_source,

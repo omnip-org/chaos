@@ -6,8 +6,7 @@ use chaos_domain::{
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
-        CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderShippingStatus,
-        OrderStatus, ShopperId,
+        CartId, CartStatus, OrderId, OrderIdentity, OrderPaymentStatus, OrderStatus, ShopperId,
     },
 };
 use time::OffsetDateTime;
@@ -86,7 +85,7 @@ pub struct OrderRefundItem {
 
 /// One shipment against an Order. Kept as its own row (rather than flat
 /// columns on `orders`) so the shipping history is a real timeline — see
-/// `commerce.order_fulfillments`.
+/// `commerce.order_shippings`.
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
     pub shipping_provider_account_id: ShippingProviderAccountId,
@@ -108,7 +107,8 @@ pub struct OrderDetail {
     pub currency: CurrencyCode,
     pub status: OrderStatus,
     pub payment_status: OrderPaymentStatus,
-    pub shipping_status: OrderShippingStatus,
+    /// Aggregate projection of the Order's active Fulfillments.
+    pub shipping_status: FulfillmentStatus,
     pub payment_provider: Option<PaymentProvider>,
     pub payment_provider_reference_id: Option<String>,
     pub shipping_provider: Option<ShippingProvider>,

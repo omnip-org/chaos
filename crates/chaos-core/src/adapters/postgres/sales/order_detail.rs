@@ -15,8 +15,8 @@ use chaos_domain::{
     payments::{PaymentAttemptStatus, RefundId, RefundStatus},
     pricing::PriceListId,
     sales::{
-        OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus, OrderShippingStatus,
-        OrderStatus, PostalAddress, ShopperId,
+        OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus, OrderStatus,
+        PostalAddress, ShopperId,
     },
     store::{SalesChannelId, StoreId},
 };
@@ -217,7 +217,7 @@ pub(crate) async fn load(
     let fulfillments = sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND order_id = $2 \
+         FROM commerce.order_shippings WHERE store_id = $1 AND order_id = $2 \
          ORDER BY created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -235,7 +235,7 @@ pub(crate) async fn load(
         currency: CurrencyCode::parse(&row.currency)?,
         status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         payment_status: OrderPaymentStatus::parse(&row.payment_status).ok_or_else(corrupt_state)?,
-        shipping_status: OrderShippingStatus::parse(&row.shipping_status)
+        shipping_status: FulfillmentStatus::parse(&row.shipping_status)
             .ok_or_else(corrupt_state)?,
         payment_provider: row
             .payment_provider
@@ -351,7 +351,7 @@ pub(crate) async fn load_many(
     let fulfillments = sqlx::query_as::<_, BatchFulfillmentRow>(
         "SELECT order_id, id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
+         FROM commerce.order_shippings WHERE store_id = $1 AND order_id = ANY($2::uuid[]) \
          ORDER BY order_id, created_at, id",
     )
     .bind(store_id.as_uuid())
@@ -388,7 +388,7 @@ pub(crate) async fn load_many(
                 status: OrderStatus::parse(&row.status).ok_or_else(corrupt_state)?,
                 payment_status: OrderPaymentStatus::parse(&row.payment_status)
                     .ok_or_else(corrupt_state)?,
-                shipping_status: OrderShippingStatus::parse(&row.shipping_status)
+                shipping_status: FulfillmentStatus::parse(&row.shipping_status)
                     .ok_or_else(corrupt_state)?,
                 payment_provider: row
                     .payment_provider

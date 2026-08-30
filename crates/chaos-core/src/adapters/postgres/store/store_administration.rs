@@ -79,19 +79,20 @@ impl PostgresStoreAdministrationRepository {
         &self,
         actor: AdminActor,
         store_id: StoreId,
-        replacement: &Store,
+        name: &str,
+        region: RegionCode,
+        meta: Option<serde_json::Value>,
     ) -> Result<StoreId, ApplicationError> {
         let mut transaction = self.begin(&actor).await?;
         let result = sqlx::query(
             "UPDATE commerce.stores SET name = $2, region = $3, \
-                    currency = $4, meta = $5, updated_at = CURRENT_TIMESTAMP \
+                    meta = $4, updated_at = CURRENT_TIMESTAMP \
              WHERE id = $1",
         )
         .bind(store_id.as_uuid())
-        .bind(replacement.name())
-        .bind(replacement.region().as_str())
-        .bind(replacement.currency().as_str())
-        .bind(replacement.meta().cloned())
+        .bind(name)
+        .bind(region.as_str())
+        .bind(meta)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -596,7 +597,6 @@ mod tests {
                 store_id,
                 name: "Updated Admin Store".into(),
                 region: "SG".into(),
-                currency: "SGD".into(),
                 meta: None,
             })
             .await
@@ -605,7 +605,7 @@ mod tests {
             .get_store(AdminActor::Store(owner), store_id)
             .await
             .unwrap();
-        assert_eq!(updated.currency.as_str(), "SGD");
+        assert_eq!(updated.currency.as_str(), "USD");
         service
             .activate_store(ChangeStoreStatusInput {
                 actor: AdminActor::Store(owner),

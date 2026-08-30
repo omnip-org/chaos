@@ -408,10 +408,11 @@ mod tests {
     use chaos_core::contracts::OrderDetail;
     use chaos_domain::{
         CurrencyCode,
+        fulfillment::FulfillmentStatus,
         pricing::PriceListId,
         sales::{
-            OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus,
-            OrderShippingStatus, OrderStatus, PostalAddress, ShopperId,
+            OrderContact, OrderId, OrderIdentity, OrderNumber, OrderPaymentStatus, OrderStatus,
+            PostalAddress, ShopperId,
         },
     };
     use serde_json::json;
@@ -455,7 +456,7 @@ mod tests {
                 currency: CurrencyCode::USD,
                 status: OrderStatus::Pending,
                 payment_status: OrderPaymentStatus::Pending,
-                shipping_status: OrderShippingStatus::Pending,
+                shipping_status: FulfillmentStatus::Pending,
                 payment_provider: None,
                 payment_provider_reference_id: None,
                 shipping_provider: None,

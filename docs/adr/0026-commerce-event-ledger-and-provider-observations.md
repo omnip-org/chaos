@@ -14,9 +14,11 @@ than the product requires.
 ## Decision
 
 `integration.analytics_events` is the source of truth for behavior data. It is
-an append-only, Store-scoped event ledger with this small common envelope:
+an append-only, Store- and Channel-scoped event ledger with this small common
+envelope:
 
 - `store_id`;
+- `channel_id`;
 - `shopper_id`;
 - optional `session_id` (the browser session UUID);
 - optional `utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, and

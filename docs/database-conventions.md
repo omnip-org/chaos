@@ -88,6 +88,11 @@ state are created directly in their owning Commerce migrations. There are no
 follow-up checkout-attempt or key-binding migrations.
 Cart status is `active | locked | completed | abandoned`, and the private
 payment-form handoff lives in `commerce.carts.payment_client_action`.
+An Order's cart context is bound by `(store_id, cart_id, channel_id,
+shopper_id, price_list_id)`. `commerce.order_shipping_status` is shared by
+Fulfillment rows and the Order's `shipping_status` projection; `pending` is
+used only when an Order has no active Fulfillment.
+New analytics events persist their Channel and Shopper ownership directly.
 Catalog media attachments and manual-review provenance are part of
 `0005_commerce_products.sql`. Release-hardening constraints, capability checks,
 and cleanup routines are defined in the migration that creates each dependent

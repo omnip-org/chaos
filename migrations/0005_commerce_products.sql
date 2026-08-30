@@ -738,16 +738,12 @@ REVOKE ALL ON FUNCTION commerce.capture_variant_change () FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.rebuild_store_products (UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 
-GRANT SELECT, INSERT, UPDATE, DELETE
+GRANT SELECT, INSERT, UPDATE
     ON commerce.products,
        commerce.product_options,
        commerce.product_option_values,
        commerce.product_variants,
-       commerce.variant_selected_options,
-       commerce.product_publications,
        commerce.collections,
-       commerce.collection_products,
-       commerce.collection_publications,
        commerce.media_assets,
        commerce.product_media_assets,
        commerce.product_option_value_media_assets,
@@ -756,13 +752,38 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.reviews,
        commerce.review_media_assets,
        commerce.product_documents,
-       commerce.price_lists,
+       commerce.price_lists
+    TO chaos_runtime;
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON commerce.variant_selected_options,
+       commerce.product_publications,
+       commerce.collection_products,
+       commerce.collection_publications,
        commerce.price_list_items
     TO chaos_runtime;
 
-REVOKE DELETE ON commerce.collections, commerce.media_assets, commerce.product_media_assets,
-                commerce.product_option_value_media_assets, commerce.product_variant_media_assets,
-                commerce.product_meta_media_assets,
-                commerce.reviews, commerce.review_media_assets FROM chaos_runtime;
+REVOKE DELETE, TRUNCATE ON commerce.products,
+    commerce.product_options,
+    commerce.product_option_values,
+    commerce.product_variants,
+    commerce.collections,
+    commerce.media_assets,
+    commerce.product_media_assets,
+    commerce.product_option_value_media_assets,
+    commerce.product_variant_media_assets,
+    commerce.product_meta_media_assets,
+    commerce.reviews,
+    commerce.review_media_assets,
+    commerce.product_documents,
+    commerce.price_lists
+    FROM chaos_runtime;
+
+REVOKE TRUNCATE ON commerce.variant_selected_options,
+    commerce.product_publications,
+    commerce.collection_products,
+    commerce.collection_publications,
+    commerce.price_list_items
+    FROM chaos_runtime;
 
 GRANT EXECUTE ON FUNCTION commerce.process_events (INTEGER, INTEGER, TIMESTAMPTZ) TO chaos_runtime;

@@ -124,7 +124,7 @@ impl PostgresFulfillmentRepository {
             tracking_url,
         )?;
         sqlx::query(
-            "INSERT INTO commerce.order_fulfillments \
+            "INSERT INTO commerce.order_shippings \
              (id, store_id, order_id, shipping_provider_account_id, status, \
               tracking_number, tracking_url) \
              VALUES ($1, $2, $3, $4, 'awaiting_pickup', $5, $6)",
@@ -158,7 +158,7 @@ impl PostgresFulfillmentRepository {
                 message: "the Order is already assigned to another shipping provider account",
             });
         }
-        recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
+        recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, fulfillment.id())
             .await?
             .ok_or_else(|| fulfillment_not_found(fulfillment.id()))?;
@@ -180,7 +180,7 @@ impl PostgresFulfillmentRepository {
         let transitioned = fulfillment.mark_shipped(tracking_number, tracking_url)?;
         let update_result = if transitioned {
             sqlx::query(
-                "UPDATE commerce.order_fulfillments \
+                "UPDATE commerce.order_shippings \
                     SET status = 'shipped', tracking_number = $3, tracking_url = $4, \
                         shipped_at = $5, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'awaiting_pickup'",
@@ -198,7 +198,7 @@ impl PostgresFulfillmentRepository {
             // be correcting the tracking number/url, so persist those fields directly rather
             // than silently discarding the update (status/shipped_at are left untouched).
             sqlx::query(
-                "UPDATE commerce.order_fulfillments \
+                "UPDATE commerce.order_shippings \
                     SET tracking_number = $3, tracking_url = $4, updated_at = $5 \
                   WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
             )
@@ -237,7 +237,7 @@ impl PostgresFulfillmentRepository {
             .await
             .map_err(database_error)?;
         }
-        recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
+        recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
             .await?
             .ok_or_else(|| fulfillment_not_found(id))?;
@@ -256,7 +256,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         fulfillment.mark_delivered()?;
         sqlx::query(
-            "UPDATE commerce.order_fulfillments \
+            "UPDATE commerce.order_shippings \
                 SET status = 'delivered', delivered_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status = 'shipped'",
         )
@@ -267,7 +267,7 @@ impl PostgresFulfillmentRepository {
         .await
         .map_err(database_error)?;
         let order_id = fulfillment.order_id();
-        recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
+        recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
             .await?
             .ok_or_else(|| fulfillment_not_found(id))?;
@@ -286,7 +286,7 @@ impl PostgresFulfillmentRepository {
         let mut fulfillment = load_domain_fulfillment(&mut transaction, store_id, id).await?;
         fulfillment.cancel()?;
         sqlx::query(
-            "UPDATE commerce.order_fulfillments \
+            "UPDATE commerce.order_shippings \
                 SET status = 'cancelled', cancelled_at = $3, updated_at = $3 \
               WHERE store_id = $1 AND id = $2 AND status IN ('awaiting_pickup', 'shipped')",
         )
@@ -297,7 +297,7 @@ impl PostgresFulfillmentRepository {
         .await
         .map_err(database_error)?;
         let order_id = fulfillment.order_id();
-        recompute_order_shipping_status(&mut transaction, store_id, order_id).await?;
+        recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, id)
             .await?
             .ok_or_else(|| fulfillment_not_found(id))?;
@@ -309,33 +309,53 @@ impl PostgresFulfillmentRepository {
 /// A Store's `orders.shipping_status` is a read projection of its
 /// Fulfillments, not an independent source of truth. Recomputing it from the
 /// current Fulfillment rows (rather than patching it incrementally) keeps it
-/// correct under concurrent or out-of-order Fulfillment writes.
+/// correct under concurrent or out-of-order Fulfillment writes. The Order row
+/// is locked before reading its Fulfillments so split-shipment updates cannot
+/// overwrite a newer projection with a stale snapshot.
 ///
 /// An Order may have several concurrently active (non-cancelled)
 /// Fulfillments — split shipments are normal, not an error — so the
 /// projection takes the weakest link across them: `awaiting_pickup` <
 /// `shipped` < `delivered`. The Order is not `delivered` until every active
 /// Fulfillment is delivered, but becomes `shipped` as soon as any of them
-/// has moved past `awaiting_pickup`.
-async fn recompute_order_shipping_status(
+/// has moved past `awaiting_pickup`. An Order with only cancelled
+/// Fulfillments is projected as `cancelled`.
+async fn recompute_order_shipping_projection(
     transaction: &mut Transaction<'static, Postgres>,
     store_id: StoreId,
     order_id: OrderId,
 ) -> Result<(), ApplicationError> {
-    let active_statuses: Vec<String> = sqlx::query_scalar(
-        "SELECT status::text FROM commerce.order_fulfillments \
-         WHERE store_id = $1 AND order_id = $2 AND status <> 'cancelled'",
+    sqlx::query(
+        "SELECT 1 FROM commerce.orders \
+         WHERE store_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(store_id.as_uuid())
+    .bind(order_id.as_uuid())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| order_not_found(order_id))?;
+
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status::text FROM commerce.order_shippings \
+         WHERE store_id = $1 AND order_id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
     .fetch_all(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let shipping_status = if active_statuses.is_empty() {
+    let shipping_status = if statuses.is_empty() {
         "pending"
-    } else if active_statuses.iter().all(|status| status == "delivered") {
+    } else if statuses.iter().all(|status| status == "cancelled") {
+        "cancelled"
+    } else if statuses
+        .iter()
+        .filter(|status| status.as_str() != "cancelled")
+        .all(|status| status == "delivered")
+    {
         "delivered"
-    } else if active_statuses
+    } else if statuses
         .iter()
         .any(|status| status == "shipped" || status == "delivered")
     {
@@ -364,7 +384,7 @@ async fn load_domain_fulfillment(
     let row = sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2 FOR UPDATE",
+         FROM commerce.order_shippings WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())
@@ -390,7 +410,7 @@ async fn load_fulfillment(
     sqlx::query_as::<_, FulfillmentRow>(
         "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
-         FROM commerce.order_fulfillments WHERE store_id = $1 AND id = $2",
+         FROM commerce.order_shippings WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(id.as_uuid())

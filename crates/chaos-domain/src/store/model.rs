@@ -59,6 +59,16 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn validate_name(value: &str) -> Result<(), DomainError> {
+        if value.trim().is_empty() || value.chars().count() > 120 {
+            return Err(DomainError::Validation(vec![FieldViolation {
+                field: "name",
+                reason: "must contain 1-120 characters".into(),
+            }]));
+        }
+        Ok(())
+    }
+
     pub fn create(
         name: impl Into<String>,
         region: RegionCode,
@@ -66,12 +76,7 @@ impl Store {
         meta: Option<serde_json::Value>,
     ) -> Result<Self, DomainError> {
         let name = name.into();
-        if name.trim().is_empty() || name.chars().count() > 120 {
-            return Err(DomainError::Validation(vec![FieldViolation {
-                field: "name",
-                reason: "must contain 1-120 characters".into(),
-            }]));
-        }
+        Self::validate_name(&name)?;
         Ok(Self {
             id: StoreId::new(),
             name,

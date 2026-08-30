@@ -19,11 +19,13 @@ optional analytics_deliveries
 Meta CAPI or another destination
 ```
 
-The ledger envelope is intentionally small: who (`shopper_id`), which browser
-session when available (`session_id`), the normalized source (`event_source`),
-what (`event_name`), when (`occurred_at`), a stable retry key (`event_id`), and
-event-specific `properties`. The browser cannot declare `shopper_id` or change
-the Store context. Normalized UTM values are stored in dedicated nullable columns;
+The ledger envelope is intentionally small: which Store and Channel
+(`store_id`, `channel_id`), who (`shopper_id`), which browser session when
+available (`session_id`), the normalized source (`event_source`), what
+(`event_name`), when (`occurred_at`), a stable retry key (`event_id`), and
+event-specific `properties`. The browser cannot declare `shopper_id`, change
+the Store context, or bind an event to another Channel. Normalized UTM values
+are stored in dedicated nullable columns;
 traffic history, product IDs, order IDs, and money remain dynamic properties.
 For commerce items, `product_id` and `product_variant_id` are canonical. The
 Meta adapter derives its content ID from `product_variant_id` when present,

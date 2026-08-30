@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use chaos_domain::{
-    CurrencyCode, RegionCode,
+    RegionCode,
     store::{
         SalesChannel, SalesChannelId, SalesChannelStatus, Store, StoreId, StoreStatus,
         StorefrontOrigin,
@@ -21,7 +21,6 @@ pub struct UpdateStoreInput {
     pub store_id: StoreId,
     pub name: String,
     pub region: String,
-    pub currency: String,
     pub meta: Option<serde_json::Value>,
 }
 
@@ -80,14 +79,10 @@ impl StoreAdministration {
 
     pub async fn update_store(&self, input: UpdateStoreInput) -> Result<StoreId, ApplicationError> {
         input.actor.require_owner()?;
-        let replacement = Store::create(
-            input.name,
-            RegionCode::parse(&input.region)?,
-            CurrencyCode::parse(&input.currency)?,
-            input.meta,
-        )?;
+        Store::validate_name(&input.name)?;
+        let region = RegionCode::parse(&input.region)?;
         self.repository
-            .update_store(input.actor, input.store_id, &replacement)
+            .update_store(input.actor, input.store_id, &input.name, region, input.meta)
             .await
     }
 

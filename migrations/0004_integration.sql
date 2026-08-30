@@ -99,7 +99,7 @@ CREATE TABLE integration.provider_webhook_inbox (
     CONSTRAINT provider_webhook_inbox_normalized_event_type_check       CHECK (normalized_event_type IS NULL OR normalized_event_type ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
     CONSTRAINT provider_webhook_inbox_payload_object_check              CHECK (jsonb_typeof(payload) = 'object'),
     CONSTRAINT provider_webhook_inbox_payload_size_check                CHECK (octet_length(payload::text) <= 32768),
-    CONSTRAINT provider_webhook_inbox_aggregate_shape_check             CHECK ((aggregate_type IS NULL AND aggregate_id IS NULL) OR (aggregate_type IS NOT NULL AND aggregate_type ~ '^[a-z][a-z0-9_]*$')),
+    CONSTRAINT provider_webhook_inbox_aggregate_shape_check             CHECK ((aggregate_type IS NULL AND aggregate_id IS NULL) OR (aggregate_type IS NOT NULL AND aggregate_id IS NOT NULL AND aggregate_type ~ '^[a-z][a-z0-9_]*$')),
     CONSTRAINT provider_webhook_inbox_status_timestamps_check           CHECK ((processing_status = 'pending' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'processed' AND processed_at IS NOT NULL AND unsupported_at IS NULL AND failed_at IS NULL) OR (processing_status = 'unsupported' AND processed_at IS NULL AND unsupported_at IS NOT NULL AND failed_at IS NULL) OR (processing_status = 'failed' AND processed_at IS NULL AND unsupported_at IS NULL AND failed_at IS NOT NULL)),
     CONSTRAINT provider_webhook_inbox_last_error_length_check           CHECK (last_error IS NULL OR length(last_error) <= 2000)
 );
@@ -127,6 +127,29 @@ CREATE INDEX provider_webhook_inbox_terminal_retention_idx
         id
     )
     WHERE processing_status <> 'pending';
+
+CREATE FUNCTION integration.prevent_provider_account_identity_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.store_id IS DISTINCT FROM OLD.store_id
+       OR NEW.capability IS DISTINCT FROM OLD.capability
+       OR NEW.provider IS DISTINCT FROM OLD.provider THEN
+        RAISE EXCEPTION 'Provider Account identity is immutable after creation'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER provider_accounts_identity_immutable
+    BEFORE UPDATE OF id, store_id, capability, provider
+    ON integration.provider_accounts
+    FOR EACH ROW EXECUTE FUNCTION integration.prevent_provider_account_identity_change();
 
 INSERT INTO integration.event_routes (internal_event_type, queue_name, description) VALUES ('search.product.changed', 'chaos_search_events', 'Refreshes the Store-isolated Product search document'), ('order.confirmed', 'chaos_email_commands', 'Sends the Order confirmation through the configured Email provider'), ('fulfillment.shipped', 'chaos_shipping_commands', 'Dispatches shipment state to the configured Shipping provider'), ('refund.create_requested', 'chaos_payment_commands', 'Creates an Order refund through the configured Payment provider');
 
@@ -597,6 +620,7 @@ REVOKE ALL ON FUNCTION integration.enqueue_webhook_event () FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.claim_provider_webhook_inbox (integration.provider_capability, INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.finish_provider_webhook (UUID, INTEGER, integration.webhook_processing_status, TEXT, INTEGER, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.cleanup_terminal_rows (INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION integration.prevent_provider_account_identity_change () FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION integration.finish_event_outbox (UUID, INTEGER, BOOLEAN, TEXT, INTEGER, TIMESTAMPTZ) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.claim_event_outbox (TEXT, INTEGER) TO chaos_runtime;
@@ -613,8 +637,20 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT USAGE, SELECT ON SEQUENCES 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA integration TO chaos_runtime;
 
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON integration.event_routes FROM chaos_runtime;
-REVOKE UPDATE, DELETE ON integration.event_outbox FROM chaos_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE ON integration.event_outbox FROM chaos_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE ON integration.provider_webhook_inbox FROM chaos_runtime;
+REVOKE UPDATE ON integration.provider_accounts FROM chaos_runtime;
+GRANT UPDATE (
+    display_name,
+    credential_secret_reference,
+    webhook_secret_reference,
+    configuration,
+    enabled,
+    updated_at
+)
+    ON integration.provider_accounts TO chaos_runtime;
+REVOKE DELETE, TRUNCATE ON integration.provider_accounts FROM chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA integration GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

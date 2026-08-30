@@ -129,6 +129,68 @@ AS $$
         AND store.status = 'active';
 $$;
 
+CREATE FUNCTION commerce.prevent_store_currency_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF NEW.currency IS DISTINCT FROM OLD.currency THEN
+        RAISE EXCEPTION 'Store currency is immutable after creation'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER stores_currency_immutable
+    BEFORE UPDATE OF currency ON commerce.stores
+    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_store_currency_change();
+
+CREATE FUNCTION commerce.prevent_channel_identity_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.store_id IS DISTINCT FROM OLD.store_id THEN
+        RAISE EXCEPTION 'Sales Channel identity is immutable after creation'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER channels_identity_immutable
+    BEFORE UPDATE OF id, store_id ON commerce.channels
+    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_channel_identity_change();
+
+CREATE FUNCTION commerce.prevent_publishable_key_identity_change ()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.store_id IS DISTINCT FROM OLD.store_id
+       OR NEW.channel_id IS DISTINCT FROM OLD.channel_id
+       OR NEW.public_key IS DISTINCT FROM OLD.public_key THEN
+        RAISE EXCEPTION 'Publishable Key identity is immutable after creation'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER channel_publishable_keys_identity_immutable
+    BEFORE UPDATE OF id, store_id, channel_id, public_key
+    ON commerce.channel_publishable_keys
+    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_publishable_key_identity_change();
+
 ALTER TABLE commerce.stores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.shoppers FORCE ROW LEVEL SECURITY;
@@ -178,6 +240,9 @@ CREATE POLICY store_isolation ON commerce.store_shipping_countries
 
 REVOKE ALL ON FUNCTION commerce.authenticate_publishable_key (TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION commerce.authenticate_publishable_key (TEXT) TO chaos_runtime;
+REVOKE ALL ON FUNCTION commerce.prevent_store_currency_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.prevent_channel_identity_change () FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.prevent_publishable_key_identity_change () FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON commerce.stores,
@@ -188,10 +253,26 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.store_shipping_countries
     TO chaos_runtime;
 
+REVOKE UPDATE ON commerce.stores, commerce.channels, commerce.channel_publishable_keys
+    FROM chaos_runtime;
+GRANT UPDATE (name, region, meta, status, updated_at)
+    ON commerce.stores TO chaos_runtime;
+GRANT UPDATE (name, origin, status, updated_at)
+    ON commerce.channels TO chaos_runtime;
+GRANT UPDATE (revoked_at, updated_at)
+    ON commerce.channel_publishable_keys TO chaos_runtime;
+
+REVOKE DELETE, TRUNCATE ON commerce.stores,
+    commerce.shoppers,
+    commerce.channels,
+    commerce.channel_publishable_keys,
+    commerce.store_shipping_countries
+    FROM chaos_runtime;
+
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+    GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce
     GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;

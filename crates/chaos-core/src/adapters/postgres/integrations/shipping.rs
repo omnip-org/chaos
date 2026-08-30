@@ -147,7 +147,7 @@ impl PostgresShippingRepository {
             .map_err(database_error)?;
         if result.tracking_number.is_some() || result.tracking_url.is_some() {
             let updated = sqlx::query(
-                "UPDATE commerce.order_fulfillments \
+                "UPDATE commerce.order_shippings \
                  SET tracking_number = COALESCE($3, tracking_number), \
                      tracking_url = COALESCE($4, tracking_url), updated_at = $5 \
                  WHERE store_id = $1 AND id = $2 AND order_id = $6 \

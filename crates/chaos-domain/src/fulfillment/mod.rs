@@ -32,11 +32,12 @@ macro_rules! fulfillment_id {
 fulfillment_id!(FulfillmentId);
 fulfillment_id!(ShippingProviderAccountId);
 
-/// A shipment's own lifecycle, distinct from an Order's commercial
-/// `OrderStatus`. `AwaitingPickup` covers the window between marking an
-/// Order fulfilled and the carrier actually collecting it.
+/// Shared shipping vocabulary for Fulfillment rows and the Order's shipping
+/// projection. `Pending` is used only when an Order has no active shipment;
+/// an individual Fulfillment starts at `AwaitingPickup`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FulfillmentStatus {
+    Pending,
     AwaitingPickup,
     Shipped,
     Delivered,
@@ -46,6 +47,7 @@ pub enum FulfillmentStatus {
 impl FulfillmentStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Pending => "pending",
             Self::AwaitingPickup => "awaiting_pickup",
             Self::Shipped => "shipped",
             Self::Delivered => "delivered",
@@ -55,6 +57,7 @@ impl FulfillmentStatus {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "pending" => Some(Self::Pending),
             "awaiting_pickup" => Some(Self::AwaitingPickup),
             "shipped" => Some(Self::Shipped),
             "delivered" => Some(Self::Delivered),

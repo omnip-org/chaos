@@ -6,6 +6,7 @@ CREATE TABLE integration.analytics_events (
     id             UUID           NOT NULL,
     event_id       UUID           NOT NULL,
     store_id       UUID           NOT NULL,
+    channel_id     UUID           NOT NULL,
     shopper_id     UUID           NOT NULL,
     session_id     UUID,
     utm_source     TEXT,
@@ -23,6 +24,8 @@ CREATE TABLE integration.analytics_events (
     CONSTRAINT analytics_events_received_id_pkey               PRIMARY KEY (received_at, id),
     CONSTRAINT analytics_events_store_received_event_key       UNIQUE (store_id, received_at, event_id),
     CONSTRAINT analytics_events_store_received_id_key          UNIQUE (store_id, received_at, id),
+    CONSTRAINT analytics_events_store_id_channel_id_fkey       FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id) ON DELETE CASCADE,
+    CONSTRAINT analytics_events_store_id_shopper_id_fkey       FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id) ON DELETE CASCADE,
     CONSTRAINT analytics_events_event_id_check                 CHECK (event_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT analytics_events_event_name_check               CHECK (event_name ~ '^[a-z][a-z0-9_]{0,63}$'),
     CONSTRAINT analytics_events_event_source_check             CHECK (event_source IN ('browser', 'server')),
@@ -41,6 +44,7 @@ SELECT partman.create_partition(
 );
 
 CREATE INDEX analytics_events_shopper_path_idx ON integration.analytics_events (store_id, shopper_id, occurred_at, id);
+CREATE INDEX analytics_events_channel_time_idx ON integration.analytics_events (store_id, channel_id, occurred_at DESC, id DESC);
 CREATE INDEX analytics_events_name_time_idx ON integration.analytics_events (store_id, event_name, occurred_at DESC, id DESC);
 CREATE INDEX analytics_events_event_key_idx ON integration.analytics_events (store_id, event_id);
 CREATE INDEX analytics_events_source_idx ON integration.analytics_events (store_id, event_source, received_at DESC, id DESC);

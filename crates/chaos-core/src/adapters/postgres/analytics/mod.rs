@@ -55,6 +55,7 @@ type AnalyticsEventRow = (
     String,
     String,
     Uuid,
+    Uuid,
     Option<Uuid>,
     Option<String>,
     Option<String>,
@@ -113,6 +114,7 @@ async fn context(
 /// roll back event collection or a commerce transaction.
 pub(crate) struct AnalyticsEventToAppend {
     pub(crate) store_id: Uuid,
+    pub(crate) channel_id: Uuid,
     pub(crate) shopper_id: Uuid,
     pub(crate) event_id: Uuid,
     pub(crate) event_name: String,
@@ -186,12 +188,13 @@ pub(crate) async fn append_event(
     }
     sqlx::query(
         "INSERT INTO integration.analytics_events
-            (id,event_id,store_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,event_source,properties,occurred_at,received_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+            (id,event_id,store_id,channel_id,shopper_id,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,event_name,event_source,properties,occurred_at,received_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
     )
     .bind(analytics_event_id)
     .bind(event.event_id)
     .bind(event.store_id)
+    .bind(event.channel_id)
     .bind(event.shopper_id)
     .bind(session_id)
     .bind(utm_source)
@@ -497,6 +500,7 @@ impl PostgresAnalyticsEventStore {
                 &mut tx,
                 AnalyticsEventToAppend {
                     store_id: actor.store_id.as_uuid(),
+                    channel_id: channel.as_uuid(),
                     shopper_id,
                     event_id: event.event_id,
                     event_name: event.event_name.clone(),
@@ -525,7 +529,7 @@ impl PostgresAnalyticsEventStore {
         context(&mut tx, store.as_uuid(), Some(actor.user_id().as_uuid())).await?;
         let query_limit = i32::from(limit) + 1;
         let rows: Vec<AnalyticsEventRow> = sqlx::query_as(
-            "SELECT e.id,e.event_id,e.event_name,e.event_source,e.shopper_id,e.session_id,
+            "SELECT e.id,e.event_id,e.event_name,e.event_source,e.channel_id,e.shopper_id,e.session_id,
                     e.utm_source,e.utm_medium,e.utm_campaign,e.utm_term,e.utm_content,
                     e.occurred_at,e.received_at,e.properties,
                     COALESCE(delivery_snapshot.deliveries, '[]'::jsonb)
@@ -565,12 +569,13 @@ impl PostgresAnalyticsEventStore {
                       AND filter_delivery.delivery_status=$7::integration.delivery_status
                ))
                AND ($8::uuid IS NULL OR e.shopper_id=$8)
-               AND ($9::uuid IS NULL OR e.session_id=$9)
-               AND ($10::text IS NULL OR e.utm_source=$10)
-               AND ($11::text IS NULL OR e.utm_medium=$11)
-               AND ($12::text IS NULL OR e.utm_campaign=$12)
-               AND ($13::text IS NULL OR e.utm_term=$13)
-               AND ($14::text IS NULL OR e.utm_content=$14)
+               AND ($9::uuid IS NULL OR e.channel_id=$9)
+               AND ($10::uuid IS NULL OR e.session_id=$10)
+               AND ($11::text IS NULL OR e.utm_source=$11)
+               AND ($12::text IS NULL OR e.utm_medium=$12)
+               AND ($13::text IS NULL OR e.utm_campaign=$13)
+               AND ($14::text IS NULL OR e.utm_term=$14)
+               AND ($15::text IS NULL OR e.utm_content=$15)
              ORDER BY e.received_at DESC, e.id DESC
              LIMIT $2",
         )
@@ -582,6 +587,7 @@ impl PostgresAnalyticsEventStore {
         .bind(query.source)
         .bind(query.delivery_status)
         .bind(query.shopper_id)
+        .bind(query.channel_id)
         .bind(query.session_id)
         .bind(query.utm_source)
         .bind(query.utm_medium)
@@ -603,6 +609,7 @@ impl PostgresAnalyticsEventStore {
                     event_id,
                     event_name,
                     event_source,
+                    channel_id,
                     shopper_id,
                     session_id,
                     utm_source,
@@ -634,6 +641,7 @@ impl PostgresAnalyticsEventStore {
                         event_id,
                         event_name,
                         event_source,
+                        channel_id,
                         shopper_id,
                         session_id,
                         utm_source,

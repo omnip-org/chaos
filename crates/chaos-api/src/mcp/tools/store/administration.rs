@@ -30,8 +30,6 @@ pub struct UpdateStoreParams {
     pub name: String,
     /// Two-letter ISO 3166-1 region code.
     pub region: String,
-    /// Three-letter ISO 4217 currency code.
-    pub currency: String,
     #[serde(default)]
     pub meta: Option<serde_json::Value>,
     /// Must be explicitly set to true. This action affects live store data.
@@ -206,8 +204,10 @@ impl ChaosMcp {
         }
     }
 
-    #[tool(description = "Update the selected Store's name, region, \
-                        and currency. Requires confirm: true.")]
+    #[tool(
+        description = "Update the selected Store's name, region, and metadata. \
+                        Store currency is fixed at creation. Requires confirm: true."
+    )]
     async fn update_store(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -236,7 +236,6 @@ impl ChaosMcp {
                 store_id,
                 name: params.name,
                 region: params.region,
-                currency: params.currency,
                 meta: params.meta,
             })
             .await

@@ -140,11 +140,13 @@ full postal address precisely because the link itself is treated as shareable.
 The Storefront identity is a Store-scoped persisted `commerce.shoppers` row. A
 website visit creates one Shopper through `/api/v1/shopper/sessions`, and the
 API returns a signed possession token for that row. The Shopper does not own a
-Sales Channel and does not hold contact information; channel is request context,
-while contact and address data are captured directly on the business Order.
-Carts, Orders, Payments, and Analytics events carry the same `shopper_id`; there
-is no Customer entity or visitor-to-Customer association table. An Order-bearing
-Shopper is the buyer for all commerce and analytics purposes.
+Sales Channel and does not hold contact information; channel is request context
+for Shopper identity, while Carts, Orders, and Analytics events persist their
+Channel binding and contact/address data is captured directly on the business
+Order. Carts, Orders, Payments, and Analytics events carry the same
+`shopper_id`; there is no Customer entity or visitor-to-Customer association
+table. An Order-bearing Shopper is the buyer for all commerce and analytics
+purposes.
 
 Store-owned business state, including Orders, refunds, and payment/fulfillment
 state transitions, remains in the `commerce` schema so Store-scoped foreign
@@ -184,8 +186,8 @@ There is no local checkout expiry job: the provider callback is the source of
 truth. New products are added only to a separate active Cart and a later
 checkout creates a new Order.
 
-Analytics uses one append-only, Store-scoped behavior event ledger. The common
-envelope contains `store_id`, `shopper_id`, `event_id`, `event_name`, normalized
+Analytics uses one append-only, Store- and Channel-scoped behavior event ledger.
+The common envelope contains `store_id`, `channel_id`, `shopper_id`, `event_id`, `event_name`, normalized
 `event_source`, time, nullable `session_id`, and normalized UTM columns;
 event-specific values such as
 product, cart, order, traffic, and money remain in bounded `properties` JSON.

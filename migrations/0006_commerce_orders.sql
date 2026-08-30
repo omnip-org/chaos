@@ -3,7 +3,6 @@ CREATE TYPE commerce.order_status AS ENUM ('pending', 'confirmed', 'cancelled');
 CREATE TYPE commerce.order_payment_status AS ENUM ('pending', 'paid', 'failed', 'expired', 'partially_refunded', 'refunded');
 CREATE TYPE commerce.order_shipping_status AS ENUM ('pending', 'awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 CREATE TYPE commerce.order_refund_status AS ENUM ('pending', 'succeeded', 'failed');
-CREATE TYPE commerce.order_fulfillment_status AS ENUM ('awaiting_pickup', 'shipped', 'delivered', 'cancelled');
 
 CREATE TABLE commerce.carts (
     id                    UUID                    NOT NULL PRIMARY KEY,
@@ -17,14 +16,14 @@ CREATE TABLE commerce.carts (
     created_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMPTZ             NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT carts_store_id_id_key                   UNIQUE (store_id, id),
-    CONSTRAINT carts_store_id_id_shopper_id_key        UNIQUE (store_id, id, shopper_id),
-    CONSTRAINT carts_store_id_fkey                     FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
-    CONSTRAINT carts_store_id_channel_fkey             FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
-    CONSTRAINT carts_store_id_shopper_fkey             FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
-    CONSTRAINT carts_store_id_price_list_fkey          FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
-    CONSTRAINT carts_version_nonnegative_check         CHECK (version >= 0),
-    CONSTRAINT carts_payment_client_action_check       CHECK (
+    CONSTRAINT carts_store_id_id_key              UNIQUE (store_id, id),
+    CONSTRAINT carts_store_id_id_channel_id_shopper_id_price_list_id_key UNIQUE (store_id, id, channel_id, shopper_id, price_list_id),
+    CONSTRAINT carts_store_id_fkey                FOREIGN KEY (store_id) REFERENCES commerce.stores (id) ON DELETE CASCADE,
+    CONSTRAINT carts_store_id_channel_fkey        FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
+    CONSTRAINT carts_store_id_shopper_fkey        FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
+    CONSTRAINT carts_store_id_price_list_fkey     FOREIGN KEY (store_id, price_list_id) REFERENCES commerce.price_lists (store_id, id),
+    CONSTRAINT carts_version_nonnegative_check    CHECK (version >= 0),
+    CONSTRAINT carts_payment_client_action_check  CHECK (
         payment_client_action IS NULL
         OR (
             status = 'locked'
@@ -51,30 +50,30 @@ CREATE TABLE commerce.cart_lines (
 );
 
 CREATE TABLE commerce.orders (
-    id                              UUID                               NOT NULL PRIMARY KEY,
-    order_number                    TEXT                               NOT NULL,
-    store_id                        UUID                               NOT NULL,
-    channel_id                      UUID                               NOT NULL,
-    shopper_id                      UUID                               NOT NULL,
-    cart_id                         UUID                               NOT NULL,
-    idempotency_key                 UUID                               NOT NULL,
+    id                              UUID                            NOT NULL PRIMARY KEY,
+    order_number                    TEXT                            NOT NULL,
+    store_id                        UUID                            NOT NULL,
+    channel_id                      UUID                            NOT NULL,
+    shopper_id                      UUID                            NOT NULL,
+    cart_id                         UUID                            NOT NULL,
+    idempotency_key                 UUID                            NOT NULL,
     checkout_request_fingerprint    BYTEA,
-    price_list_id                   UUID                               NOT NULL,
-    currency                        CHAR(3)                            NOT NULL,
-    status                          commerce.order_status              NOT NULL DEFAULT 'pending',
-    payment_status                  commerce.order_payment_status      NOT NULL DEFAULT 'pending',
-    payment_provider_account_id     UUID                               NOT NULL,
+    price_list_id                   UUID                            NOT NULL,
+    currency                        CHAR(3)                         NOT NULL,
+    status                          commerce.order_status           NOT NULL DEFAULT 'pending',
+    payment_status                  commerce.order_payment_status   NOT NULL DEFAULT 'pending',
+    payment_provider_account_id     UUID                            NOT NULL,
     payment_provider_reference_id   TEXT,
     payment_failure_code            TEXT,
-    shipping_status                 commerce.order_shipping_status     NOT NULL DEFAULT 'pending',
+    shipping_status                 commerce.order_shipping_status  NOT NULL DEFAULT 'pending',
     shipping_provider_account_id    UUID,
     shipping_provider_reference_id  TEXT,
-    refunded_amount_minor           BIGINT                             NOT NULL DEFAULT 0,
-    subtotal_amount_minor           BIGINT                             NOT NULL,
-    discount_amount_minor           BIGINT                             NOT NULL,
-    tax_amount_minor                BIGINT                             NOT NULL,
-    shipping_amount_minor           BIGINT                             NOT NULL,
-    total_amount_minor              BIGINT                             NOT NULL,
+    refunded_amount_minor           BIGINT                          NOT NULL DEFAULT 0,
+    subtotal_amount_minor           BIGINT                          NOT NULL,
+    discount_amount_minor           BIGINT                          NOT NULL,
+    tax_amount_minor                BIGINT                          NOT NULL,
+    shipping_amount_minor           BIGINT                          NOT NULL,
+    total_amount_minor              BIGINT                          NOT NULL,
     contact_email                   extensions.citext,
     contact_phone                   TEXT,
     billing_full_name               TEXT,
@@ -93,17 +92,14 @@ CREATE TABLE commerce.orders (
     shipping_administrative_area    TEXT,
     shipping_postal_code            TEXT,
     shipping_country_code           CHAR(2),
-    created_at                      TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at                      TIMESTAMPTZ                        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at                      TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                      TIMESTAMPTZ                     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT orders_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT orders_store_id_order_number_key               UNIQUE (store_id, order_number),
     CONSTRAINT orders_store_id_id_currency_key                UNIQUE (store_id, id, currency),
-    CONSTRAINT orders_store_id_id_shopper_id_key              UNIQUE (store_id, id, shopper_id),
     CONSTRAINT orders_store_id_channel_id_shopper_id_idempotency_key_key UNIQUE (store_id, channel_id, shopper_id, idempotency_key),
-    CONSTRAINT orders_store_id_cart_fkey                      FOREIGN KEY (store_id, cart_id) REFERENCES commerce.carts (store_id, id),
-    CONSTRAINT orders_store_id_shopper_fkey                   FOREIGN KEY (store_id, shopper_id) REFERENCES commerce.shoppers (store_id, id),
-    CONSTRAINT orders_store_id_channel_fkey                   FOREIGN KEY (store_id, channel_id) REFERENCES commerce.channels (store_id, id),
+    CONSTRAINT orders_store_cart_context_fkey                 FOREIGN KEY (store_id, cart_id, channel_id, shopper_id, price_list_id) REFERENCES commerce.carts (store_id, id, channel_id, shopper_id, price_list_id),
     CONSTRAINT orders_store_id_price_list_currency_fkey       FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
     CONSTRAINT orders_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
@@ -170,12 +166,12 @@ CREATE TABLE commerce.order_refunds (
     CONSTRAINT refunds_failure_code_shape_check                CHECK (status = 'failed' OR failure_code IS NULL)
 );
 
-CREATE TABLE commerce.order_fulfillments (
+CREATE TABLE commerce.order_shippings (
     id                           UUID                               NOT NULL PRIMARY KEY,
     store_id                     UUID                               NOT NULL,
     order_id                     UUID                               NOT NULL,
     shipping_provider_account_id UUID                               NOT NULL,
-    status                       commerce.order_fulfillment_status  NOT NULL DEFAULT 'awaiting_pickup',
+    status                       commerce.order_shipping_status     NOT NULL DEFAULT 'awaiting_pickup',
     tracking_number              TEXT,
     tracking_url                 TEXT,
     shipped_at                   TIMESTAMPTZ,
@@ -229,8 +225,8 @@ CREATE UNIQUE INDEX orders_shipping_provider_reference_key ON commerce.orders (s
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
 CREATE INDEX refunds_payment_provider_account_idx ON commerce.order_refunds (store_id, payment_provider_account_id, order_id);
 CREATE UNIQUE INDEX refunds_payment_provider_reference_key ON commerce.order_refunds (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
-CREATE INDEX fulfillments_order_created_idx ON commerce.order_fulfillments (store_id, order_id, created_at DESC);
-CREATE INDEX fulfillments_shipping_provider_account_idx ON commerce.order_fulfillments (store_id, shipping_provider_account_id, order_id);
+CREATE INDEX fulfillments_order_created_idx ON commerce.order_shippings (store_id, order_id, created_at DESC);
+CREATE INDEX fulfillments_shipping_provider_account_idx ON commerce.order_shippings (store_id, shipping_provider_account_id, order_id);
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
 CREATE INDEX orders_shipping_provider_account_idx ON commerce.orders (store_id, shipping_provider_account_id) WHERE shipping_provider_account_id IS NOT NULL;
 
@@ -301,7 +297,7 @@ CREATE TRIGGER refunds_payment_provider_capability_check
 
 CREATE TRIGGER fulfillments_shipping_provider_capability_check
     BEFORE INSERT OR UPDATE OF store_id, shipping_provider_account_id
-    ON commerce.order_fulfillments
+    ON commerce.order_shippings
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
 
 CREATE FUNCTION commerce.cleanup_expired_order_tracking_tokens(batch_size INTEGER)
@@ -371,7 +367,7 @@ ALTER TABLE commerce.orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_tracking_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE commerce.order_refunds ENABLE ROW LEVEL SECURITY;
-ALTER TABLE commerce.order_fulfillments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE commerce.order_shippings ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY store_isolation ON commerce.carts
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
@@ -397,7 +393,7 @@ CREATE POLICY store_isolation ON commerce.order_refunds
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
-CREATE POLICY store_isolation ON commerce.order_fulfillments
+CREATE POLICY store_isolation ON commerce.order_shippings
     USING (store_id = nullif(current_setting('app.store_id', true), '')::uuid)
     WITH CHECK (store_id = nullif(current_setting('app.store_id', true), '')::uuid);
 
@@ -408,13 +404,16 @@ GRANT SELECT, INSERT, UPDATE, DELETE
        commerce.order_tracking_tokens,
        commerce.order_lines,
        commerce.order_refunds,
-       commerce.order_fulfillments
+       commerce.order_shippings
     TO chaos_runtime;
 
-REVOKE DELETE ON commerce.orders FROM chaos_runtime;
-REVOKE UPDATE, DELETE ON commerce.order_lines FROM chaos_runtime;
-REVOKE DELETE ON commerce.order_refunds FROM chaos_runtime;
-REVOKE DELETE ON commerce.order_fulfillments FROM chaos_runtime;
+REVOKE DELETE, TRUNCATE ON commerce.carts,
+    commerce.orders,
+    commerce.order_tracking_tokens,
+    commerce.order_refunds,
+    commerce.order_shippings
+    FROM chaos_runtime;
+REVOKE UPDATE, DELETE, TRUNCATE ON commerce.order_lines FROM chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 
@@ -427,7 +426,7 @@ GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos
 GRANT EXECUTE ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT SELECT, INSERT ON TABLES TO chaos_runtime;
 ALTER DEFAULT PRIVILEGES IN SCHEMA commerce GRANT USAGE, SELECT ON SEQUENCES TO chaos_runtime;
 
 GRANT USAGE ON SCHEMA commerce TO chaos_runtime;
