@@ -174,10 +174,13 @@ async fn load_order_checkout_payment(
 ) -> Result<Option<OrderCheckoutPayment>, ApplicationError> {
     let channel_id = actor.sales_channel_id.ok_or(ApplicationError::Forbidden)?;
     let row = sqlx::query_as::<_, OrderCheckoutPaymentRow>(
-        "SELECT sales_order.id, sales_order.cart_id, \
-                sales_order.subtotal_amount_minor, sales_order.currency::text, \
-                sales_order.status::text, sales_order.payment_status::text, \
-                account.provider::text, source_cart.payment_client_action \
+        "SELECT sales_order.id AS id, sales_order.cart_id AS cart_id, \
+                sales_order.subtotal_amount_minor AS amount_minor, \
+                sales_order.currency::text AS currency, \
+                sales_order.status::text AS order_status, \
+                sales_order.payment_status::text AS payment_status, \
+                account.provider::text AS provider, \
+                source_cart.payment_client_action AS client_action \
          FROM commerce.orders AS sales_order \
          INNER JOIN commerce.carts AS source_cart \
            ON source_cart.store_id = sales_order.store_id AND source_cart.id = sales_order.cart_id \
