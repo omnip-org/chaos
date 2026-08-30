@@ -24,7 +24,7 @@ impl PostgresStripeRepository {
         payment: &OrderCheckoutPayment,
         return_url: &str,
     ) -> Result<PaymentCommand, ApplicationError> {
-        let return_url = checkout_return_url(return_url, payment.order_id)?;
+        let return_url = checkout_return_url(return_url, &payment.order_number)?;
         let job = direct_checkout_job(actor, payment, &return_url);
         let mut command = self.prepare_payment_command(&job).await?;
         command.idempotency_key = checkout_provider_idempotency_key(payment.order_id);
@@ -665,11 +665,16 @@ fn direct_checkout_job(
 
 fn checkout_return_url(
     return_url: &str,
-    order_id: OrderId,
+    order_number: &str,
 ) -> Result<String, ApplicationError> {
     let mut url = url::Url::parse(return_url).map_err(|_| invalid_outbox_payload())?;
-    url.query_pairs_mut()
-        .append_pair("order_id", &order_id.as_uuid().to_string());
+    let mut query_pairs = url
+        .query_pairs()
+        .filter(|(key, _)| key != "order_id" && key != "order_number")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query_pairs.push(("order_number".into(), order_number.into()));
+    url.query_pairs_mut().clear().extend_pairs(query_pairs);
     Ok(url.to_string())
 }
 
@@ -693,4 +698,31 @@ fn normalize_failure_code(value: &str) -> String {
         return "checkout_failed".into();
     }
     value.chars().take(2000).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkout_return_url;
+
+    #[test]
+    fn checkout_return_url_uses_the_public_order_number() {
+        let value = checkout_return_url(
+            "https://shop.example/checkout/confirmation?source=email&order_id=internal&order_number=stale",
+            "W-20260830-7K4M9Q2D",
+        )
+        .expect("return URL should be valid");
+        let url = url::Url::parse(&value).expect("generated URL should be valid");
+        let pairs = url
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("source".into(), "email".into()),
+                ("order_number".into(), "W-20260830-7K4M9Q2D".into()),
+            ]
+        );
+    }
 }

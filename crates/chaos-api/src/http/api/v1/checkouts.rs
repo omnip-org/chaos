@@ -34,7 +34,7 @@ struct CheckoutPath {
 
 #[derive(Serialize)]
 struct EmbeddedCheckoutData {
-    order_id: Uuid,
+    order_number: String,
     source_cart_id: Uuid,
     client_action: PaymentClientActionData,
 }
@@ -94,7 +94,7 @@ fn embedded_checkout_data(
     checkout: chaos_core::payments::EmbeddedCheckoutResult,
 ) -> EmbeddedCheckoutData {
     EmbeddedCheckoutData {
-        order_id: checkout.order_id.as_uuid(),
+        order_number: checkout.order_number,
         source_cart_id: checkout.source_cart_id.as_uuid(),
         client_action: client_action_data(checkout.client_action),
     }
@@ -130,11 +130,13 @@ fn client_action_data(value: PaymentClientAction) -> PaymentClientActionData {
 
 #[cfg(test)]
 mod tests {
-    use chaos_core::contracts::PaymentClientAction;
+    use chaos_core::{contracts::PaymentClientAction, payments::EmbeddedCheckoutResult};
+    use chaos_domain::sales::CartId;
     use secrecy::SecretString;
     use serde_json::json;
+    use uuid::Uuid;
 
-    use super::{client_action_data, validate_return_url};
+    use super::{client_action_data, embedded_checkout_data, validate_return_url};
 
     #[test]
     fn embedded_checkout_requires_a_secure_or_loopback_return_url() {
@@ -159,5 +161,22 @@ mod tests {
                 "client_token": "cs_test_secret",
             })
         );
+    }
+
+    #[test]
+    fn embedded_checkout_response_exposes_order_number_instead_of_internal_id() {
+        let response = embedded_checkout_data(EmbeddedCheckoutResult {
+            order_number: "W-20260830-7K4M9Q2D".into(),
+            source_cart_id: CartId::from_uuid(Uuid::now_v7()),
+            client_action: PaymentClientAction {
+                kind: "mount_embedded_checkout",
+                public_key: SecretString::from("pk_test_stripe"),
+                client_token: SecretString::from("cs_test_secret"),
+            },
+        });
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["order_number"], "W-20260830-7K4M9Q2D");
+        assert!(value.get("order_id").is_none());
     }
 }

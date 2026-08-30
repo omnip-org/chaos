@@ -28,7 +28,7 @@ pub struct CreateEmbeddedCheckoutInput {
 }
 
 pub struct EmbeddedCheckoutResult {
-    pub order_id: OrderId,
+    pub order_number: String,
     pub source_cart_id: chaos_domain::sales::CartId,
     pub client_action: PaymentClientAction,
 }
@@ -204,7 +204,7 @@ impl PaymentService {
         ensure_order_payment_open(&payment)?;
         if let Some(client_action) = payment.client_action {
             return Ok(EmbeddedCheckoutResult {
-                order_id: payment.order_id,
+                order_number: payment.order_number,
                 source_cart_id: payment.source_cart_id,
                 client_action,
             });
@@ -243,7 +243,7 @@ impl PaymentService {
             return Err(checkout_client_action_missing());
         };
         Ok(EmbeddedCheckoutResult {
-            order_id: payment.order_id,
+            order_number: payment.order_number,
             source_cart_id: payment.source_cart_id,
             client_action,
         })

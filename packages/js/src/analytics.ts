@@ -366,8 +366,8 @@ export class ChaosStorefrontAnalytics {
     validateMoney(input.valueMinor, input.currency);
     if (!isUuid(input.cartId))
       throw new TypeError("cartId must be a valid UUID");
-    if (!isUuid(input.orderId))
-      throw new TypeError("orderId must be a valid UUID");
+    if (!isNonEmptyText(input.orderNumber))
+      throw new TypeError("orderNumber must be a non-empty string");
     if (!Array.isArray(input.items) || input.items.length === 0)
       throw new TypeError("items must contain at least one checkout item");
     for (const item of input.items) {
@@ -383,7 +383,7 @@ export class ChaosStorefrontAnalytics {
 
     return this.recordCommerceEvent("initiate_checkout", {
       cart_id: input.cartId,
-      order_id: input.orderId,
+      order_number: input.orderNumber,
       value_minor: input.valueMinor,
       currency: input.currency.toUpperCase(),
       items: input.items.map((item) => ({
@@ -417,11 +417,11 @@ export class ChaosStorefrontAnalytics {
   /** Records checkout initiation from the exact cart snapshot used by Chaos. */
   recordCheckoutCreation(input: EmbeddedCheckoutCreation): string | null {
     return this.recordInitiateCheckout({
-      cartId: input.cart.id,
-      orderId: input.checkout.order_id,
-      valueMinor: input.cart.subtotal_amount_minor,
-      currency: input.cart.currency,
-      items: input.cart.lines.map((line) => ({
+      cartId: input.checkout.source_cart_id,
+      orderNumber: input.checkout.order_number,
+      valueMinor: input.source_cart.subtotal_amount_minor,
+      currency: input.source_cart.currency,
+      items: input.source_cart.lines.map((line) => ({
         productId: line.product_id,
         productVariantId: line.product_variant_id,
         quantity: line.quantity,
@@ -1030,6 +1030,10 @@ function validateProviderOptions(options: ProviderOptions): void {
   }
 }
 
+function isNonEmptyText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function loadProviderScript(
   documentRef: Document,
   id: string,
@@ -1122,7 +1126,7 @@ function ga4Event(
       page_title: properties.title,
       search_term: properties.query,
       engagement_time_msec: properties.active_milliseconds,
-      transaction_id: properties.order_id,
+      transaction_id: properties.order_id ?? properties.order_number,
       value: providerValue(properties.value_minor, properties.currency),
       currency: properties.currency,
       items:

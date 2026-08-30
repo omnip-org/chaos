@@ -56,14 +56,14 @@ and retries a successfully queued event independently of provider delivery.
 Analytics does not consume the generic business `event_outbox`.
 
 The browser-side `initiate_checkout` event stores the captured attribution in
-`integration.analytics_events` together with the canonical `order_id` property.
+`integration.analytics_events` together with the public `order_number` property.
 When a payment webhook appends `purchase`, it looks up that exact checkout
-event by Store, event name, and order ID, rather than querying the shopper's
-latest browser event. This keeps `fbc`, `fbp`, session, traffic, UTM, URL, and
-network context tied to the checkout that produced the Order without adding
-attribution fields to `commerce.orders`. `purchase` is never accepted from the
-generic browser collection path; payment confirmation remains its only ledger
-source.
+event by Store, Channel, Shopper, source Cart, and order number, rather than
+querying the shopper's latest browser event. This keeps `fbc`, `fbp`, session,
+traffic, UTM, URL, and network context tied to the checkout that produced the
+Order without adding attribution fields to `commerce.orders`. `purchase` is
+never accepted from the generic browser collection path; payment confirmation
+remains its only ledger source.
 
 External delivery is a separate projection:
 

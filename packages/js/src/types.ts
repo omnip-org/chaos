@@ -229,12 +229,12 @@ export interface EmbeddedCheckoutOptions {
    * value to prefill.
    */
   email?: string;
-  /** Stripe appends the order ID to this URL before redirecting the shopper. */
+  /** Stripe appends the public order number to this URL before redirecting the shopper. */
   returnUrl: string;
 }
 
 export interface EmbeddedCheckoutSession {
-  order_id: UUID;
+  order_number: string;
   source_cart_id: UUID;
   client_action: PaymentClientAction;
 }
@@ -242,6 +242,8 @@ export interface EmbeddedCheckoutSession {
 /** Browser-facing result of creating or recovering a checkout by Cart. */
 export interface EmbeddedCheckoutCreation {
   checkout: EmbeddedCheckoutSession;
+  /** The immutable source Cart snapshot used to create this checkout. */
+  source_cart: Cart;
   /** The newly obtained active Cart for subsequent shopping. */
   cart: Cart;
 }
@@ -367,7 +369,7 @@ export interface AddToCartAnalyticsInput {
 
 export interface InitiateCheckoutAnalyticsInput {
   cartId: UUID;
-  orderId: UUID;
+  orderNumber: string;
   valueMinor: number;
   currency: CurrencyCode;
   items: AnalyticsCommerceItem[];

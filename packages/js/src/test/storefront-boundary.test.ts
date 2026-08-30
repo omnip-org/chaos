@@ -111,16 +111,17 @@ test("browser commerce bridge owns API paths, response envelopes, and mutation a
 test("browser checkout bridge forwards shared checkout options", async () => {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const recorded: string[] = [];
-	const creation = {
-		checkout: {
-			order_id: "00000000-0000-4000-8000-000000000041",
-			source_cart_id: "00000000-0000-4000-8000-000000000042",
+  const creation = {
+    checkout: {
+      order_number: "W-20260830-00000041",
+      source_cart_id: "00000000-0000-4000-8000-000000000042",
       client_action: {
         type: "mount_embedded_checkout" as const,
         public_key: "pk_test_store",
         client_token: "cs_test_token",
       },
     },
+    source_cart: cart([]),
     cart: cart([]),
   };
   const browser = createStorefrontBrowserClient({
@@ -147,7 +148,7 @@ test("browser checkout bridge forwards shared checkout options", async () => {
     email: "shopper@example.com",
   });
   browser.orders.recordPurchase({
-    orderId: creation.checkout.order_id,
+    orderId: "00000000-0000-4000-8000-000000000041",
     valueMinor: 9900,
     currency: "USD",
     items: [
@@ -176,7 +177,7 @@ test("server checkout bridge creates a new Cart when the source Cart is terminal
   const response = {
     data: {
       checkout: {
-        order_id: "00000000-0000-4000-8000-000000000061",
+        order_number: "W-20260830-00000061",
         source_cart_id: "source-cart",
         client_action: {
           type: "mount_embedded_checkout" as const,
@@ -184,6 +185,7 @@ test("server checkout bridge creates a new Cart when the source Cart is terminal
           client_token: "cs_test_token",
         },
       },
+      source_cart: { ...cart([]), id: "source-cart" },
       cart: { ...cart([]), id: "active-cart" },
     },
   };
@@ -234,7 +236,7 @@ test("server checkout bridge retries the same Cart after a lost response", async
     set: (name, value) => writes.set(name, value),
   };
   const checkout = {
-    order_id: "00000000-0000-4000-8000-000000000071",
+    order_number: "W-20260830-00000071",
     source_cart_id: "source-cart",
     client_action: {
       type: "mount_embedded_checkout" as const,
@@ -253,6 +255,7 @@ test("server checkout bridge retries the same Cart after a lost response", async
         return {
           data: {
             checkout,
+            source_cart: { ...cart([]), id: "source-cart" },
             cart: { ...cart([]), id: "active-cart" },
           },
         };
@@ -273,7 +276,7 @@ test("server checkout bridge retries the same Cart after a lost response", async
   );
 
   assert.equal(retriedCart, "source-cart");
-  assert.equal(result.data.checkout.order_id, checkout.order_id);
+  assert.equal(result.data.checkout.order_number, checkout.order_number);
   assert.equal(result.data.cart.id, "active-cart");
   assert.equal(writes.get("chaos_cart_id"), "active-cart");
 });

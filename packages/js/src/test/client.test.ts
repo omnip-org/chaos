@@ -534,7 +534,7 @@ test("payments create an embedded Checkout session with SDK-owned request detail
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
-            order_id: "order-1",
+            order_number: "W-20260830-00000001",
             source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
@@ -575,6 +575,78 @@ test("payments create an embedded Checkout session with SDK-owned request detail
   });
 });
 
+test("checkout creation keeps the source Cart snapshot when rotating the Cart", async () => {
+  const sourceCart = {
+    id: "cart-1",
+    price_list_id: "price-list-1",
+    currency: "USD",
+    status: "active",
+    version: 4,
+    subtotal_amount_minor: 2_000,
+    lines: [
+      {
+        product_id: "product-1",
+        product_variant_id: "variant-1",
+        product_title: "Trail pack",
+        variant_title: "One size",
+        track_inventory: false,
+        quantity: 1,
+        unit_price_amount_minor: 2_000,
+        subtotal_amount_minor: 2_000,
+        media: [],
+      },
+    ],
+  };
+  const nextCart = {
+    ...sourceCart,
+    id: "active-cart",
+    status: "active",
+    version: 1,
+    subtotal_amount_minor: 0,
+    lines: [],
+  };
+  const client = createStorefrontClient({
+    publishableKey: "public_test",
+    storage: null,
+    analytics: false,
+    fetch: (async (url: string, init: RequestInit) => {
+      if (url.endsWith("/shopper/sessions")) {
+        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
+      }
+      if (url.endsWith("/carts/cart-1")) {
+        return jsonResponse(200, { data: sourceCart });
+      }
+      if (url.endsWith("/carts/cart-1/checkout")) {
+        return jsonResponse(201, {
+          data: {
+            order_number: "W-20260830-00000001",
+            source_cart_id: "cart-1",
+            client_action: {
+              type: "mount_embedded_checkout",
+              public_key: "pk_test_stripe",
+              client_token: "cs_test_secret",
+            },
+          },
+        });
+      }
+      if (url.endsWith("/carts") && init.method === "POST") {
+        return jsonResponse(201, { data: nextCart });
+      }
+      return jsonResponse(404, {
+        error: { code: "not_found", message: "not found" },
+      });
+    }) as unknown as typeof fetch,
+  });
+
+  const creation = await client.payments.createEmbeddedCheckoutWithCart(
+    "cart-1",
+    { returnUrl: "https://shop.example.com/checkout/success" },
+  );
+
+  assert.deepEqual(creation.data.source_cart, sourceCart);
+  assert.deepEqual(creation.data.cart, nextCart);
+});
+
 test("payments reject a checkout response that is missing required fields", async () => {
   let sequence = 0;
   const client = createStorefrontClient({
@@ -597,7 +669,7 @@ test("payments reject a checkout response that is missing required fields", asyn
           },
         });
       }
-      return jsonResponse(201, { data: { order_id: "order-1" } });
+      return jsonResponse(201, { data: { order_number: "W-20260830-00000001" } });
     }) as unknown as typeof fetch,
   });
 
@@ -642,7 +714,7 @@ test("payments create an embedded Checkout session without an email", async () =
       if (url.endsWith("/checkout")) {
         return jsonResponse(201, {
           data: {
-            order_id: "order-1",
+            order_number: "W-20260830-00000001",
             source_cart_id: "cart-1",
             client_action: {
               type: "mount_embedded_checkout",
@@ -709,7 +781,7 @@ test("checkout idempotency follows the cart snapshot instead of the cart id", as
       );
       return jsonResponse(201, {
         data: {
-          order_id: "55555555-5555-4555-8555-555555555555",
+          order_number: "W-20260830-55555555",
           source_cart_id: "cart-1",
           client_action: {
             type: "mount_embedded_checkout",
@@ -880,7 +952,7 @@ test("checkout records InitiateCheckout after the session is created", async () 
     requestBody = options.body;
     return {
       data: {
-        order_id: "55555555-5555-4555-8555-555555555555",
+        order_number: "W-20260830-55555555",
         source_cart_id: "cart-1",
         client_action: {
           type: "mount_embedded_checkout",
@@ -901,7 +973,7 @@ test("checkout records InitiateCheckout after the session is created", async () 
   });
   assert.deepEqual(projection, {
     cartId: "cart-1",
-    orderId: "55555555-5555-4555-8555-555555555555",
+    orderNumber: "W-20260830-55555555",
     valueMinor: 2_000,
     currency: "USD",
     items: [

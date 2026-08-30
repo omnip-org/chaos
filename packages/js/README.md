@@ -73,6 +73,8 @@ const { data: creation } = await chaos.payments.createEmbeddedCheckoutWithCart(c
   returnUrl: "https://shop.example.com/checkout/success",
 });
 const session = creation.checkout;
+// creation.source_cart is the exact pre-checkout snapshot used for
+// InitiateCheckout analytics; creation.cart is the new active Cart.
 // Keep using creation.cart for any later shopping; the original Cart is now
 // locked and must not be edited or checked out again.
 // The source Cart is the recovery key. Retrying the same Cart checkout request
@@ -174,10 +176,12 @@ endpoint records it in the same ledger used by all browser observations. The
 SDK projects the event ID to browser providers after success and persists the
 first-party event for retry, so Meta can deduplicate the Pixel and CAPI copies.
 The API normalizes the session UUID into the analytics event's nullable
-`session_id` column and the UTM values into nullable `utm_*` columns. Use the
-shopper ID and order/cart IDs as the durable association keys. First-touch and
-last-non-direct traffic history remains in `properties`; UTM values are not
-forwarded as Meta custom parameters.
+`session_id` column and the UTM values into nullable `utm_*` columns. The
+server keeps shopper and internal Order IDs for authoritative payment and
+deduplication work; browser checkout events use the public order number and
+Cart ID as their association keys. First-touch and last-non-direct traffic
+history remains in `properties`; UTM values are not forwarded as Meta custom
+parameters.
 Do not duplicate `add_to_cart`, `initiate_checkout`, or `purchase` through
 generic `track()`. The SDK resources own the first two and send them through
 the common endpoint after the matching request succeeds. `purchase` is

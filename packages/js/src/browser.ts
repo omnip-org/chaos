@@ -235,17 +235,23 @@ function isCartLineMutation(value: unknown): value is CartLineMutation {
 function isEmbeddedCheckoutCreation(
   value: unknown,
 ): value is EmbeddedCheckoutCreation {
-  if (!isRecord(value) || !isRecord(value.checkout) || !isRecord(value.cart)) {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.checkout) ||
+    !isRecord(value.source_cart) ||
+    !isRecord(value.cart)
+  ) {
     return false;
   }
   const checkout = value.checkout;
   return (
-    typeof checkout.order_id === "string" &&
+    typeof checkout.order_number === "string" &&
     typeof checkout.source_cart_id === "string" &&
     isRecord(checkout.client_action) &&
     checkout.client_action.type === "mount_embedded_checkout" &&
     typeof checkout.client_action.public_key === "string" &&
     typeof checkout.client_action.client_token === "string" &&
+    isCart(value.source_cart) &&
     isCart(value.cart)
   );
 }

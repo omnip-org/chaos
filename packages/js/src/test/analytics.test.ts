@@ -518,6 +518,90 @@ test("high-level commerce methods own canonical event properties", async () => {
   assert.deepEqual(metaTrack?.[3], { eventID: eventId });
 });
 
+test("records InitiateCheckout with the public order number", async () => {
+  const environment = harness([]);
+  const eventId = environment.analytics.recordInitiateCheckout({
+    cartId: "00000000-0000-4000-8000-000000000011",
+    orderNumber: "W-20260830-7K4M9Q2D",
+    valueMinor: 2_000,
+    currency: "usd",
+    items: [
+      {
+        productId: "00000000-0000-4000-8000-000000000012",
+        productVariantId: "00000000-0000-4000-8000-000000000013",
+        quantity: 1,
+        priceMinor: 2_000,
+      },
+    ],
+  });
+  await environment.analytics.flush();
+
+  const event = JSON.parse(environment.requests[0]!.options.body).events[0];
+  assert.equal(event.event_id, eventId);
+  assert.equal(event.properties.order_number, "W-20260830-7K4M9Q2D");
+  assert.equal(event.properties.order_id, undefined);
+});
+
+test("attributes server checkout creation to the source Cart", async () => {
+  const environment = harness([]);
+  const eventId = environment.analytics.recordCheckoutCreation({
+    checkout: {
+      order_number: "W-20260830-7K4M9Q2D",
+      source_cart_id: "00000000-0000-4000-8000-000000000021",
+      client_action: {
+        type: "mount_embedded_checkout",
+        public_key: "pk_test_stripe",
+        client_token: "cs_test_secret",
+      },
+    },
+    source_cart: {
+      id: "00000000-0000-4000-8000-000000000021",
+      price_list_id: "00000000-0000-4000-8000-000000000023",
+      currency: "USD",
+      status: "locked",
+      version: 1,
+      lines: [
+        {
+          product_id: "00000000-0000-4000-8000-000000000024",
+          product_variant_id: "00000000-0000-4000-8000-000000000025",
+          product_title: "Test product",
+          variant_title: "Test variant",
+          track_inventory: false,
+          quantity: 1,
+          unit_price_amount_minor: 2_000,
+          subtotal_amount_minor: 2_000,
+          media: [],
+        },
+      ],
+      subtotal_amount_minor: 2_000,
+      created_at: "2026-08-16T00:00:00Z",
+      updated_at: "2026-08-16T00:00:00Z",
+    },
+    cart: {
+      id: "00000000-0000-4000-8000-000000000026",
+      price_list_id: "00000000-0000-0000-0000-000000000023",
+      currency: "USD",
+      status: "active",
+      version: 1,
+      lines: [],
+      subtotal_amount_minor: 0,
+      created_at: "2026-08-16T00:00:00Z",
+      updated_at: "2026-08-16T00:00:00Z",
+    },
+  });
+  await environment.analytics.flush();
+
+  const event = JSON.parse(environment.requests[0]!.options.body).events[0];
+  assert.equal(event.event_id, eventId);
+  assert.equal(event.properties.cart_id, "00000000-0000-4000-8000-000000000021");
+  assert.equal(event.properties.order_number, "W-20260830-7K4M9Q2D");
+  assert.equal(event.properties.value_minor, 2_000);
+  assert.equal(
+    event.properties.items[0].product_variant_id,
+    "00000000-0000-4000-8000-000000000025",
+  );
+});
+
 test("maps browser Meta standard event payloads", () => {
   const environment = harness([], {
     providers: { metaPixel: { pixelId: "12345" } },

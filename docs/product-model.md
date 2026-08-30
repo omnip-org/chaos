@@ -69,7 +69,7 @@ before the cart or checkout request, but the business request remains
 analytics-agnostic. After a successful response, the SDK sends the event through
 the common `/analytics/events` endpoint with canonical response values and
 projects the same event ID to browser providers. The browser-side
-`InitiateCheckout` event is stored with its `order_id`; retrying a Cart checkout
+`InitiateCheckout` event is stored with its public `order_number`; retrying a Cart checkout
 does not emit a second initiation event. The server-side `Purchase` event later looks
 up that exact event and combines its attribution with the final
 provider-reconciled total. No attribution is stored on the Order, and Meta can

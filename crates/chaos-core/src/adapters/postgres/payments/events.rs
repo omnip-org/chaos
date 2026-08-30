@@ -240,9 +240,10 @@ async fn apply_payment_event(
     if !captured && !failed && !expired {
         return Err(corrupt_webhook_payload());
     }
-    let (order_status, payment_status, shopper_id, channel_id, currency):
-        (String, String, Uuid, Uuid, String) = sqlx::query_as(
-            "SELECT status::text, payment_status::text, shopper_id, channel_id, currency::text \
+    let (order_status, payment_status, shopper_id, channel_id, currency, order_number, cart_id):
+        (String, String, Uuid, Uuid, String, String, Uuid) = sqlx::query_as(
+            "SELECT status::text, payment_status::text, shopper_id, channel_id, currency::text, \
+                    order_number, cart_id \
              FROM commerce.orders WHERE store_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(store_id.as_uuid())
@@ -314,7 +315,10 @@ async fn apply_payment_event(
         let checkout_attribution = load_checkout_attribution(
             transaction,
             store_id.as_uuid(),
-            order_id.as_uuid(),
+            channel_id,
+            shopper_id,
+            cart_id,
+            &order_number,
         )
         .await?;
         let (contact_email, contact_phone, origin): (

@@ -307,26 +307,36 @@ pub(crate) fn merge_attribution(properties: &mut Value, attribution: &Value) {
 
 /// Load attribution from the exact browser-side InitiateCheckout event that
 /// the SDK records after an Order is created. A later payment webhook can
-/// correlate by order_id without using the latest browser event or adding
-/// attribution columns to commerce.orders.
+/// correlate by the public order_number without using the latest browser event
+/// or adding attribution columns to commerce.orders.
 pub(crate) async fn load_checkout_attribution(
     tx: &mut Transaction<'_, Postgres>,
     store_id: Uuid,
-    order_id: Uuid,
+    channel_id: Uuid,
+    shopper_id: Uuid,
+    cart_id: Uuid,
+    order_number: &str,
 ) -> Result<Value, ApplicationError> {
     let row: Option<CheckoutAttributionRow> = sqlx::query_as(
         "SELECT properties,session_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content
             FROM integration.analytics_events
           WHERE store_id = $1
+            AND channel_id = $2
+            AND shopper_id = $3
             AND event_name = 'initiate_checkout'
             AND event_source = 'browser'
-            AND properties ? 'order_id'
-            AND properties->>'order_id' = $2
+            AND properties ? 'cart_id'
+            AND properties->>'cart_id' = $4
+            AND properties ? 'order_number'
+            AND properties->>'order_number' = $5
           ORDER BY occurred_at DESC, received_at DESC, id DESC
           LIMIT 1",
     )
     .bind(store_id)
-    .bind(order_id.to_string())
+    .bind(channel_id)
+    .bind(shopper_id)
+    .bind(cart_id.to_string())
+    .bind(order_number)
     .fetch_optional(&mut **tx)
     .await
     .map_err(db)?;

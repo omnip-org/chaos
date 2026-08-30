@@ -41,7 +41,7 @@ same `/analytics/events` endpoint, adds canonical response values, and projects
 the same event ID to browser providers. Meta Pixel and the ledger-backed CAPI
 delivery can therefore deduplicate. Cart and Checkout repositories do not
 write analytics rows. The browser-side checkout event stores the captured
-attribution and its canonical `order_id`; the later payment webhook looks up
+attribution and its canonical public `order_number`; the later payment webhook looks up
 that exact event instead of querying the latest browser event. No attribution
 field is added to the Order. The generic
 `integration.event_outbox` is reserved for asynchronous business workflows;

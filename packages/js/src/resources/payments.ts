@@ -35,6 +35,7 @@ export class PaymentsResource {
     return {
       data: {
         checkout: checkout.data,
+        source_cart: cart.data,
         cart: nextCart.data,
       },
     };
@@ -60,7 +61,7 @@ export class PaymentsResource {
       try {
         this.client.analytics?.recordInitiateCheckout({
           cartId: cart.id,
-          orderId: checkout.data.order_id,
+          orderNumber: checkout.data.order_number,
           valueMinor: cart.subtotal_amount_minor,
           currency: cart.currency,
           items: cart.lines.map((line) => ({
@@ -112,7 +113,7 @@ function isEmbeddedCheckoutSession(
 ): value is EmbeddedCheckoutSession {
   if (!isRecord(value) || !isRecord(value.client_action)) return false;
   return (
-    isNonEmptyString(value.order_id) &&
+    isNonEmptyString(value.order_number) &&
     isNonEmptyString(value.source_cart_id) &&
     value.client_action.type === "mount_embedded_checkout" &&
     isNonEmptyString(value.client_action.public_key) &&
