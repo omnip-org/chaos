@@ -59,7 +59,6 @@ impl OrderContact {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostalAddress {
     full_name: String,
-    company: Option<String>,
     address_line1: String,
     address_line2: Option<String>,
     locality: String,
@@ -72,7 +71,6 @@ impl PostalAddress {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         full_name: impl Into<String>,
-        company: Option<String>,
         address_line1: impl Into<String>,
         address_line2: Option<String>,
         locality: impl Into<String>,
@@ -81,7 +79,6 @@ impl PostalAddress {
         country_code: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let full_name = required_text("address.full_name", full_name.into(), 200)?;
-        let company = optional_text("address.company", company, 200)?;
         let address_line1 = required_text("address.address_line1", address_line1.into(), 255)?;
         let address_line2 = optional_text("address.address_line2", address_line2, 255)?;
         let locality = required_text("address.locality", locality.into(), 100)?;
@@ -101,7 +98,6 @@ impl PostalAddress {
         }
         Ok(Self {
             full_name,
-            company,
             address_line1,
             address_line2,
             locality,
@@ -113,10 +109,6 @@ impl PostalAddress {
 
     pub fn full_name(&self) -> &str {
         &self.full_name
-    }
-
-    pub fn company(&self) -> Option<&str> {
-        self.company.as_deref()
     }
 
     pub fn address_line1(&self) -> &str {
@@ -218,7 +210,6 @@ mod tests {
             OrderContact::new(Some(" Guest@Example.COM "), Some("+14155552671".into())).unwrap();
         let address = PostalAddress::new(
             " Guest Buyer ",
-            None,
             " 1 Market Street ",
             None,
             "San Francisco",
@@ -243,6 +234,6 @@ mod tests {
     fn contact_and_address_reject_invalid_customer_data() {
         assert!(OrderContact::new(Some("invalid"), None).is_err());
         assert!(OrderContact::new(Some("guest@example.com"), Some("4155552671".into())).is_err());
-        assert!(PostalAddress::new("", None, "1 Main", None, "City", None, None, "USA").is_err());
+        assert!(PostalAddress::new("", "1 Main", None, "City", None, None, "USA").is_err());
     }
 }

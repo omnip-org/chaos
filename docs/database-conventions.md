@@ -91,7 +91,17 @@ payment-form handoff lives in `commerce.carts.payment_client_action`.
 An Order's cart context is bound by `(store_id, cart_id, channel_id,
 shopper_id, price_list_id)`. `commerce.order_shipping_status` is shared by
 Fulfillment rows and the Order's `shipping_status` projection; `pending` is
-used only when an Order has no active Fulfillment.
+used only when an Order has no active Fulfillment. The shipping provider
+account and external provider reference belong to individual
+`commerce.order_shippings` rows so split shipments can use different provider
+accounts. `commerce.orders.price_list_id` is an immutable commercial-context
+reference, not a live price lookup: Order lines snapshot their charged prices,
+while this ID preserves the selected price-list and currency context and
+proves that the Order came from the same Cart pricing context.
+An Order starts with a provisional subtotal and zero provider-owned adjustments
+while payment is pending. Verified checkout reconciliation writes the final
+discount, tax, shipping, and total and sets `orders.amounts_finalized_at`; the
+database then enforces the final-total equation.
 New analytics events persist their Channel and Shopper ownership directly.
 Catalog media attachments and manual-review provenance are part of
 `0005_commerce_products.sql`. Release-hardening constraints, capability checks,

@@ -29,6 +29,7 @@ struct FulfillmentRow {
     id: Uuid,
     order_id: Uuid,
     shipping_provider_account_id: Uuid,
+    provider_reference_id: Option<String>,
     status: String,
     tracking_number: Option<String>,
     tracking_url: Option<String>,
@@ -138,26 +139,6 @@ impl PostgresFulfillmentRepository {
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
-        let order_provider_bound = sqlx::query(
-            "UPDATE commerce.orders \
-             SET shipping_provider_account_id = $3, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE store_id = $1 AND id = $2 \
-               AND (shipping_provider_account_id IS NULL \
-                    OR shipping_provider_account_id = $3)",
-        )
-        .bind(store_id.as_uuid())
-        .bind(order_id.as_uuid())
-        .bind(shipping_provider_account_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        if order_provider_bound.rows_affected() != 1 {
-            return Err(ApplicationError::Conflict {
-                code: "shipping_provider_mismatch",
-                message: "the Order is already assigned to another shipping provider account",
-            });
-        }
         recompute_order_shipping_projection(&mut transaction, store_id, order_id).await?;
         let detail = load_fulfillment(&mut transaction, store_id, fulfillment.id())
             .await?
@@ -364,8 +345,11 @@ async fn recompute_order_shipping_projection(
         "awaiting_pickup"
     };
     sqlx::query(
-        "UPDATE commerce.orders SET shipping_status = $3::commerce.order_shipping_status \
-         WHERE store_id = $1 AND id = $2",
+        "UPDATE commerce.orders \
+            SET shipping_status = $3::commerce.order_shipping_status, \
+                updated_at = CURRENT_TIMESTAMP \
+          WHERE store_id = $1 AND id = $2 \
+            AND shipping_status IS DISTINCT FROM $3::commerce.order_shipping_status",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -382,7 +366,8 @@ async fn load_domain_fulfillment(
     id: FulfillmentId,
 ) -> Result<Fulfillment, ApplicationError> {
     let row = sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
+        "SELECT id, order_id, shipping_provider_account_id, \
+                shipping_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
          FROM commerce.order_shippings WHERE store_id = $1 AND id = $2 FOR UPDATE",
     )
@@ -408,7 +393,8 @@ async fn load_fulfillment(
     id: FulfillmentId,
 ) -> Result<Option<FulfillmentDetail>, ApplicationError> {
     sqlx::query_as::<_, FulfillmentRow>(
-        "SELECT id, order_id, shipping_provider_account_id, status::text, tracking_number, \
+        "SELECT id, order_id, shipping_provider_account_id, \
+                shipping_provider_reference_id AS provider_reference_id, status::text, tracking_number, \
                 tracking_url, shipped_at, delivered_at, cancelled_at, created_at, updated_at \
          FROM commerce.order_shippings WHERE store_id = $1 AND id = $2",
     )
@@ -428,6 +414,7 @@ fn fulfillment_detail(row: FulfillmentRow) -> Result<FulfillmentDetail, Applicat
         shipping_provider_account_id: ShippingProviderAccountId::from_uuid(
             row.shipping_provider_account_id,
         ),
+        provider_reference_id: row.provider_reference_id,
         status: FulfillmentStatus::parse(&row.status).ok_or_else(corrupt_state)?,
         tracking_number: row.tracking_number,
         tracking_url: row.tracking_url,

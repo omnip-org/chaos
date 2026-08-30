@@ -47,6 +47,12 @@ Transactional email uses the same provider-neutral application boundary. The cur
 
 Every Store receives a manual Shipping Provider account and enabled destination-country rows at provisioning. Stripe Checkout owns shipping-rate, shipping, tax, and final-total calculation; Chaos stores the resulting address and provider-reported amounts. Manual fulfillment records tracking and lifecycle changes without a network call; it does not provide quotations, labels, or carrier reconciliation.
 
+The shipping provider account and external shipping resource reference are
+stored on the owning Fulfillment row, not on the Order, so split shipments can
+use different provider accounts and retain one provider reference per
+shipment. The Order's shipping status remains an aggregate projection of those
+Fulfillment rows.
+
 If a carrier is added, carrier names, service codes, label formats, customs payloads, tracking event names, and provider errors remain adapter concerns. Purchased label and tracking snapshots should be persisted as fulfillment evidence after a successful provider command, and callbacks should enter a signed, deduplicated inbox before application use cases advance fulfillment state.
 
 A separate `logistics` bounded context is deferred. It becomes justified only when Chaos owns multi-leg routing, warehouse selection, split shipment planning, cross-dock or transfer workflows, or carrier procurement independently of one Order Fulfillment. Until then, a new top-level context would duplicate Fulfillment ownership.

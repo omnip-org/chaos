@@ -89,6 +89,8 @@ pub struct OrderRefundItem {
 pub struct OrderFulfillmentItem {
     pub id: FulfillmentId,
     pub shipping_provider_account_id: ShippingProviderAccountId,
+    pub shipping_provider: ShippingProvider,
+    pub provider_reference_id: Option<String>,
     pub status: FulfillmentStatus,
     pub tracking_number: Option<String>,
     pub tracking_url: Option<String>,
@@ -111,14 +113,15 @@ pub struct OrderDetail {
     pub shipping_status: FulfillmentStatus,
     pub payment_provider: Option<PaymentProvider>,
     pub payment_provider_reference_id: Option<String>,
-    pub shipping_provider: Option<ShippingProvider>,
-    pub shipping_provider_reference_id: Option<String>,
     pub identity: OrderIdentity,
     pub subtotal_amount_minor: i64,
     pub discount_amount_minor: i64,
     pub tax_amount_minor: i64,
     pub shipping_amount_minor: i64,
     pub total_amount_minor: i64,
+    /// `None` while the pending checkout still awaits the provider's final
+    /// tax, discount, shipping, and total snapshot.
+    pub amounts_finalized_at: Option<OffsetDateTime>,
     pub refunded_amount_minor: i64,
     pub lines: Vec<OrderLineItem>,
     pub payment_attempt: Option<OrderPaymentAttemptItem>,

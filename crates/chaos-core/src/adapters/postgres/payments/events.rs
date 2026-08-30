@@ -623,8 +623,9 @@ async fn apply_stripe_checkout_snapshot(
     sqlx::query(
         "UPDATE commerce.orders SET subtotal_amount_minor = $3, discount_amount_minor = $4, \
                 tax_amount_minor = $5, shipping_amount_minor = $6, total_amount_minor = $7, \
-                payment_provider_reference_id = COALESCE(payment_provider_reference_id, $8), \
-                updated_at = $9 WHERE store_id = $1 AND id = $2",
+                amounts_finalized_at = $8, \
+                payment_provider_reference_id = COALESCE(payment_provider_reference_id, $9), \
+                updated_at = $10 WHERE store_id = $1 AND id = $2",
     )
     .bind(store_id.as_uuid())
     .bind(order_id.as_uuid())
@@ -633,6 +634,7 @@ async fn apply_stripe_checkout_snapshot(
     .bind(snapshot.amount_tax)
     .bind(snapshot.amount_shipping)
     .bind(snapshot.amount_total)
+    .bind(now)
     .bind(snapshot.payment_intent_id.as_deref())
     .bind(now)
     .execute(&mut **transaction)

@@ -261,6 +261,7 @@ fn order_list_item(detail: OrderDetail) -> serde_json::Value {
         "shipping_status": detail.shipping_status.as_str(),
         "currency": detail.currency.as_str(),
         "total_amount_minor": detail.total_amount_minor,
+        "amounts_finalized_at": detail.amounts_finalized_at.map(format_time),
         "refunded_amount_minor": detail.refunded_amount_minor,
         "contact_email": detail.identity.contact().email(),
         "line_count": detail.lines.len(),
@@ -281,14 +282,13 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         shipping_status,
         payment_provider,
         payment_provider_reference_id,
-        shipping_provider,
-        shipping_provider_reference_id,
         identity,
         subtotal_amount_minor,
         discount_amount_minor,
         tax_amount_minor,
         shipping_amount_minor,
         total_amount_minor,
+        amounts_finalized_at,
         refunded_amount_minor,
         lines,
         payment_attempt,
@@ -308,8 +308,6 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         "shipping_status": shipping_status.as_str(),
         "payment_provider": payment_provider.map(|value| value.as_str()),
         "payment_provider_reference_id": payment_provider_reference_id,
-        "shipping_provider": shipping_provider.map(|value| value.as_str()),
-        "shipping_provider_reference_id": shipping_provider_reference_id,
         "contact": order_contact_data(identity.contact()),
         "billing_address": identity.billing_address().map(postal_address_data),
         "shipping_address": identity.shipping_address().map(postal_address_data),
@@ -319,6 +317,7 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         "tax_amount_minor": tax_amount_minor,
         "shipping_amount_minor": shipping_amount_minor,
         "total_amount_minor": total_amount_minor,
+        "amounts_finalized_at": amounts_finalized_at.map(format_time),
         "refunded_amount_minor": refunded_amount_minor,
         "lines": lines.into_iter().map(|line| json!({
             "product_id": line.product_id.as_uuid(),
@@ -351,6 +350,8 @@ fn order_detail(detail: OrderDetail) -> serde_json::Value {
         "fulfillments": fulfillments.into_iter().map(|fulfillment| json!({
             "id": fulfillment.id.as_uuid(),
             "shipping_provider_account_id": fulfillment.shipping_provider_account_id.as_uuid(),
+            "shipping_provider": fulfillment.shipping_provider.as_str(),
+            "provider_reference_id": fulfillment.provider_reference_id,
             "status": fulfillment.status.as_str(),
             "tracking_number": fulfillment.tracking_number,
             "tracking_url": fulfillment.tracking_url,
@@ -375,7 +376,6 @@ fn order_contact_data(contact: &OrderContact) -> serde_json::Value {
 fn postal_address_data(address: &PostalAddress) -> serde_json::Value {
     json!({
         "full_name": address.full_name(),
-        "company": address.company(),
         "address_line1": address.address_line1(),
         "address_line2": address.address_line2(),
         "locality": address.locality(),
@@ -426,7 +426,6 @@ mod tests {
             OrderContact::new(Some("buyer@example.com"), Some("+14155552671".to_owned())).unwrap();
         let billing_address = PostalAddress::new(
             "Buyer",
-            Some("Chaos Inc".to_owned()),
             "1 Market Street",
             Some("Suite 100".to_owned()),
             "San Francisco",
@@ -437,7 +436,6 @@ mod tests {
         .unwrap();
         let shipping_address = PostalAddress::new(
             "Buyer",
-            None,
             "2 Market Street",
             None,
             "San Francisco",
@@ -459,8 +457,6 @@ mod tests {
                 shipping_status: FulfillmentStatus::Pending,
                 payment_provider: None,
                 payment_provider_reference_id: None,
-                shipping_provider: None,
-                shipping_provider_reference_id: None,
                 identity: OrderIdentity::new(
                     contact,
                     Some(billing_address),
@@ -471,6 +467,7 @@ mod tests {
                 tax_amount_minor: 90,
                 shipping_amount_minor: 50,
                 total_amount_minor: 1_040,
+                amounts_finalized_at: None,
                 refunded_amount_minor: 0,
                 lines: Vec::new(),
                 payment_attempt: None,
@@ -496,7 +493,7 @@ mod tests {
         assert_eq!(value["contact"]["email"], "buyer@example.com");
         assert_eq!(value["contact"]["phone"], "+14155552671");
         assert_eq!(value["billing_address"]["address_line1"], "1 Market Street");
-        assert_eq!(value["billing_address"]["company"], "Chaos Inc");
+        assert!(value["billing_address"].get("company").is_none());
         assert_eq!(
             value["shipping_address"]["address_line1"],
             "2 Market Street"

@@ -177,15 +177,17 @@ impl PostgresShippingRepository {
             return Ok(());
         };
         let updated = sqlx::query(
-            "UPDATE commerce.orders \
+            "UPDATE commerce.order_shippings \
              SET shipping_provider_reference_id = COALESCE(shipping_provider_reference_id, $3), \
                  updated_at = CASE WHEN shipping_provider_reference_id IS NULL THEN $4 ELSE updated_at END \
-             WHERE store_id = $1 AND id = $2 AND shipping_provider_account_id = $5",
+             WHERE store_id = $1 AND id = $2 AND order_id = $5 \
+               AND shipping_provider_account_id = $6",
         )
         .bind(job.store_id)
-        .bind(order_id)
+        .bind(fulfillment_id)
         .bind(provider_reference_id)
         .bind(now)
+        .bind(order_id)
         .bind(account_id)
         .execute(&mut *transaction)
         .await
@@ -195,7 +197,7 @@ impl PostgresShippingRepository {
             transaction.rollback().await.map_err(database_error)?;
             return Err(ApplicationError::Conflict {
                 code: "shipping_provider_reference_mismatch",
-                message: "the Shipping result does not match the Order",
+                message: "the Shipping result does not match the Fulfillment",
             });
         }
         transaction.commit().await.map_err(database_error)?;

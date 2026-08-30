@@ -310,6 +310,7 @@ fn fulfillment_summary(detail: chaos_core::contracts::FulfillmentDetail) -> serd
         "id": detail.id.as_uuid(),
         "order_id": detail.order_id.as_uuid(),
         "shipping_provider_account_id": detail.shipping_provider_account_id.as_uuid(),
+        "provider_reference_id": detail.provider_reference_id,
         "status": detail.status.as_str(),
         "tracking_number": detail.tracking_number,
         "tracking_url": detail.tracking_url,

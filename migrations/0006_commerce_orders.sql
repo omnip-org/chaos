@@ -56,9 +56,9 @@ CREATE TABLE commerce.orders (
     channel_id                      UUID                            NOT NULL,
     shopper_id                      UUID                            NOT NULL,
     cart_id                         UUID                            NOT NULL,
+    price_list_id                   UUID                            NOT NULL,
     idempotency_key                 UUID                            NOT NULL,
     checkout_request_fingerprint    BYTEA,
-    price_list_id                   UUID                            NOT NULL,
     currency                        CHAR(3)                         NOT NULL,
     status                          commerce.order_status           NOT NULL DEFAULT 'pending',
     payment_status                  commerce.order_payment_status   NOT NULL DEFAULT 'pending',
@@ -66,18 +66,16 @@ CREATE TABLE commerce.orders (
     payment_provider_reference_id   TEXT,
     payment_failure_code            TEXT,
     shipping_status                 commerce.order_shipping_status  NOT NULL DEFAULT 'pending',
-    shipping_provider_account_id    UUID,
-    shipping_provider_reference_id  TEXT,
     refunded_amount_minor           BIGINT                          NOT NULL DEFAULT 0,
     subtotal_amount_minor           BIGINT                          NOT NULL,
     discount_amount_minor           BIGINT                          NOT NULL,
     tax_amount_minor                BIGINT                          NOT NULL,
     shipping_amount_minor           BIGINT                          NOT NULL,
     total_amount_minor              BIGINT                          NOT NULL,
+    amounts_finalized_at            TIMESTAMPTZ,
     contact_email                   extensions.citext,
     contact_phone                   TEXT,
     billing_full_name               TEXT,
-    billing_company                 TEXT,
     billing_address_line1           TEXT,
     billing_address_line2           TEXT,
     billing_locality                TEXT,
@@ -85,7 +83,6 @@ CREATE TABLE commerce.orders (
     billing_postal_code             TEXT,
     billing_country_code            CHAR(2),
     shipping_full_name              TEXT,
-    shipping_company                TEXT,
     shipping_address_line1          TEXT,
     shipping_address_line2          TEXT,
     shipping_locality               TEXT,
@@ -102,19 +99,134 @@ CREATE TABLE commerce.orders (
     CONSTRAINT orders_store_cart_context_fkey                 FOREIGN KEY (store_id, cart_id, channel_id, shopper_id, price_list_id) REFERENCES commerce.carts (store_id, id, channel_id, shopper_id, price_list_id),
     CONSTRAINT orders_store_id_price_list_currency_fkey       FOREIGN KEY (store_id, price_list_id, currency) REFERENCES commerce.price_lists (store_id, id, currency),
     CONSTRAINT orders_store_id_payment_provider_account_fkey  FOREIGN KEY (store_id, payment_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
-    CONSTRAINT orders_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
     CONSTRAINT orders_currency_format_check                   CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT orders_idempotency_key_not_nil_check           CHECK (idempotency_key <> '00000000-0000-0000-0000-000000000000'::uuid),
     CONSTRAINT orders_checkout_request_fingerprint_check      CHECK (checkout_request_fingerprint IS NULL OR octet_length(checkout_request_fingerprint) = 32),
     CONSTRAINT orders_order_number_check                      CHECK (order_number ~ '^W-[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8}$'),
-    CONSTRAINT orders_amounts_check                           CHECK (subtotal_amount_minor >= 0 AND discount_amount_minor >= 0 AND tax_amount_minor >= 0 AND shipping_amount_minor >= 0 AND total_amount_minor >= 0 AND refunded_amount_minor >= 0 AND refunded_amount_minor <= total_amount_minor),
+    CONSTRAINT orders_amounts_check                           CHECK (
+        subtotal_amount_minor >= 0
+        AND discount_amount_minor >= 0
+        AND tax_amount_minor >= 0
+        AND shipping_amount_minor >= 0
+        AND total_amount_minor >= 0
+        AND refunded_amount_minor >= 0
+        AND refunded_amount_minor <= total_amount_minor
+        AND (
+            (
+                amounts_finalized_at IS NULL
+                AND discount_amount_minor = 0
+                AND tax_amount_minor = 0
+                AND shipping_amount_minor = 0
+                AND total_amount_minor = 0
+            )
+            OR (
+                amounts_finalized_at IS NOT NULL
+                AND total_amount_minor::numeric = subtotal_amount_minor::numeric
+                    - discount_amount_minor::numeric
+                    + tax_amount_minor::numeric
+                    + shipping_amount_minor::numeric
+            )
+        )
+    ),
     CONSTRAINT orders_contact_email_length_check              CHECK (contact_email IS NULL OR length(trim(contact_email::text)) BETWEEN 3 AND 320),
     CONSTRAINT orders_contact_phone_format_check              CHECK (contact_phone IS NULL OR contact_phone ~ '^\+[1-9][0-9]{7,14}$'),
     CONSTRAINT orders_billing_country_code_check              CHECK (billing_country_code IS NULL OR billing_country_code ~ '^[A-Z]{2}$'),
     CONSTRAINT orders_shipping_country_code_check             CHECK (shipping_country_code IS NULL OR shipping_country_code ~ '^[A-Z]{2}$'),
     CONSTRAINT orders_payment_provider_reference_check        CHECK (payment_provider_reference_id IS NULL OR length(trim(payment_provider_reference_id)) BETWEEN 1 AND 255),
-    CONSTRAINT orders_shipping_provider_reference_check       CHECK (shipping_provider_reference_id IS NULL OR (shipping_provider_account_id IS NOT NULL AND length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255)),
-    CONSTRAINT orders_payment_failure_code_check              CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000)
+    CONSTRAINT orders_payment_failure_code_check              CHECK (payment_failure_code IS NULL OR length(trim(payment_failure_code)) BETWEEN 1 AND 2000),
+    CONSTRAINT orders_payment_failure_code_shape_check        CHECK (payment_failure_code IS NULL OR payment_status IN ('failed', 'expired')),
+    CONSTRAINT orders_refund_state_check                      CHECK (
+        (refunded_amount_minor = 0 AND payment_status NOT IN ('partially_refunded', 'refunded'))
+        OR (refunded_amount_minor > 0 AND payment_status IN ('partially_refunded', 'refunded'))
+    ),
+    CONSTRAINT orders_billing_address_shape_check             CHECK (
+        (
+            billing_full_name IS NULL
+            AND billing_address_line1 IS NULL
+            AND billing_address_line2 IS NULL
+            AND billing_locality IS NULL
+            AND billing_administrative_area IS NULL
+            AND billing_postal_code IS NULL
+            AND billing_country_code IS NULL
+        )
+        OR (
+            billing_full_name IS NOT NULL
+            AND length(trim(billing_full_name)) BETWEEN 1 AND 200
+            AND billing_full_name !~ '[[:cntrl:]]'
+            AND billing_address_line1 IS NOT NULL
+            AND length(trim(billing_address_line1)) BETWEEN 1 AND 255
+            AND billing_address_line1 !~ '[[:cntrl:]]'
+            AND billing_locality IS NOT NULL
+            AND length(trim(billing_locality)) BETWEEN 1 AND 100
+            AND billing_locality !~ '[[:cntrl:]]'
+            AND billing_country_code IS NOT NULL
+            AND (
+                billing_address_line2 IS NULL
+                OR (
+                    length(trim(billing_address_line2)) BETWEEN 1 AND 255
+                    AND billing_address_line2 !~ '[[:cntrl:]]'
+                )
+            )
+            AND (
+                billing_administrative_area IS NULL
+                OR (
+                    length(trim(billing_administrative_area)) BETWEEN 1 AND 100
+                    AND billing_administrative_area !~ '[[:cntrl:]]'
+                )
+            )
+            AND (
+                billing_postal_code IS NULL
+                OR (
+                    length(trim(billing_postal_code)) BETWEEN 1 AND 32
+                    AND billing_postal_code !~ '[[:cntrl:]]'
+                )
+            )
+        )
+    ),
+    CONSTRAINT orders_shipping_address_shape_check            CHECK (
+        (
+            shipping_full_name IS NULL
+            AND shipping_address_line1 IS NULL
+            AND shipping_address_line2 IS NULL
+            AND shipping_locality IS NULL
+            AND shipping_administrative_area IS NULL
+            AND shipping_postal_code IS NULL
+            AND shipping_country_code IS NULL
+        )
+        OR (
+            shipping_full_name IS NOT NULL
+            AND length(trim(shipping_full_name)) BETWEEN 1 AND 200
+            AND shipping_full_name !~ '[[:cntrl:]]'
+            AND shipping_address_line1 IS NOT NULL
+            AND length(trim(shipping_address_line1)) BETWEEN 1 AND 255
+            AND shipping_address_line1 !~ '[[:cntrl:]]'
+            AND shipping_locality IS NOT NULL
+            AND length(trim(shipping_locality)) BETWEEN 1 AND 100
+            AND shipping_locality !~ '[[:cntrl:]]'
+            AND shipping_country_code IS NOT NULL
+            AND (
+                shipping_address_line2 IS NULL
+                OR (
+                    length(trim(shipping_address_line2)) BETWEEN 1 AND 255
+                    AND shipping_address_line2 !~ '[[:cntrl:]]'
+                )
+            )
+            AND (
+                shipping_administrative_area IS NULL
+                OR (
+                    length(trim(shipping_administrative_area)) BETWEEN 1 AND 100
+                    AND shipping_administrative_area !~ '[[:cntrl:]]'
+                )
+            )
+            AND (
+                shipping_postal_code IS NULL
+                OR (
+                    length(trim(shipping_postal_code)) BETWEEN 1 AND 32
+                    AND shipping_postal_code !~ '[[:cntrl:]]'
+                )
+            )
+        )
+    )
 );
 
 CREATE TABLE commerce.order_lines (
@@ -171,6 +283,7 @@ CREATE TABLE commerce.order_shippings (
     store_id                     UUID                               NOT NULL,
     order_id                     UUID                               NOT NULL,
     shipping_provider_account_id UUID                               NOT NULL,
+    shipping_provider_reference_id TEXT,
     status                       commerce.order_shipping_status     NOT NULL DEFAULT 'awaiting_pickup',
     tracking_number              TEXT,
     tracking_url                 TEXT,
@@ -183,6 +296,7 @@ CREATE TABLE commerce.order_shippings (
     CONSTRAINT fulfillments_store_id_id_key                         UNIQUE (store_id, id),
     CONSTRAINT fulfillments_store_id_order_fkey                     FOREIGN KEY (store_id, order_id) REFERENCES commerce.orders (store_id, id),
     CONSTRAINT fulfillments_store_id_shipping_provider_account_fkey FOREIGN KEY (store_id, shipping_provider_account_id) REFERENCES integration.provider_accounts (store_id, id),
+    CONSTRAINT fulfillments_shipping_provider_reference_check       CHECK (shipping_provider_reference_id IS NULL OR length(trim(shipping_provider_reference_id)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_number_check                   CHECK (tracking_number IS NULL OR length(trim(tracking_number)) BETWEEN 1 AND 255),
     CONSTRAINT fulfillments_tracking_url_check                      CHECK (tracking_url IS NULL OR (length(tracking_url) BETWEEN 9 AND 2048 AND tracking_url ~ '^https://')),
     CONSTRAINT fulfillments_shape_check                             CHECK (
@@ -221,14 +335,13 @@ CREATE INDEX orders_store_shopper_idx ON commerce.orders (store_id, shopper_id);
 CREATE INDEX orders_store_price_list_currency_idx ON commerce.orders (store_id, price_list_id, currency);
 CREATE INDEX order_tracking_tokens_expiry_idx ON commerce.order_tracking_tokens (expires_at, store_id, order_id);
 CREATE UNIQUE INDEX orders_payment_provider_reference_key ON commerce.orders (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
-CREATE UNIQUE INDEX orders_shipping_provider_reference_key ON commerce.orders (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
+CREATE UNIQUE INDEX fulfillments_shipping_provider_reference_key ON commerce.order_shippings (store_id, shipping_provider_account_id, shipping_provider_reference_id) WHERE shipping_provider_reference_id IS NOT NULL;
 CREATE INDEX refunds_order_created_idx ON commerce.order_refunds (store_id, order_id, created_at DESC);
 CREATE INDEX refunds_payment_provider_account_idx ON commerce.order_refunds (store_id, payment_provider_account_id, order_id);
 CREATE UNIQUE INDEX refunds_payment_provider_reference_key ON commerce.order_refunds (store_id, payment_provider_account_id, payment_provider_reference_id) WHERE payment_provider_reference_id IS NOT NULL;
 CREATE INDEX fulfillments_order_created_idx ON commerce.order_shippings (store_id, order_id, created_at DESC);
 CREATE INDEX fulfillments_shipping_provider_account_idx ON commerce.order_shippings (store_id, shipping_provider_account_id, order_id);
 CREATE INDEX orders_payment_provider_account_idx ON commerce.orders (store_id, payment_provider_account_id);
-CREATE INDEX orders_shipping_provider_account_idx ON commerce.orders (store_id, shipping_provider_account_id) WHERE shipping_provider_account_id IS NOT NULL;
 
 CREATE FUNCTION commerce.validate_payment_provider_account()
 RETURNS TRIGGER
@@ -262,10 +375,6 @@ AS $$
 DECLARE
     account_capability TEXT;
 BEGIN
-    IF NEW.shipping_provider_account_id IS NULL THEN
-        RETURN NEW;
-    END IF;
-
     SELECT account.capability::text
       INTO account_capability
       FROM integration.provider_accounts AS account
@@ -280,15 +389,42 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION commerce.prevent_order_identity_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.order_number IS DISTINCT FROM OLD.order_number
+       OR NEW.store_id IS DISTINCT FROM OLD.store_id
+       OR NEW.channel_id IS DISTINCT FROM OLD.channel_id
+       OR NEW.shopper_id IS DISTINCT FROM OLD.shopper_id
+       OR NEW.cart_id IS DISTINCT FROM OLD.cart_id
+       OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+       OR NEW.checkout_request_fingerprint IS DISTINCT FROM OLD.checkout_request_fingerprint
+       OR NEW.price_list_id IS DISTINCT FROM OLD.price_list_id
+       OR NEW.currency IS DISTINCT FROM OLD.currency
+       OR NEW.payment_provider_account_id IS DISTINCT FROM OLD.payment_provider_account_id THEN
+        RAISE EXCEPTION 'Order identity and payment provider binding are immutable after creation'
+            USING ERRCODE = '22023';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
 CREATE TRIGGER orders_payment_provider_capability_check
     BEFORE INSERT OR UPDATE OF store_id, payment_provider_account_id
     ON commerce.orders
     FOR EACH ROW EXECUTE FUNCTION commerce.validate_payment_provider_account();
 
-CREATE TRIGGER orders_shipping_provider_capability_check
-    BEFORE INSERT OR UPDATE OF store_id, shipping_provider_account_id
+CREATE TRIGGER orders_identity_immutable
+    BEFORE UPDATE OF id, order_number, store_id, channel_id, shopper_id, cart_id,
+        idempotency_key, checkout_request_fingerprint, price_list_id, currency,
+        payment_provider_account_id
     ON commerce.orders
-    FOR EACH ROW EXECUTE FUNCTION commerce.validate_shipping_provider_account();
+    FOR EACH ROW EXECUTE FUNCTION commerce.prevent_order_identity_change();
 
 CREATE TRIGGER refunds_payment_provider_capability_check
     BEFORE INSERT OR UPDATE OF store_id, payment_provider_account_id
@@ -413,16 +549,51 @@ REVOKE DELETE, TRUNCATE ON commerce.carts,
     commerce.order_refunds,
     commerce.order_shippings
     FROM chaos_runtime;
+REVOKE UPDATE ON commerce.orders FROM chaos_runtime;
+GRANT UPDATE (
+    payment_status,
+    payment_provider_reference_id,
+    payment_failure_code,
+    shipping_status,
+    refunded_amount_minor,
+    subtotal_amount_minor,
+    discount_amount_minor,
+    tax_amount_minor,
+    shipping_amount_minor,
+    total_amount_minor,
+    amounts_finalized_at,
+    contact_email,
+    contact_phone,
+    billing_full_name,
+    billing_address_line1,
+    billing_address_line2,
+    billing_locality,
+    billing_administrative_area,
+    billing_postal_code,
+    billing_country_code,
+    shipping_full_name,
+    shipping_address_line1,
+    shipping_address_line2,
+    shipping_locality,
+    shipping_administrative_area,
+    shipping_postal_code,
+    shipping_country_code,
+    status,
+    updated_at
+)
+    ON commerce.orders TO chaos_runtime;
 REVOKE UPDATE, DELETE, TRUNCATE ON commerce.order_lines FROM chaos_runtime;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA commerce TO chaos_runtime;
 
 REVOKE ALL ON FUNCTION commerce.validate_payment_provider_account() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.validate_shipping_provider_account() FROM PUBLIC;
+REVOKE ALL ON FUNCTION commerce.prevent_order_identity_change() FROM PUBLIC;
 REVOKE ALL ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION commerce.validate_payment_provider_account() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.validate_shipping_provider_account() TO chaos_runtime;
+GRANT EXECUTE ON FUNCTION commerce.prevent_order_identity_change() TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION commerce.cleanup_expired_order_tracking_tokens(INTEGER) TO chaos_runtime;
 GRANT EXECUTE ON FUNCTION integration.set_provider_webhook_aggregate (UUID, TEXT, UUID) TO chaos_runtime;
 
