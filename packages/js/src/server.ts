@@ -13,8 +13,6 @@ import type {
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
-  OrderStatus,
-  PendingPaymentOrder,
   SubmitReviewRequest,
   TrackedOrder,
 } from "./types.js";
@@ -313,36 +311,17 @@ export async function createEmbeddedCheckoutFromRequest(
   const resolved = resolveSessionOptions(options);
   const existingCartId = cookies.get(resolved.cartCookieName)?.value;
   if (existingCartId && client.getShopperToken()) {
-    const activeCart = await client.cart.getActive(existingCartId);
-    if (activeCart) {
-      persistCartSession(cookies, { cart: activeCart.data }, resolved);
-      return createCheckoutWithCart(
+    try {
+      return await createCheckoutWithCart(
         client,
         cookies,
-        activeCart.data,
+        existingCartId,
         returnUrl,
         email,
         resolved,
       );
-    }
-
-    // The response may have been lost after Chaos locked the source Cart but
-    // before the new Cart cookie was written. Resume that Order instead of
-    // attempting checkout against a newly created empty Cart.
-    if (client.getShopperToken()) {
-      const pending = await client.payments.listPendingPaymentOrders();
-      const pendingOrder = pending.data.find(
-        (order) => order.source_cart_id === existingCartId,
-      );
-      if (pendingOrder) {
-        return resumeCheckoutWithNewCart(
-          client,
-          cookies,
-          pendingOrder.order_id,
-          returnUrl,
-          resolved,
-        );
-      }
+    } catch (error) {
+      if (!isRecoverableCartCheckoutError(error)) throw error;
     }
   }
 
@@ -350,50 +329,23 @@ export async function createEmbeddedCheckoutFromRequest(
   return createCheckoutWithCart(
     client,
     cookies,
-    session.cart,
+    session.cart.id,
     returnUrl,
     email,
     resolved,
   );
 }
 
-/** Lists Orders that can still be resumed for the current shopper. */
-export async function listPendingPaymentOrdersFromRequest(
-  client: ChaosStorefrontClient,
-): Promise<PendingPaymentOrder[]> {
-  const response = await client.payments.listPendingPaymentOrders();
-  return response.data;
-}
-
-/** Resumes an Order's persisted payment action and rotates to a new active Cart. */
-export async function resumeEmbeddedCheckoutFromRequest(
-  client: ChaosStorefrontClient,
-  cookies: StorefrontCookieJar,
-  request: Request,
-  options: StorefrontSessionOptions = {},
-): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
-  const body = await readJsonRecord(request, "resume_checkout");
-  const orderId = body.orderId;
-  if (typeof orderId !== "string" || !orderId) {
-    throw invalidRequest("orderId is required");
-  }
-  const returnUrl = body.returnUrl;
-  if (returnUrl !== undefined && (typeof returnUrl !== "string" || !returnUrl)) {
-    throw invalidRequest("returnUrl is invalid");
-  }
-  return resumeCheckoutWithNewCart(client, cookies, orderId, returnUrl, options);
-}
-
 async function createCheckoutWithCart(
   client: ChaosStorefrontClient,
   cookies: StorefrontCookieJar,
-  cart: Cart,
+  cartId: string,
   returnUrl: string,
   email: string | undefined,
   options: StorefrontSessionOptions,
 ): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
   const response = await client.payments.createEmbeddedCheckoutWithCart(
-    cart.id,
+    cartId,
     {
       returnUrl,
       ...(email ? { email } : {}),
@@ -403,34 +355,13 @@ async function createCheckoutWithCart(
   return response;
 }
 
-async function resumeCheckoutWithNewCart(
-  client: ChaosStorefrontClient,
-  cookies: StorefrontCookieJar,
-  orderId: string,
-  returnUrl: string | undefined,
-  options: StorefrontSessionOptions,
-): Promise<DataEnvelope<EmbeddedCheckoutCreation>> {
-  const checkout = await client.payments.resumeEmbeddedCheckout(
-    orderId,
-    returnUrl === undefined ? undefined : { returnUrl },
+function isRecoverableCartCheckoutError(error: unknown): boolean {
+  return (
+    error instanceof ChaosApiError &&
+    ([401, 403, 404].includes(error.status) ||
+      error.code === "cart_not_active" ||
+      error.code === "checkout_cart_already_started")
   );
-  const nextCart = await client.cart.getOrCreate();
-  const response = {
-    data: {
-      checkout: checkout.data,
-      cart: nextCart.data,
-    },
-  } satisfies DataEnvelope<EmbeddedCheckoutCreation>;
-  persistCartSession(cookies, response.data, options);
-  return response;
-}
-
-export async function getOrderStatus(
-  client: ChaosStorefrontClient,
-  orderId: string,
-): Promise<OrderStatus> {
-  requireText(orderId, "orderId");
-  return client.orders.getStatus(orderId);
 }
 
 /** Parses and validates a guest order capability before calling the shared order resource. */

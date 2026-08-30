@@ -169,10 +169,11 @@ the build pipeline provides the migrated database or offline query metadata.
 - `commerce.carts.payment_client_action` is private provider-form recovery
   state. It is allowed only on a locked Cart, is returned only by checkout
   handoff endpoints, and is cleared by every terminal payment or Order path.
-- A pending Order is the resume identity. If the action exists, resume must
-  return it without a Provider call. If it does not exist, a retry may create
-  the Provider form with the Order-derived idempotency key; the retry must
-  provide a return URL because it is intentionally not persisted.
+- The source Cart is the checkout recovery boundary. If its action exists, a
+  retry of the same Cart checkout request must return it without a Provider
+  call. If it does not exist, the same retry may create the Provider form with
+  the Order-derived idempotency key; the retry must provide a return URL because
+  it is intentionally not persisted.
 - Provider callbacks, not a local timer, decide payment expiry. Failure and
   expiry callbacks cancel the pending Order, release inventory, clear the
   action, and mark the source Cart `abandoned`. A successful payment consumes

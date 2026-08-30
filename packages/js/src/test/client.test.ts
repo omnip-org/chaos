@@ -30,7 +30,7 @@ function jsonResponse(status: number, body: unknown): Response {
 test("does not construct browser analytics during SSR", () => {
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/storefront/v1",
+    baseUrl: "https://shop.example.com/api/v1",
     storage: null,
     randomUUID: () => "random-id",
     fetch: (async () =>
@@ -297,7 +297,7 @@ test("can fail on a stale shopper token without silently changing identity", asy
   const requests: string[] = [];
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/storefront/v1",
+    baseUrl: "https://shop.example.com/api/v1",
     storage: null,
     analytics: false,
     retryInvalidShopperToken: false,
@@ -342,7 +342,7 @@ test("creates a fresh cart when the stored cart is locked", async () => {
   const requests: Array<{ url: string; token: string | null }> = [];
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/storefront/v1",
+    baseUrl: "https://shop.example.com/api/v1",
     storage: null,
     analytics: false,
     fetch: (async (url: string, init: RequestInit) => {
@@ -367,10 +367,10 @@ test("creates a fresh cart when the stored cart is locked", async () => {
     requests.map((request) => [request.url, request.token]),
     [
       [
-        "https://shop.example.com/storefront/v1/carts/locked-cart",
+        "https://shop.example.com/api/v1/carts/locked-cart",
         "stable-shopper-token",
       ],
-      ["https://shop.example.com/storefront/v1/carts", "stable-shopper-token"],
+      ["https://shop.example.com/api/v1/carts", "stable-shopper-token"],
     ],
   );
   assert.equal(client.getShopperToken(), "stable-shopper-token");
@@ -473,7 +473,7 @@ test("catalog.listProducts forwards query parameters", async () => {
   const captured: { url: URL | null } = { url: null };
   const client = createStorefrontClient({
     publishableKey: "public_test",
-    baseUrl: "https://shop.example.com/storefront/v1",
+    baseUrl: "https://shop.example.com/api/v1",
     storage: new MemoryStorage(),
     analytics: false,
     fetch: (async (url: string) => {
@@ -491,7 +491,7 @@ test("catalog.listProducts forwards query parameters", async () => {
     collection: "sale",
   });
 
-  assert.equal(captured.url?.pathname, "/storefront/v1/products");
+  assert.equal(captured.url?.pathname, "/api/v1/products");
   assert.equal(captured.url?.searchParams.get("q"), "shoes");
   assert.equal(captured.url?.searchParams.get("limit"), "10");
   assert.equal(captured.url?.searchParams.get("collection"), "sale");
@@ -609,30 +609,6 @@ test("payments reject a checkout response that is missing required fields", asyn
       error instanceof ChaosApiError &&
       error.status === 502 &&
       error.code === "invalid_checkout_response",
-  );
-});
-
-test("payments reject malformed pending payment orders", async () => {
-  let sequence = 0;
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    analytics: false,
-    randomUUID: () => `id-${++sequence}`,
-    fetch: (async (url: string) => {
-      if (url.endsWith("/shopper/sessions")) {
-        return jsonResponse(201, { data: { shopper_token: "shopper-token" } });
-      }
-      return jsonResponse(200, { data: [{ order_id: "order-1" }] });
-    }) as unknown as typeof fetch,
-  });
-
-  await assert.rejects(
-    client.payments.listPendingPaymentOrders(),
-    (error: unknown) =>
-      error instanceof ChaosApiError &&
-      error.status === 502 &&
-      error.code === "invalid_pending_payment_orders_response",
   );
 });
 
@@ -982,57 +958,4 @@ test("browser SDK observations record only after successful responses", async ()
     ["search", { query: "shoes", resultCount: 1 }],
     ["view_content", { productId: "product-1" }],
   ]);
-});
-
-test("projects purchases only after a confirmed order is paid", async () => {
-  const client = createStorefrontClient({
-    publishableKey: "public_test",
-    storage: null,
-    analytics: false,
-    randomUUID: () => "random-id",
-    fetch: (async () =>
-      jsonResponse(200, { data: {} })) as unknown as typeof fetch,
-  });
-  const recorded: unknown[] = [];
-  const mutable = client as unknown as {
-    analytics: { purchase: (input: unknown) => void };
-    request: () => Promise<unknown>;
-  };
-  mutable.analytics = { purchase: (input) => recorded.push(input) };
-  const order = {
-    id: "order-1",
-    status: "confirmed",
-    payment_status: "pending",
-    total_amount_minor: 1_000,
-    currency: "USD",
-    lines: [
-      {
-        product_id: "product-1",
-        product_variant_id: "variant-1",
-        quantity: 1,
-        unit_price_amount_minor: 1_000,
-      },
-    ],
-  };
-  mutable.request = async () => ({ data: order });
-
-  await client.orders.get("order-1");
-  assert.equal(recorded.length, 0);
-
-  order.payment_status = "paid";
-  await client.orders.get("order-1");
-  assert.equal(recorded.length, 1);
-  assert.deepEqual(recorded[0], {
-    orderId: "order-1",
-    valueMinor: 1_000,
-    currency: "USD",
-    items: [
-      {
-        productId: "product-1",
-        productVariantId: "variant-1",
-        quantity: 1,
-        priceMinor: 1_000,
-      },
-    ],
-  });
 });

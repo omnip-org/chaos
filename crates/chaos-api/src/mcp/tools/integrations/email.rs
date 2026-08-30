@@ -397,7 +397,7 @@ fn email_account_json(
     public_base_url: &str,
 ) -> serde_json::Value {
     let webhook_url = format!(
-        "{}/integrations/v1/webhooks/email/{}/{}",
+        "{}/webhooks/v1/email/{}/{}",
         public_base_url.trim_end_matches('/'),
         account.provider,
         account.id

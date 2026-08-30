@@ -391,19 +391,6 @@ impl PostgresStorefrontSalesRepository {
         Ok(draft)
     }
 
-    pub(crate) async fn get_order(
-        &self,
-        shopper: &ShopperActor,
-        order_id: OrderId,
-    ) -> Result<Option<OrderDetail>, ApplicationError> {
-        let actor = &shopper.machine;
-        let mut transaction = self.begin_shopper(shopper).await?;
-        ensure_order_owner(&mut transaction, actor, order_id, shopper.shopper_id).await?;
-        let detail = load_order(&mut transaction, actor, order_id).await?;
-        transaction.commit().await.map_err(database_error)?;
-        Ok(detail)
-    }
-
     pub(crate) async fn get_tracked_order(
         &self,
         actor: &MachineActor,

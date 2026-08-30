@@ -4,7 +4,7 @@ use chaos_domain::{
     FieldViolation,
     catalog::ProductVariantId,
     integration::PaymentProvider,
-    sales::{CartId, OrderContact, OrderId},
+    sales::{CartId, OrderContact},
 };
 use time::OffsetDateTime;
 
@@ -146,21 +146,6 @@ impl StorefrontSales {
                 },
             )
             .await
-    }
-
-    pub async fn get_order(
-        &self,
-        actor: &ShopperActor,
-        order_id: OrderId,
-    ) -> Result<crate::contracts::OrderDetail, ApplicationError> {
-        actor.machine.require_sales_channel()?;
-        self.repository
-            .get_order(actor, order_id)
-            .await?
-            .ok_or_else(|| ApplicationError::NotFound {
-                resource: "order",
-                id: order_id.as_uuid().to_string(),
-            })
     }
 
     pub async fn get_tracked_order(

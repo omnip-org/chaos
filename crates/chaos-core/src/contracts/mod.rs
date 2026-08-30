@@ -69,7 +69,7 @@ pub use publishable_key::{GeneratedPublishableKey, MachineActor, PublishableKeyL
 pub use review::{CreateManualReviewRecord, ReviewMediaSummary, ReviewSummary, SubmitReviewRecord};
 pub use sales::{
     CartDetail, CartLineItem, CheckoutDraft, OrderDetail, OrderFulfillmentItem, OrderLineItem,
-    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem, PendingPaymentOrder,
+    OrderListFilter, OrderPage, OrderPaymentAttemptItem, OrderRefundItem,
 };
 pub use shipping::{ShippingCommand, ShippingOperation, ShippingProvider, ShippingResult};
 pub use store::{

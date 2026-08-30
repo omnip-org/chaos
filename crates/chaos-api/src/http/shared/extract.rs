@@ -65,14 +65,10 @@ where
     }
 }
 
-pub struct StorefrontMachine(pub MachineActor);
-pub struct AnalyticsShopper(pub ShopperActor);
-pub struct CartMachine(pub MachineActor);
-pub struct OrderLookupMachine(pub MachineActor);
-pub struct CartShopper(pub ShopperActor);
-pub struct PaymentShopper(pub ShopperActor);
+pub struct PublishableChannel(pub MachineActor);
+pub struct ShopperContext(pub ShopperActor);
 
-impl FromRequestParts<ApiState> for StorefrontMachine {
+impl FromRequestParts<ApiState> for PublishableChannel {
     type Rejection = ApiError;
 
     async fn from_request_parts(
@@ -88,57 +84,26 @@ impl FromRequestParts<ApiState> for StorefrontMachine {
     }
 }
 
-macro_rules! storefront_machine_extractor {
-    ($name:ident) => {
-        impl FromRequestParts<ApiState> for $name {
-            type Rejection = ApiError;
+impl FromRequestParts<ApiState> for ShopperContext {
+    type Rejection = ApiError;
 
-            async fn from_request_parts(
-                parts: &mut Parts,
-                state: &ApiState,
-            ) -> Result<Self, Self::Rejection> {
-                let token = bearer_token(&parts.headers)?;
-                let actor = state
-                    .publishable_key_authentication
-                    .authenticate(token.expose_secret())
-                    .await?;
-                Ok(Self(actor))
-            }
-        }
-    };
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &ApiState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = bearer_token(&parts.headers)?;
+        let machine = state
+            .publishable_key_authentication
+            .authenticate(token.expose_secret())
+            .await?;
+        let credential = shopper_credential(&parts.headers)?;
+        let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
+        Ok(Self(ShopperActor {
+            machine,
+            shopper_id,
+        }))
+    }
 }
-
-storefront_machine_extractor!(CartMachine);
-storefront_machine_extractor!(OrderLookupMachine);
-
-macro_rules! storefront_shopper_extractor {
-    ($name:ident) => {
-        impl FromRequestParts<ApiState> for $name {
-            type Rejection = ApiError;
-
-            async fn from_request_parts(
-                parts: &mut Parts,
-                state: &ApiState,
-            ) -> Result<Self, Self::Rejection> {
-                let token = bearer_token(&parts.headers)?;
-                let machine = state
-                    .publishable_key_authentication
-                    .authenticate(token.expose_secret())
-                    .await?;
-                let credential = shopper_credential(&parts.headers)?;
-                let shopper_id = state.shopper_credentials.verify(&machine, &credential)?;
-                Ok(Self(ShopperActor {
-                    machine,
-                    shopper_id,
-                }))
-            }
-        }
-    };
-}
-
-storefront_shopper_extractor!(CartShopper);
-storefront_shopper_extractor!(PaymentShopper);
-storefront_shopper_extractor!(AnalyticsShopper);
 
 fn bearer_token(headers: &HeaderMap) -> Result<SecretString, ApiError> {
     let value = headers

@@ -8,7 +8,7 @@ use crate::{
     },
     error::database_error,
     contracts::{
-        AdminActor, MachineActor, OrderMetadataContext, PendingPaymentOrder,
+        AdminActor, MachineActor, OrderMetadataContext,
         PaymentCheckoutDetails, PaymentClientAction, PaymentLineItem,
         StripeAccountConfiguration,
         StripeAccountDetail, StripeAccountPage,

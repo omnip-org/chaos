@@ -22,7 +22,7 @@ const MAX_CLIENT_IP_LENGTH = 128;
 
 export interface ClientOptions {
   publishableKey: string;
-  /** Storefront API origin + prefix, e.g. "https://shop.example.com/storefront/v1". Defaults to same-origin "/storefront/v1". */
+  /** Public channel API origin + prefix, e.g. "https://shop.example.com/api/v1". Defaults to same-origin "/api/v1". */
   baseUrl?: string;
   fetch?: typeof fetch;
   /** Incoming request used to enrich server-side analytics with the edge-observed client IP. */
@@ -101,7 +101,7 @@ export class ChaosStorefrontClient {
       throw new TypeError("publishableKey is required");
     }
     this.publishableKey = options.publishableKey;
-    this.baseUrl = (options.baseUrl ?? "/storefront/v1").replace(/\/+$/, "");
+    this.baseUrl = (options.baseUrl ?? "/api/v1").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
     this.storage =
       options.storage !== undefined

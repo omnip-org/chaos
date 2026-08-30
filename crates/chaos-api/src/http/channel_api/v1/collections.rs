@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::http::shared::pagination::{
     CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
 };
-use crate::http::{ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine};
+use crate::http::{ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
@@ -40,7 +40,7 @@ struct CollectionData {
 
 async fn list_collections(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiQuery(query): ApiQuery<ListCollectionsQuery>,
 ) -> Result<ApiResponse<Vec<CollectionData>>, crate::http::ApiError> {
     let limit = page_limit(query.limit)?;
@@ -70,7 +70,7 @@ async fn list_collections(
 
 async fn get_collection(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiPath(path): ApiPath<CollectionPath>,
 ) -> Result<ApiResponse<CollectionData>, crate::http::ApiError> {
     Ok(ApiResponse::ok(collection_data(

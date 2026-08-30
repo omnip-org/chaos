@@ -1,7 +1,8 @@
+mod channel_api;
 mod health;
 mod oauth;
 mod shared;
-mod storefront;
+mod webhooks;
 
 use axum::{Router, http::Request};
 use chaos_core::runtime::lifecycle::Lifecycle;
@@ -65,11 +66,9 @@ use tower_http::{
     catch_panic::CatchPanicLayer, request_id::PropagateRequestIdLayer, trace::TraceLayer,
 };
 
+pub(crate) use shared::error::invalid_value;
 pub use shared::error::{ApiError, ErrorBody, ErrorDetail, ErrorEnvelope};
-pub use shared::extract::{
-    AnalyticsShopper, ApiJson, ApiPath, ApiQuery, CartMachine, CartShopper, OrderLookupMachine,
-    PaymentShopper, StorefrontMachine,
-};
+pub use shared::extract::{ApiJson, ApiPath, ApiQuery, PublishableChannel, ShopperContext};
 pub use shared::response::{ApiDateTime, ApiResponse, PageMeta, ResponseEnvelope, ResponseMeta};
 
 #[derive(Clone)]
@@ -368,8 +367,8 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .nest("/health", health::routes())
         .merge(oauth::routes())
-        .nest("/storefront/v1", storefront::v1::routes())
-        .nest("/integrations/v1", storefront::integration_routes())
+        .nest("/api/v1", channel_api::v1::routes())
+        .nest("/webhooks/v1", webhooks::v1::routes())
         .with_state(state)
         .nest("/mcp/v1", mcp_router)
         .fallback(shared::error::not_found)
@@ -519,13 +518,13 @@ mod tests {
         let state = test_state();
         let requests = [
             (Method::GET, "/health/live"),
-            (Method::GET, "/storefront/v1/products"),
-            (Method::GET, "/storefront/v1/collections"),
-            (Method::POST, "/storefront/v1/analytics/events"),
-            (Method::POST, "/storefront/v1/carts"),
+            (Method::GET, "/api/v1/products"),
+            (Method::GET, "/api/v1/collections"),
+            (Method::POST, "/api/v1/analytics/events"),
+            (Method::POST, "/api/v1/carts"),
             (
                 Method::POST,
-                "/integrations/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000",
+                "/webhooks/v1/payment/stripe/00000000-0000-0000-0000-000000000000",
             ),
         ];
 
@@ -545,6 +544,32 @@ mod tests {
                 StatusCode::NOT_FOUND,
                 "route missing: {path}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_order_recovery_routes_and_legacy_prefixes_are_not_routed() {
+        let requests = [
+            Request::get("/api/v1/orders/pending-payment")
+                .body(Body::empty())
+                .unwrap(),
+            Request::post("/api/v1/orders/00000000-0000-0000-0000-000000000000/checkout")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/api/v1/orders/00000000-0000-0000-0000-000000000000")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/storefront/v1/products")
+                .body(Body::empty())
+                .unwrap(),
+            Request::post("/integrations/v1/webhooks/stripe/00000000-0000-0000-0000-000000000000")
+                .body(Body::empty())
+                .unwrap(),
+        ];
+
+        for request in requests {
+            let response = router(test_state()).oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }
 
@@ -610,7 +635,7 @@ mod tests {
     async fn storefront_catalog_rejects_requests_without_a_machine_credential() {
         let response = router(test_state())
             .oneshot(
-                Request::get("/storefront/v1/products")
+                Request::get("/api/v1/products")
                     .body(Body::empty())
                     .unwrap(),
             )

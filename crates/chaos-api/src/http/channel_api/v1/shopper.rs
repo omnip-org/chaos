@@ -2,7 +2,7 @@ use axum::{Router, extract::State, routing::post};
 use secrecy::ExposeSecret;
 use serde::Serialize;
 
-use crate::http::{ApiResponse, ApiState, CartMachine};
+use crate::http::{ApiResponse, ApiState, PublishableChannel};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
@@ -16,7 +16,7 @@ struct ShopperSessionData {
 
 async fn create_shopper_session(
     State(state): State<ApiState>,
-    CartMachine(actor): CartMachine,
+    PublishableChannel(actor): PublishableChannel,
 ) -> Result<ApiResponse<ShopperSessionData>, crate::http::ApiError> {
     let shopper_id = state.storefront_sales.create_shopper(&actor).await?;
     let shopper_token = state.shopper_credentials.issue(&actor, shopper_id)?;

@@ -48,6 +48,16 @@ impl From<chaos_domain::DomainError> for ApiError {
     }
 }
 
+pub(crate) fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
+    ApplicationError::Validation {
+        violations: vec![chaos_domain::FieldViolation {
+            field,
+            reason: reason.into(),
+        }],
+    }
+    .into()
+}
+
 impl ApiError {
     pub fn from_json_rejection(rejection: JsonRejection) -> Self {
         let status = rejection.status();

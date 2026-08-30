@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use super::response::parse_api_time;
-use crate::http::ApiError;
+use crate::http::{ApiError, invalid_value};
 
 const MAX_META_BROWSER_ID_BYTES: usize = 2_048;
 
@@ -123,16 +123,6 @@ fn valid_meta_browser_id(value: &str) -> bool {
         && timestamp.bytes().all(|byte| byte.is_ascii_digit())
         && !suffix.is_empty()
         && !suffix.chars().any(char::is_whitespace)
-}
-
-fn invalid_value(field: &'static str, reason: &'static str) -> ApiError {
-    chaos_core::ApplicationError::Validation {
-        violations: vec![chaos_domain::FieldViolation {
-            field,
-            reason: reason.into(),
-        }],
-    }
-    .into()
 }
 
 #[cfg(test)]

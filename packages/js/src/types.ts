@@ -171,27 +171,6 @@ export interface SetCartLineRequest {
   quantity: number;
 }
 
-export interface OrderContact {
-  /**
-   * Absent until a verified payment webhook backfills it. Stripe Embedded
-   * Checkout collects the shopper's email directly when the storefront does
-   * not already have one.
-   */
-  email?: string;
-  phone?: string;
-}
-
-export interface PostalAddress {
-  full_name: string;
-  company?: string;
-  address_line1: string;
-  address_line2?: string;
-  locality: string;
-  administrative_area?: string;
-  postal_code?: string;
-  country_code: string;
-}
-
 export interface OrderLine {
   product_id: UUID;
   product_variant_id: UUID;
@@ -204,41 +183,6 @@ export interface OrderLine {
   subtotal_amount_minor: number;
 }
 
-/** The current payment state exposed for an Order. */
-export interface OrderPaymentAttempt {
-  status: "pending" | "authorized" | "captured" | "failed" | "expired" | "cancelled";
-  amount_minor: number;
-  provider_reference_id?: string;
-  failure_code?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-/** One Refund recorded against an Order. An Order may have more than one. */
-export interface OrderRefund {
-  id: UUID;
-  status: "pending" | "succeeded" | "failed";
-  amount_minor: number;
-  provider_reference_id?: string;
-  failure_code?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-/** One shipment against an Order. An Order may have more than one
- * concurrently active (non-cancelled) Fulfillment for split shipments. */
-export interface OrderFulfillment {
-  id: UUID;
-  status: "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
-  tracking_number?: string;
-  tracking_url?: string;
-  shipped_at?: string;
-  delivered_at?: string;
-  cancelled_at?: string;
-  created_at: string;
-  updated_at: string;
-}
-
 /** The subset of a Fulfillment exposed on the order-tracking view: shipping
  * progress and carrier tracking, without the internal Store provider-account id. */
 export interface TrackedOrderFulfillment {
@@ -247,37 +191,6 @@ export interface TrackedOrderFulfillment {
   tracking_url?: string;
   shipped_at?: string;
   delivered_at?: string;
-}
-
-export interface Order {
-  id: UUID;
-  order_number: string;
-  price_list_id: UUID;
-  currency: CurrencyCode;
-  status: "pending" | "confirmed" | "cancelled";
-  payment_status:
-    "pending" | "paid" | "failed" | "expired" | "partially_refunded" | "refunded";
-  shipping_status:
-    "pending" | "awaiting_pickup" | "shipped" | "delivered" | "cancelled";
-  payment_provider?: "stripe";
-  payment_provider_reference_id?: string;
-  shipping_provider?: "manual";
-  shipping_provider_reference_id?: string;
-  contact: OrderContact;
-  billing_address?: PostalAddress;
-  shipping_address?: PostalAddress;
-  subtotal_amount_minor: number;
-  discount_amount_minor: number;
-  tax_amount_minor: number;
-  shipping_amount_minor: number;
-  total_amount_minor: number;
-  refunded_amount_minor: number;
-  lines: OrderLine[];
-  payment_attempt?: OrderPaymentAttempt;
-  refunds: OrderRefund[];
-  fulfillments: OrderFulfillment[];
-  created_at: string;
-  updated_at: string;
 }
 
 /**
@@ -326,17 +239,7 @@ export interface EmbeddedCheckoutSession {
   client_action: PaymentClientAction;
 }
 
-/** An Order that is still waiting for a provider payment callback. */
-export interface PendingPaymentOrder {
-  order_id: UUID;
-  source_cart_id: UUID;
-  currency: CurrencyCode;
-  subtotal_amount_minor: number;
-  created_at: string;
-  updated_at: string;
-}
-
-/** Browser-facing result of creating or resuming a checkout. */
+/** Browser-facing result of creating or recovering a checkout by Cart. */
 export interface EmbeddedCheckoutCreation {
   checkout: EmbeddedCheckoutSession;
   /** The newly obtained active Cart for subsequent shopping. */
@@ -352,12 +255,6 @@ export interface PaymentClientAction {
   type: "mount_embedded_checkout";
   public_key: string;
   client_token: string;
-}
-
-/** Minimal order state used while a payment webhook is settling. */
-export interface OrderStatus {
-  status: Order["status"];
-  payment_status: Order["payment_status"];
 }
 
 export type OrderConfirmationState =

@@ -13,7 +13,7 @@ use crate::{
     adapters::postgres::PostgresStripeRepository,
     contracts::{
         AdminActor, IntegrationQueue, MachineActor, PaymentClientAction, PaymentProviderRegistry,
-        PaymentWebhookVerifierRegistry, PendingPaymentOrder, QueueJob, RefundDetail, ShopperActor,
+        PaymentWebhookVerifierRegistry, QueueJob, RefundDetail, ShopperActor,
         StripeAccountConfiguration, StripeAccountDetail, StripeAccountPage, VerifiedWebhookEvent,
         WebhookInbox, WebhookProcessingResult,
     },
@@ -24,13 +24,6 @@ pub struct CreateEmbeddedCheckoutInput {
     pub actor: ShopperActor,
     pub order_id: OrderId,
     pub return_url: String,
-    pub now: OffsetDateTime,
-}
-
-pub struct ResumeEmbeddedCheckoutInput {
-    pub actor: ShopperActor,
-    pub order_id: OrderId,
-    pub return_url: Option<String>,
     pub now: OffsetDateTime,
 }
 
@@ -196,23 +189,6 @@ impl PaymentService {
         .await
     }
 
-    pub async fn resume_embedded_checkout(
-        &self,
-        input: ResumeEmbeddedCheckoutInput,
-    ) -> Result<EmbeddedCheckoutResult, ApplicationError> {
-        require_checkout_key(&input.actor.machine)?;
-        self.open_embedded_checkout(input.actor, input.order_id, input.return_url, input.now)
-            .await
-    }
-
-    pub async fn list_pending_payment_orders(
-        &self,
-        actor: &ShopperActor,
-    ) -> Result<Vec<PendingPaymentOrder>, ApplicationError> {
-        require_checkout_key(&actor.machine)?;
-        self.repository.list_pending_payment_orders(actor).await
-    }
-
     async fn open_embedded_checkout(
         &self,
         actor: ShopperActor,
@@ -316,23 +292,6 @@ impl PaymentService {
             refunded_amount_minor,
             refunds,
         })
-    }
-
-    pub async fn receive_webhook(
-        &self,
-        provider_account_id: StripeAccountId,
-        signature: &str,
-        payload: &[u8],
-        received_at: OffsetDateTime,
-    ) -> Result<bool, ApplicationError> {
-        self.receive_provider_webhook(
-            "stripe",
-            provider_account_id.as_uuid(),
-            signature,
-            payload,
-            received_at,
-        )
-        .await
     }
 
     pub async fn receive_provider_webhook(

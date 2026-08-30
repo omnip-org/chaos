@@ -12,6 +12,7 @@ import {
   createStorefrontBrowserClient,
   StorefrontBrowserClient,
 } from "../browser.js";
+import { ChaosApiError } from "../errors.js";
 import type { ChaosStorefrontAnalytics } from "../analytics.js";
 import type {
   Cart,
@@ -161,58 +162,7 @@ test("browser checkout bridge forwards shared checkout options", async () => {
   assert.deepEqual(recorded, ["checkout", "purchase"]);
 });
 
-test("browser checkout bridge resumes an Order without creating another payment session", async () => {
-  const requests: Array<{ url: string; init: RequestInit }> = [];
-  const creation = {
-    checkout: {
-      order_id: "00000000-0000-4000-8000-000000000051",
-      source_cart_id: "00000000-0000-4000-8000-000000000052",
-      client_action: {
-        type: "mount_embedded_checkout" as const,
-        public_key: "pk_test_store",
-        client_token: "cs_test_token",
-      },
-    },
-    cart: cart([]),
-  };
-  const pendingOrders = [
-    {
-      order_id: creation.checkout.order_id,
-      source_cart_id: creation.checkout.source_cart_id,
-      currency: "USD" as const,
-      subtotal_amount_minor: 9900,
-      created_at: "2026-08-29T11:30:00Z",
-      updated_at: "2026-08-29T11:31:00Z",
-    },
-  ];
-  const browser = createStorefrontBrowserClient({
-    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = { url: String(input), init: init ?? {} };
-      requests.push(request);
-      if (request.url === "/api/pending-payment-orders") {
-        return new Response(JSON.stringify({ data: pendingOrders }), { status: 200 });
-      }
-      assert.equal(request.url, "/api/checkout/resume");
-      assert.equal(request.init.method, "POST");
-      assert.deepEqual(JSON.parse(String(request.init.body)), {
-        orderId: creation.checkout.order_id,
-      });
-      return new Response(JSON.stringify({ data: creation }), { status: 200 });
-    }) as typeof fetch,
-  });
-
-  assert.deepEqual(await browser.checkout.listPendingPaymentOrders(), pendingOrders);
-  assert.deepEqual(
-    await browser.checkout.resumeEmbeddedCheckout(
-      creation.checkout.order_id,
-    ),
-    creation,
-  );
-  assert.equal(requests[0]?.init.credentials, "same-origin");
-  assert.equal(requests[1]?.init.credentials, "same-origin");
-});
-
-test("server checkout bridge rotates away from a locked source cart", async () => {
+test("server checkout bridge creates a new Cart when the source Cart is terminal", async () => {
   const writes = new Map<string, string>();
   const cookies: StorefrontCookieJar = {
     get: (name) => {
@@ -240,10 +190,6 @@ test("server checkout bridge rotates away from a locked source cart", async () =
   const client = {
     getShopperToken: () => "shopper-token",
     cart: {
-      getActive: async (cartId: string) => {
-        assert.equal(cartId, "source-cart");
-        return null;
-      },
       getOrCreate: async (cartId?: string) => {
         assert.equal(cartId, "source-cart");
         usedCreate = true;
@@ -251,8 +197,10 @@ test("server checkout bridge rotates away from a locked source cart", async () =
       },
     },
     payments: {
-      listPendingPaymentOrders: async () => ({ data: [] }),
       createEmbeddedCheckoutWithCart: async (cartId: string) => {
+        if (cartId === "source-cart") {
+          throw new ChaosApiError(409, "cart_not_active", "the Cart is no longer active");
+        }
         assert.equal(cartId, "active-cart");
         return response;
       },
@@ -276,7 +224,7 @@ test("server checkout bridge rotates away from a locked source cart", async () =
   assert.equal(writes.get("chaos_cart_id"), "active-cart");
 });
 
-test("server checkout bridge resumes a pending Order after a lost response", async () => {
+test("server checkout bridge retries the same Cart after a lost response", async () => {
   const writes = new Map<string, string>([["chaos_cart_id", "source-cart"]]);
   const cookies: StorefrontCookieJar = {
     get: (name) => {
@@ -294,41 +242,20 @@ test("server checkout bridge resumes a pending Order after a lost response", asy
       client_token: "cs_test_token",
     },
   };
-  let resumed = false;
-  let createdFromCart = false;
+  let retriedCart: string | undefined;
   const client = {
     getShopperToken: () => "shopper-token",
-    cart: {
-      getActive: async (cartId: string) => {
-        assert.equal(cartId, "source-cart");
-        return null;
-      },
-      getOrCreate: async () => {
-        return { data: { ...cart([]), id: "active-cart" } };
-      },
-    },
     payments: {
-      listPendingPaymentOrders: async () => ({
-        data: [
-          {
-            order_id: checkout.order_id,
-            source_cart_id: checkout.source_cart_id,
-            currency: "USD",
-            subtotal_amount_minor: 0,
-            created_at: "2026-08-29T11:30:00Z",
-            updated_at: "2026-08-29T11:31:00Z",
+      createEmbeddedCheckoutWithCart: async (cartId: string, options: { returnUrl: string }) => {
+        assert.equal(cartId, "source-cart");
+        assert.equal(options.returnUrl, "https://shop.example/checkout/confirmation");
+        retriedCart = cartId;
+        return {
+          data: {
+            checkout,
+            cart: { ...cart([]), id: "active-cart" },
           },
-        ],
-      }),
-      resumeEmbeddedCheckout: async (orderId: string, options?: { returnUrl: string }) => {
-        assert.equal(orderId, checkout.order_id);
-        assert.equal(options?.returnUrl, "https://shop.example/checkout/confirmation");
-        resumed = true;
-        return { data: checkout };
-      },
-      createEmbeddedCheckoutWithCart: async () => {
-        createdFromCart = true;
-        throw new Error("must resume the pending Order");
+        };
       },
     },
   } as unknown as ChaosStorefrontClient;
@@ -345,8 +272,7 @@ test("server checkout bridge resumes a pending Order after a lost response", asy
     }),
   );
 
-  assert.equal(resumed, true);
-  assert.equal(createdFromCart, false);
+  assert.equal(retriedCart, "source-cart");
   assert.equal(result.data.checkout.order_id, checkout.order_id);
   assert.equal(result.data.cart.id, "active-cart");
   assert.equal(writes.get("chaos_cart_id"), "active-cart");
@@ -440,7 +366,7 @@ test("collection cache is isolated by store and shares in-flight reads", async (
   let secondCalls = 0;
   const makeClient = (publishableKey: string, data: Collection[]) =>
     ({
-      baseUrl: "https://chaos.example/storefront/v1",
+      baseUrl: "https://chaos.example/api/v1",
       publishableKey,
       request: async () => {
         if (publishableKey === "pk-cache-a") firstCalls += 1;

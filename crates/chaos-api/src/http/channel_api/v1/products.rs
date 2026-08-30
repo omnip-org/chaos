@@ -19,7 +19,7 @@ use crate::http::shared::pagination::{
     CursorKind, decode_cursor, encode_cursor, page_limit, page_meta,
 };
 use crate::http::{
-    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, StorefrontMachine,
+    ApiDateTime, ApiError, ApiJson, ApiPath, ApiQuery, ApiResponse, ApiState, PublishableChannel,
 };
 
 #[rustfmt::skip]
@@ -130,7 +130,7 @@ struct StorefrontMediaData {
 
 async fn list_products(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiQuery(query): ApiQuery<CatalogQuery>,
 ) -> Result<ApiResponse<Vec<StorefrontProductData>>, ApiError> {
     let limit = page_limit(query.limit)?;
@@ -164,7 +164,7 @@ async fn list_products(
 
 async fn get_product(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiPath(path): ApiPath<ProductPath>,
     ApiQuery(query): ApiQuery<ProductQuery>,
 ) -> Result<ApiResponse<StorefrontProductData>, ApiError> {
@@ -327,7 +327,7 @@ struct ReviewData {
 
 async fn submit_review(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiPath(path): ApiPath<ReviewProductPath>,
     ApiJson(body): ApiJson<SubmitReviewBody>,
 ) -> Result<ApiResponse<MutationData>, ApiError> {
@@ -349,7 +349,7 @@ async fn submit_review(
 
 async fn list_product_reviews(
     State(state): State<ApiState>,
-    StorefrontMachine(actor): StorefrontMachine,
+    PublishableChannel(actor): PublishableChannel,
     ApiPath(path): ApiPath<ReviewProductPath>,
     ApiQuery(query): ApiQuery<StorefrontListQuery>,
 ) -> Result<ApiResponse<Vec<ReviewData>>, ApiError> {
@@ -576,7 +576,7 @@ mod tests {
 
         let response = router(state.clone())
             .oneshot(
-                Request::get("/storefront/v1/products")
+                Request::get("/api/v1/products")
                     .header("authorization", &authorize)
                     .body(Body::empty())
                     .unwrap(),
@@ -595,7 +595,7 @@ mod tests {
 
         let response = router(state.clone())
             .oneshot(
-                Request::get("/storefront/v1/products/public-shirt")
+                Request::get("/api/v1/products/public-shirt")
                     .header("authorization", &authorize)
                     .body(Body::empty())
                     .unwrap(),
@@ -606,7 +606,7 @@ mod tests {
 
         let response = router(state.clone())
             .oneshot(
-                Request::get("/storefront/v1/products?currency=usd")
+                Request::get("/api/v1/products?currency=usd")
                     .header("authorization", &authorize)
                     .body(Body::empty())
                     .unwrap(),
@@ -617,7 +617,7 @@ mod tests {
 
         let response = router(state)
             .oneshot(
-                Request::get("/storefront/v1/products/missing-product")
+                Request::get("/api/v1/products/missing-product")
                     .header("authorization", &authorize)
                     .body(Body::empty())
                     .unwrap(),

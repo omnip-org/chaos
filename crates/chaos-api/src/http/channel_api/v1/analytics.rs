@@ -6,7 +6,7 @@ use chaos_core::{
 use serde::Serialize;
 
 use crate::http::shared::analytics::{AnalyticsEventBody, merge_request_meta, request_meta};
-use crate::http::{AnalyticsShopper, ApiError, ApiJson, ApiResponse, ApiState};
+use crate::http::{ApiError, ApiJson, ApiResponse, ApiState, ShopperContext};
 
 #[rustfmt::skip]
 pub(crate) fn routes() -> Router<ApiState> {
@@ -28,7 +28,7 @@ struct CollectionResultData {
 
 async fn collect_events(
     State(state): State<ApiState>,
-    AnalyticsShopper(shopper): AnalyticsShopper,
+    ShopperContext(shopper): ShopperContext,
     headers: HeaderMap,
     ApiJson(body): ApiJson<CollectEventsBody>,
 ) -> Result<ApiResponse<CollectionResultData>, ApiError> {

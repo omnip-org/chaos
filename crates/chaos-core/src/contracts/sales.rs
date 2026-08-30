@@ -48,15 +48,6 @@ pub struct CheckoutDraft {
     pub subtotal_amount_minor: i64,
 }
 
-pub struct PendingPaymentOrder {
-    pub order_id: OrderId,
-    pub source_cart_id: CartId,
-    pub currency: CurrencyCode,
-    pub subtotal_amount_minor: i64,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
-}
-
 pub struct OrderLineItem {
     pub product_id: ProductId,
     pub product_variant_id: ProductVariantId,

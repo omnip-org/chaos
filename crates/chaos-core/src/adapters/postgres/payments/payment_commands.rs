@@ -18,43 +18,6 @@ impl PostgresStripeRepository {
         Ok(payment)
     }
 
-    pub(crate) async fn list_pending_payment_orders(
-        &self,
-        shopper: &ShopperActor,
-    ) -> Result<Vec<PendingPaymentOrder>, ApplicationError> {
-        let actor = &shopper.machine;
-        let channel_id = actor.channel_id.ok_or(ApplicationError::Forbidden)?;
-        let mut transaction = self.begin_shopper(shopper).await?;
-        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, i64, OffsetDateTime, OffsetDateTime)>(
-            "SELECT id, cart_id, currency::text, subtotal_amount_minor, created_at, updated_at \
-             FROM commerce.orders \
-             WHERE store_id = $1 AND channel_id = $2 AND shopper_id = $3 \
-               AND status = 'pending' AND payment_status = 'pending' \
-             ORDER BY created_at DESC, id DESC",
-        )
-        .bind(actor.store_id.as_uuid())
-        .bind(channel_id.as_uuid())
-        .bind(shopper.shopper_id.as_uuid())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        let orders = rows
-            .into_iter()
-            .map(|row| {
-                Ok(PendingPaymentOrder {
-                    order_id: OrderId::from_uuid(row.0),
-                    source_cart_id: CartId::from_uuid(row.1),
-                    currency: CurrencyCode::parse(&row.2)?,
-                    subtotal_amount_minor: row.3,
-                    created_at: row.4,
-                    updated_at: row.5,
-                })
-            })
-            .collect::<Result<Vec<_>, ApplicationError>>()?;
-        transaction.commit().await.map_err(database_error)?;
-        Ok(orders)
-    }
-
     pub(crate) async fn prepare_checkout_command(
         &self,
         actor: &ShopperActor,
@@ -570,7 +533,7 @@ impl PostgresStripeRepository {
                 })
                 .collect::<Result<Vec<_>, ApplicationError>>()?;
             // Shipping policy is read only while creating a provider session.
-            // A resumed checkout with a stored client action never reaches
+            // A Cart retry with a stored client action never reaches
             // this path, so editing the Store policy cannot invalidate it.
             let shipping_countries: Vec<String> = sqlx::query_scalar(
                 "SELECT country_code::text FROM commerce.store_shipping_countries \

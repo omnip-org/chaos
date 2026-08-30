@@ -60,8 +60,8 @@ the payment client action needed to mount the provider form. The source Cart
 cannot be edited or checked out again. A subsequent active Cart is obtained or
 created by the SDK after the checkout transaction; it is not linked into the
 Order model. The private `payment_client_action` on the locked Cart is the only
-persisted payment-form recovery data. Resuming by Order returns that same action
-and never creates another provider session. Stripe collects the checkout address
+persisted payment-form recovery data. Retrying the same Cart checkout request
+returns that action and never creates another provider session. Stripe collects the checkout address
 and calculates tax, promotions, shipping, and the final total. Verified Stripe
 webhooks reconcile those facts onto the Order, while Chaos retains inventory and
 fulfillment state. The browser SDK prepares one attributed commerce envelope
@@ -69,8 +69,8 @@ before the cart or checkout request, but the business request remains
 analytics-agnostic. After a successful response, the SDK sends the event through
 the common `/analytics/events` endpoint with canonical response values and
 projects the same event ID to browser providers. The browser-side
-`InitiateCheckout` event is stored with its `order_id`; resuming an Order does
-not emit a second initiation event. The server-side `Purchase` event later looks
+`InitiateCheckout` event is stored with its `order_id`; retrying a Cart checkout
+does not emit a second initiation event. The server-side `Purchase` event later looks
 up that exact event and combines its attribution with the final
 provider-reconciled total. No attribution is stored on the Order, and Meta can
 deduplicate the Pixel and CAPI copies using the shared event ID.

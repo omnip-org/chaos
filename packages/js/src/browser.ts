@@ -5,13 +5,9 @@ import type {
   DataEnvelope,
   EmbeddedCheckoutCreation,
   EmbeddedCheckoutOptions,
-  OrderConfirmationState,
-  OrderStatus,
-  PendingPaymentOrder,
   PurchaseAnalyticsInput,
   TrackedOrder,
 } from "./types.js";
-import { getOrderConfirmationState } from "./domain.js";
 
 export interface StorefrontBrowserOptions {
   /** Same-origin storefront adapter prefix. Defaults to the shared route prefix. */
@@ -186,59 +182,6 @@ export class BrowserCheckoutResource {
     return creation;
   }
 
-  async resumeEmbeddedCheckout(
-    orderId: string,
-    returnUrl?: string,
-  ): Promise<EmbeddedCheckoutCreation> {
-    if (!orderId.trim()) {
-      throw new TypeError("orderId is required");
-    }
-    const response = await this.client.request<DataEnvelope<EmbeddedCheckoutCreation>>(
-      "/checkout/resume",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId,
-          ...(returnUrl ? { returnUrl } : {}),
-        }),
-      },
-    );
-    const creation = requireData<EmbeddedCheckoutCreation>(
-      response,
-      "invalid_checkout_response",
-    );
-    if (!isEmbeddedCheckoutCreation(creation)) {
-      throw new ChaosApiError(
-        502,
-        "invalid_checkout_response",
-        "checkout response is invalid",
-      );
-    }
-    return creation;
-  }
-
-  async listPendingPaymentOrders(): Promise<PendingPaymentOrder[]> {
-    const response = await this.client.request<DataEnvelope<PendingPaymentOrder[]>>(
-      "/pending-payment-orders",
-      { method: "GET" },
-    );
-    const orders = requireData<PendingPaymentOrder[]>(
-      response,
-      "invalid_pending_payment_orders_response",
-    );
-    if (
-      !Array.isArray(orders) ||
-      !orders.every((order) => isPendingPaymentOrder(order))
-    ) {
-      throw new ChaosApiError(
-        502,
-        "invalid_pending_payment_orders_response",
-        "pending payment orders response is invalid",
-      );
-    }
-    return orders;
-  }
 }
 
 export class BrowserOrderResource {
@@ -246,30 +189,6 @@ export class BrowserOrderResource {
 
   recordPurchase(input: PurchaseAnalyticsInput): void {
     this.client.recordPurchase(input);
-  }
-
-  async getStatus(orderId: string): Promise<OrderConfirmationState> {
-    if (!orderId.trim()) throw new TypeError("orderId is required");
-    const response = await this.client.request<DataEnvelope<OrderStatus>>(
-      `/orders/${encodeURIComponent(orderId)}/status`,
-      { cache: "no-store" },
-    );
-    const status = requireData<OrderStatus>(response, "invalid_order_status_response");
-    if (
-      !isRecord(status) ||
-      typeof status.status !== "string" ||
-      typeof status.payment_status !== "string"
-    ) {
-      throw new ChaosApiError(
-        502,
-        "invalid_order_status_response",
-        "order status response is invalid",
-      );
-    }
-    return getOrderConfirmationState(
-      status.status,
-      status.payment_status,
-    );
   }
 
   async getTrackedOrder(trackingToken: string): Promise<TrackedOrder> {
@@ -328,18 +247,6 @@ function isEmbeddedCheckoutCreation(
     typeof checkout.client_action.public_key === "string" &&
     typeof checkout.client_action.client_token === "string" &&
     isCart(value.cart)
-  );
-}
-
-function isPendingPaymentOrder(value: unknown): value is PendingPaymentOrder {
-  return (
-    isRecord(value) &&
-    typeof value.order_id === "string" &&
-    typeof value.source_cart_id === "string" &&
-    typeof value.currency === "string" &&
-    Number.isSafeInteger(value.subtotal_amount_minor) &&
-    typeof value.created_at === "string" &&
-    typeof value.updated_at === "string"
   );
 }
 

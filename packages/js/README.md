@@ -75,16 +75,11 @@ const { data: creation } = await chaos.payments.createEmbeddedCheckoutWithCart(c
 const session = creation.checkout;
 // Keep using creation.cart for any later shopping; the original Cart is now
 // locked and must not be edited or checked out again.
-// The Order is the durable "waiting for payment" identity. Calling resume with
-// that ID returns the same provider client action and does not create another
-// Stripe Session.
-// If an SSR checkout response is lost before its Cart cookie is rotated, the
-// server helper finds the pending Order for that source Cart and resumes it;
-// it never retries checkout against a newly created empty Cart.
-const pending = await chaos.payments.listPendingPaymentOrders();
-const resumed = await chaos.payments.resumeEmbeddedCheckout(
-  pending.data[0]!.order_id,
-);
+// The source Cart is the recovery key. Retrying the same Cart checkout request
+// with the same Cart snapshot reuses the existing Order and Stripe Session.
+// The server helper applies this same rule when a response is lost before the
+// Cart cookie is rotated; it only creates a new Cart when the source Cart is no
+// longer eligible for checkout.
 // The SDK derives and sends a stable client idempotency key from the Cart
 // snapshot. Chaos derives the provider idempotency key from the Order ID.
 const action = session.client_action;
@@ -119,7 +114,7 @@ import {
 // Worker/SSR request — `cookies` is any jar with get(name) and set(name, value, options).
 const server = createServerStorefrontClient({
   publishableKey: "pk_...",
-  baseUrl: "https://chaos.example/storefront/v1",
+  baseUrl: "https://chaos.example/api/v1",
   cookies,
   request,
 });
@@ -128,13 +123,11 @@ const server = createServerStorefrontClient({
 const storefront = createStorefrontBrowserClient({ baseUrl: "/api", analytics: chaos.analytics });
 await storefront.cart.addLine(variantId, 1);
 await storefront.checkout.createEmbeddedCheckout(returnUrl);
-await storefront.checkout.resumeEmbeddedCheckout(orderId);
 storefront.orders.recordPurchase(purchase);
 ```
 
 The server helpers `addCartLineFromRequest()`, `updateCartLineFromRequest()`,
-`createEmbeddedCheckoutFromRequest()`, `listPendingPaymentOrdersFromRequest()`,
-`resumeEmbeddedCheckoutFromRequest()`, `getTrackedOrderFromRequest()`, and
+`createEmbeddedCheckoutFromRequest()`, `getTrackedOrderFromRequest()`, and
 `createProductReviewFromRequest()` own request parsing, validation, session
 cookies, and the corresponding Chaos operation. Framework routes only adapt
 the response or redirect. Browser bridge methods own same-origin paths,
@@ -214,14 +207,14 @@ names.
 
 ### Server-side / SSR usage
 
-`createStorefrontClient` defaults to same-origin relative URLs (`/storefront/v1/...`),
+`createStorefrontClient` defaults to same-origin relative URLs (`/api/v1/...`),
 which relies on a browser `fetch` and `location`. From Node, an edge
 function, or any non-browser environment, pass an absolute `baseUrl`:
 
 ```ts
 const chaos = createStorefrontClient({
   publishableKey: process.env.CHAOS_PUBLISHABLE_KEY!,
-  baseUrl: "https://shop.example.com/storefront/v1",
+  baseUrl: "https://shop.example.com/api/v1",
 });
 ```
 

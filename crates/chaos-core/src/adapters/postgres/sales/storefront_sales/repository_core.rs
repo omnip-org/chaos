@@ -143,31 +143,6 @@ async fn ensure_cart_owner(
     }
 }
 
-async fn ensure_order_owner(
-    transaction: &mut Transaction<'static, Postgres>,
-    actor: &MachineActor,
-    order_id: OrderId,
-    shopper_id: ShopperId,
-) -> Result<(), ApplicationError> {
-    let owned: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM commerce.orders \
-         WHERE store_id = $1 AND channel_id = $2 \
-           AND id = $3 AND shopper_id = $4)",
-    )
-    .bind(actor.store_id.as_uuid())
-    .bind(actor.channel_id.map(SalesChannelId::as_uuid))
-    .bind(order_id.as_uuid())
-    .bind(shopper_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if owned {
-        Ok(())
-    } else {
-        Err(order_not_found(order_id))
-    }
-}
-
 fn require_channel(actor: &MachineActor) -> Result<SalesChannelId, ApplicationError> {
     actor.channel_id.ok_or(ApplicationError::Forbidden)
 }
@@ -248,13 +223,6 @@ fn cart_not_found(cart_id: CartId) -> ApplicationError {
     }
 }
 
-fn order_not_found(order_id: OrderId) -> ApplicationError {
-    ApplicationError::NotFound {
-        resource: "order",
-        id: order_id.as_uuid().to_string(),
-    }
-}
-
 fn cart_not_active() -> ApplicationError {
     ApplicationError::Conflict {
         code: "cart_not_active",
@@ -265,7 +233,7 @@ fn cart_not_active() -> ApplicationError {
 fn checkout_cart_already_started() -> ApplicationError {
     ApplicationError::Conflict {
         code: "checkout_cart_already_started",
-        message: "the Cart is locked to an existing Order; resume that Order or use a new active Cart",
+        message: "the Cart is locked to an existing checkout; retry the same Cart checkout request or use a new active Cart",
     }
 }
 
